@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@pi-fit-trace/api-contracts": "workspace:*",
     "@pi-fit-trace/core": "workspace:*",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

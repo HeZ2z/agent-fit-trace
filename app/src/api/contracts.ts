@@ -7,18 +7,7 @@ export interface WorkoutExportFile {
 }
 
 /**
- * Raised when a pi response cannot be trusted.
- *
- * The message always names the offending field so callers can surface a
- * readable error instead of crashing on a shape mismatch.
+ * `MalformedResponseError` now lives in the shared contract package; re-export
+ * it so the app keeps one class identity across the api and contracts layers.
  */
-export class MalformedResponseError extends Error {
-  code = "MALFORMED_RESPONSE";
-  field: string;
-
-  constructor(field: string, reason: string) {
-    super(`Malformed response: \`${field}\` ${reason}.`);
-    this.name = "MalformedResponseError";
-    this.field = field;
-  }
-}
+export { MalformedResponseError } from "@pi-fit-trace/api-contracts";

@@ -17,6 +17,7 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@pi-fit-trace/api-contracts": "workspace:*",
     "@pi-fit-trace/core": "workspace:*",
     "@types/node": "^24.0.0",
     "typebox": "^1.3.30",
