@@ -135,6 +135,11 @@ export const HTTP_STATUS = {
 - `POST /plans/drafts` (optional `PlanConstraints` body) → `200`.
 - Any unexpected failure → `500` with an `ErrorEnvelope`.
 
+Optional plan constraints are validated server-side — `goal` is a string,
+`days_available` is an integer from 1 to 7, and `equipment`/`constraints`
+are string arrays — and invalid values are rejected with `400
+VALIDATION_ERROR`.
+
 `createMemoryHandler` maps `ApiError` codes to these statuses
 (`statusForError`): an explicit `status` on the error wins, otherwise
 `VALIDATION_ERROR` → `400`, `CONFLICT` → `409`, and anything else → `500`.
@@ -241,6 +246,18 @@ Idempotency flow (asserted by the contract suite and the memory-handler test):
 - The same id with different content is rejected with `CONFLICT` (`409`) and
   never overwrites the original record.
 
+The async client boundary makes id preparation the caller's job: both the
+local and HTTP clients derive the id from content only when the draft has
+none, and otherwise send the supplied id unchanged. A server preserves the
+caller-supplied id — it validates and normalizes the record but never
+re-derives the id. A server requires the caller to supply the id and rejects
+a missing/blank id with `400 VALIDATION_ERROR` (it never derives ids
+itself), and malformed request bodies (e.g. `{ record: null }`) are also
+`400`. This contrasts with the legacy in-browser store, which
+derived ids from content internally. Preserving the caller's id is what makes
+retries idempotent across the wire, and the local client behaves the same
+way so both transports share one rule.
+
 The app's stable import path re-exports the shared implementation
 (`app/src/contracts/ids.ts`):
 
@@ -331,5 +348,15 @@ routes.
 
 ## 9. Non-goals
 
-This contract covers shapes only. Runtime mode selection, the loopback dev
-server, and development modes are covered in later work, not here.
+This contract covers shapes only. Runtime mode selection and development
+modes are covered in later work, not here.
+
+### 9.1 Loopback development API
+
+`server/devApiServer.ts` is a loopback-bound `node:http` development API for
+exercising the contract over real HTTP. It reuses `createMemoryHandler` over
+an in-memory append-only store (`server/inMemoryWorkoutStore.ts`) that runs
+the deterministic core directly and serializes imports, so concurrent
+same-id submits resolve to exactly one stored record plus duplicates. It is
+bound to loopback and clears its records on restart. Full development-mode
+docs come with the runtime-selection work, not here.
