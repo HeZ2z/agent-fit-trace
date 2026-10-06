@@ -53,7 +53,8 @@ function isExtremeRpe(raw: string): boolean {
 
 export function WorkoutEditorScreen() {
   const navigate = useNavigate();
-  const { add } = useWorkouts();
+  const { saveWorkout, saveStatus } = useWorkouts();
+  const saving = saveStatus === "saving";
   const nextKey = useRef(1);
 
   const makeSet = (): SetDraft => ({ key: nextKey.current++, weight: "", reps: "", rpe: "" });
@@ -151,8 +152,9 @@ export function WorkoutEditorScreen() {
 
   function buildDraft(): Record<string, unknown> {
     const draft: Record<string, unknown> = {
-      // Placeholder id: the store owns/derives the real id, but validation
-      // requires a non-empty id to be present.
+      // Placeholder id: validation requires a non-empty id, but the id is
+      // owned by the client — it is stripped before saving so the client
+      // derives the real id from content (idempotent retries).
       id: "pending",
       schema_version: CURRENT_SCHEMA_VERSION,
       date,
@@ -189,19 +191,30 @@ export function WorkoutEditorScreen() {
     return draft;
   }
 
-  function persist(draft: Record<string, unknown>): void {
-    // Storage failures (unavailable, quota, conflict) must surface to the user
-    // rather than escaping as an unhandled error.
+  /** Drop the validation placeholder so the client derives the real id. */
+  function buildSaveInputFrom(draft: Record<string, unknown>): Record<string, unknown> {
+    if (draft.id === "pending") {
+      const { id: _placeholder, ...rest } = draft;
+      return rest;
+    }
+    return draft;
+  }
+
+  async function persist(draft: Record<string, unknown>): Promise<void> {
+    // Save failures (unavailable, quota, conflict) must surface to the user
+    // rather than escaping as an unhandled error. Input is retained and no
+    // navigation happens until the save resolves.
     try {
-      const saved = add(draft);
+      const saved = await saveWorkout(buildSaveInputFrom(draft));
       navigate(`/workout/${saved.id}`);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (saving) return;
     setIssues([]);
     setWarnings([]);
     setSaveError(null);
@@ -229,10 +242,11 @@ export function WorkoutEditorScreen() {
       return;
     }
 
-    persist(draft);
+    await persist(draft);
   }
 
-  function handleConfirmSave(): void {
+  async function handleConfirmSave(): Promise<void> {
+    if (saving) return;
     // The form changed after the warning was shown: drop the stale draft and
     // require a fresh submission and validation.
     if (pendingSave === null || pendingIsStale) {
@@ -242,7 +256,7 @@ export function WorkoutEditorScreen() {
     }
     const draft = pendingSave;
     setPendingSave(null);
-    persist(draft);
+    await persist(draft);
   }
 
   return (
@@ -295,7 +309,7 @@ export function WorkoutEditorScreen() {
       {pendingSave !== null && !pendingIsStale && (
         <div className="validation-warnings" data-testid="warning-confirmation">
           <p>This workout was accepted with warnings. Save it anyway?</p>
-          <button type="button" onClick={handleConfirmSave}>
+          <button type="button" onClick={handleConfirmSave} disabled={saving}>
             Save anyway
           </button>
         </div>
@@ -504,7 +518,7 @@ export function WorkoutEditorScreen() {
           </button>
         </fieldset>
 
-        <button type="submit">Save workout</button>
+        <button type="submit" disabled={saving}>Save workout</button>
       </form>
     </section>
   );

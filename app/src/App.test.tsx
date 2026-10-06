@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import App from "./App.tsx";
 
 describe("App", () => {
-  it("renders the primary navigation and the history screen at /", () => {
+  it("renders the primary navigation and the history screen at /", async () => {
     render(<App />);
 
     expect(screen.getByRole("navigation", { name: /primary/i })).toBeInTheDocument();
@@ -13,5 +13,6 @@ describe("App", () => {
     expect(screen.getByRole("link", { name: /plan/i })).toBeInTheDocument();
 
     expect(screen.getByRole("heading", { level: 1, name: /workout history/i })).toBeInTheDocument();
+    expect(await screen.findByText(/no workouts yet/i)).toBeInTheDocument();
   });
 });

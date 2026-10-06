@@ -1,7 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
 import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
-import type { StorageAdapter } from "./storage/adapter.ts";
+import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
 import { HistoryScreen } from "./screens/HistoryScreen.tsx";
 import { WorkoutEditorScreen } from "./screens/WorkoutEditorScreen.tsx";
 import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
@@ -9,13 +9,13 @@ import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
 
 export interface AppProps {
-  /** Optional storage adapter for tests; defaults to `localStorage`. */
-  adapter?: StorageAdapter;
+  /** Optional client for tests; defaults to the local client. */
+  client?: FitTraceClient;
 }
 
-export default function App({ adapter }: AppProps = {}) {
+export default function App({ client }: AppProps = {}) {
   return (
-    <WorkoutStoreProvider adapter={adapter}>
+    <WorkoutStoreProvider client={client}>
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>

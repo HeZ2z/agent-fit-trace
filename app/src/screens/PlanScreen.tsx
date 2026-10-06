@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { Link } from "react-router-dom";
-import { generateNextPlan, stableStringify } from "@pi-fit-trace/core";
+import { stableStringify } from "@pi-fit-trace/core";
 import type { PlanDraft } from "@pi-fit-trace/core";
 import { readTextFile } from "../api/fileTransport.ts";
 import { parsePlanResponse } from "../api/responseParsers.ts";
@@ -69,24 +69,51 @@ function PlanView({ plan }: { plan: PlanDraft }) {
 }
 
 export function PlanScreen() {
-  const { records } = useWorkouts();
+  const { client, records, status: historyStatus, loadError, reload } = useWorkouts();
   const [imported, setImported] = useState<PlanDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Confirmation is UI-only: it never touches stored workout records. Adoption
   // is bound to the exact plan that was confirmed, so it cannot go stale.
   const [adoptedFingerprint, setAdoptedFingerprint] = useState<string | null>(null);
+  const [localPlan, setLocalPlan] = useState<PlanDraft | null>(null);
+  const [planCallStatus, setPlanCallStatus] = useState<"loading" | "error" | "ready">("loading");
+  const [planCallError, setPlanCallError] = useState<Error | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const generationRef = useRef(0);
+
+  useEffect(() => {
+    if (historyStatus !== "ready") return;
+    const generation = ++generationRef.current;
+    let cancelled = false;
+    setPlanCallStatus("loading");
+    setPlanCallError(null);
+    client
+      .createPlanDraft()
+      .then((draft) => {
+        if (cancelled || generationRef.current !== generation) return;
+        setLocalPlan(draft);
+        setPlanCallStatus("ready");
+      })
+      .catch((caught: unknown) => {
+        if (cancelled || generationRef.current !== generation) return;
+        setPlanCallError(caught instanceof Error ? caught : new Error(String(caught)));
+        setPlanCallStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, records, reloadToken, historyStatus]);
 
   // Single source of truth for rendering: local plan unless an import
   // succeeded. A failed import never changes this.
-  const localPlan = generateNextPlan([...records]);
   const plan = imported ?? localPlan;
   const source = imported === null ? "local" : "imported";
-  const showEmpty = records.length === 0 && imported === null;
+  const showEmpty = historyStatus === "ready" && records.length === 0 && imported === null;
 
   // Deriving status from a fingerprint means a regenerated plan (for example
   // after workout history changes) can never inherit a stale "adopted" status.
-  const planFingerprint = stableStringify(plan);
-  const status: PlanStatus = adoptedFingerprint === planFingerprint ? "adopted" : "draft";
+  const planFingerprint = plan === null ? null : stableStringify(plan);
+  const status: PlanStatus = adoptedFingerprint !== null && adoptedFingerprint === planFingerprint ? "adopted" : "draft";
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const input = event.currentTarget;
@@ -115,7 +142,7 @@ export function PlanScreen() {
   }
 
   function confirmPlan(): void {
-    setAdoptedFingerprint(planFingerprint);
+    if (planFingerprint !== null) setAdoptedFingerprint(planFingerprint);
   }
 
   function discardPlan(): void {
@@ -150,7 +177,23 @@ export function PlanScreen() {
         </div>
       )}
 
-      {showEmpty ? (
+      {historyStatus === "error" ? (
+        <div role="alert" data-testid="history-error" className="validation-summary">
+          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <button type="button" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      ) : historyStatus === "loading" || (historyStatus === "ready" && planCallStatus === "loading") ? (
+        <p role="status">Loading plan…</p>
+      ) : planCallStatus === "error" && imported === null ? (
+        <div role="alert" data-testid="plan-error" className="validation-summary">
+          <p>Could not load plan: {planCallError?.message ?? "Unknown error."}</p>
+          <button type="button" onClick={() => setReloadToken((n) => n + 1)}>
+            Retry
+          </button>
+        </div>
+      ) : showEmpty || plan === null ? (
         <div className="empty-state">
           <p>No workout history to draft a plan from yet.</p>
           <Link to="/workout/new">Log your first workout</Link>

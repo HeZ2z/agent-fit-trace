@@ -25,11 +25,11 @@ function HistoryRow({ record }: { record: WorkoutRecord }) {
 }
 
 export function HistoryScreen() {
-  const { records } = useWorkouts();
+  const { records, status, loadError, reload } = useWorkouts();
   const { exportWorkouts, error: exportError } = useWorkoutExport(records);
 
-  // The store loads records in ascending date order; reverse explicitly so the
-  // most recent workout appears first.
+  // The client returns records in ascending date order; reverse explicitly so
+  // the most recent workout appears first.
   const newestFirst = [...records].reverse();
 
   return (
@@ -48,18 +48,30 @@ export function HistoryScreen() {
         </div>
       )}
 
-      {records.length === 0 ? (
-        <div className="empty-state">
-          <p>No workouts yet.</p>
-          <Link to="/workout/new">Log your first workout</Link>
+      {status === "loading" && <p role="status">Loading workout history…</p>}
+
+      {status === "error" && (
+        <div role="alert" className="validation-summary" data-testid="history-error">
+          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <button type="button" onClick={reload}>
+            Retry
+          </button>
         </div>
-      ) : (
-        <ul className="history-list">
-          {newestFirst.map((record) => (
-            <HistoryRow key={record.id} record={record} />
-          ))}
-        </ul>
       )}
+
+      {status === "ready" &&
+        (records.length === 0 ? (
+          <div className="empty-state">
+            <p>No workouts yet.</p>
+            <Link to="/workout/new">Log your first workout</Link>
+          </div>
+        ) : (
+          <ul className="history-list">
+            {newestFirst.map((record) => (
+              <HistoryRow key={record.id} record={record} />
+            ))}
+          </ul>
+        ))}
     </section>
   );
 }
