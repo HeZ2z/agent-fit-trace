@@ -358,5 +358,6 @@ exercising the contract over real HTTP. It reuses `createMemoryHandler` over
 an in-memory append-only store (`server/inMemoryWorkoutStore.ts`) that runs
 the deterministic core directly and serializes imports, so concurrent
 same-id submits resolve to exactly one stored record plus duplicates. It is
-bound to loopback and clears its records on restart. Full development-mode
-docs come with the runtime-selection work, not here.
+bound to loopback and clears its records on restart. The runtime modes
+(local vs HTTP), proxy, scripts, and storage ownership are documented in
+`docs/app-dev-modes.md`.

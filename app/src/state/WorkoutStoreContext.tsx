@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import { sortRecords } from "@pi-fit-trace/core";
 import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
-import { LocalFitTraceClient } from "../api/localFitTraceClient.ts";
+import { createFitTraceClient } from "../api/createFitTraceClient.ts";
 
 export interface WorkoutContextValue {
   client: FitTraceClient;
@@ -27,14 +27,15 @@ export interface WorkoutStoreProviderProps {
  * Provide an async `FitTraceClient` to the subtree.
  *
  * History is loaded on mount and whenever `client` changes; stale responses
- * are discarded via a request-generation guard. The default client is local
- * storage (no mode selection yet).
+ * are discarded via a request-generation guard. The default client is
+ * mode-aware (`VITE_FIT_TRACE_MODE=http` selects the HTTP client, anything
+ * else stays local).
  */
 export function WorkoutStoreProvider({ client: clientProp, children }: WorkoutStoreProviderProps) {
-  // The parameter default `= new LocalFitTraceClient()` would evaluate on
+  // The parameter default `= createFitTraceClient()` would evaluate on
   // every render; keep one fallback per provider instance instead so the
   // resolved client identity stays stable.
-  const [fallbackClient] = useState(() => new LocalFitTraceClient());
+  const [fallbackClient] = useState(() => createFitTraceClient());
   const client = clientProp ?? fallbackClient;
   const [status, setStatus] = useState<WorkoutContextValue["status"]>("loading");
   const [records, setRecords] = useState<readonly WorkoutRecord[]>([]);

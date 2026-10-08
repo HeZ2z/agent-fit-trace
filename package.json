@@ -12,6 +12,8 @@
     "test": "pnpm run test:extension && pnpm run test:app",
     "test:extension": "node --test tests/*.test.ts",
     "test:app": "pnpm --filter app test",
+    "dev:api": "node server/devApiServer.ts",
+    "build": "pnpm --filter @pi-fit-trace/app build",
     "typecheck": "tsc --noEmit && pnpm --filter app typecheck"
   },
   "devDependencies": {
