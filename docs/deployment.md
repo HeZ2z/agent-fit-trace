@@ -10,9 +10,10 @@ pnpm dlx vercel deploy --yes --scope <team-slug>
 ```
 
 Configure the Supabase integration for the intended deployment environments.
-The current Vite application does not consume its variables yet.
 `NEXT_PUBLIC_*` variables are not automatically exposed by Vite;
-only explicitly selected public configuration may become `VITE_*`.
+only explicitly selected public configuration may become `VITE_*` — in
+practice the app bootstraps the Supabase URL + publishable key at runtime
+from `GET /api/v1/public-config`, so no `VITE_*` Supabase copies are needed.
 Keep generated `.vercel/` and `.env.local` files out of Git.
 
 ## Current deployable application
@@ -22,10 +23,12 @@ The React/Vite application deploys from the repository root using
 serves `app/dist`. SPA rewrites support direct visits to `/analysis`,
 `/plan`, and workout routes. API and asset paths are excluded from rewrites.
 
-Leave `VITE_FIT_TRACE_MODE` unset for the current preview: records live in
-the browser's localStorage. Supabase persistence and authentication are
-planned, not implemented. Setting HTTP mode on Vercel currently has no
-deployed API to connect to: the Vite loopback proxy is development-only.
+Leave `VITE_FIT_TRACE_MODE` unset for browser-local behavior: records live in
+the browser's localStorage. Set `VITE_FIT_TRACE_MODE=http` for the
+authenticated Supabase deployment: the app shows the invite-only login UI and
+talks to the Vercel functions under `/api/v1` (see `docs/supabase-setup.md`
+for the required `SUPABASE_URL` / publishable-key env and the dashboard
+invite-only checklist). The Vite loopback proxy is development-only.
 
 To deploy via Vercel's Git integration, import this repository with the
 repository root as Root Directory. Use Node 24 and the committed build

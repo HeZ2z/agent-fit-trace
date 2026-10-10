@@ -20,12 +20,20 @@ Run it:
 pnpm --filter @pi-fit-trace/app dev
 ```
 
-## HTTP mode
+## HTTP mode (authenticated)
 
 Selection: `VITE_FIT_TRACE_MODE=http`.
 
-- The app uses `HttpFitTraceClient` at same-origin `/api/v1`.
-- The Vite dev server proxies `/api` to the loopback dev API at
+- The app uses `HttpFitTraceClient` at same-origin `/api/v1` with the session
+  token attached per request (`Authorization: Bearer`), plus an invite-only
+  login UI (`/login`, `/forgot-password`, `/reset-password`, `/auth/callback`).
+  There is no public sign-up path.
+- The app bootstraps the Supabase URL + publishable key at runtime from
+  `GET /api/v1/public-config` (no `VITE_*` secret copies). The session lives
+  under `pi-fit-trace:auth:v1:session`; logout or account change clears all
+  cached workout/analysis state. A `401` surfaces (writes are never retried);
+  reads refresh the session once via explicit reload.
+- Locally, the Vite dev server proxies `/api` to the loopback dev API at
   `127.0.0.1:5199` (override the port with `FIT_TRACE_DEV_API_PORT`).
 - The proxy target is derived from the SAME `FIT_TRACE_DEV_API_PORT`
   setting the dev API honors, so pass the variable to BOTH processes when
@@ -61,5 +69,6 @@ committed proxy config against the real dev API), while the root
 
 ## Next milestone
 
-Authenticated API operations backed by Postgres; cloud pi integration stays
+Account/Postgres foundation is implemented (Supabase Auth + RLS workouts +
+Vercel functions; see `docs/supabase-setup.md`); cloud pi integration stays
 behind the future coaching module.
