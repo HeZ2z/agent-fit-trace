@@ -1,0 +1,45 @@
+# Fit-trace local Supabase (CLI + Docker).
+#
+# Invite-only is enforced HERE for local dev, not just in the UI:
+# - `auth.enable_signup = false` (global) removes the public sign-up path
+#   entirely — local signup stays denied.
+# - `[auth.email] enable_signup` must stay `true`: Supabase CLI v2.120.0 maps
+#   `auth.email.enable_signup = false` to GOTRUE_EXTERNAL_EMAIL_ENABLED=false,
+#   which disables email login entirely despite `[auth.email] enabled = true`.
+#   Email/password sign-in for invited users requires it enabled here; the
+#   global `auth.enable_signup = false` above is what blocks registration.
+# - `auth.email.enable_confirmations = true` requires email verification.
+# Production must mirror this in the Supabase dashboard
+# (Authentication → Sign In / Sign Up → "Allow new users to sign up" OFF);
+# see docs/supabase-setup.md. Never rely on hiding a button.
+
+project_id = "pi-fit-trace"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:5173"
+additional_redirect_urls = ["http://127.0.0.1:5173/auth/callback", "http://127.0.0.1:5173/reset-password", "http://127.0.0.1:5173/login"]
+jwt_expiry = 3600
+enable_signup = false
+minimum_password_length = 8
+
+[auth.email]
+enabled = true
+# Keep email authentication enabled; global auth.enable_signup denies signup.
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+
+[storage]
+enabled = false
