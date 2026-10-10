@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -112,6 +113,25 @@ describe("auth callback and reset screens", () => {
     // The submit runs after the async bootstrap resolves: success, not the
     // invalid-link error.
     await waitFor(() => expect(screen.queryByText("Login stub")).toBeInTheDocument());
+  });
+
+  it("survives a repeated effect without reporting the consumed link as expired", async () => {
+    window.location.hash = "#access_token=invite-token&refresh_token=r&type=invite";
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={["/auth/callback"]}>
+          <AuthProvider skipBootstrap publicConfig={PUBLIC_CONFIG} initialSession={null}>
+            <Routes>
+              <Route path="/auth/callback" element={<AuthCallbackScreen />} />
+              <Route path="/reset-password" element={<ResetPasswordScreen />} />
+            </Routes>
+          </AuthProvider>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem(RECOVERY_TOKEN_KEY)).toBe("invite-token");
   });
 
   it("never reads a token from the query string", async () => {

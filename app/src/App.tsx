@@ -16,6 +16,10 @@ import {
   ResetPasswordScreen,
   SignInScreen,
 } from "./auth/AuthScreens.tsx";
+import {
+  isPasswordSetupType,
+  parseAuthCallbackHash,
+} from "./auth/supabaseAuth.ts";
 
 export interface AppProps {
   /** Optional client for tests; defaults to the mode-aware client. */
@@ -148,7 +152,42 @@ function RequireAuth({
   return <ProtectedContent client={client}>{children}</ProtectedContent>;
 }
 
+/**
+ * True when a root-URL hash looks like an invite/recovery redirect: either a
+ * usable session of a password-setup type, or a mangled/expired variant that
+ * still deserves the expired-link notice instead of the sign-in form. Never
+ * matches ordinary fragment hashes (`#section`) — tokens are only ever read
+ * from the hash, never the query string.
+ */
+function isRootAuthHash(hash: string): boolean {
+  const session = parseAuthCallbackHash(hash);
+  if (session !== null) return isPasswordSetupType(session.type);
+  const fragment = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (fragment === "") return false;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(fragment);
+  } catch {
+    return false;
+  }
+  // A bare `?code=…` PKCE link is not consumed here (implicit-hash flow
+  // only); the callback screen reports it as invalid/expired.
+  if (params.get("code") !== null) return true;
+  return isPasswordSetupType(params.get("type")) || params.get("error") !== null;
+}
+
 function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; client?: FitTraceClient }) {
+  // Default Supabase invite/recovery links land on `/` (Site URL is the app
+  // origin): when the URL hash carries an invite/recovery session, route to
+  // the callback screen — ahead of the sign-in gate and any existing
+  // session — so users can set their password without editing the address.
+  // The callback consumes the hash into the tab-scoped token handoff and
+  // strips it from the URL before navigating to `/reset-password`.
+  // Local mode (and ordinary non-auth hashes) never enters this path.
+  const rootIsAuthCallback =
+    isHttpMode() &&
+    typeof window !== "undefined" &&
+    isRootAuthHash(window.location.hash);
   return (
     <BrowserRouter>
       <Routes>
@@ -156,9 +195,13 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
           <Route
             path="/"
             element={
-              <RequireAuth legacyLoopback={legacyLoopback} client={client}>
-                <HistoryScreen />
-              </RequireAuth>
+              rootIsAuthCallback ? (
+                <AuthCallbackScreen />
+              ) : (
+                <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+                  <HistoryScreen />
+                </RequireAuth>
+              )
             }
           />
           <Route

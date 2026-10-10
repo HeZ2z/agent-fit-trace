@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -35,7 +36,9 @@ interface MockState {
   usersByToken: Map<string, { id: string; email: string }>;
   usersByEmail: Map<string, { id: string; password: string }>;
   workoutsByUser: Map<string, WorkoutRecord[]>;
-  apiCalls: { url: string; authorization: string | null }[];
+  apiCalls: { url: string; method: string; authorization: string | null }[];
+  /** Password updates via PUT /auth/v1/user (recovery handoff). */
+  passwordUpdates: { authorization: string | null; body: string }[];
   authUserCalls: number;
 }
 
@@ -53,6 +56,7 @@ function makeState(): MockState {
       ["user-b", [workout("w-b", "2026-10-02")]],
     ]),
     apiCalls: [],
+    passwordUpdates: [],
     authUserCalls: 0,
   };
 }
@@ -106,6 +110,17 @@ function installFetch(state: MockState): void {
       if (url === `${AUTH_BASE}/auth/v1/user`) {
         state.authUserCalls += 1;
         if (state.userGate !== null) await state.userGate();
+        if ((init?.method ?? "GET") === "PUT") {
+          const handoff = token ?? "";
+          state.passwordUpdates.push({
+            authorization,
+            body: String(init?.body ?? ""),
+          });
+          if (handoff === "" || handoff === "bad-token") {
+            return new Response(JSON.stringify({ msg: "bad token" }), { status: 401 });
+          }
+          return new Response(JSON.stringify({ id: `user-for-${handoff}` }), { status: 200 });
+        }
         const principal = token === null ? undefined : state.usersByToken.get(token);
         if (principal === undefined) {
           return new Response(JSON.stringify({ msg: "bad token" }), { status: 401 });
@@ -118,7 +133,7 @@ function installFetch(state: MockState): void {
       }
 
       if (url.startsWith("/api/v1/")) {
-        state.apiCalls.push({ url, authorization });
+        state.apiCalls.push({ url, method: init?.method ?? "GET", authorization });
         const principal = token === null ? undefined : state.usersByToken.get(token);
         if (principal === undefined) {
           return new Response(
@@ -235,5 +250,129 @@ describe("App auth integration (HTTP mode)", () => {
     expect(await screen.findByRole("heading", { name: /login is unavailable/i })).toBeInTheDocument();
     expect(state.apiCalls).toHaveLength(0);
     expect(screen.queryByRole("button", { name: /^sign in$/i })).not.toBeInTheDocument();
+  });
+
+  it("routes a default root invite hash to password setup with a usable handoff", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=invite-token&refresh_token=r&type=invite",
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBe("invite-token");
+
+    await user.type(screen.getByLabelText("New password"), "new-password-1");
+    await user.click(screen.getByRole("button", { name: /update password/i }));
+    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    // The handoff used the invite hash's access token with the new password…
+    expect(state.passwordUpdates).toHaveLength(1);
+    expect(state.passwordUpdates[0]?.authorization).toBe("Bearer invite-token");
+    expect(JSON.parse(state.passwordUpdates[0]?.body ?? "{}")).toEqual({
+      password: "new-password-1",
+    });
+    // …and the callback flow never issued a workout write.
+    expect(
+      state.apiCalls.filter(
+        (call) =>
+          call.url.includes("workout") &&
+          (call.method === "POST" || call.method === "PUT" || call.method === "PATCH"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("routes a root invite hash to password setup under StrictMode without an expired-link error", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=strict-invite-token&refresh_token=r&type=invite",
+    );
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+
+    // The repeated effect must not report the just-consumed link as expired.
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBe(
+      "strict-invite-token",
+    );
+  });
+
+  it("routes a default root recovery hash to password setup", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=rec-token&refresh_token=r&type=recovery",
+    );
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBe("rec-token");
+  });
+
+  it("prefers password setup over an existing session on the root hash", async () => {
+    const state = makeState();
+    state.usersByToken.set("access-user-a", { id: "user-a", email: "a@example.com" });
+    installFetch(state);
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      serializeSession(storedSession("user-a", "a@example.com", "access-user-a")),
+    );
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=invite-token&refresh_token=r&type=invite",
+    );
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    expect(screen.queryByText(/2026-09-01/)).not.toBeInTheDocument();
+  });
+
+  it("leaves a non-auth root hash on the normal sign-in route", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState({}, "", "/#section");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#section");
+    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBeNull();
+  });
+
+  it("shows the invalid-link notice at root when the hash carries no token", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState({}, "", "/#type=invite");
+    render(<App />);
+
+    expect(await screen.findByText(/invalid or expired/i)).toBeInTheDocument();
+  });
+
+  it("does not hijack the root invite hash in local mode", async () => {
+    vi.stubEnv("VITE_FIT_TRACE_MODE", "local");
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=invite-token&refresh_token=r&type=invite",
+    );
+    render(<App legacyLoopback />);
+
+    expect(await screen.findByRole("heading", { name: /workout history/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /choose a new password/i })).not.toBeInTheDocument();
   });
 });

@@ -74,6 +74,13 @@ Local config does not change the cloud project. Before releasing auth:
 - Local mode (`VITE_FIT_TRACE_MODE` unset) and the unauthenticated loopback
   dev API (`pnpm dev:api`) are unchanged for local development/tests. No
   automatic upload of local records.
+- Default invite/recovery links land on `/` (the Supabase Site URL is the app
+  origin): the app detects an invite/recovery URL hash at the root route and
+  serves the auth-callback screen ahead of the sign-in gate — even with an
+  existing session — so invited users set their first password without
+  editing the address. The hash is consumed into the tab-scoped token
+  handoff and stripped from the URL before routing to `/reset-password`;
+  ordinary fragment hashes and local mode never enter this path.
 
 ## 5. Integration tests
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext.tsx";
@@ -269,8 +269,15 @@ export function AuthCallbackScreen() {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
+  // StrictMode double-invokes this effect on one mount: the first run
+  // consumes the hash (stores the token, strips it from the URL), so the
+  // second run must not re-read the now-empty hash and report the just
+  // consumed link as expired.
+  const consumedRef = useRef(false);
 
   useEffect(() => {
+    if (consumedRef.current) return;
+    consumedRef.current = true;
     const hashSession = parseAuthCallbackHash(window.location.hash);
     if (hashSession === null) {
       setError("This link is invalid or expired. Request a new one or sign in.");
