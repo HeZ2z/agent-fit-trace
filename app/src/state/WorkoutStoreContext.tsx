@@ -1,72 +1,166 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { LocalStorageAdapter } from "../storage/adapter.ts";
-import type { StorageAdapter } from "../storage/adapter.ts";
-import { createWorkoutStore } from "./workoutStore.ts";
-import type { WorkoutStore } from "./workoutStore.ts";
+import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { sortRecords } from "@pi-fit-trace/core";
+import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import { createFitTraceClient } from "../api/createFitTraceClient.ts";
 
-const WorkoutStoreContext = createContext<WorkoutStore | null>(null);
+export interface WorkoutContextValue {
+  client: FitTraceClient;
+  status: "loading" | "error" | "ready";
+  records: readonly WorkoutRecord[];
+  loadError: Error | null;
+  reload: () => void;
+  saveWorkout: (input: unknown) => Promise<WorkoutRecord>;
+  saveStatus: "idle" | "saving" | "error";
+  saveError: Error | null;
+}
+
+const WorkoutStoreContext = createContext<WorkoutContextValue | null>(null);
 
 export interface WorkoutStoreProviderProps {
-  adapter?: StorageAdapter;
+  client?: FitTraceClient;
   children: ReactNode;
 }
 
-type ResolvedStore =
-  | { store: WorkoutStore; error: null }
-  | { store: null; error: Error };
-
 /**
- * Fallback rendered when the store cannot be initialized, e.g. blocked
- * `localStorage` or a corrupt stored record. Recoverable: the user can retry
- * once the underlying problem is fixed.
- */
-function StoreInitError({ error, onRetry }: { error: Error; onRetry: () => void }) {
-  return (
-    <div role="alert" className="store-init-error" data-testid="store-init-error">
-      <h1>Workout storage is unavailable</h1>
-      <p>pi-fit-trace could not read your local workout data, so it cannot start safely.</p>
-      <p className="store-init-error-detail">{error.message}</p>
-      <button type="button" onClick={onRetry}>
-        Try again
-      </button>
-    </div>
-  );
-}
-
-/**
- * Provide a single workout store to the subtree.
+ * Provide an async `FitTraceClient` to the subtree.
  *
- * Initialization failures (blocked `localStorage`, a corrupt stored record) are
- * caught here and rendered as a recoverable error screen instead of crashing
- * every screen. Pass an adapter to make screens testable in isolation (e.g.
- * `MemoryStorageAdapter`); the default is `localStorage`.
+ * History is loaded on mount and whenever `client` changes; stale responses
+ * are discarded via a request-generation guard. The default client is
+ * mode-aware (`VITE_FIT_TRACE_MODE=http` selects the HTTP client, anything
+ * else stays local).
  */
-export function WorkoutStoreProvider({ adapter, children }: WorkoutStoreProviderProps) {
-  const [attempt, setAttempt] = useState(0);
+export function WorkoutStoreProvider({ client: clientProp, children }: WorkoutStoreProviderProps) {
+  // The parameter default `= createFitTraceClient()` would evaluate on
+  // every render; keep one fallback per provider instance instead so the
+  // resolved client identity stays stable.
+  const [fallbackClient] = useState(() => createFitTraceClient());
+  const client = clientProp ?? fallbackClient;
+  const [status, setStatus] = useState<WorkoutContextValue["status"]>("loading");
+  const [records, setRecords] = useState<readonly WorkoutRecord[]>([]);
+  const [loadError, setLoadError] = useState<Error | null>(null);
+  const [saveStatus, setSaveStatus] = useState<WorkoutContextValue["saveStatus"]>("idle");
+  const [saveError, setSaveError] = useState<Error | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const generationRef = useRef(0);
+  const clientRef = useRef(client);
+  clientRef.current = client;
 
-  const resolved = useMemo<ResolvedStore>(() => {
-    try {
-      return { store: createWorkoutStore(adapter ?? new LocalStorageAdapter()), error: null };
-    } catch (error) {
-      return { store: null, error: error instanceof Error ? error : new Error(String(error)) };
+  // Single guarded loader for ALL history reads. Captures the resolved
+  // client and a fresh generation at request start; applies results only
+  // when both are still current. Any successful current read means history
+  // is fine, so it sets records, settles status to ready, and clears the
+  // error — including a silent refresh after a failed load. A silent
+  // failure touches nothing.
+  const loadHistory = useCallback((mode: "visible" | "silent"): void => {
+    const requestClient = clientRef.current;
+    const generation = ++generationRef.current;
+    if (mode === "visible") {
+      setStatus("loading");
+      setLoadError(null);
     }
-  }, [adapter, attempt]);
+    void requestClient.listWorkouts().then(
+      (loaded) => {
+        if (generationRef.current !== generation) return;
+        if (requestClient !== clientRef.current) return;
+        setRecords(loaded);
+        setStatus("ready");
+        setLoadError(null);
+      },
+      (error: unknown) => {
+        if (generationRef.current !== generation) return;
+        if (requestClient !== clientRef.current) return;
+        if (mode === "silent") return;
+        setRecords([]);
+        setLoadError(error instanceof Error ? error : new Error(String(error)));
+        setStatus("error");
+      },
+    );
+  }, []);
 
-  if (resolved.store === null) {
-    return <StoreInitError error={resolved.error} onRetry={() => setAttempt((n) => n + 1)} />;
-  }
+  useEffect(() => {
+    loadHistory("visible");
+  }, [client, reloadToken, loadHistory]);
 
-  return (
-    <WorkoutStoreContext.Provider value={resolved.store}>{children}</WorkoutStoreContext.Provider>
+  // A replaced client owns fresh save state: the previous client's late
+  // save completion skips all updates (guarded in saveWorkout), so reset
+  // here to avoid leaving saveStatus stuck at "saving".
+  useEffect(() => {
+    setSaveStatus("idle");
+    setSaveError(null);
+  }, [client]);
+
+  const reload = useCallback(() => {
+    setReloadToken((n) => n + 1);
+  }, []);
+
+  const saveWorkout = useCallback(
+    async (input: unknown): Promise<WorkoutRecord> => {
+      const saveClient = clientRef.current;
+      setSaveStatus("saving");
+      setSaveError(null);
+      try {
+        const result = await saveClient.createWorkout(input as WorkoutRecord);
+        const saved = result.record;
+        // The client may have been replaced while saving; skip every state
+        // update in that case (the caller still receives the record).
+        if (saveClient !== clientRef.current) return saved;
+        // Invalidate in-flight history requests BEFORE merging so an older
+        // refresh resolving later cannot clobber the just-saved record.
+        generationRef.current += 1;
+        // Incorporate immediately so the record is present even before the
+        // background refresh resolves.
+        setRecords((prev) => {
+          const merged = [
+            ...prev.filter((entry) => entry.id !== saved.id),
+            saved,
+          ];
+          return sortRecords(merged);
+        });
+        setSaveStatus("idle");
+        // Settle a still-loading history so a save during the initial load
+        // does not leave status stuck: the in-flight visible read was
+        // invalidated above and will never settle it. Only loading settles
+        // here — an existing "error" keeps its real loadError until the
+        // silent refresh below resolves it (clearing it here would degrade
+        // the message to "Unknown error").
+        setStatus((prev) => (prev === "loading" ? "ready" : prev));
+        // Background refresh; a failure here must not surface as a save
+        // failure nor drop the just-saved record.
+        loadHistory("silent");
+        return saved;
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        if (saveClient === clientRef.current) {
+          setSaveStatus("error");
+          setSaveError(err);
+        }
+        throw err;
+      }
+    },
+    [loadHistory],
   );
+
+  const value: WorkoutContextValue = {
+    client,
+    status,
+    records,
+    loadError,
+    reload,
+    saveWorkout,
+    saveStatus,
+    saveError,
+  };
+
+  return <WorkoutStoreContext.Provider value={value}>{children}</WorkoutStoreContext.Provider>;
 }
 
-/** Read the provided workout store, failing loudly outside a provider. */
-export function useWorkoutStore(): WorkoutStore {
-  const store = useContext(WorkoutStoreContext);
-  if (store === null) {
+/** Read the provided workout client value, failing loudly outside a provider. */
+export function useWorkoutStore(): WorkoutContextValue {
+  const value = useContext(WorkoutStoreContext);
+  if (value === null) {
     throw new Error("useWorkoutStore must be used within a <WorkoutStoreProvider>.");
   }
-  return store;
+  return value;
 }

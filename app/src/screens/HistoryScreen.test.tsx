@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,8 @@ import { downloadJson } from "../api/fileTransport.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
+import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
 import { HistoryScreen } from "./HistoryScreen.tsx";
 
 vi.mock("../api/fileTransport.ts", () => ({
@@ -35,10 +37,10 @@ function record(overrides: Partial<WorkoutRecord> = {}): WorkoutRecord {
   };
 }
 
-function renderHistory(adapter: MemoryStorageAdapter) {
+function renderHistory(client: FitTraceClient) {
   return render(
     <MemoryRouter initialEntries={["/"]}>
-      <WorkoutStoreProvider adapter={adapter}>
+      <WorkoutStoreProvider client={client}>
         <Routes>
           <Route path="/" element={<HistoryScreen />} />
           <Route path="/workout/:id" element={<div data-testid="summary" />} />
@@ -49,24 +51,33 @@ function renderHistory(adapter: MemoryStorageAdapter) {
   );
 }
 
+function renderHistoryOver(adapter: MemoryStorageAdapter) {
+  return renderHistory(clientFor(adapter));
+}
+
 describe("HistoryScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("shows an empty state with a link to the editor", () => {
-    renderHistory(new MemoryStorageAdapter());
+  it("shows a loading notice before history resolves", () => {
+    const client = new FakeFitTraceClient({ records: [] });
+    client.nextList();
+    renderHistory(client);
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /workout history/i }),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/no workouts yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
+  });
+
+  it("shows an empty state with a link to the editor", async () => {
+    renderHistoryOver(new MemoryStorageAdapter());
+
+    expect(await screen.findByText(/no workouts yet/i)).toBeInTheDocument();
 
     const link = screen.getByRole("link", { name: /log your first workout/i });
     expect(link).toHaveAttribute("href", "/workout/new");
   });
 
-  it("renders stored records with date, session type, and a summary", () => {
+  it("renders stored records with date, session type, and a summary", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
     saveRecord(
@@ -79,21 +90,39 @@ describe("HistoryScreen", () => {
       }),
     );
 
-    renderHistory(adapter);
+    renderHistoryOver(adapter);
 
-    expect(screen.getByText(/2026-01-05/)).toBeInTheDocument();
+    expect(await screen.findByText(/2026-01-05/)).toBeInTheDocument();
     expect(screen.getByText(/2026-01-07/)).toBeInTheDocument();
     expect(screen.getByText(/2 sets · 1000 kg · avg RPE 8/)).toBeInTheDocument();
     expect(screen.getByText(/1 set · 800 kg · avg RPE 7/)).toBeInTheDocument();
   });
 
-  it("links each row to the right workout", () => {
+  it("shows a retryable error when history fails to load and recovers", async () => {
+    const client = new FakeFitTraceClient();
+    const first = client.nextList();
+    const user = userEvent.setup();
+    renderHistory(client);
+
+    await waitFor(() => expect(client.listCalls).toBe(1));
+    first.reject(new Error("blocked"));
+    expect(await screen.findByTestId("history-error")).toBeInTheDocument();
+
+    const second = client.nextList();
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+    second.resolve([record()]);
+    await waitFor(() => expect(screen.getByText(/2026-01-05/)).toBeInTheDocument());
+    expect(client.listCalls).toBe(2);
+  });
+
+  it("links each row to the right workout", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
     saveRecord(adapter, record({ id: "wkt_b", date: "2026-01-07" }));
 
-    renderHistory(adapter);
+    renderHistoryOver(adapter);
 
+    await screen.findByText(/2026-01-05/);
     expect(screen.getByRole("link", { name: /2026-01-05/ })).toHaveAttribute(
       "href",
       "/workout/wkt_a",
@@ -104,7 +133,7 @@ describe("HistoryScreen", () => {
     );
   });
 
-  it("renders avg RPE as n/a when no RPE values are recorded", () => {
+  it("renders avg RPE as n/a when no RPE values are recorded", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(
       adapter,
@@ -113,15 +142,16 @@ describe("HistoryScreen", () => {
       }),
     );
 
-    renderHistory(adapter);
+    renderHistoryOver(adapter);
 
-    expect(screen.getByText(/avg RPE n\/a/)).toBeInTheDocument();
+    expect(await screen.findByText(/avg RPE n\/a/)).toBeInTheDocument();
   });
 
   it("exports the stored records as workout.json", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
-    renderHistory(adapter);
+    renderHistoryOver(adapter);
+    await screen.findByText(/2026-01-05/);
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /export workouts/i }));
@@ -141,7 +171,8 @@ describe("HistoryScreen", () => {
       throw new Error("browser download APIs are unavailable");
     });
 
-    renderHistory(adapter);
+    renderHistoryOver(adapter);
+    await screen.findByText(/2026-01-05/);
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /export workouts/i }));
@@ -151,8 +182,9 @@ describe("HistoryScreen", () => {
     expect(alert).toHaveTextContent(/download APIs are unavailable/i);
   });
 
-  it("disables export when there are no records", () => {
-    renderHistory(new MemoryStorageAdapter());
+  it("disables export when there are no records", async () => {
+    renderHistoryOver(new MemoryStorageAdapter());
+    await screen.findByText(/no workouts yet/i);
 
     expect(screen.getByRole("button", { name: /export workouts/i })).toBeDisabled();
     expect(downloadJsonMock).not.toHaveBeenCalled();

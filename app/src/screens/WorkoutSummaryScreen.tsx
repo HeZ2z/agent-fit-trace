@@ -9,7 +9,31 @@ import { useWorkouts } from "../state/useWorkouts.ts";
 
 export function WorkoutSummaryScreen() {
   const { id } = useParams<{ id: string }>();
-  const { records } = useWorkouts();
+  const { records, status, loadError, reload } = useWorkouts();
+
+  if (status === "loading") {
+    return (
+      <section>
+        <h1>Workout Summary</h1>
+        <p role="status">Loading workout…</p>
+      </section>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <section>
+        <h1>Workout Summary</h1>
+        <div role="alert" className="validation-summary" data-testid="summary-error">
+          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <button type="button" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
+
   const record = records.find((entry) => entry.id === id);
 
   if (record === undefined) {

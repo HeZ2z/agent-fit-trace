@@ -6,6 +6,7 @@ import App from "./App.tsx";
 import { downloadJson } from "./api/fileTransport.ts";
 import { MemoryStorageAdapter } from "./storage/adapter.ts";
 import { loadRecords } from "./storage/workoutRepository.ts";
+import { clientFor } from "./test/asyncClient.ts";
 
 vi.mock("./api/fileTransport.ts", () => ({
   downloadJson: vi.fn(),
@@ -16,7 +17,7 @@ const downloadJsonMock = vi.mocked(downloadJson);
 
 function renderApp(adapter: MemoryStorageAdapter) {
   const user = userEvent.setup();
-  const view = render(<App adapter={adapter} />);
+  const view = render(<App client={clientFor(adapter)} />);
   return { user, ...view };
 }
 
@@ -45,17 +46,17 @@ describe("App integration", () => {
     const { user } = renderApp(adapter);
 
     // Empty history.
-    expect(screen.getByText(/no workouts yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no workouts yet/i)).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: /log your first workout/i }));
 
     // Editor.
     expect(screen.getByRole("heading", { level: 1, name: /log workout/i })).toBeInTheDocument();
     await fillAndSave(user);
 
-    // Summary reflects the stored record (id derived by the store).
+    // Summary reflects the stored record (id derived by the client).
+    await screen.findByRole("heading", { level: 1, name: /workout summary/i });
     const [saved] = loadRecords(adapter);
     expect(saved).toBeDefined();
-    expect(screen.getByRole("heading", { level: 1, name: /workout summary/i })).toBeInTheDocument();
     expect(screen.getByText(saved.date)).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Squat" })).toBeInTheDocument();
     expect(screen.getByText(/100 kg × 5 reps · RPE 8/)).toBeInTheDocument();
@@ -64,17 +65,17 @@ describe("App integration", () => {
     await user.click(screen.getByRole("link", { name: /^history$/i }));
     expect(screen.getByRole("heading", { level: 1, name: /workout history/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: `View ${saved.session_type} workout on ${saved.date}` }),
+      await screen.findByRole("link", { name: `View ${saved.session_type} workout on ${saved.date}` }),
     ).toBeInTheDocument();
 
     // Analysis reflects the saved workout.
     await user.click(screen.getByRole("link", { name: /analysis/i }));
-    expect(screen.getByText(/Sessions: 1/)).toBeInTheDocument();
+    expect(await screen.findByText(/Sessions: 1/)).toBeInTheDocument();
     expect(screen.getByText(/Volume: 500 kg/)).toBeInTheDocument();
 
     // Plan is a draft and is not adopted without confirmation.
     await user.click(screen.getByRole("link", { name: /^plan$/i }));
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/draft/i);
+    expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
     expect(screen.getByRole("button", { name: /confirm plan/i })).toBeInTheDocument();
     expect(screen.queryByText(/adopted/i)).not.toBeInTheDocument();
   });
@@ -83,8 +84,10 @@ describe("App integration", () => {
     const adapter = new MemoryStorageAdapter();
     const first = renderApp(adapter);
 
+    await screen.findByText(/no workouts yet/i);
     await first.user.click(screen.getByRole("link", { name: /log workout/i }));
     await fillAndSave(first.user);
+    await screen.findByRole("heading", { level: 1, name: /workout summary/i });
     const [saved] = loadRecords(adapter);
     expect(saved).toBeDefined();
 
@@ -95,7 +98,7 @@ describe("App integration", () => {
 
     expect(screen.getByRole("heading", { level: 1, name: /workout history/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: `View ${saved.session_type} workout on ${saved.date}` }),
+      await screen.findByRole("link", { name: `View ${saved.session_type} workout on ${saved.date}` }),
     ).toBeInTheDocument();
   });
 
@@ -103,11 +106,14 @@ describe("App integration", () => {
     const adapter = new MemoryStorageAdapter();
     const { user } = renderApp(adapter);
 
+    await screen.findByText(/no workouts yet/i);
     await user.click(screen.getByRole("link", { name: /log workout/i }));
     await fillAndSave(user);
+    await screen.findByRole("heading", { level: 1, name: /workout summary/i });
     const [saved] = loadRecords(adapter);
 
     await user.click(screen.getByRole("link", { name: /^history$/i }));
+    await screen.findByRole("button", { name: /export workouts \(json\)/i });
     await user.click(screen.getByRole("button", { name: /export workouts \(json\)/i }));
 
     expect(downloadJsonMock).toHaveBeenCalledTimes(1);
@@ -121,6 +127,7 @@ describe("App integration", () => {
     const adapter = new MemoryStorageAdapter();
     const { user } = renderApp(adapter);
 
+    await screen.findByText(/no workouts yet/i);
     await user.click(screen.getByRole("link", { name: /log workout/i }));
     await fillAndSave(user, { weight: "-5" });
 
@@ -136,6 +143,7 @@ describe("App integration", () => {
     expect(screen.getByRole("navigation", { name: /primary/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
 
+    await screen.findByText(/no workouts yet/i);
     await user.click(screen.getByRole("link", { name: /log workout/i }));
 
     const controls = Array.from(
