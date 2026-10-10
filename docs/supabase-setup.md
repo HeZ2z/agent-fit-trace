@@ -39,6 +39,19 @@ supabase stop
   project). Never reset the shared cloud project; use forward migrations.
 - Re-running the migration is idempotent (`IF NOT EXISTS` / `DROP POLICY IF
   EXISTS` / `CREATE OR REPLACE FUNCTION`).
+- `supabase/migrations/20261011000000_workouts_pagination.sql` adds the
+  keyset pagination RPC `list_workouts_page(p_after_date, p_after_id,
+  p_limit)` (`SECURITY INVOKER`, owner from `auth.uid()`, strict
+  `(date, id) > cursor` row-value filter, `(owner_id, date, id)` index,
+  `EXECUTE` granted to `authenticated` only) plus an additive forward-only
+  delivery: it never rewrites the earlier migration. Cursor arguments travel
+  as JSON RPC parameters so arbitrary business ids round-trip byte-exact
+  with no URL-filter quoting or injection surface.
+- Read-consistency boundary: a multi-page history read is **not** a single
+  MVCC snapshot. A row inserted strictly before the cursor while paging
+  appears on the next reload instead — it is still never returned twice in
+  the same read. Products needing a strict snapshot must read in a single
+  transaction; keyset pagination does not claim that.
 
 ## 3. Production dashboard (invite-only)
 

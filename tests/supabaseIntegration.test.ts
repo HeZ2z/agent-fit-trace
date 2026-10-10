@@ -314,6 +314,75 @@ test("local signup stays denied while invited-user email login works", async (t)
   );
 });
 
+test("pagination: keyset history over the RPC with special ids and small pages", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) {
+    assert.fail("local Supabase stack is not running (`supabase start`).");
+  }
+  const { createSupabaseWorkoutStore } = await import("../server/db/supabaseWorkouts.ts");
+  const { sortRecords } = await import("@pi-fit-trace/core");
+  const user = await provisionUser("page");
+  const ids = [
+    "w-page-01",
+    "w-page-02",
+    "w-page-03",
+    "w-page-04",
+    `w-page-"quoted"`,
+    "w-page-comma,x",
+    "w-page-paren-(x)",
+    "w-page-back\\slash",
+    "w-page-unicode-你好-🏋️",
+    "w-page-space x",
+  ];
+  // Same-date subgroup (cursor must page by id within one date) plus an
+  // earlier and a later date around it.
+  const dates = [
+    "2026-09-14",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-15",
+    "2026-09-16",
+  ];
+  const store = createSupabaseWorkoutStore(
+    { id: user.id },
+    {
+      supabaseUrl: SUPABASE_URL,
+      publishableKey: PUBLISHABLE_KEY,
+      accessToken: user.accessToken,
+      pageSize: 3,
+      fetchImpl: fetch as typeof fetch,
+    },
+  );
+  for (let i = 0; i < ids.length; i += 1) {
+    const created = await store.createWorkout(seedRecord({ id: ids[i] as string, date: dates[i] as string }));
+    assert.equal(created.duplicate, false);
+  }
+  const listed = await store.listWorkouts();
+  assert.equal(listed.length, ids.length);
+  assert.deepEqual([...new Set(listed.map((entry) => entry.id))].sort(), [...ids].sort());
+  // Output order is core's sortRecords (shared by every store); the keyset
+  // cursor itself always follows database order, so pages never gap or repeat
+  // even when the two orderings disagree on punctuation (see w-page-"quoted").
+  const expected = sortRecords(
+    ids.map((id, i) => seedRecord({ id: id as string, date: dates[i] as string })),
+  );
+  assert.deepEqual(
+    listed.map((entry) => entry.id),
+    expected.map((entry) => entry.id),
+  );
+});
+
 test("concurrency: parallel identical creates yield one row + duplicates", async (t) => {
   if (!ENABLED) {
     t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");

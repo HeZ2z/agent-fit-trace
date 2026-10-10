@@ -29,13 +29,22 @@ import { ValidationError } from "@pi-fit-trace/core";
  * `create_workout` RPC, which derives `owner_id` from `auth.uid()`.
  *
  * Defence in depth (never RLS alone):
- * - reads add an explicit `owner_id=eq.<principal>` filter AND validate that
- *   every returned row's `owner_id`/`id`/`date` matches the principal and the
- *   embedded payload;
- * - histories paginate deterministically (`limit`/`offset` with a stable
- *   `order=date.asc,id.asc`) so PostgREST `max_rows` truncation can never
- *   silently omit old data;
+ * - reads go through the `list_workouts_page` RPC, which scopes by
+ *   `auth.uid()` AND the table RLS policy; the server additionally validates
+ *   that every returned row's `owner_id`/`id`/`date` matches the principal
+ *   and the embedded payload;
+ * - histories use keyset pagination over the database's own
+ *   `(date ASC, id ASC)` order: each page passes the previous page's last
+ *   `(date, id)` as a strictly-greater cursor (JSON RPC parameters, so
+ *   arbitrary business ids round-trip byte-exact with no quoting or
+ *   injection surface). Reads stop only on an empty page, so PostgREST
+ *   `max_rows` truncation can never silently omit old data, and rows
+ *   inserted before the cursor can never be returned twice;
  * - sorting reuses core's `sortRecords` so all stores share one order.
+ *
+ * Read-consistency boundary: a multi-page read is not a single MVCC
+ * snapshot. A row inserted strictly before the cursor while paging appears
+ * on the next reload instead — never twice in the same read.
  *
  * Both incoming records and rows read back from the database are validated
  * through core's `validateWorkoutRecord`; a stored row that no longer
@@ -51,6 +60,13 @@ export interface SupabaseWorkoutStoreOptions {
   /** The verified caller's access token (used for RLS, never logged). */
   accessToken: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Rows requested per history page (default `SUPABASE_PAGE_SIZE`). Tests use
+   * small values to force multi-page reads; the server may still truncate
+   * shorter (PostgREST `max_rows`). Reads stop only on an empty page either
+   * way. Must be a positive integer.
+   */
+  pageSize?: number;
 }
 
 /** Page size for deterministic history pagination (PostgREST max_rows guard). */
@@ -150,6 +166,10 @@ export function createSupabaseWorkoutStore(
   const baseUrl = options.supabaseUrl.replace(/\/+$/, "");
   const fetchImpl = options.fetchImpl ?? fetch;
   const ownerId = principal.id;
+  const pageSize = options.pageSize ?? SUPABASE_PAGE_SIZE;
+  if (!Number.isInteger(pageSize) || pageSize < 1) {
+    throw new Error("SupabaseWorkoutStore requires a positive integer pageSize.");
+  }
 
   function headers(): Record<string, string> {
     // The publishable key identifies the project; the user token authorizes.
@@ -169,15 +189,21 @@ export function createSupabaseWorkoutStore(
     });
   }
 
-  async function fetchPage(offset: number): Promise<unknown[]> {
-    const url =
-      `${baseUrl}/rest/v1/workouts` +
-      `?select=payload,owner_id,id,date` +
-      `&owner_id=eq.${encodeURIComponent(ownerId)}` +
-      `&order=date.asc,id.asc&limit=${SUPABASE_PAGE_SIZE}&offset=${offset}`;
+  async function fetchPage(after: { date: string; id: string } | null): Promise<unknown[]> {
     let response: Response;
     try {
-      response = await fetchImpl(url, { headers: headers() });
+      // Parameterized cursor: ids travel as JSON arguments, never as URL
+      // filter text, so arbitrary business strings cannot break or inject
+      // into the query.
+      response = await fetchImpl(`${baseUrl}/rest/v1/rpc/list_workouts_page`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          p_after_date: after?.date ?? null,
+          p_after_id: after?.id ?? null,
+          p_limit: pageSize,
+        }),
+      });
     } catch {
       throw storageUnavailable("Workout storage is unreachable.");
     }
@@ -202,18 +228,21 @@ export function createSupabaseWorkoutStore(
 
   async function listStored(): Promise<WorkoutRecord[]> {
     const records: WorkoutRecord[] = [];
-    let offset = 0;
+    // Keyset loop: each page continues strictly after the previous page's
+    // last row in database (date, id) order. Only an empty page ends the
+    // read — a short page just means the server truncated below p_limit.
+    let after: { date: string; id: string } | null = null;
     for (;;) {
-      const rows = await fetchPage(offset);
-      for (let index = 0; index < rows.length; index += 1) {
-        const globalIndex = offset + index;
-        const row = rows[index] as { payload?: unknown; owner_id?: unknown; id?: unknown; date?: unknown };
-        const rowObj = row !== null && typeof row === "object" ? row : null;
+      const rows = await fetchPage(after);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        const typed = row as { payload?: unknown; owner_id?: unknown; id?: unknown; date?: unknown };
+        const rowObj = typed !== null && typeof typed === "object" ? typed : null;
         const payload = rowObj?.payload;
         try {
           const validated = validateWorkoutRecord(payload).record;
-          // Defence in depth: the explicit owner filter + RLS must agree with
-          // the stored columns and the embedded payload.
+          // Defence in depth: the RPC's auth.uid() scope + RLS must agree
+          // with the stored columns and the embedded payload.
           if (
             rowObj?.owner_id !== ownerId ||
             rowObj?.id !== validated.id ||
@@ -222,16 +251,15 @@ export function createSupabaseWorkoutStore(
             throw new Error("owner mismatch");
           }
           records.push(validated);
+          after = { date: validated.date, id: validated.id };
         } catch {
           throw new ApiError({
             code: API_ERROR_CODES.CORRUPT_STORE,
-            message: `Stored workout at index ${globalIndex} failed validation.`,
-            details: { index: globalIndex },
+            message: `Stored workout at index ${records.length} failed validation.`,
+            details: { index: records.length },
           });
         }
       }
-      if (rows.length < SUPABASE_PAGE_SIZE) break;
-      offset += rows.length;
     }
     return sortRecords(records);
   }
