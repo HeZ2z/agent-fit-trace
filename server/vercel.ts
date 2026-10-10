@@ -1,0 +1,182 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createSupabaseVerifier } from "./auth/supabaseVerifier.ts";
+import { extractBearerToken } from "./auth/verifier.ts";
+import { createAuthenticatedHandler, DEFAULT_MAX_BODY_BYTES } from "./authenticatedHandler.ts";
+import { readSupabaseServerEnv } from "./db/env.ts";
+import { createSupabaseWorkoutStore } from "./db/supabaseWorkouts.ts";
+import { getPublicConfig } from "./publicConfig.ts";
+
+/**
+ * Shared Vercel Function adapter.
+ *
+ * Production fails closed: when `SUPABASE_URL` or the publishable key is
+ * absent there is no verifier and no store — the shared handler answers 500
+ * `API_ERROR` and never falls back to an in-memory store or anonymous
+ * access. The test verifier is never constructed here.
+ */
+
+export interface VercelRequestLike extends IncomingMessage {
+  query?: Record<string, string | string[] | undefined>;
+  body?: unknown;
+}
+
+function send(
+  response: ServerResponse,
+  status: number,
+  body: string,
+  headers: Record<string, string>,
+): void {
+  response.writeHead(status, {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    ...headers,
+  });
+  response.end(body);
+}
+
+function byteSizeUtf8(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+async function readBody(
+  request: VercelRequestLike,
+  maxBytes: number,
+): Promise<string | undefined> {
+  // Vercel may pre-parse JSON bodies onto `request.body` (object) or leave a
+  // raw string. `null` means "already parsed, no body" — treat as empty.
+  if (typeof request.body === "string") {
+    if (byteSizeUtf8(request.body) > maxBytes) {
+      throw new Error("body-too-large");
+    }
+    return request.body === "" ? undefined : request.body;
+  }
+  if (request.body !== undefined && request.body !== null) {
+    const serialized = JSON.stringify(request.body);
+    if (byteSizeUtf8(serialized) > maxBytes) throw new Error("body-too-large");
+    return serialized;
+  }
+  if (request.body === null) return undefined;
+  // GET/HEAD never carry a workout body in this API: return immediately
+  // instead of waiting on a stream Vercel may already have consumed (which
+  // would hang when `end` never fires).
+  const method = (request.method ?? "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD") return undefined;
+  // A stream the platform already consumed has nothing left to read.
+  const incoming = request as IncomingMessage & { readableEnded?: boolean };
+  if (incoming.readableEnded === true) return undefined;
+  return await new Promise<string | undefined>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const failTooLarge = (): void => {
+      if (settled) return;
+      settled = true;
+      // Never destroy the socket: the caller still has to send the 400
+      // error response over it. Pause the stream and reject instead.
+      request.pause();
+      reject(new Error("body-too-large"));
+    };
+    request.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        failTooLarge();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      if (settled) return;
+      settled = true;
+      if (chunks.length === 0) resolve(undefined);
+      else resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    request.on("error", (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+}
+
+/** Route one Vercel request through the shared authenticated handler. */
+export async function handleVercelApi(
+  request: VercelRequestLike,
+  response: ServerResponse,
+): Promise<void> {
+  const env = readSupabaseServerEnv();
+  const publicConfig = getPublicConfig();
+  const verifier =
+    env === null
+      ? null
+      : createSupabaseVerifier({ supabaseUrl: env.supabaseUrl, publishableKey: env.publishableKey });
+
+  let rawUrl = request.url ?? "/";
+  const query = request.query;
+  if (query !== undefined && !rawUrl.includes("?")) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string") params.set(key, value);
+      else if (Array.isArray(value) && value[0] !== undefined) params.set(key, value[0]);
+    }
+    const serialized = params.toString();
+    if (serialized !== "") rawUrl += `?${serialized}`;
+  }
+
+  let body: string | undefined;
+  try {
+    body = await readBody(request, DEFAULT_MAX_BODY_BYTES);
+  } catch {
+    send(
+      response,
+      400,
+      JSON.stringify({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: `Request body exceeds the ${DEFAULT_MAX_BODY_BYTES} byte limit.`,
+        },
+      }),
+      {},
+    );
+    return;
+  }
+
+  const authorization =
+    request.headers.authorization ??
+    (Array.isArray(request.headers.authorization) ? request.headers.authorization[0] : undefined);
+  const accessToken = extractBearerToken(
+    typeof authorization === "string" ? authorization : undefined,
+  );
+
+  const handler = createAuthenticatedHandler({
+    verifier,
+    // Per-request store bound to the caller's own token so PostgREST RLS
+    // applies. When the token is missing the handler rejects before the
+    // factory is used; when env is missing the factory cannot build a
+    // store, so requests fail closed instead of reading memory.
+    stores:
+      env === null || accessToken === null
+        ? null
+        : {
+            storeFor: (principal) =>
+              createSupabaseWorkoutStore(principal, {
+                supabaseUrl: env.supabaseUrl,
+                publishableKey: env.publishableKey,
+                accessToken,
+              }),
+          },
+    publicConfig,
+  });
+
+  // Strip the `/api/v1` mount prefix so the shared handler sees bare routes.
+  const url = new URL(rawUrl, "http://fit-trace.invalid");
+  const route = `${url.pathname.replace(/^\/api\/v1(?=\/|$)/, "")}${url.search}`;
+  const result = await handler(route, {
+    method: request.method ?? "GET",
+    body,
+    authorization: typeof authorization === "string" ? authorization : undefined,
+  });
+  send(response, result.status, result.body, result.headers);
+}

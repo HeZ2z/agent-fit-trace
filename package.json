@@ -13,7 +13,8 @@
     "test:extension": "node --test tests/*.test.ts",
     "test:app": "pnpm --filter app test",
     "dev:api": "node server/devApiServer.ts",
-    "build": "pnpm --filter @pi-fit-trace/app build",
+    "build": "pnpm build:server && pnpm --filter @pi-fit-trace/app build",
+    "build:server": "pnpm --filter @pi-fit-trace/app exec vite build --config vite.server.config.ts",
     "typecheck": "tsc --noEmit && pnpm --filter app typecheck"
   },
   "devDependencies": {
