@@ -1,7 +1,9 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { StrictMode } from "react";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./AuthContext.tsx";
+import { Layout } from "../components/Layout.tsx";
 import type { SupabaseSession } from "./supabaseAuth.ts";
 
 function sessionFor(id: string, email: string): SupabaseSession {
@@ -344,5 +346,420 @@ describe("AuthProvider", () => {
     // so the provider reports signed-out while keeping the stored session.
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
     expect(window.localStorage.getItem("pi-fit-trace:auth:v1:session")).toContain("user-1");
+  });
+});
+
+const RECOVERY_CONFIG = { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub" };
+
+type RefreshStep = "transient-503" | "transient-network" | "ok" | "invalid";
+
+interface CallRecord {
+  at: number;
+  kind: "getUser" | "refresh" | "signIn" | "other";
+}
+
+/** Scripted Auth fetch: getUser verifies, refresh follows the script per attempt. */
+function makeRecoveryFetch(script: RefreshStep[], calls: CallRecord[]) {
+  let refreshCount = 0;
+  return (async (url: unknown, init?: RequestInit) => {
+    const target = String(url);
+    if (target.includes("/auth/v1/user") && (init?.method ?? "GET") === "GET") {
+      calls.push({ at: Date.now(), kind: "getUser" });
+      return new Response(JSON.stringify({ id: "user-1", email: "a@example.com" }), { status: 200 });
+    }
+    if (target.includes("grant_type=refresh_token")) {
+      refreshCount += 1;
+      calls.push({ at: Date.now(), kind: "refresh" });
+      const step = script[Math.min(refreshCount - 1, script.length - 1)] ?? "transient-503";
+      if (step === "ok") {
+        return new Response(
+          JSON.stringify({
+            access_token: `access-user-1-r${refreshCount}`,
+            refresh_token: `refresh-user-1-r${refreshCount}`,
+            expires_in: 3600,
+            user: { id: "user-1", email: "a@example.com" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (step === "invalid") {
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      if (step === "transient-network") throw new TypeError("offline");
+      return new Response(JSON.stringify({ message: "overloaded" }), { status: 503 });
+    }
+    if (target.includes("grant_type=password")) {
+      calls.push({ at: Date.now(), kind: "signIn" });
+      return new Response(
+        JSON.stringify({
+          access_token: "access-user-2-fresh",
+          refresh_token: "refresh-user-2-fresh",
+          expires_in: 3600,
+          user: { id: "user-2", email: "b@example.com" },
+        }),
+        { status: 200 },
+      );
+    }
+    calls.push({ at: Date.now(), kind: "other" });
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+function RetryProbe() {
+  const { status, user, getAccessToken, authError, refresh, signOutSession, signIn } = useAuth();
+  return (
+    <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="user">{user?.id ?? "none"}</span>
+      <span data-testid="token">{getAccessToken() ?? "none"}</span>
+      <span data-testid="auth-error">{authError?.code ?? "none"}</span>
+      <button type="button" onClick={() => void refresh()}>
+        retry
+      </button>
+      <button type="button" onClick={() => void signOutSession()}>
+        sign out
+      </button>
+      <button type="button" onClick={() => void signIn("b@example.com", "pw-b-1234")}>
+        sign in b
+      </button>
+    </div>
+  );
+}
+
+/** Session expiring `inMs` from now so the proactive timer fires deterministically. */
+function shortLivedSession(inMs: number): SupabaseSession {
+  return { ...sessionFor("user-1", "a@example.com"), expiresAt: Date.now() + inMs };
+}
+
+function refreshTimes(calls: CallRecord[], t0: number): number[] {
+  return calls.filter((call) => call.kind === "refresh").map((call) => call.at - t0);
+}
+
+describe("transient refresh recovery (fake timers)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function renderRecovering(script: RefreshStep[], expiresInMs = 65_000) {
+    const calls: CallRecord[] = [];
+    const t0 = Date.now();
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={RECOVERY_CONFIG}
+        fetchImpl={makeRecoveryFetch(script, calls)}
+        initialSession={shortLivedSession(expiresInMs)}
+      >
+        <RetryProbe />
+      </AuthProvider>,
+    );
+    return { calls, t0 };
+  }
+
+  async function settle(): Promise<void> {
+    await act(async () => {});
+  }
+
+  async function advance(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+    await settle();
+  }
+
+  it("retries a transient timer refresh with backoff and recovers without losing the session", async () => {
+    const { calls, t0 } = renderRecovering(["transient-503", "transient-503", "transient-503", "ok"]);
+    await settle();
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+
+    // Proactive refresh (5s out) hits the outage: session kept, retryable error.
+    await advance(5_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000]);
+    expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE");
+    expect(screen.getByTestId("token").textContent).toBe("access-user-1");
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+
+    // Backoff: +5s, +10s, then success on the +20s attempt.
+    await advance(5_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000, 10_000]);
+    await advance(10_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000, 10_000, 20_000]);
+    await advance(20_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000, 10_000, 20_000, 40_000]);
+
+    // Recovered: new token, error cleared, no further retries scheduled.
+    expect(screen.getByTestId("token").textContent).toBe("access-user-1-r4");
+    expect(screen.getByTestId("auth-error").textContent).toBe("none");
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+    await advance(180_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000, 10_000, 20_000, 40_000]);
+  });
+
+  it("caps the retry interval at 60s under a sustained outage", async () => {
+    const { calls, t0 } = renderRecovering(["transient-503"], 61_000);
+    await settle();
+    await advance(1_000);
+    await advance(5_000);
+    await advance(10_000);
+    await advance(20_000);
+    await advance(40_000);
+    await advance(60_000);
+    await advance(60_000);
+    const times = refreshTimes(calls, t0);
+    expect(times).toEqual([1_000, 6_000, 16_000, 36_000, 76_000, 136_000, 196_000]);
+    expect(screen.getByTestId("token").textContent).toBe("access-user-1");
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+  });
+
+  it("shares one inflight refresh between the timer and a manual retry", async () => {
+    let resolveRefresh!: (value: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify({ id: "user-1", email: "a@example.com" }), { status: 200 });
+      }
+      if (target.includes("grant_type=refresh_token")) {
+        refreshCalls += 1;
+        return gate;
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={RECOVERY_CONFIG}
+        fetchImpl={fetchImpl}
+        initialSession={shortLivedSession(65_000)}
+      >
+        <RetryProbe />
+      </AuthProvider>,
+    );
+    await settle();
+    // Timer-triggered refresh is inflight; a manual retry joins it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    fireEvent.click(screen.getByText("retry"));
+    await settle();
+    expect(refreshCalls).toBe(1);
+    await act(async () => {
+      resolveRefresh(
+        new Response(
+          JSON.stringify({
+            access_token: "access-user-1-r1",
+            refresh_token: "refresh-user-1-r1",
+            expires_in: 3600,
+            user: { id: "user-1", email: "a@example.com" },
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+    await settle();
+    expect(screen.getByTestId("token").textContent).toBe("access-user-1-r1");
+    expect(refreshCalls).toBe(1);
+  });
+
+  it("stops retrying after logout", async () => {
+    const { calls, t0 } = renderRecovering(["transient-503"]);
+    await settle();
+    await advance(5_000);
+    expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE");
+    fireEvent.click(screen.getByText("sign out"));
+    await settle();
+    expect(screen.getByTestId("status").textContent).toBe("signed-out");
+    await advance(120_000);
+    // Only the initial timer attempt ever ran.
+    expect(refreshTimes(calls, t0)).toEqual([5_000]);
+  });
+
+  it("stops retrying after unmount", async () => {
+    const calls: CallRecord[] = [];
+    const view = render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={RECOVERY_CONFIG}
+        fetchImpl={makeRecoveryFetch(["transient-503"], calls)}
+        initialSession={shortLivedSession(65_000)}
+      >
+        <RetryProbe />
+      </AuthProvider>,
+    );
+    await settle();
+    await advance(5_000);
+    expect(calls.filter((call) => call.kind === "refresh")).toHaveLength(1);
+    view.unmount();
+    await advance(120_000);
+    expect(calls.filter((call) => call.kind === "refresh")).toHaveLength(1);
+  });
+
+  it("never schedules retries after unmount when the inflight refresh fails late", async () => {
+    let resolveRefresh!: (value: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify({ id: "user-1", email: "a@example.com" }), { status: 200 });
+      }
+      if (target.includes("grant_type=refresh_token")) {
+        refreshCalls += 1;
+        return gate;
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const view = render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={RECOVERY_CONFIG}
+        fetchImpl={fetchImpl}
+        initialSession={shortLivedSession(65_000)}
+      >
+        <RetryProbe />
+      </AuthProvider>,
+    );
+    await settle();
+    // Proactive refresh is inflight; unmount before it settles.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(refreshCalls).toBe(1);
+    view.unmount();
+    // The late 503 must not schedule a retry loop in the background.
+    await act(async () => {
+      resolveRefresh(new Response(JSON.stringify({ message: "overloaded" }), { status: 503 }));
+    });
+    await settle();
+    await advance(120_000);
+    expect(refreshCalls).toBe(1);
+  });
+
+  it("still retries with backoff under StrictMode double effects", async () => {
+    const calls: CallRecord[] = [];
+    const t0 = Date.now();
+    render(
+      <StrictMode>
+        <AuthProvider
+          skipBootstrap
+          skipValidation={false}
+          publicConfig={RECOVERY_CONFIG}
+          fetchImpl={makeRecoveryFetch(["transient-503", "ok"], calls)}
+          initialSession={shortLivedSession(65_000)}
+        >
+          <RetryProbe />
+        </AuthProvider>
+      </StrictMode>,
+    );
+    await settle();
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+    // The second mount's retry schedule must survive: transient failure
+    // retries once on backoff and then recovers with a cleared error.
+    await advance(5_000);
+    expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE");
+    await advance(5_000);
+    expect(screen.getByTestId("token").textContent).toBe("access-user-1-r2");
+    expect(screen.getByTestId("auth-error").textContent).toBe("none");
+    expect(refreshTimes(calls, t0)).toEqual([5_000, 10_000]);
+  });
+
+  it("signs out without retrying when the refresh token is rejected", async () => {
+    const { calls, t0 } = renderRecovering(["invalid"]);
+    await settle();
+    await advance(5_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000]);
+    expect(screen.getByTestId("status").textContent).toBe("signed-out");
+    expect(screen.getByTestId("token").textContent).toBe("none");
+    await advance(120_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000]);
+  });
+
+  it("drops the old retry timer on account switch", async () => {
+    const { calls, t0 } = renderRecovering(["transient-503"]);
+    await settle();
+    await advance(5_000);
+    expect(refreshTimes(calls, t0)).toEqual([5_000]);
+    fireEvent.click(screen.getByText("sign in b"));
+    await settle();
+    expect(screen.getByTestId("user").textContent).toBe("user-2");
+    await advance(120_000);
+    // No retry of account A's refresh ever ran after the switch.
+    expect(refreshTimes(calls, t0)).toEqual([5_000]);
+    expect(screen.getByTestId("user").textContent).toBe("user-2");
+  });
+});
+
+describe("signed-in outage notice", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  it("shows a recoverable notice with manual retry while signed in", async () => {
+    let fail = true;
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("grant_type=refresh_token")) {
+        if (fail) return new Response(JSON.stringify({ message: "down" }), { status: 503 });
+        return new Response(
+          JSON.stringify({
+            access_token: "access-new",
+            refresh_token: "refresh-new",
+            expires_in: 3600,
+            user: { id: "user-1", email: "a@example.com" },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    function BreakProbe() {
+      const { refresh, getAccessToken } = useAuth();
+      return (
+        <div>
+          <span data-testid="token">{getAccessToken() ?? "none"}</span>
+          <button type="button" onClick={() => void refresh()}>
+            break refresh
+          </button>
+        </div>
+      );
+    }
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AuthProvider
+          skipBootstrap
+          publicConfig={RECOVERY_CONFIG}
+          fetchImpl={fetchImpl}
+          initialSession={sessionFor("user-1", "a@example.com")}
+        >
+          <Routes>
+            <Route element={<Layout />}>
+              <Route path="/" element={<BreakProbe />} />
+            </Route>
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("token").textContent).toBe("access-user-1");
+    fireEvent.click(screen.getByText("break refresh"));
+    expect(await screen.findByText(/temporarily unavailable/i)).toBeInTheDocument();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    await waitFor(() => expect(screen.getByTestId("token").textContent).toBe("access-new"));
+    expect(screen.queryByText(/temporarily unavailable/i)).not.toBeInTheDocument();
   });
 });

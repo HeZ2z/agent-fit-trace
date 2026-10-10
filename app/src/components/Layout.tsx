@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
 
@@ -51,9 +52,37 @@ export function Layout() {
         </nav>
         <AccountArea />
       </header>
+      <AuthOutageNotice />
       <main className="app-main">
         <Outlet />
       </main>
+    </div>
+  );
+}
+
+/**
+ * Signed-in recovery entry: while a transient Auth outage keeps the session,
+ * the loading gate (with its own Retry) is not shown — this short notice
+ * with a manual retry is. It shares the single-flight `refresh()` with the
+ * automatic backoff timer, so concurrent retries never double-dispatch.
+ */
+function AuthOutageNotice() {
+  const { status, authError, refresh } = useAuth();
+  const [retrying, setRetrying] = useState(false);
+  if (status !== "signed-in" || authError?.code !== "AUTH_UNAVAILABLE") return null;
+  return (
+    <div className="auth-outage-notice" role="alert">
+      <span>Authentication is temporarily unavailable. You stay signed in.</span>{" "}
+      <button
+        type="button"
+        disabled={retrying}
+        onClick={() => {
+          setRetrying(true);
+          void refresh().finally(() => setRetrying(false));
+        }}
+      >
+        {retrying ? "Retrying…" : "Retry"}
+      </button>
     </div>
   );
 }

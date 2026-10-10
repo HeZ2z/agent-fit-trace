@@ -40,6 +40,9 @@ interface MockState {
   /** Password updates via PUT /auth/v1/user (recovery handoff). */
   passwordUpdates: { authorization: string | null; body: string }[];
   authUserCalls: number;
+  refreshCalls: number;
+  /** When true the refresh_token grant fails transiently (503). */
+  refreshTransient: boolean;
 }
 
 function makeState(): MockState {
@@ -58,6 +61,8 @@ function makeState(): MockState {
     apiCalls: [],
     passwordUpdates: [],
     authUserCalls: 0,
+    refreshCalls: 0,
+    refreshTransient: false,
   };
 }
 
@@ -102,6 +107,24 @@ function installFetch(state: MockState): void {
             refresh_token: `refresh-${account.id}`,
             expires_in: 3600,
             user: { id: account.id, email: body.email },
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url === `${AUTH_BASE}/auth/v1/token?grant_type=refresh_token`) {
+        state.refreshCalls += 1;
+        if (state.refreshTransient) {
+          return new Response(JSON.stringify({ message: "overloaded" }), { status: 503 });
+        }
+        const accessToken = `access-refreshed-${state.refreshCalls}`;
+        state.usersByToken.set(accessToken, { id: "user-a", email: "a@example.com" });
+        return new Response(
+          JSON.stringify({
+            access_token: accessToken,
+            refresh_token: "refresh-user-a-new",
+            expires_in: 3600,
+            user: { id: "user-a", email: "a@example.com" },
           }),
           { status: 200 },
         );
@@ -374,5 +397,36 @@ describe("App auth integration (HTTP mode)", () => {
 
     expect(await screen.findByRole("heading", { name: /workout history/i })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /choose a new password/i })).not.toBeInTheDocument();
+  });
+
+  it("recovers from a transient refresh without replaying writes and uses the new token", async () => {
+    const state = makeState();
+    state.refreshTransient = true;
+    state.usersByToken.set("access-user-a", { id: "user-a", email: "a@example.com" });
+    installFetch(state);
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      serializeSession({
+        ...storedSession("user-a", "a@example.com", "access-user-a"),
+        expiresAt: Date.now() - 1000,
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Transient outage during validation: retry gate, stored session preserved.
+    expect(await screen.findByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toContain("user-a");
+
+    state.refreshTransient = false;
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(await screen.findByText(/2026-09-01/)).toBeInTheDocument();
+
+    // Later business requests carry the refreshed token…
+    const historyCalls = state.apiCalls.filter((call) => call.url === "/api/v1/workouts");
+    expect(historyCalls.length).toBeGreaterThan(0);
+    expect(historyCalls[historyCalls.length - 1]?.authorization).toMatch(/^Bearer access-refreshed-/);
+    // …and no write was ever dispatched or replayed.
+    expect(state.apiCalls.filter((call) => call.method !== "GET")).toHaveLength(0);
   });
 });

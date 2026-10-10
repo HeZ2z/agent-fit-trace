@@ -72,6 +72,19 @@ function sessionIdentity(session: SupabaseSession | null): string | null {
   return session === null ? null : `${session.user.id}:${session.accessToken}`;
 }
 
+/**
+ * Bounded backoff for transient refresh retries: 5s, 10s, 20s, 40s, then
+ * capped at 60s. Only the credential refresh is retried — never a workout
+ * read or write.
+ */
+const REFRESH_RETRY_BASE_MS = 5_000;
+const REFRESH_RETRY_CAP_MS = 60_000;
+
+function refreshRetryDelayMs(failures: number): number {
+  const shift = Math.min(Math.max(failures - 1, 0), 4);
+  return Math.min(REFRESH_RETRY_BASE_MS * 2 ** shift, REFRESH_RETRY_CAP_MS);
+}
+
 export function AuthProvider({
   children,
   publicConfig: publicConfigProp,
@@ -103,6 +116,13 @@ export function AuthProvider({
   // current. This blocks A-refresh-replacing-B and post-logout restores.
   const generationRef = useRef(0);
   const refreshInflightRef = useRef<Promise<boolean> | null>(null);
+  // Bounded retry state for transient refresh failures. The timer only ever
+  // re-runs the credential refresh; logout, sign-in/account-switch, and
+  // unmount clear it, and a fired task never clears a newer one (id check).
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimerIdRef = useRef(0);
+  const transientFailuresRef = useRef(0);
+  const refreshRef = useRef<() => Promise<boolean>>(async () => false);
 
   const effectiveConfig = publicConfigProp ?? publicConfig;
 
@@ -110,6 +130,42 @@ export function AuthProvider({
   const setSessionSync = useCallback((next: SupabaseSession | null): void => {
     sessionRef.current = next;
     setSession(next);
+  }, []);
+
+  /** Cancel a pending refresh retry and invalidate its fired task, if any. */
+  const clearRefreshRetry = useCallback(() => {
+    retryTimerIdRef.current += 1;
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
+  /** Reset the backoff (on success, logout, or account change). */
+  const resetRefreshRetry = useCallback(() => {
+    transientFailuresRef.current = 0;
+    clearRefreshRetry();
+  }, [clearRefreshRetry]);
+
+  /** Schedule the next credential-only retry with bounded exponential backoff. */
+  const scheduleRefreshRetry = useCallback(() => {
+    transientFailuresRef.current += 1;
+    const delay = refreshRetryDelayMs(transientFailuresRef.current);
+    const generation = generationRef.current;
+    const id = retryTimerIdRef.current + 1;
+    retryTimerIdRef.current = id;
+    if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current);
+    const timer = setTimeout(() => {
+      // A superseded task must never clear or fire for a newer schedule.
+      if (retryTimerIdRef.current !== id) return;
+      if (retryTimerRef.current === timer) retryTimerRef.current = null;
+      if (generationRef.current !== generation) return;
+      if (sessionRef.current === null) return;
+      // Shared single-flight refresh: a manual retry coalesces onto the
+      // same network request instead of dispatching a second one.
+      void refreshRef.current();
+    }, delay);
+    retryTimerRef.current = timer;
   }, []);
 
   // Bootstrap the public Supabase config from the server (runtime, not
@@ -150,12 +206,27 @@ export function AuthProvider({
       if (event.newValue !== null) return;
       generationRef.current += 1;
       refreshInflightRef.current = null;
+      resetRefreshRetry();
       setSessionSync(null);
       setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [setSessionSync, skipAsyncValidation]);
+  }, [resetRefreshRetry, setSessionSync, skipAsyncValidation]);
+
+  // Unmount invalidates in-flight refreshes (generation bump) and clears a
+  // pending retry timer, so a late 503/network failure can never schedule
+  // new retries in the background. StrictMode-safe: the simulated
+  // unmount/remount runs effects fresh and the second mount captures the new
+  // generation for its own retries.
+  useEffect(
+    () => () => {
+      generationRef.current += 1;
+      refreshInflightRef.current = null;
+      clearRefreshRetry();
+    },
+    [clearRefreshRetry],
+  );
 
   const getAccessToken = useCallback((): string | null => {
     return sessionRef.current?.accessToken ?? null;
@@ -182,6 +253,7 @@ export function AuthProvider({
       const generation = generationRef.current + 1;
       generationRef.current = generation;
       refreshInflightRef.current = null;
+      resetRefreshRetry();
       const resolved = publicConfigProp ?? publicConfig ?? (await fetchPublicConfig("/api/v1", fetchImpl));
       if (generationRef.current !== generation) {
         throw new AuthError("SIGN_IN_FAILED", "Sign-in was superseded.");
@@ -207,7 +279,7 @@ export function AuthProvider({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fetchImpl, publicConfig, publicConfigProp],
+    [fetchImpl, publicConfig, publicConfigProp, resetRefreshRetry],
   );
 
   const signOutSession = useCallback(async (): Promise<void> => {
@@ -218,6 +290,7 @@ export function AuthProvider({
     // flash, even if the network sign-out fails.
     generationRef.current += 1;
     refreshInflightRef.current = null;
+    resetRefreshRetry();
     setSessionSync(null);
     setAuthError(null);
     setValidatedIdentity(null);
@@ -233,7 +306,7 @@ export function AuthProvider({
         // the refresh token may survive server-side until expiry.
       }
     }
-  }, [fetchImpl, publicConfig, publicConfigProp, setSessionSync]);
+  }, [fetchImpl, publicConfig, publicConfigProp, resetRefreshRetry, setSessionSync]);
 
   const refresh = useCallback(async (): Promise<boolean> => {
     const current = sessionRef.current;
@@ -252,7 +325,17 @@ export function AuthProvider({
         // Never clear a newer request's entry: only drop the slot when this
         // task is still the inflight one.
         if (refreshInflightRef.current === task) refreshInflightRef.current = null;
-        return applySessionIfCurrent(generation, refreshToken, next);
+        const applied = applySessionIfCurrent(generation, refreshToken, next);
+        if (applied) {
+          // Recovery: backoff resets and a cleared AUTH_UNAVAILABLE lets the
+          // outage notice disappear. Later business requests resolve the new
+          // token per request — earlier failed calls are never replayed.
+          resetRefreshRetry();
+          setAuthError((prev) =>
+            prev !== null && prev.code === "AUTH_UNAVAILABLE" ? null : prev,
+          );
+        }
+        return applied;
       },
       (error: unknown) => {
         if (refreshInflightRef.current === task) refreshInflightRef.current = null;
@@ -268,12 +351,16 @@ export function AuthProvider({
               ? error
               : new AuthError("AUTH_UNAVAILABLE", "The sign-in service is unavailable. Try again.", 503),
           );
+          // Keep the session and retry only the credential refresh on a
+          // bounded backoff; workout requests are never re-dispatched here.
+          scheduleRefreshRetry();
           return false;
         }
         const err =
           error instanceof AuthError
             ? error
             : new AuthError("SESSION_EXPIRED", "Your session expired. Please sign in again.");
+        resetRefreshRetry();
         setAuthError(err);
         setSessionSync(null);
         setValidatedIdentity(null);
@@ -282,7 +369,12 @@ export function AuthProvider({
     );
     refreshInflightRef.current = task;
     return task;
-  }, [applySessionIfCurrent, fetchImpl, publicConfig, publicConfigProp, setSessionSync]);
+  }, [applySessionIfCurrent, fetchImpl, publicConfig, publicConfigProp, resetRefreshRetry, scheduleRefreshRetry, setSessionSync]);
+
+  // The retry timer always calls the latest refresh (stable single-flight).
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
 
   // Validate a restored session once the config is known: an expired or
   // revoked token signs out locally instead of failing later on first write.
@@ -328,12 +420,16 @@ export function AuthProvider({
         if (cancelled || generationRef.current !== generation) return;
         // Transient Auth outages must not log the user out: leave the
         // session unvalidated with a recoverable error and let the UI retry.
+        // A bounded credential-only retry is also scheduled so recovery does
+        // not depend on a manual click; refresh() marks a recovered session
+        // validated, which releases the loading gate.
         if (isTransientAuthError(error)) {
           setAuthError(
             error instanceof AuthError
               ? error
               : new AuthError("AUTH_UNAVAILABLE", "The sign-in service is unavailable. Try again.", 503),
           );
+          scheduleRefreshRetry();
           return;
         }
         // Try one shared refresh before giving up; a failed refresh signs out.

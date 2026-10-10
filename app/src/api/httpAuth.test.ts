@@ -85,6 +85,31 @@ describe("HttpFitTraceClient credentials", () => {
     expect((failed as ApiError).code).toBe(API_ERROR_CODES.UNAUTHENTICATED);
     expect(writes).toBe(1);
   });
+
+  it("does not replay a failed 401 write after credentials recover", async () => {
+    const seenAuth: (string | undefined)[] = [];
+    let token: string | null = "stale-token";
+    let writes = 0;
+    const client = new HttpFitTraceClient({
+      getAccessToken: () => token,
+      fetchImpl: (async (_input: string, init?: { headers?: Record<string, string> }) => {
+        writes += 1;
+        seenAuth.push(init?.headers?.authorization);
+        return {
+          status: 401,
+          text: () =>
+            JSON.stringify({ error: { code: "UNAUTHENTICATED", message: "Expired." } }),
+        } satisfies HttpResponseLike;
+      }) as HttpFitTraceClient["fetchImpl"],
+    });
+    const failed = await client.createWorkout(seedRecord()).catch((caught: unknown) => caught);
+    expect((failed as ApiError).code).toBe(API_ERROR_CODES.UNAUTHENTICATED);
+    // Credentials recover (as after a refresh); the failed write is never replayed.
+    token = "fresh-token";
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(writes).toBe(1);
+    expect(seenAuth).toEqual(["Bearer stale-token"]);
+  });
 });
 
 describe("fetchPublicConfig", () => {
