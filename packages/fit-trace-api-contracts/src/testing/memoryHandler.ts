@@ -44,6 +44,10 @@ function statusForError(err: ApiError): number {
   switch (err.code) {
     case API_ERROR_CODES.VALIDATION_ERROR:
       return HTTP_STATUS.badRequest;
+    case API_ERROR_CODES.UNAUTHENTICATED:
+      return HTTP_STATUS.unauthorized;
+    case API_ERROR_CODES.FORBIDDEN:
+      return HTTP_STATUS.forbidden;
     case API_ERROR_CODES.CONFLICT:
       return HTTP_STATUS.conflict;
     default:
