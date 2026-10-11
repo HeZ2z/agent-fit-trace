@@ -1,4 +1,4 @@
-# Fit-trace API contract (`@pi-fit-trace/api-contracts`)
+# agent-fit-trace API contract (`@pi-fit-trace/api-contracts`)
 
 Source of truth: `packages/fit-trace-api-contracts/src/`.
 

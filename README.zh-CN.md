@@ -1,19 +1,23 @@
-# pi-fit-trace
+# agent-fit-trace
 
-基于 pi 插件的训练记录分析与计划建议工具。
+由 Agent 驱动的训练记录与教练应用，根据训练日志提供有据可查的进度分析和训练计划草案。
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 ## 状态
 
-MVP 实现已完成：确定性的 Extension 工具、`training-coach` Skill、测试样例和测试套件。
+当前已实现 Web App、确定性共享核心、本地与认证 HTTP 数据访问，以及包含 Extension 工具和 `training-coach` Skill 的 pi 集成。
+
+计划支持两条 Agent 路径：无需本地安装 Agent 的托管云端教练，以及使用用户已有 Codex、pi、OpenCode CLI 的本地教练。这两条执行路径尚未实现。
 
 ## 工作方式
 
 App JSON → `import_workout` → 确定性分析 → `generate_next_plan` 草案 → 用户确认。
 
-- **Extension** — `.pi/extensions/fit-trace/`：校验、幂等存储、指标计算、进度分析、计划草案。
-- **Skill** — `.pi/skills/training-coach/SKILL.md`：解读、证据规则、安全提示、输出格式。
+- **App** — `app/`：训练记录录入、历史查询、分析与计划草案展示。
+- **共享核心** — `packages/fit-trace-core/`：确定性校验、指标计算、进度分析与计划草案。
+- **数据 API** — `packages/fit-trace-api-contracts/` 和 `server/`：共享客户端契约与认证 HTTP 数据访问。
+- **现有 pi 集成** — `.pi/extensions/fit-trace/` 和 `.pi/skills/training-coach/SKILL.md`：工具注册、本地 JSON 持久化与教练行为指令。
 
 ## 开发
 
@@ -28,4 +32,4 @@ pnpm typecheck
 ## 文档
 
 - [MVP 设计](docs/mvp-design.md)
-- [Extension + Skill 规范](docs/extension-skill-spec.md)
+- [pi 集成规范](docs/extension-skill-spec.md)

@@ -2,9 +2,9 @@
 
 ## What this repo is
 
-`pi-fit-trace` is a pi **Extension + Skill** that turns training logs into deterministic progress analysis and draft training plans. An implementation now exists; the docs in `docs/` remain the product contract.
+`agent-fit-trace` is an Agent-powered workout tracking and coaching application that turns training logs into evidence-based progress analysis and draft training plans. The product targets a hosted cloud coach that requires no local Agent installation and local coaching through the user's Codex, pi, or OpenCode CLI. These Agent execution paths are planned; the current implementation includes the App, deterministic shared core, local/authenticated HTTP data access, and a pi Extension + training-coach Skill integration. The docs in `docs/` remain the product contract.
 
-## Layout (pi discovery paths, not generic folders)
+## Layout
 
 - `.pi/extensions/fit-trace/index.ts` — the only pi-runtime module; registers the four tools.
 - `.pi/extensions/fit-trace/store.ts` — Node-only JSON persistence, out of the shared core.
@@ -25,7 +25,7 @@
 
 ## Hard rules
 
-- Extension = deterministic only: no LLM, clock, or randomness in `core/`. Skill = behavior/domain only; it must not read storage directly.
+- Shared core and domain tools are deterministic: no LLM, clock, or randomness in `packages/fit-trace-core/`. Agent/Skill instructions own interpretation and domain behavior; they must not read storage directly.
 - pi signals tool failure by **throwing** from `execute`. Returning `{ accepted: false }` is not an error. Validation/conflict failures throw `FitTraceError` subclasses.
 - Imports are idempotent by `id`: an identical re-import is a no-op; the same `id` with different content throws `CONFLICT` (never overwrite an original record).
 - Stored records are re-validated on load; a malformed/outdated store throws `CORRUPT_STORE` with the failing record index. Date filters are validated and throw `VALIDATION_ERROR` (invalid or inverted ranges) instead of an opaque `RangeError`.
@@ -39,6 +39,6 @@
 - Persistence is local JSON at `<cwd>/.pi/fit-trace/workouts.json`; override with `PI_FIT_TRACE_STORE`.
 - Tests mock `ExtensionAPI`, so the adapter is exercised without a pi runtime.
 
-## Open blocker
+## Planned Agent integration
 
-App ↔ pi transport (SDK / RPC / JSON mode) is undecided; v1 is fixture-driven.
+Hosted cloud coaching and local Codex/pi/OpenCode execution are not implemented. Agent session transport, lifecycle, and shared tool access remain to be designed and verified. Existing local/HTTP data clients select storage access, not the Agent execution backend.
