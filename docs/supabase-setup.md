@@ -6,12 +6,17 @@ configuration are **not** part of this slice.
 
 ## 1. Local Supabase (CLI + Docker)
 
+`supabase/config.toml` is committed — do NOT run `supabase init` over it on
+a fresh checkout; use the existing tracked invite-only configuration.
+Start the already-configured local stack:
+
 ```sh
-supabase init          # only once; supabase/config.toml is committed
 supabase start         # Docker; API http://127.0.0.1:54321, DB port 54322
 supabase db reset      # apply supabase/migrations/* to a clean local DB
-supabase stop
 ```
+
+Keep the stack running while you develop. When you are done for the day,
+shut it down separately with `supabase stop`.
 
 - Local Auth is invite-only by config: `supabase/config.toml` sets the global
   `[auth] enable_signup = false` (public registration denied — verified by the
@@ -24,6 +29,37 @@ supabase stop
   as `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) with
   `SUPABASE_URL=http://127.0.0.1:54321` in `.env.local` (see `.env.example`).
   Never commit `.env.local`.
+
+- Serve the authenticated API from the local stack (stack must be up first):
+
+  ```sh
+  # Node does NOT auto-read `.env.local` — pass it with `--env-file`.
+  # The inline FIT_TRACE_DEV_API_MODE=supabase wins over both the file and
+  # any externally exported value (a --env-file entry never overrides an
+  # already-set variable).
+  FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
+  ```
+
+  In a second terminal, run the app in plain HTTP mode (no
+  `VITE_FIT_TRACE_LEGACY_LOOPBACK` — that flag is only for the memory
+  loopback flow in `docs/app-dev-modes.md`; Vite reads `.env.local` for
+  `VITE_*` vars itself):
+
+  ```sh
+  VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
+  ```
+
+  With a custom API port, pass the shared `FIT_TRACE_DEV_API_PORT` to BOTH
+  processes:
+
+  ```sh
+  FIT_TRACE_DEV_API_PORT=6000 FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
+  FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
+  ```
+
+  Smoke-check at least `GET /api/v1/public-config` (local Supabase URL +
+  publishable key) and the unauthenticated gate (workout reads without a
+  token get `401 UNAUTHENTICATED`).
 
 ## 2. Migrations
 
@@ -83,9 +119,14 @@ Local config does not change the cloud project. Before releasing auth:
 - The app stores the session under `pi-fit-trace:auth:v1:session`, attaches
   the token per request, refreshes expired sessions, and clears all cached
   workout/analysis state on logout or account change. Writes are never
-  retried after a 401; reads refresh once via explicit reload.
-- Local mode (`VITE_FIT_TRACE_MODE` unset) and the unauthenticated loopback
-  dev API (`pnpm dev:api`) are unchanged for local development/tests. No
+  retried after a 401. Credential refresh retries transient failures; failed
+  business requests are not automatically replayed.
+- Local mode (`VITE_FIT_TRACE_MODE` unset) and the unauthenticated memory
+  loopback dev API (`pnpm dev:api`, i.e. default
+  `FIT_TRACE_DEV_API_MODE=memory` with the app's development-only
+  `VITE_FIT_TRACE_LEGACY_LOOPBACK=1` opt-in) are unchanged for local
+  development/tests. The legacy flag never applies to production: production
+  builds reject it and stay gated on a validated session. No
   automatic upload of local records.
 - Default invite/recovery links land on `/` (the Supabase Site URL is the app
   origin): the app detects an invite/recovery URL hash at the root route and
