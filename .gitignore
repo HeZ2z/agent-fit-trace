@@ -28,3 +28,7 @@ pnpm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+.vercel/
+supabase/.temp/
+supabase/.branches/
+.playwright-cli/

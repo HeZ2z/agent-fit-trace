@@ -35,6 +35,7 @@ import type {
 export interface HttpRequestInit {
   method?: string;
   body?: string;
+  headers?: Record<string, string>;
 }
 
 export interface HttpResponseLike {
@@ -47,9 +48,19 @@ export type HttpFetch = (
   init?: HttpRequestInit,
 ) => HttpResponseLike | Promise<HttpResponseLike>;
 
+export type AccessTokenProvider = () => string | null | Promise<string | null>;
+
 export interface HttpFitTraceClientOptions {
   baseUrl?: string;
   fetchImpl?: HttpFetch;
+  /**
+   * Injectable credential provider: called per request (and awaited when it
+   * returns a promise) to attach `Authorization: Bearer <token>`. A `null`
+   * resolution sends the request without credentials so the server answers
+   * 401 `UNAUTHENTICATED`. The token is only placed on the wire — never in a
+   * workout payload, URL, or log.
+   */
+  getAccessToken?: AccessTokenProvider;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -106,13 +117,16 @@ function hasUsableId(record: WorkoutRecord): boolean {
 export class HttpFitTraceClient implements FitTraceClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: HttpFetch;
+  private readonly getAccessToken?: AccessTokenProvider;
 
   constructor({
     baseUrl = "/api/v1",
     fetchImpl = (input, init) => globalThis.fetch(input, init),
+    getAccessToken,
   }: HttpFitTraceClientOptions = {}) {
     this.baseUrl = baseUrl;
     this.fetchImpl = fetchImpl;
+    this.getAccessToken = getAccessToken;
   }
 
   private async request<T>(
@@ -121,8 +135,17 @@ export class HttpFitTraceClient implements FitTraceClient {
     unwrap: (data: unknown) => T,
   ): Promise<T> {
     let response: HttpResponseLike;
+    // Resolve credentials per request so a refreshed session applies to the
+    // next call without recreating the client. Exactly one HTTP attempt is
+    // made here — 401s (including expired sessions) are surfaced, never
+    // silently retried, so an ambiguous write cannot double-apply.
+    const accessToken = this.getAccessToken === undefined ? null : await this.getAccessToken();
+    const headers: Record<string, string> = {
+      ...(init?.body === undefined ? {} : { "content-type": "application/json" }),
+      ...(accessToken === null || accessToken === "" ? {} : { authorization: `Bearer ${accessToken}` }),
+    };
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, init);
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
     } catch (error) {
       throw new NetworkError(undefined, { cause: error });
     }

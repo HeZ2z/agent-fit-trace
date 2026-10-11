@@ -1,0 +1,47 @@
+/**
+ * Server-only public bootstrap configuration.
+ *
+ * The browser needs the Supabase project URL and publishable key to start a
+ * login, but `VITE_*` variables are build-time baked. The API serves them at
+ * runtime from server environment instead, so no `NEXT_PUBLIC`-to-`VITE`
+ * magic is required. Secret keys are never included here: values that look
+ * like `sb_secret_…` or a JWT with `role: service_role` are rejected so an
+ * env mistake cannot leak the service role to the browser.
+ */
+
+export interface ServerPublicConfig {
+  supabaseUrl: string;
+  supabasePublishableKey: string;
+}
+
+function isRejectedKey(key: string): boolean {
+  if (key.startsWith("sb_secret_")) return true;
+  const parts = key.split(".");
+  if (parts.length === 3) {
+    try {
+      const payloadJson = Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+      const payload = JSON.parse(payloadJson) as { role?: unknown };
+      if (payload.role === "service_role") return true;
+    } catch {
+      // Leave unparseable values to fail closed below only on exact matches.
+    }
+  }
+  return false;
+}
+
+export function getPublicConfig(
+  env: Record<string, string | undefined> = process.env,
+): ServerPublicConfig | null {
+  const supabaseUrl = env.SUPABASE_URL;
+  const supabasePublishableKey = env.SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_ANON_KEY;
+  if (supabaseUrl === undefined || supabaseUrl === "") return null;
+  if (supabasePublishableKey === undefined || supabasePublishableKey === "") return null;
+  try {
+    const parsed = new URL(supabaseUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  } catch {
+    return null;
+  }
+  if (isRejectedKey(supabasePublishableKey)) return null;
+  return { supabaseUrl, supabasePublishableKey };
+}

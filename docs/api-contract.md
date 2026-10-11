@@ -103,10 +103,11 @@ export const API_ENDPOINTS = {
   workouts: "/workouts",
   analysis: "/analysis",
   planDrafts: "/plans/drafts",
+  publicConfig: "/public-config",
 } as const;
 ```
 
-Combined with the `/api/v1` base, the four endpoints are:
+Combined with the `/api/v1` base, the endpoints are:
 
 | Method | Path | Request | Success status |
 | ------ | ---- | ------- | -------------- |
@@ -114,6 +115,7 @@ Combined with the `/api/v1` base, the four endpoints are:
 | `POST` | `/api/v1/workouts` | body `{ record }` | `201` new record, `200` identical retry (`duplicate`) |
 | `GET` | `/api/v1/analysis` | query `from` / `to` / `exercises` (comma-separated) | `200` |
 | `POST` | `/api/v1/plans/drafts` | optional `PlanConstraints` body | `200` |
+| `GET` | `/api/v1/public-config` | — (public, no token) | `200` Supabase URL + publishable key |
 
 Status semantics (`HTTP_STATUS`, `src/types.ts`):
 
@@ -122,6 +124,8 @@ export const HTTP_STATUS = {
   created: 201,
   ok: 200,
   badRequest: 400,
+  unauthorized: 401,
+  forbidden: 403,
   conflict: 409,
   serverError: 500,
 } as const;
@@ -133,6 +137,12 @@ export const HTTP_STATUS = {
 - `GET /workouts` → `200` list.
 - `GET /analysis` (optional `from`/`to`/`exercises` query) → `200`.
 - `POST /plans/drafts` (optional `PlanConstraints` body) → `200`.
+- Authenticated deployments verify `Authorization: Bearer <token>` on all
+  four workout/analysis/plan endpoints and reject missing/invalid tokens with
+  `401 UNAUTHENTICATED` plus a `WWW-Authenticate: Bearer` header;
+  out-of-scope callers get `403 FORBIDDEN`. `GET /public-config` stays public
+  so the app can bootstrap login. Missing server configuration fails closed
+  (`500 API_ERROR`) — production never falls back to memory.
 - Any unexpected failure → `500` with an `ErrorEnvelope`.
 
 Optional plan constraints are validated server-side — `goal` is a string,
@@ -158,6 +168,8 @@ export const API_ERROR_CODES = {
   CONFLICT: "CONFLICT",
   CORRUPT_STORE: "CORRUPT_STORE",
   STORAGE_UNAVAILABLE: "STORAGE_UNAVAILABLE",
+  UNAUTHENTICATED: "UNAUTHENTICATED",
+  FORBIDDEN: "FORBIDDEN",
   NETWORK_ERROR: "NETWORK_ERROR",
   MALFORMED_RESPONSE: "MALFORMED_RESPONSE",
   API_ERROR: "API_ERROR",
@@ -166,9 +178,16 @@ export const API_ERROR_CODES = {
 
 - `VALIDATION_ERROR` — invalid record or filter (including an inverted date
   range, a missing `{ record }` field, or unparseable JSON). Maps to `400`.
+  Oversized request bodies (over 64 KiB) are also `400`.
 - `CONFLICT` — the id already exists with different content. Maps to `409`.
 - `CORRUPT_STORE` / `STORAGE_UNAVAILABLE` — store-layer failures; surfaced with
   their codes and mapped to `500` by the memory handler's default branch.
+  `STORAGE_UNAVAILABLE` (with a `503` status) is also the transient
+  auth-service signal: both the server verifier and the app auth client use it
+  for network errors and 429/5xx so callers retry instead of signing out.
+- `UNAUTHENTICATED` — missing/invalid/expired bearer token on an authenticated
+  deployment. Maps to `401` with a `WWW-Authenticate: Bearer` header.
+- `FORBIDDEN` — authenticated but out-of-scope caller. Maps to `403`.
 - `NETWORK_ERROR` — reserved for the fetch transport itself failing (offline,
   DNS, connection reset); see `NetworkError` below.
 - `MALFORMED_RESPONSE` — a response that cannot be trusted; carried by
@@ -351,7 +370,18 @@ routes.
 This contract covers shapes only. Runtime mode selection and development
 modes are covered in later work, not here.
 
-### 9.1 Loopback development API
+### 9.1 Authenticated deployments
+
+`AuthPrincipal` (`src/types.ts`) is the stable caller identity the HTTP
+boundary injects after verifying the bearer token (`id` = provider `sub`,
+e.g. the Supabase `auth.users` id; optional `email`). Only the app's auth
+layer (`app/src/auth/`, which stores the session and attaches the token per
+request) and the HTTP transport ever see tokens; the domain core and the
+workout stores receive only resolved principals and validated records.
+`PublicApiConfig` is the public bootstrap shape served by
+`GET /public-config` (Supabase URL + publishable key only — never secrets).
+
+### 9.2 Loopback development API
 
 `server/devApiServer.ts` is a loopback-bound `node:http` development API for
 exercising the contract over real HTTP. It reuses `createMemoryHandler` over

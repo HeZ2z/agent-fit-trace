@@ -53,11 +53,33 @@ export interface ErrorEnvelope {
 
 export const FIT_TRACE_API_VERSION = "v1";
 
+/**
+ * The authenticated caller of an API operation.
+ *
+ * The domain core and the workout stores never see tokens: the HTTP boundary
+ * verifies the bearer token and injects only this stable principal (the app's
+ * auth layer and HTTP transport necessarily handle the token itself to store
+ * the session and attach it per request). `id` is the identity
+ * provider's subject (`sub`, e.g. the Supabase `auth.users` id) and is the
+ * sole owner key for workout isolation.
+ */
+export interface AuthPrincipal {
+  id: string;
+  email?: string;
+}
+
+/** Public (unauthenticated) bootstrap configuration served by the API. */
+export interface PublicApiConfig {
+  supabaseUrl: string;
+  supabasePublishableKey: string;
+}
+
 /** Resource paths for the four endpoints (see status semantics below). */
 export const API_ENDPOINTS = {
   workouts: "/workouts",
   analysis: "/analysis",
   planDrafts: "/plans/drafts",
+  publicConfig: "/public-config",
 } as const;
 
 /**
@@ -68,12 +90,20 @@ export const API_ENDPOINTS = {
  * - `GET /workouts` → 200 list.
  * - `GET /analysis` (optional `from`/`to`/`exercises` query) → 200.
  * - `POST /plans/drafts` (optional `PlanConstraints` body) → 200.
+ * - Authenticated deployments reject missing/invalid bearer tokens on all
+ *   four endpoints with 401 `UNAUTHENTICATED` (plus a `WWW-Authenticate:
+ *   Bearer` header) and out-of-scope callers with 403 `FORBIDDEN`.
+ * - `GET /public-config` → 200 without authentication; it only exposes the
+ *   public Supabase URL and publishable key needed to start a login.
  * - Any unexpected failure → 500 with an {@link ErrorEnvelope}.
  */
 export const HTTP_STATUS = {
   created: 201,
   ok: 200,
   badRequest: 400,
+  unauthorized: 401,
+  forbidden: 403,
   conflict: 409,
   serverError: 500,
+  serviceUnavailable: 503,
 } as const;

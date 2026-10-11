@@ -39,7 +39,9 @@ describe("App workflow against the real loopback API", () => {
 
   it("logs a workout through the server from empty history to an unconfirmed draft plan", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    // Explicit opt-in to the development-only unauthenticated loopback UI:
+    // production HTTP mode stays gated on a validated session.
+    render(<App legacyLoopback />);
 
     // Empty server-side history.
     expect(await screen.findByText(/no workouts yet/i)).toBeInTheDocument();
