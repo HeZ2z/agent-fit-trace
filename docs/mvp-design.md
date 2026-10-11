@@ -1,8 +1,10 @@
-# pi-fit-trace MVP Design
+# agent-fit-trace MVP Design
 
 ## Goal
 
-Complete the minimal loop of "workout log import → workout analysis → next-session recommendation". The App handles collection and display; the pi plugin reads structured data, analyzes trends, and generates recommendations.
+Complete the minimal loop of "workout log import → workout analysis → next-session recommendation". The App handles collection and display; the shared deterministic core validates records, computes trends, and generates plan drafts. Agents use domain tools to interpret results and explain recommendations.
+
+The product targets hosted cloud coaching without local Agent installation and local coaching through Codex, pi, or OpenCode CLI. These execution paths are planned. The existing pi Extension + Skill is one integration component; the implementation order below records the original pi MVP sequence.
 
 ## Phase 1 scope
 
@@ -37,7 +39,7 @@ Out of scope for now: automatic wearable device connection, complex periodizatio
 
 The protocol should be formalized with JSON Schema as early as possible, and units must be explicit (weight defaults to kg, duration defaults to minutes).
 
-## Plugin capability draft
+## Domain tool capabilities
 
 - `import_workout(record)`: validate and store a workout record
 - `get_training_history(range)`: query historical records
@@ -46,7 +48,7 @@ The protocol should be formalized with JSON Schema as early as possible, and uni
 
 Each recommendation should include a `reason` that cites actual historical data; it is written back to the App only after user confirmation.
 
-## Implementation order
+## Original pi MVP implementation order
 
 1. Confirm the target pi version and plugin API (tool registration, persistence, context injection).
 2. Build the TypeScript/JSON Schema data model and validator.

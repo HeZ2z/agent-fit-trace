@@ -1,8 +1,10 @@
-# pi-fit-trace Extension + Skill Spec
+# agent-fit-trace pi Integration Spec
+
+This document describes the pi Extension + Skill integration component. The broader product is a workout tracking and coaching application targeting hosted cloud and local Codex/pi/OpenCode Agent execution. Those execution paths are not yet implemented; this specification retains the original pi MVP design.
 
 ## 1. Goal
 
-Build a training tracking agent: the App submits structured workout records, the Extension provides data and tool capabilities, and the Skill provides training analysis and plan generation rules.
+Provide a pi integration for the training tracking application: the App submits structured workout records, the Extension exposes deterministic domain tools, and the Skill provides training analysis and recommendation rules.
 
 ## 2. Layered responsibilities
 
