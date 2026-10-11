@@ -350,8 +350,24 @@ export function isSessionExpired(session: SupabaseSession | null, now: number = 
  * the token back. `sessionStorage` (tab-scoped) is used instead of
  * `localStorage` so the token never persists beyond the tab, and it is
  * cleared after a successful password update.
+ *
+ * Storage may be disabled (private mode, blocked cookies): every helper
+ * keeps an in-page JS-memory copy as a fallback so a valid link still works
+ * for router-internal navigation. The memory copy is written before
+ * `sessionStorage` is attempted, so a failed `setItem` never falls back to a
+ * stale stored value — the newest token always wins. Clearing sets an
+ * in-memory tombstone, so a failed `removeItem` cannot resurrect a stale
+ * token on this page. A full page reload drops the memory fallback (only
+ * `sessionStorage` survives a reload); this limitation is intentional and the
+ * token is never copied to `localStorage`, the URL query, or logs.
  */
 export const RECOVERY_TOKEN_KEY = "pi-fit-trace:auth:v1:recovery-token";
+
+// In-page fallback + tombstone. Module-scoped on purpose (single tab page);
+// tests must call `resetRecoveryTokenMemoryForTests()` in `afterEach` so no
+// token or tombstone leaks between tests.
+let memoryRecoveryToken: string | null = null;
+let recoveryTokenCleared = false;
 
 function storageGet(key: string): string | null {
   try {
@@ -371,16 +387,32 @@ function storageSet(key: string, value: string | null): void {
 }
 
 export function saveRecoveryToken(accessToken: string): void {
+  memoryRecoveryToken = accessToken;
+  recoveryTokenCleared = false;
   storageSet(RECOVERY_TOKEN_KEY, accessToken);
 }
 
 export function loadRecoveryToken(): string | null {
+  // A cleared tombstone wins over any stale value left behind by a failed
+  // `removeItem` — this page must never reuse a consumed token.
+  if (recoveryTokenCleared) return null;
+  // The newest token wins: a just-saved memory copy takes precedence over a
+  // stale stored value left behind by a failed `setItem`.
+  if (memoryRecoveryToken !== null) return memoryRecoveryToken;
   const value = storageGet(RECOVERY_TOKEN_KEY);
   return value === "" ? null : value;
 }
 
 export function clearRecoveryToken(): void {
+  memoryRecoveryToken = null;
+  recoveryTokenCleared = true;
   storageSet(RECOVERY_TOKEN_KEY, null);
+}
+
+/** Test-only reset for the in-page fallback/tombstone (no storage access). */
+export function resetRecoveryTokenMemoryForTests(): void {
+  memoryRecoveryToken = null;
+  recoveryTokenCleared = false;
 }
 
 /** Remove the Auth hash from the address bar after consuming it. */

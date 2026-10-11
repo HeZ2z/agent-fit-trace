@@ -174,8 +174,10 @@ export function ForgotPasswordScreen() {
 
 /**
  * Resolve the password-setup token: the URL hash first (consumed into
- * tab-scoped storage and stripped from the address bar), then the stored
- * handoff. Tokens are never read from the query string.
+ * tab-scoped storage + in-page memory and stripped from the address bar),
+ * then the stored handoff. Tokens are never read from the query string.
+ * The hash is consumed eagerly (see `ResetPasswordScreen` mount effect) so a
+ * slow public config never leaves the token lingering in the address bar.
  */
 function resolveResetToken(): string | null {
   const hashToken = parseAuthCallbackHash(window.location.hash)?.accessToken ?? null;
@@ -192,16 +194,33 @@ function resolveResetToken(): string | null {
 }
 
 export function ResetPasswordScreen() {
-  const { publicConfig } = useAuth();
+  const { publicConfig, configError } = useAuth();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const configPending = publicConfig === null && configError === null;
+  const configFailed = publicConfig === null && configError !== null;
+
+  // Consume any direct `#access_token=…` hash on mount so the token leaves
+  // the address bar immediately, even while the public config is still
+  // loading. The stored handoff (or in-memory fallback) serves the submit.
+  useEffect(() => {
+    resolveResetToken();
+  }, []);
 
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
+    if (publicConfig === null) {
+      setError(
+        configError !== null
+          ? "Login is unavailable: the server did not provide its public configuration."
+          : "Still loading configuration. Wait a moment and try again.",
+      );
+      return;
+    }
     const accessToken = resolveResetToken();
-    if (accessToken === null || publicConfig === null) {
+    if (accessToken === null) {
       setError("This reset link is invalid or expired. Request a new one.");
       return;
     }
@@ -232,6 +251,18 @@ export function ResetPasswordScreen() {
     <section aria-labelledby="reset-heading">
       <h1 id="reset-heading">Choose a new password</h1>
       <p>Invited users set their first password here as well as password resets.</p>
+      {configPending ? <p>Loading configuration…</p> : null}
+      {configFailed ? (
+        <div className="validation-summary" role="alert">
+          <p>Login is unavailable: the server did not provide its public configuration.</p>
+          <p>
+            <button type="button" onClick={() => window.location.reload()}>
+              Reload
+            </button>{" "}
+            <Link to="/forgot-password">Request a new link</Link>
+          </p>
+        </div>
+      ) : null}
       {error !== null ? (
         <div className="validation-summary" role="alert">
           <p>{error}</p>
@@ -250,7 +281,7 @@ export function ResetPasswordScreen() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </div>
-        <button type="submit" disabled={pending}>
+        <button type="submit" disabled={pending || publicConfig === null}>
           {pending ? "Updating…" : "Update password"}
         </button>
       </form>

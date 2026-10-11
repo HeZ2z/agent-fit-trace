@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import App from "./App.tsx";
-import { AUTH_STORAGE_KEY, serializeSession } from "./auth/supabaseAuth.ts";
+import { AUTH_STORAGE_KEY, resetRecoveryTokenMemoryForTests, serializeSession } from "./auth/supabaseAuth.ts";
 import type { SupabaseSession } from "./auth/supabaseAuth.ts";
 
 const AUTH_BASE = "http://auth.invalid";
@@ -185,11 +185,16 @@ describe("App auth integration (HTTP mode)", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+    resetRecoveryTokenMemoryForTests();
+    vi.restoreAllMocks();
     window.history.pushState({}, "", "/");
     vi.stubEnv("VITE_FIT_TRACE_MODE", "http");
   });
 
   afterEach(() => {
+    window.sessionStorage.clear();
+    resetRecoveryTokenMemoryForTests();
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });

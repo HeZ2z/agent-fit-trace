@@ -1,14 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AuthError,
+  RECOVERY_TOKEN_KEY,
+  clearRecoveryToken,
   isPasswordSetupType,
   isSessionExpired,
   isTransientAuthError,
   fetchAuthUser,
+  loadRecoveryToken,
   loadStoredSession,
   parseAuthCallbackHash,
   refreshSession,
   requestPasswordReset,
+  resetRecoveryTokenMemoryForTests,
+  saveRecoveryToken,
   serializeSession,
   signInWithPassword,
   signOut,
@@ -33,6 +38,17 @@ function session(): SupabaseSession {
 }
 
 describe("supabaseAuth", () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    resetRecoveryTokenMemoryForTests();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    window.sessionStorage.clear();
+    resetRecoveryTokenMemoryForTests();
+    vi.restoreAllMocks();
+  });
   it("signs in and resolves the session user", async () => {
     const next = await signInWithPassword(
       config,
@@ -155,5 +171,47 @@ describe("supabaseAuth", () => {
     expect(loadStoredSession(JSON.stringify({ accessToken: "a" }))).toBeNull();
     const restored = loadStoredSession(serializeSession(session()));
     expect(restored?.user.id).toBe("user-1");
+  });
+
+  it("prefers the newest in-memory token when sessionStorage set fails", () => {
+    window.sessionStorage.setItem(RECOVERY_TOKEN_KEY, "old-token");
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage denied");
+    });
+    saveRecoveryToken("new-token");
+    // The stale stored value must never win over the just-saved token.
+    expect(loadRecoveryToken()).toBe("new-token");
+  });
+
+  it("recovers the in-memory token when sessionStorage get fails", () => {
+    saveRecoveryToken("mem-token");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage denied");
+    });
+    expect(loadRecoveryToken()).toBe("mem-token");
+  });
+
+  it("uses a tombstone so a failed remove cannot resurrect a cleared token", () => {
+    saveRecoveryToken("used-token");
+    expect(window.sessionStorage.getItem(RECOVERY_TOKEN_KEY)).toBe("used-token");
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("storage denied");
+    });
+    clearRecoveryToken();
+    // The raw store still holds the stale value, but this page must not reuse it.
+    expect(window.sessionStorage.getItem(RECOVERY_TOKEN_KEY)).toBe("used-token");
+    expect(loadRecoveryToken()).toBeNull();
+  });
+
+  it("explicit success clears the in-memory fallback", () => {
+    saveRecoveryToken("done-token");
+    clearRecoveryToken();
+    expect(window.sessionStorage.getItem(RECOVERY_TOKEN_KEY)).toBeNull();
+    // With storage unreadable, a leftover memory copy would resurface here;
+    // success must have cleared it.
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage denied");
+    });
+    expect(loadRecoveryToken()).toBeNull();
   });
 });
