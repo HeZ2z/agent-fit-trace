@@ -429,4 +429,100 @@ describe("App auth integration (HTTP mode)", () => {
     // …and no write was ever dispatched or replayed.
     expect(state.apiCalls.filter((call) => call.method !== "GET")).toHaveLength(0);
   });
+
+  it("completes invite -> password -> login -> History in one mount under StrictMode", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=invite-token&refresh_token=r&type=invite",
+    );
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("New password"), "new-password-1");
+    await user.click(screen.getByRole("button", { name: /update password/i }));
+
+    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    expect(state.passwordUpdates).toHaveLength(1);
+    expect(state.passwordUpdates[0]?.authorization).toBe("Bearer invite-token");
+
+    await user.type(screen.getByLabelText("Email"), "a@example.com");
+    await user.type(screen.getByLabelText("Password"), "pw-a-1234");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    expect(await screen.findByRole("heading", { name: /workout history/i })).toBeInTheDocument();
+    expect(await screen.findByText(/2026-09-01/)).toBeInTheDocument();
+    expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
+    expect(
+      state.apiCalls.filter((call) => call.method !== "GET"),
+    ).toHaveLength(0);
+
+    // Subsequent router navigation away and back keeps History (no stale callback).
+    await user.click(screen.getByRole("link", { name: "Plan" }));
+    expect(await screen.findByRole("heading", { name: /training plan/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "History" }));
+    expect(await screen.findByText(/2026-09-01/)).toBeInTheDocument();
+    expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
+  });
+
+  it("completes recovery -> password -> login -> History in one mount", async () => {
+    const state = makeState();
+    installFetch(state);
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=rec-token&refresh_token=r&type=recovery",
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("New password"), "new-password-2");
+    await user.click(screen.getByRole("button", { name: /update password/i }));
+
+    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    expect(state.passwordUpdates).toHaveLength(1);
+    expect(state.passwordUpdates[0]?.authorization).toBe("Bearer rec-token");
+
+    await user.type(screen.getByLabelText("Email"), "a@example.com");
+    await user.type(screen.getByLabelText("Password"), "pw-a-1234");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    expect(await screen.findByRole("heading", { name: /workout history/i })).toBeInTheDocument();
+    expect(await screen.findByText(/2026-09-01/)).toBeInTheDocument();
+    expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
+  });
+
+  it("returns an existing session to History via router navigation after an invite link", async () => {
+    const state = makeState();
+    state.usersByToken.set("access-user-a", { id: "user-a", email: "a@example.com" });
+    installFetch(state);
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      serializeSession(storedSession("user-a", "a@example.com", "access-user-a")),
+    );
+    window.history.pushState(
+      {},
+      "",
+      "/#access_token=invite-token&refresh_token=r&type=invite",
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Invite takes precedence over the existing session.
+    expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
+
+    // Router navigation back to "/" (no hash left after consume) returns History.
+    await user.click(screen.getByRole("link", { name: "History" }));
+    expect(await screen.findByRole("heading", { name: /workout history/i })).toBeInTheDocument();
+    expect(await screen.findByText(/2026-09-01/)).toBeInTheDocument();
+    expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
+  });
 });

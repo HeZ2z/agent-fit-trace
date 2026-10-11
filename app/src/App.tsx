@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
 import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
 import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
@@ -176,34 +176,35 @@ function isRootAuthHash(hash: string): boolean {
   return isPasswordSetupType(params.get("type")) || params.get("error") !== null;
 }
 
-function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; client?: FitTraceClient }) {
+function RootRoute({ legacyLoopback, client }: { legacyLoopback?: boolean; client?: FitTraceClient }) {
   // Default Supabase invite/recovery links land on `/` (Site URL is the app
-  // origin): when the URL hash carries an invite/recovery session, route to
-  // the callback screen — ahead of the sign-in gate and any existing
-  // session — so users can set their password without editing the address.
-  // The callback consumes the hash into the tab-scoped token handoff and
-  // strips it from the URL before navigating to `/reset-password`.
-  // Local mode (and ordinary non-auth hashes) never enters this path.
-  const rootIsAuthCallback =
-    isHttpMode() &&
-    typeof window !== "undefined" &&
-    isRootAuthHash(window.location.hash);
+  // origin): when the router location hash carries an invite/recovery
+  // session, route to the callback screen — ahead of the sign-in gate and
+  // any existing session — so users can set their password without editing
+  // the address. The callback consumes the hash into the tab-scoped token
+  // handoff and strips it from the URL before navigating to
+  // `/reset-password` via router replace (so the manual replaceState never
+  // stays out of sync with the router location). Local mode (and ordinary
+  // non-auth hashes) never enters this path.
+  // Reading useLocation() here (inside BrowserRouter) keeps the branch
+  // router-aware: later navigations re-evaluate instead of reusing a stale
+  // window.location.hash snapshot from the first render.
+  const location = useLocation();
+  const rootIsAuthCallback = isHttpMode() && isRootAuthHash(location.hash);
+  if (rootIsAuthCallback) return <AuthCallbackScreen />;
+  return (
+    <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+      <HistoryScreen />
+    </RequireAuth>
+  );
+}
+
+function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; client?: FitTraceClient }) {
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
-          <Route
-            path="/"
-            element={
-              rootIsAuthCallback ? (
-                <AuthCallbackScreen />
-              ) : (
-                <RequireAuth legacyLoopback={legacyLoopback} client={client}>
-                  <HistoryScreen />
-                </RequireAuth>
-              )
-            }
-          />
+          <Route path="/" element={<RootRoute legacyLoopback={legacyLoopback} client={client} />} />
           <Route
             path="/workout/new"
             element={
