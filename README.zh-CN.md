@@ -31,5 +31,6 @@ pnpm typecheck
 
 ## 文档
 
+- [PR 提交规范](CONTRIBUTING.md)
 - [MVP 设计](docs/mvp-design.md)
 - [pi 集成规范](docs/extension-skill-spec.md)

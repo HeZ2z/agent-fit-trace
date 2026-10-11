@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Pull requests
+
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) when preparing commits and PRs. Use [.github/pull_request_template.md](.github/pull_request_template.md) for PR descriptions, and report actual verification results and known gaps.
+
 ## What this repo is
 
 `agent-fit-trace` is an Agent-powered workout tracking and coaching application that turns training logs into evidence-based progress analysis and draft training plans. The product targets a hosted cloud coach that requires no local Agent installation and local coaching through the user's Codex, pi, or OpenCode CLI. These Agent execution paths are planned; the current implementation includes the App, deterministic shared core, local/authenticated HTTP data access, and a pi Extension + training-coach Skill integration. The docs in `docs/` remain the product contract.

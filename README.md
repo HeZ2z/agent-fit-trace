@@ -31,5 +31,6 @@ pnpm typecheck
 
 ## Docs
 
+- [Pull request guidelines](CONTRIBUTING.md)
 - [MVP design](docs/mvp-design.md)
 - [pi integration spec](docs/extension-skill-spec.md)
