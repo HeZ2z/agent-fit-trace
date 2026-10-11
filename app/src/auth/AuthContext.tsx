@@ -169,20 +169,24 @@ export function AuthProvider({
   }, []);
 
   // Bootstrap the public Supabase config from the server (runtime, not
-  // build-time `VITE_*`): the app cannot start a login without it.
+  // build-time `VITE_*`): the app cannot start a login without it. This fetch
+  // is independent of the session generation epoch — a cross-tab sign-out (or
+  // any auth task) must never discard the config response, or bootstrap would
+  // hang in `loading` forever. Only the effect-local `cancelled` flag (config
+  // override / unmount / StrictMode remount) drops a stale response. Auth
+  // tasks keep their own generation guards below.
   useEffect(() => {
     if (skipBootstrap || publicConfigProp !== undefined) return;
     let cancelled = false;
-    const generation = generationRef.current;
     fetchPublicConfig("/api/v1", fetchImpl).then(
       (config) => {
-        if (cancelled || generationRef.current !== generation) return;
+        if (cancelled) return;
         setPublicConfig(config);
         setConfigError(null);
         setBootstrapped(true);
       },
       (error: unknown) => {
-        if (cancelled || generationRef.current !== generation) return;
+        if (cancelled) return;
         setConfigError(error instanceof Error ? error : new Error(String(error)));
         setBootstrapped(true);
       },

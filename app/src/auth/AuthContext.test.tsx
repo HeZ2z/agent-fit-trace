@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./AuthContext.tsx";
 import { Layout } from "../components/Layout.tsx";
+import { AUTH_STORAGE_KEY } from "./supabaseAuth.ts";
 import type { SupabaseSession } from "./supabaseAuth.ts";
 
 function sessionFor(id: string, email: string): SupabaseSession {
@@ -761,5 +762,196 @@ describe("signed-in outage notice", () => {
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
     await waitFor(() => expect(screen.getByTestId("token").textContent).toBe("access-new"));
     expect(screen.queryByText(/temporarily unavailable/i)).not.toBeInTheDocument();
+  });
+});
+
+function configJson(url = "http://127.0.0.1:54321"): Response {
+  return new Response(
+    JSON.stringify({ data: { supabaseUrl: url, supabasePublishableKey: "pub" } }),
+    { status: 200 },
+  );
+}
+
+function ConfigProbe() {
+  const { status, user, publicConfig, configError, getAccessToken } = useAuth();
+  return (
+    <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="user">{user?.id ?? "none"}</span>
+      <span data-testid="token">{getAccessToken() ?? "none"}</span>
+      <span data-testid="config">{publicConfig?.supabaseUrl ?? "none"}</span>
+      <span data-testid="config-error">{configError?.message ?? "none"}</span>
+    </div>
+  );
+}
+
+function dispatchCrossTabSignOut(): void {
+  window.dispatchEvent(
+    new StorageEvent("storage", { key: AUTH_STORAGE_KEY, newValue: null }),
+  );
+}
+
+describe("deferred public config bootstrap", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  it("completes bootstrap as signed-out when cross-tab sign-out races deferred config", async () => {
+    let resolveConfig!: (value: Response) => void;
+    let authUserCalls = 0;
+    const gate = new Promise<Response>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return gate;
+      if (String(url).includes("/auth/v1/user")) {
+        authUserCalls += 1;
+        return new Response(JSON.stringify({ id: "user-1" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider fetchImpl={fetchImpl} initialSession={null}>
+        <ConfigProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("status").textContent).toBe("loading");
+    // Cross-tab sign-out bumps the session generation while config is pending.
+    dispatchCrossTabSignOut();
+    await act(async () => {
+      resolveConfig(configJson());
+    });
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
+    expect(screen.getByTestId("config").textContent).toBe("http://127.0.0.1:54321");
+    expect(screen.getByTestId("user").textContent).toBe("none");
+    expect(authUserCalls).toBe(0);
+  });
+
+  it("surfaces config failure after cross-tab sign-out instead of hanging in loading", async () => {
+    let rejectConfig!: (reason: unknown) => void;
+    const gate = new Promise<Response>((_resolve, reject) => {
+      rejectConfig = reject;
+    });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return gate;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider fetchImpl={fetchImpl} initialSession={null}>
+        <ConfigProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("status").textContent).toBe("loading");
+    dispatchCrossTabSignOut();
+    await act(async () => {
+      rejectConfig(new TypeError("offline"));
+    });
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
+    expect(screen.getByTestId("config-error").textContent).not.toBe("none");
+  });
+
+  it("does not resurrect a signed-out account or fetch protected resources when late config resolves", async () => {
+    let resolveConfig!: (value: Response) => void;
+    let authUserCalls = 0;
+    const gate = new Promise<Response>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return gate;
+      if (String(url).includes("/auth/v1/user")) {
+        authUserCalls += 1;
+        return new Response(JSON.stringify({ id: "user-1", email: "a@example.com" }), {
+          status: 200,
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider
+        fetchImpl={fetchImpl}
+        skipValidation={false}
+        initialSession={sessionFor("user-1", "a@example.com")}
+      >
+        <ConfigProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("status").textContent).toBe("loading");
+    dispatchCrossTabSignOut();
+    await act(async () => {
+      resolveConfig(configJson());
+    });
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
+    expect(screen.getByTestId("token").textContent).toBe("none");
+    expect(screen.getByTestId("user").textContent).toBe("none");
+    expect(authUserCalls).toBe(0);
+  });
+
+  it("ignores a stale config response after the effect is replaced", async () => {
+    let resolveFirst!: (value: Response) => void;
+    const firstGate = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const fetchFirst = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return firstGate;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const fetchSecond = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return configJson("http://second.invalid");
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const view = render(
+      <AuthProvider fetchImpl={fetchFirst} initialSession={null}>
+        <ConfigProbe />
+      </AuthProvider>,
+    );
+    view.rerender(
+      <AuthProvider fetchImpl={fetchSecond} initialSession={null}>
+        <ConfigProbe />
+      </AuthProvider>,
+    );
+    // The replaced (cancelled) request resolves late and must be dropped.
+    await act(async () => {
+      resolveFirst(configJson("http://stale.invalid"));
+    });
+    await waitFor(() => expect(screen.getByTestId("config").textContent).toBe("http://second.invalid"));
+    expect(screen.getByTestId("status").textContent).toBe("signed-out");
+  });
+
+  it("ignores a config response after unmount", async () => {
+    let resolveConfig!: (value: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return gate;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const view = render(
+      <AuthProvider fetchImpl={fetchImpl} initialSession={null}>
+        <ConfigProbe />
+      </AuthProvider>,
+    );
+    view.unmount();
+    // Must not throw or update state after unmount.
+    await act(async () => {
+      resolveConfig(configJson());
+    });
+  });
+
+  it("completes bootstrap under StrictMode double effects", async () => {
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/public-config")) return configJson();
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <StrictMode>
+        <AuthProvider fetchImpl={fetchImpl} initialSession={null}>
+          <ConfigProbe />
+        </AuthProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
+    expect(screen.getByTestId("config").textContent).toBe("http://127.0.0.1:54321");
   });
 });
