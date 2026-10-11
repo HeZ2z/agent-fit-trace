@@ -91,15 +91,17 @@ server in `FIT_TRACE_DEV_API_MODE=supabase`.
 - The dev API runs the real authenticated handler against the local
   Supabase stack (RLS applies; `owner_id` comes from `auth.uid()`). It needs
   `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) from
-  `.env.local` (see `.env.example` and `docs/supabase-setup.md`). Missing
+  repo-root `.env.local` (see `.env.example` and `docs/supabase-setup.md`). Missing
   server configuration fails closed (`500 API_ERROR`) — the server never
   falls back to memory.
 - `FIT_TRACE_DEV_API_MODE` also accepts `memory` (default, unauthenticated
   loopback) and `authenticated` (local test verifier); the two supported
   local dev flows are the memory legacy flow above and this Supabase flow.
 
-Node does NOT auto-read `.env.local` — pass it explicitly. Vite DOES read
-`.env.local` for `VITE_*` vars, so the app side needs only `VITE_*`:
+Node does NOT auto-read repo-root `.env.local` — pass it explicitly from the
+repo root. Vite runs from `app/` with no `envDir` override
+(`app/vite.config.ts`), so it reads `app/.env.local` — NOT repo-root
+`.env.local` — for `VITE_*` vars; the app side needs only `VITE_*` there:
 
 ```sh
 # Terminal 1 — Supabase-backed dev API (local stack must be up; see docs/supabase-setup.md):

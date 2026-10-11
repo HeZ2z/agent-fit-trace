@@ -27,13 +27,14 @@ shut it down separately with `supabase stop`.
   forgot/reset password, and the invite explanation.
 - Get the local publishable key with `supabase status -o env` and export it
   as `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) with
-  `SUPABASE_URL=http://127.0.0.1:54321` in `.env.local` (see `.env.example`).
-  Never commit `.env.local`.
+  `SUPABASE_URL=http://127.0.0.1:54321` in repo-root `.env.local` (see `.env.example`).
+  Never commit `.env.local` files (repo-root or `app/.env.local`).
 
 - Serve the authenticated API from the local stack (stack must be up first):
 
   ```sh
-  # Node does NOT auto-read `.env.local` — pass it with `--env-file`.
+  # Node does NOT auto-read repo-root `.env.local` — pass it with `--env-file`
+  # from the repo root.
   # The inline FIT_TRACE_DEV_API_MODE=supabase wins over both the file and
   # any externally exported value (a --env-file entry never overrides an
   # already-set variable).
@@ -42,8 +43,9 @@ shut it down separately with `supabase stop`.
 
   In a second terminal, run the app in plain HTTP mode (no
   `VITE_FIT_TRACE_LEGACY_LOOPBACK` — that flag is only for the memory
-  loopback flow in `docs/app-dev-modes.md`; Vite reads `.env.local` for
-  `VITE_*` vars itself):
+  loopback flow in `docs/app-dev-modes.md`; Vite runs from `app/` with no
+  `envDir` override (`app/vite.config.ts`), so it reads `app/.env.local` —
+  NOT repo-root `.env.local` — for `VITE_*` vars):
 
   ```sh
   VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
