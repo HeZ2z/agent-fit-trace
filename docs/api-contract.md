@@ -391,3 +391,5 @@ same-id submits resolve to exactly one stored record plus duplicates. It is
 bound to loopback and clears its records on restart. The runtime modes
 (local vs HTTP), proxy, scripts, and storage ownership are documented in
 `docs/app-dev-modes.md`.
+
+Coaching runs over a separate loopback server: see [`coaching-api.md`](coaching-api.md).

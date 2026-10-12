@@ -8,9 +8,16 @@ import {
   dedupeEventsBySeq,
   isTerminalStatus,
   nextRunStatus,
+  parseCancelCoachingRunBody,
+  parseCoachingBootstrapResult,
   parseCoachingDataSnapshot,
   parseCoachingEventEnvelope,
+  parseCoachingLogoutResult,
+  parseCoachingRuntimeInfo,
+  parseReadCoachingEventsResult,
   parseReadCoachingRunResult,
+  parseRuntimeEventEnvelope,
+  parseSnapshotFilter,
   parseSubmitCoachingRunInput,
   replayRunState,
 } from "@pi-fit-trace/api-contracts";
@@ -209,10 +216,72 @@ test("snapshot/read parsers enforce handle binding and server-resolved consisten
       runtimeId: "pi",
     },
     lastSeq: 3,
+    firstSeq: 0,
+    expiresAt: 9999999999999,
   };
   assert.deepEqual(parseReadCoachingRunResult(JSON.parse(JSON.stringify(readValue))), readValue);
-  const badCursor = { ...readValue, lastSeq: -1 };
+  // Empty log cursor (-1) is accepted; below -1 rejects.
+  const emptyCursor = { ...readValue, lastSeq: -1 };
+  assert.deepEqual(parseReadCoachingRunResult(JSON.parse(JSON.stringify(emptyCursor))), emptyCursor);
+  const badCursor = { ...readValue, lastSeq: -2 };
   assert.throws(() => parseReadCoachingRunResult(badCursor));
+});
+
+test("cancel body carries no runId; runtime ids are pi-only; calendar dates are strict", () => {
+  assert.deepEqual(parseCancelCoachingRunBody(undefined), {});
+  assert.deepEqual(parseCancelCoachingRunBody({}), {});
+  assert.deepEqual(parseCancelCoachingRunBody({ reason: "stop" }), { reason: "stop" });
+  // Stray runId is ignored (path owns the id).
+  assert.deepEqual(parseCancelCoachingRunBody({ runId: "run-1", reason: "stop" }), { reason: "stop" });
+  assert.throws(() => parseCancelCoachingRunBody({ reason: 42 }));
+  // pi-only runtime ids.
+  assert.deepEqual(
+    parseSubmitCoachingRunInput({ sessionId: "s", prompt: "p", idempotencyKey: "k", snapshot: snapshotHandle(), runtimeId: "pi" }).runtimeId,
+    "pi",
+  );
+  assert.throws(() =>
+    parseSubmitCoachingRunInput({ sessionId: "s", prompt: "p", idempotencyKey: "k", snapshot: snapshotHandle(), runtimeId: "codex" }),
+  );
+  // Strict calendar dates: rollover rejects.
+  assert.throws(() => parseSnapshotFilter({ from: "2026-02-30" }));
+  assert.throws(() => parseSnapshotFilter({ from: "2026-09-10", to: "2026-09-01" }));
+  assert.deepEqual(parseSnapshotFilter({ from: "2026-09-01", to: "2026-09-03" }), { from: "2026-09-01", to: "2026-09-03" });
+});
+
+test("bootstrap/logout/runtime/events guards round-trip", () => {
+  assert.deepEqual(
+    parseCoachingBootstrapResult({ capability: "coachcap_abc123xyz456", expiresInMs: 600000 }),
+    { capability: "coachcap_abc123xyz456", expiresInMs: 600000 },
+  );
+  assert.throws(() => parseCoachingBootstrapResult({ capability: "  ", expiresInMs: 1 }));
+  assert.deepEqual(parseCoachingLogoutResult({ loggedOut: true }), { loggedOut: true });
+  assert.throws(() => parseCoachingLogoutResult({ loggedOut: false }));
+  assert.deepEqual(
+    parseCoachingRuntimeInfo({ id: "pi", kind: "local", displayName: "Pi", available: true }),
+    { id: "pi", kind: "local", displayName: "Pi", available: true },
+  );
+  assert.throws(() => parseCoachingRuntimeInfo({ id: "codex", kind: "x", displayName: "X", available: true }));
+  const env = envelope(0, { type: "text_delta", delta: "hi" });
+  assert.deepEqual(parseRuntimeEventEnvelope(JSON.parse(JSON.stringify(env))), env);
+  assert.throws(() => parseRuntimeEventEnvelope({ ...JSON.parse(JSON.stringify(env)), seq: -1 }));
+  const page = {
+    events: [env],
+    run: {
+      id: "run-1",
+      sessionId: "sess-1",
+      status: "running",
+      idempotencyKey: "k",
+      prompt: "p",
+      snapshot: resolvedSnapshot(),
+      runtimeId: "pi",
+    },
+    lastSeq: 0,
+    firstSeq: 0,
+    expiresAt: Date.now() + 1000,
+  };
+  assert.ok(parseReadCoachingEventsResult(JSON.parse(JSON.stringify(page))).events.length === 1);
+  const emptyPage = { ...page, events: [], lastSeq: -1 };
+  assert.deepEqual(parseReadCoachingEventsResult(JSON.parse(JSON.stringify(emptyPage))).lastSeq, -1);
 });
 
 test("whitespace-only and empty text deltas are content: preserved byte-for-byte", () => {
