@@ -96,6 +96,14 @@ export interface CoachingServerOptions {
   host?: string;
   port?: number;
   capabilityTtlMs?: number;
+  /**
+   * Optional trusted handler for non-coaching routes on the SAME HTTP
+   * listener. Invoked ONLY after exact canonical Host/Origin validation;
+   * receives the raw request/response and returns (or resolves) `true` when
+   * handled. Return `false` to fall through to the default 404. No
+   * route-specific CORS bypass: the handler owns its response headers.
+   */
+  trustedHandler?: (request: IncomingMessage, response: ServerResponse) => boolean | Promise<boolean>;
 }
 
 export interface CoachingServer {
@@ -604,9 +612,6 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
       const rawPath = request.url ?? "/";
       const routeUrl = new URL(rawPath, "http://127.0.0.1");
       const pathname = routeUrl.pathname;
-      const actualPort = server.address() !== null && typeof server.address() === "object"
-        ? (server.address() as { port: number }).port
-        : port;
 
       if (pathname === "/public-config" && method === "GET") {
         const config = resolvePublicConfig();
@@ -618,13 +623,9 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
         return;
       }
 
-      if (!pathname.startsWith("/coaching/")) {
-        json(response, 404, { error: { code: "NOT_FOUND", message: "Unknown route." } });
-        return;
-      }
-
-      // Host/Origin validation on every coaching route against the CANONICAL
-      // server origin (exact bind host + actual port; no alias widening).
+      // Host/Origin validation on every route except the public bootstrap
+      // read above, against the CANONICAL server origin (exact bind host +
+      // actual port; no alias widening).
       const canonical = currentCanonical();
       if (!isTrustedHost(request.headers.host, canonical.hostPort)) {
         json(response, 403, { error: { code: "FORBIDDEN", message: "Untrusted host." } });
@@ -638,6 +639,27 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
       // No broad echoed CORS: only the exact validated canonical Origin is echoed.
       const corsHeaders: Record<string, string> =
         origin !== undefined ? { "access-control-allow-origin": canonical.origin, vary: "Origin" } : {};
+
+      if (!pathname.startsWith("/coaching/")) {
+        const trusted = options.trustedHandler;
+        if (trusted !== undefined) {
+          let handled = false;
+          try {
+            handled = await trusted(request, response);
+          } catch {
+            try {
+              response.writeHead(500, { "content-type": "application/json" });
+              response.end(errorBody("API_ERROR", "Internal error."));
+            } catch {
+              // Socket already gone.
+            }
+            return;
+          }
+          if (handled) return;
+        }
+        json(response, 404, { error: { code: "NOT_FOUND", message: "Unknown route." } }, corsHeaders);
+        return;
+      }
 
       let body: string | undefined;
       try {
@@ -937,13 +959,27 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
     }
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    // Bind failure (e.g. EADDRINUSE while the launcher scans ports) must
+    // not leak the service sweep timer, the capability sweep timer, or a
+    // live runtime: no resources are held while scanning.
+    clearInterval(sweepTimer);
+    try {
+      await service.shutdown();
+    } catch {
+      // Shutdown of an idle pre-listen service is best-effort.
+    }
+    server.removeAllListeners();
+    throw error;
+  }
 
   const address = server.address();
   const actualPort = typeof address === "object" && address !== null ? address.port : port;

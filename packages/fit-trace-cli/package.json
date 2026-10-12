@@ -1,0 +1,17 @@
+{
+  "name": "@agent-fit-trace/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Source-run local launcher: same-origin static App + data proxy to the fixed configured authenticated API.",
+  "bin": {
+    "agent-fit-trace": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "node ./src/cli.ts start --no-open"
+  },
+  "dependencies": {
+    "@pi-fit-trace/api-contracts": "workspace:*",
+    "@pi-fit-trace/core": "workspace:*"
+  }
+}

@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout.tsx";
 import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
 import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./api/httpFitTraceClient.ts";
+import { isHttpModeActive } from "./api/runtimeMode.ts";
 import { HistoryScreen } from "./screens/HistoryScreen.tsx";
 import { WorkoutEditorScreen } from "./screens/WorkoutEditorScreen.tsx";
 import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
@@ -34,7 +35,9 @@ export interface AppProps {
 
 function isHttpMode(): boolean {
   const env = import.meta.env as Record<string, string | undefined> | undefined;
-  return env?.VITE_FIT_TRACE_MODE === "http";
+  // A launcher-served build may carry a same-origin runtime override so the
+  // baked local default can act as an HTTP client without rebuilding.
+  return isHttpModeActive(env?.VITE_FIT_TRACE_MODE);
 }
 
 /** Development-only escape hatch for the unauthenticated loopback dev API. */
