@@ -2,15 +2,14 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { filterRecords } from "@pi-fit-trace/core";
-import type { CoachingClient } from "../api/coachingClient.ts";
 import { runtimePiAvailable } from "../api/runtimeMode.ts";
 import { AnalysisView } from "../components/AnalysisView.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useCoach } from "../coaching/useCoach.ts";
 
-export function CoachScreen({ client }: { client?: CoachingClient } = {}) {
+export function CoachScreen() {
   const { records, status: historyStatus, loadError, reload } = useWorkouts();
-  const coach = useCoach({ client });
+  const coach = useCoach();
   const [question, setQuestion] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -122,7 +121,7 @@ export function CoachScreen({ client }: { client?: CoachingClient } = {}) {
                 ? "Coach is working…"
                 : "Ask coach"}
             </button>{" "}
-            {coach.isRunning && (
+            {coach.canCancel && (
               <button type="button" onClick={() => void coach.cancel()}>
                 {coach.phase === "cancelling" ? "Cancelling…" : "Cancel"}
               </button>
@@ -235,16 +234,22 @@ export function CoachScreen({ client }: { client?: CoachingClient } = {}) {
                     Reconnect
                   </button>
                 )}
+                {coach.canRetryRestore && (
+                  <button type="button" onClick={coach.retryRestore}>
+                    Retry restore
+                  </button>
+                )}
                 {coach.canReloadFromStart && (
                   <button type="button" onClick={coach.reloadFromStart}>
                     Reload from earliest events
                   </button>
                 )}
-                {(coach.phase === "done" || coach.phase === "failed" || coach.phase === "cancelled") && (
-                  <button type="button" onClick={coach.newAnalysis}>
-                    New analysis
-                  </button>
-                )}
+                {!coach.isRunning &&
+                  (coach.phase === "done" || coach.phase === "failed" || coach.phase === "cancelled") && (
+                    <button type="button" onClick={coach.newAnalysis}>
+                      New analysis
+                    </button>
+                  )}
               </div>
             </div>
           )}

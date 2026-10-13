@@ -1,5 +1,5 @@
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
 import { AuthProvider, useAuth } from "../auth/AuthContext.tsx";
 import type { SupabaseSession } from "../auth/supabaseAuth.ts";
 import { CoachingClient } from "../api/coachingClient.ts";
+import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
 import { FakeFitTraceClient } from "../test/asyncClient.ts";
 import App from "../App.tsx";
@@ -250,10 +251,12 @@ function renderCoach(history: WorkoutRecord[], harness: CoachingHarness) {
         initialSession={sessionFor("user-1", "a@example.com")}
       >
         <WorkoutStoreProvider client={historyClient}>
-          <Routes>
-            <Route path="/coach" element={<CoachScreen client={coachClient} />} />
-            <Route path="/workout/new" element={<div data-testid="editor" />} />
-          </Routes>
+          <CoachingProvider client={coachClient}>
+            <Routes>
+              <Route path="/coach" element={<CoachScreen />} />
+              <Route path="/workout/new" element={<div data-testid="editor" />} />
+            </Routes>
+          </CoachingProvider>
         </WorkoutStoreProvider>
       </AuthProvider>
     </MemoryRouter>,
@@ -639,9 +642,11 @@ describe("Coach account isolation + resume (items 3/4)", () => {
           >
             <WorkoutStoreProvider client={historyClient}>
               <SignInProbe />
-              <Routes>
-                <Route path="/coach" element={<CoachScreen />} />
-              </Routes>
+              <CoachingProvider>
+                <Routes>
+                  <Route path="/coach" element={<CoachScreen />} />
+                </Routes>
+              </CoachingProvider>
             </WorkoutStoreProvider>
           </AuthProvider>
         </MemoryRouter>,
@@ -990,6 +995,9 @@ describe("Coach final observable gaps (items 2/3/4)", () => {
     first.unmount();
 
     // A snapshot whose id set no longer matches the (unfiltered) history is stale.
+    // Clear the first render's persisted resume so this independent render
+    // starts from the form instead of restoring the previous run.
+    window.sessionStorage.clear();
     const changed = harnessFor(["wkt_a"]);
     const second = renderCoach(history, changed);
     await screen.findByTestId("coach-history-count");
@@ -1042,9 +1050,11 @@ describe("Coach final observable gaps (items 2/3/4)", () => {
             initialSession={sessionFor("user-1", "a@example.com")}
           >
             <WorkoutStoreProvider client={historyClient}>
-              <Routes>
-                <Route path="/coach" element={<CoachScreen client={coachClient} />} />
-              </Routes>
+              <CoachingProvider client={coachClient}>
+                <Routes>
+                  <Route path="/coach" element={<CoachScreen />} />
+                </Routes>
+              </CoachingProvider>
             </WorkoutStoreProvider>
           </AuthProvider>
         </MemoryRouter>
@@ -1060,5 +1070,451 @@ describe("Coach final observable gaps (items 2/3/4)", () => {
       (entry) => entry.url === "/coaching/runs" && entry.method === "POST",
     );
     expect(posts).toHaveLength(1);
+  });
+});
+
+describe("Coach account-level lifecycle fixes (batch 3)", () => {
+  function parsedBody(init?: RequestInit): unknown {
+    if (typeof init?.body !== "string" || init.body === "") return null;
+    try {
+      return JSON.parse(init.body) as unknown;
+    } catch {
+      return init.body;
+    }
+  }
+
+  it("a transport disconnect keeps the run: read/reconnect/cancel stay available until a terminal", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let eventsCalls = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parsedBody(init), headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) return jsonData({ id: SESSION });
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        return jsonData({ run: storedRun("running", snapshot), lastSeq: -1, replayed: false });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        eventsCalls += 1;
+        if (eventsCalls === 1) {
+          // One frame then EOF before a terminal: a transport disconnect, not
+          // a confirmed server terminal.
+          return sseResponse(sseFrame(envelope(0, { type: "text_delta", delta: "partial " })));
+        }
+        return sseResponse(sseFrame(envelope(1, { type: "terminal", status: "cancelled" })));
+      }
+      if (target.endsWith(`/coaching/runs/${RUN}/cancel`)) {
+        return jsonData({ run: storedRun("cancelled", snapshot), lastSeq: 1 });
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    const { user } = renderCoach(history, { fetchImpl, seen });
+    await screen.findByTestId("coach-history-count");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    // Disconnect: partial output + reconnect offered, run id/resume preserved.
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent(/partial/);
+    expect(await screen.findByRole("button", { name: /reconnect/i })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("fit-trace.coach.resume.v1")).not.toBeNull();
+
+    // Cancel must remain available until a terminal confirms (never local-only).
+    await user.click(await screen.findByRole("button", { name: /^cancel$/i }));
+    expect(await screen.findByTestId("coach-cancelled")).toHaveTextContent(/cancelled/i);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(1);
+    // A disconnect never submits a new run.
+    expect(
+      seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("a malformed stream frame keeps the run: new submit blocked, reconnect and cancel available", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let eventsCalls = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parsedBody(init), headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) return jsonData({ id: SESSION });
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        return jsonData({ run: storedRun("running", snapshot), lastSeq: -1, replayed: false });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        eventsCalls += 1;
+        if (eventsCalls === 1) {
+          // A non-JSON SSE data frame: a transport/parser failure, NOT a
+          // terminal. The run is still live server-side.
+          return sseResponse("data: {not-json}\n\n");
+        }
+        return sseResponse(sseFrame(envelope(0, { type: "terminal", status: "cancelled" })));
+      }
+      if (target.endsWith(`/coaching/runs/${RUN}/cancel`)) {
+        return jsonData({ run: storedRun("cancelled", snapshot), lastSeq: 0 });
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    const { user } = renderCoach(history, { fetchImpl, seen });
+    await screen.findByTestId("coach-history-count");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    // A malformed frame is a recoverable disconnect, never a terminal failure:
+    // the run id + resume are kept and Reconnect stays offered.
+    expect(await screen.findByTestId("coach-error")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /reconnect/i })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("fit-trace.coach.resume.v1")).not.toBeNull();
+
+    // A fresh submit must not abandon the known live run: no second POST.
+    const submitButton = screen.getByRole("button", { name: /ask coach/i });
+    expect(submitButton).toBeDisabled();
+    fireEvent.submit(submitButton.closest("form") as HTMLFormElement);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST"),
+    ).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /new analysis/i })).not.toBeInTheDocument();
+
+    // Cancel still reaches the retained run; the terminal confirms it.
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(await screen.findByTestId("coach-cancelled")).toHaveTextContent(/cancelled/i);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(1);
+  });
+
+  it("a cancel during restore cancels the verified restored run instead of resuming it", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let releaseSession!: () => void;
+    const sessionGate = new Promise<void>((resolve) => {
+      releaseSession = resolve;
+    });
+    let releaseRun!: () => void;
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parsedBody(init), headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.includes("/coaching/sessions/")) {
+        await sessionGate;
+        return jsonData({ id: SESSION });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        return sseResponse(sseFrame(envelope(0, { type: "terminal", status: "cancelled" })));
+      }
+      if (target.includes("/coaching/runs/") && !target.includes("/events") && !target.endsWith("/cancel")) {
+        await runGate;
+        return jsonData({
+          run: storedRun("running", snapshot),
+          lastSeq: -1,
+          firstSeq: 0,
+          expiresAt: Date.now() + 600_000,
+        });
+      }
+      if (target.endsWith(`/coaching/runs/${RUN}/cancel`)) {
+        return jsonData({ run: storedRun("cancelled", snapshot), lastSeq: 0 });
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    window.sessionStorage.setItem(
+      "fit-trace.coach.resume.v1",
+      JSON.stringify({ version: 1, accountId: "user-1", sessionId: SESSION, runId: RUN }),
+    );
+    const { user } = renderCoach(history, { fetchImpl, seen });
+
+    // Restore is mid-flight (session read gated): the user cancels.
+    await waitFor(() => expect(seen.some((entry) => entry.url.includes("/coaching/sessions/"))).toBe(true));
+    await user.click(await screen.findByRole("button", { name: /^cancel$/i }));
+
+    // The reads now resolve with a real run: the cancel must reach the server.
+    releaseSession();
+    releaseRun();
+
+    expect(await screen.findByTestId("coach-cancelled")).toHaveTextContent(/cancelled/i);
+    await waitFor(() =>
+      expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(1),
+    );
+    // Never a local cancelled followed by resuming the stream: any events
+    // request comes only after the server cancel.
+    const cancelIndex = seen.findIndex((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`));
+    const streamIndex = seen.findIndex((entry) => entry.url.includes(`/coaching/runs/${RUN}/events`));
+    expect(streamIndex === -1 || streamIndex > cancelIndex).toBe(true);
+  });
+
+  it("renews an idle-deleted session on the next submit with one bounded retry and the same key", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    const runText = new Map<string, string>();
+    const runSession = new Map<string, string>();
+    let sessions = 0;
+    let deleted = false;
+    let runs = 0;
+    const ev = (
+      sessionId: string,
+      runId: string,
+      seq: number,
+      event: CoachingEventEnvelope["event"],
+    ): CoachingEventEnvelope => ({ protocolVersion: 1, sessionId, runId, seq, event });
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = parsedBody(init);
+      seen.push({ url: target, method, body, headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions") && method === "POST") {
+        sessions += 1;
+        return jsonData({ id: `sess-${String(sessions)}` });
+      }
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        const sessionId = (body as { sessionId?: string } | null)?.sessionId ?? "";
+        if (sessionId === "sess-1" && deleted) {
+          return new Response(
+            JSON.stringify({ error: { code: "SESSION_NOT_FOUND", message: "Session not found." } }),
+            { status: 404, headers: { "content-type": "application/json" } },
+          );
+        }
+        runs += 1;
+        const runId = `run-${String(runs)}`;
+        runText.set(runId, runs === 1 ? "first result" : "second result");
+        runSession.set(runId, sessionId);
+        return jsonData({
+          run: { ...storedRun("running", snapshot), id: runId, sessionId },
+          lastSeq: -1,
+          replayed: false,
+        });
+      }
+      if (target.includes("/coaching/runs/") && target.includes("/events")) {
+        const runId = target.slice(target.indexOf("/coaching/runs/") + "/coaching/runs/".length).split("/")[0];
+        const sessionId = runSession.get(runId) ?? SESSION;
+        return sseResponse(
+          sseFrame(ev(sessionId, runId, 0, { type: "text_delta", delta: runText.get(runId) ?? "" })) +
+            sseFrame(ev(sessionId, runId, 1, { type: "terminal", status: "completed" })),
+        );
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    const { user } = renderCoach(history, { fetchImpl, seen });
+    await screen.findByTestId("coach-history-count");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("first result");
+
+    // The server forgot the idle session while the terminal page stayed open.
+    deleted = true;
+    await user.click(screen.getByRole("button", { name: /new analysis/i }));
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my bench progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    // Bounded renewal: one extra session, then the SAME key succeeds.
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("second result");
+    expect(sessions).toBe(2);
+    const secondSubmitPosts = seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST");
+    expect(secondSubmitPosts).toHaveLength(3);
+    const renewalKeys = secondSubmitPosts.slice(1).map((entry) => (entry.body as { idempotencyKey?: string })?.idempotencyKey);
+    expect(renewalKeys[0]).toBeTruthy();
+    expect(renewalKeys[0]).toBe(renewalKeys[1]);
+    expect(screen.queryByTestId("coach-error")).not.toBeInTheDocument();
+  });
+
+  it("an expired cursor keeps the run: fresh submit is blocked and cancel still reaches it", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let eventsCalls = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parsedBody(init), headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) return jsonData({ id: SESSION });
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        return jsonData({ run: storedRun("running", snapshot), lastSeq: -1, replayed: false });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        eventsCalls += 1;
+        if (eventsCalls === 1) {
+          // Retention cursor expired: the run is still live server-side.
+          return new Response(
+            JSON.stringify({
+              error: { code: "EXPIRED_CURSOR", message: "cursor expired", details: { firstSeq: 0 } },
+            }),
+            { status: 410, headers: { "content-type": "application/json" } },
+          );
+        }
+        return sseResponse(sseFrame(envelope(0, { type: "terminal", status: "cancelled" })));
+      }
+      if (target.endsWith(`/coaching/runs/${RUN}/cancel`)) {
+        return jsonData({ run: storedRun("cancelled", snapshot), lastSeq: 0 });
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    const { user } = renderCoach(history, { fetchImpl, seen });
+    await screen.findByTestId("coach-history-count");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    // EXPIRED_CURSOR: a recoverable phase that KEEPS the live run + resume.
+    expect(await screen.findByTestId("coach-error")).toHaveTextContent(/expired/i);
+    expect(window.sessionStorage.getItem("fit-trace.coach.resume.v1")).not.toBeNull();
+    expect(seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST")).toHaveLength(1);
+
+    // A fresh submit attempt is blocked: the active run must not be abandoned.
+    const submitButton = screen.getByRole("button", { name: /ask coach/i });
+    expect(submitButton).toBeDisabled();
+    fireEvent.submit(submitButton.closest("form") as HTMLFormElement);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST")).toHaveLength(1);
+    // New analysis is not offered for a still-live run.
+    expect(screen.queryByRole("button", { name: /new analysis/i })).not.toBeInTheDocument();
+
+    // Cancel still reaches the retained run and the terminal confirms it.
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(await screen.findByTestId("coach-cancelled")).toHaveTextContent(/cancelled/i);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(1);
+  });
+
+  it("an ambiguous restore failure keeps the resume; retry verifies it and cancels the real run", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let sessionCalls = 0;
+    let failSession!: (error: unknown) => void;
+    const sessionGate = new Promise<Response>((_resolve, reject) => {
+      failSession = reject;
+    });
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parsedBody(init), headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.includes("/coaching/sessions/")) {
+        sessionCalls += 1;
+        // The first read is HELD: the cancel lands first, then the transport
+        // fails ambiguously — a hiccup proves nothing about the run.
+        if (sessionCalls === 1) return await sessionGate;
+        return jsonData({ id: SESSION });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        return sseResponse(sseFrame(envelope(0, { type: "terminal", status: "cancelled" })));
+      }
+      if (target.includes("/coaching/runs/") && !target.includes("/events") && !target.endsWith("/cancel")) {
+        return jsonData({
+          run: storedRun("running", snapshot),
+          lastSeq: -1,
+          firstSeq: 0,
+          expiresAt: Date.now() + 600_000,
+        });
+      }
+      if (target.endsWith(`/coaching/runs/${RUN}/cancel`)) {
+        return jsonData({ run: storedRun("cancelled", snapshot), lastSeq: 0 });
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    window.sessionStorage.setItem(
+      "fit-trace.coach.resume.v1",
+      JSON.stringify({ version: 1, accountId: "user-1", sessionId: SESSION, runId: RUN }),
+    );
+    const { user } = renderCoach(history, { fetchImpl, seen });
+
+    // Restore is verifying the known run; the user cancels while the read is in flight.
+    await waitFor(() => expect(seen.some((entry) => entry.url.includes("/coaching/sessions/"))).toBe(true));
+    await user.click(await screen.findByRole("button", { name: /^cancel$/i }));
+    // Now the held read fails ambiguously.
+    failSession(new Error("socket hangup"));
+
+    // The read fails ambiguously: no false cancelled, resume retained, no POST.
+    expect(await screen.findByTestId("coach-error")).toHaveTextContent(/connection failed/i);
+    expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem("fit-trace.coach.resume.v1")).not.toBeNull();
+    expect(seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST")).toHaveLength(0);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(0);
+
+    // Retry re-verifies the SAME run and carries the preserved cancel through.
+    await user.click(screen.getByRole("button", { name: /retry restore/i }));
+    expect(await screen.findByTestId("coach-cancelled")).toHaveTextContent(/cancelled/i);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(1);
+    expect(seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST")).toHaveLength(0);
+  });
+
+  it("a cancel during idle-session renewal stops before the renewed POST", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let sessions = 0;
+    let releaseRenewal!: () => void;
+    const renewalGate = new Promise<void>((resolve) => {
+      releaseRenewal = resolve;
+    });
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = parsedBody(init);
+      seen.push({ url: target, method, body, headers: requestHeaders(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions") && method === "POST") {
+        sessions += 1;
+        if (sessions === 2) await renewalGate;
+        return jsonData({ id: `sess-${String(sessions)}` });
+      }
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        const sessionId = (body as { sessionId?: string } | null)?.sessionId ?? "";
+        if (sessionId === "sess-1") {
+          return new Response(
+            JSON.stringify({ error: { code: "SESSION_NOT_FOUND", message: "Session not found." } }),
+            { status: 404, headers: { "content-type": "application/json" } },
+          );
+        }
+        // Must never be reached: the renewed POST is not dispatched after cancel.
+        return jsonData({ run: storedRun("running", snapshot), lastSeq: -1, replayed: false });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        return sseResponse(sseFrame(envelope(0, { type: "terminal", status: "cancelled" })));
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    const { user } = renderCoach(history, { fetchImpl, seen });
+    await screen.findByTestId("coach-history-count");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    // First POST was definitively rejected (SESSION_NOT_FOUND); renewal is gated.
+    await waitFor(() => expect(sessions).toBe(2));
+    await user.click(await screen.findByRole("button", { name: /^cancel$/i }));
+    releaseRenewal();
+
+    // Cancelled honestly: the renewed POST is never dispatched.
+    expect(await screen.findByTestId("coach-cancelled")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sessions).toBe(2);
+    expect(seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST")).toHaveLength(1);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(0);
   });
 });

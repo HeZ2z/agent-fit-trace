@@ -1,17 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalysisResult } from "@pi-fit-trace/core";
 import { ApiError, NetworkError } from "@pi-fit-trace/api-contracts";
 import type {
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingTerminalStatus,
+  SubmitCoachingRunResult,
 } from "@pi-fit-trace/api-contracts";
 import { CoachingClient } from "../api/coachingClient.ts";
+import { isCoachingEnabled } from "../api/runtimeMode.ts";
 import { useAuth } from "../auth/AuthContext.tsx";
-import {
-  clearCoachLogoutCleanup,
-  retainCoachLogoutCleanup,
-} from "./coachLogoutRegistry.ts";
 
 /**
  * Item 4: persisted resume holds ONLY versioned, account-bound IDs in
@@ -84,27 +82,18 @@ function isMissingRunError(error: unknown): boolean {
 }
 
 /**
- * Item 4: a stored resume whose session/run is gone or whose credentials
- * expired is a clean reset, never a hard error — the app was restarted or the
- * run aged out, and the user should simply see a fresh Coach form.
+ * A stored resume whose session/run is definitively gone is a clean reset,
+ * never a hard error — a network/auth failure cannot prove absence and must be
+ * retried instead (see the restore effect).
  */
-function isStaleResumeError(error: unknown): boolean {
-  if (isMissingRunError(error)) return true;
-  if (error instanceof ApiError) {
-    return (
-      error.code === "SESSION_EXPIRED" ||
-      error.code === "UNAUTHENTICATED" ||
-      error.code === "UNAUTHORIZED"
-    );
-  }
-  return false;
-}
-
 export type CoachPhase =
   | "idle"
   | "preparing"
+  | "restoring"
   | "streaming"
   | "cancelling"
+  | "disconnected"
+  | "expired"
   | "done"
   | "failed"
   | "cancelled"
@@ -177,15 +166,29 @@ function toFilter(input: CoachSubmitInput): { from?: string; to?: string } {
 }
 
 /**
- * Small lifecycle hook over the approved {@link CoachingClient} transport.
+ * Account-level coaching owner over the approved {@link CoachingClient}
+ * transport.
  *
- * Owns bootstrap/session/snapshot/run/subscribe sequencing, per-submission
- * idempotency keys, last-consumed resume positions, and account-switch
- * cleanup. Rendering stays in `CoachScreen`.
+ * One instance per account lives in `CoachingProvider` (mounted by `Layout`,
+ * which survives child-route changes): it keeps a single client/session/run
+ * across navigation, so repeated Coach↔History trips never re-bootstrap a
+ * capability or allocate a new server session. It owns bootstrap/session/
+ * snapshot/run/subscribe sequencing, per-submission idempotency keys,
+ * last-consumed resume positions, and account-switch/logout cleanup with the
+ * captured credentials. Rendering stays in `CoachScreen`, which only subscribes.
  */
-export function useCoach({ client: clientProp }: { client?: CoachingClient } = {}) {
-  const { getAccessToken, user } = useAuth();
+export function useCoachSession({ client: clientProp }: { client?: CoachingClient } = {}) {
+  const { status, getAccessToken, user } = useAuth();
   const accountId = user?.id ?? null;
+  // The owner must not touch coaching endpoints until the account is VERIFIED
+  // signed-in AND launcher coaching is actually enabled. An explicitly injected
+  // client (tests / embedding) is an explicit opt-in. During auth `loading` (a
+  // restored, unvalidated session) the provider stays inert and the persisted
+  // resume is left untouched; plain local/HTTP modes never restore a stale
+  // resume either.
+  const explicitClient = clientProp !== undefined;
+  const coachingActive = explicitClient || isCoachingEnabled();
+  const canOperate = coachingActive && status === "signed-in" && accountId !== null;
   // Item 3: the default client is bound to the account identity that created
   // it. After a switch the old instance's token accessor returns null so B's
   // bearer can never leak into A's cleanup (or vice versa); cleanup uses the
@@ -215,8 +218,8 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
   const [runError, setRunError] = useState<{ code: string; message: string } | null>(null);
   const [terminal, setTerminal] = useState<CoachingTerminalStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [canReconnect, setCanReconnect] = useState(false);
-  const [canReloadFromStart, setCanReloadFromStart] = useState(false);
+  // Expired-cursor retention start for reloadFromStart; the reconnect/reload/
+  // cancel capabilities are DERIVED from the single phase, not duplicated state.
   const [expiredFirstSeq, setExpiredFirstSeq] = useState(0);
   // Item 3: the account whose fold is currently on screen. When `accountId`
   // changes, the visible fold is reset during render (below) so the previous
@@ -258,17 +261,28 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
   });
   // Item 4 restore runs once per account identity per mount.
   const restoreAttemptedRef = useRef<string | null | undefined>(undefined);
-  // Retained, account-bound server-cleanup credentials. The Coach can unmount
-  // (ordinary navigation) with its run still live server-side, so the
-  // shell-owned registry must be able to cancel/logout at a LATER sign-out with
-  // this account's captured credentials. Kept current while this account is on
-  // screen; only ever holds the current account's data; reset on a switch.
+  // Account identity whose restore already reached a verdict (verified run or
+  // definitive reset). Survives the StrictMode attempt-guard reset so a
+  // transient same-account re-run never re-reads and re-folds an established run.
+  const restoreCompletedRef = useRef<string | null>(null);
+  // Retained, account-bound server-cleanup credentials. The owner survives an
+  // ordinary navigation with its run still live server-side, so a LATER
+  // sign-out must be able to cancel/logout with this account's captured
+  // credentials. Kept current while this account is on screen; only ever holds
+  // the current account's data; reset on a switch.
   const retainedLogoutRef = useRef<{
     accountId: string | null;
     runId: string | null;
     capability: string | null;
     accessToken: string | null;
   }>({ accountId: null, runId: null, capability: null, accessToken: null });
+  // The in-flight restore's account-bound record, kept ONLY so an ambiguous
+  // restore failure can be re-verified on an explicit retry without inventing
+  // state. Cleared as soon as the run is verified (or definitively reset).
+  const restoreRecordRef = useRef<CoachResumeRecord | null>(null);
+  // True while a subscription is attached and has not settled: a cancel that
+  // succeeds after a transport failure re-opens the tail only when it is false.
+  const streamLiveRef = useRef(false);
 
   // Item 3: capture the live bearer while this account is current so an
   // account switch can replay the OLD account's credentials for cleanup and
@@ -303,8 +317,6 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     setRunError(null);
     setTerminal(null);
     setError(null);
-    setCanReconnect(false);
-    setCanReloadFromStart(false);
   }, []);
 
   // Item 3: when the account identity changes, reset the visible fold during
@@ -402,8 +414,10 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
         (envelope) => foldEvent(gen, attempt, runId, envelope),
       );
       subscriptionRef.current = subscription;
+      streamLiveRef.current = true;
       void subscription.done.then(
         (result) => {
+          if (attemptRef.current === attempt) streamLiveRef.current = false;
           if (generationRef.current !== gen) return;
           if (attemptRef.current !== attempt) return;
           if (runIdRef.current !== runId) return;
@@ -421,13 +435,14 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
             return;
           }
           // A non-aborted settle without a terminal envelope cannot happen
-          // (the transport rejects it); guard anyway.
+          // (the transport rejects it); treat it as a disconnect and keep the
+          // run/resume so reconnect or cancel stays possible.
           setError("The coach stream ended without a terminal event. Reconnect to resume.");
-          setCanReconnect(true);
           lastConsumedRef.current = result.lastConsumed;
-          beginPhase("failed");
+          beginPhase("disconnected");
         },
         (streamError: unknown) => {
+          if (attemptRef.current === attempt) streamLiveRef.current = false;
           if (generationRef.current !== gen) return;
           if (attemptRef.current !== attempt) return;
           if (runIdRef.current !== runId) return;
@@ -439,28 +454,58 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
                 ? details.firstSeq
                 : 0;
             setExpiredFirstSeq(firstSeq);
-            setCanReloadFromStart(true);
             setError(friendlyCoachError(streamError));
-            beginPhase("failed");
+            beginPhase("expired");
             return;
           }
-          if (streamError instanceof NetworkError) {
-            // Disconnect before terminal: keep the folded text and offer an
-            // explicit resume from last consumed + 1 (never a silent skip).
-            // lastConsumed advanced per folded envelope, so reconnect never
-            // replays delivered frames (item 1).
-            setError(friendlyCoachError(streamError));
-            setCanReconnect(true);
-            beginPhase("failed");
-            return;
-          }
+          // Any nonterminal stream failure is a disconnect: no terminal
+          // envelope arrived (a real run failure IS a terminal ENVELOPE folded
+          // into `terminatedRef`, handled above), so the run is still live
+          // server-side. That covers a transport NetworkError (EOF before the
+          // terminal, an interrupted read) and parser/API failures (a
+          // malformed or oversized frame, a bad content-type, any
+          // non-`EXPIRED_CURSOR` API error). Keep the folded text, the run id,
+          // and the persisted resume, and offer reconnect/cancel — never
+          // freeze the transcript into a terminal `failed` that would strand
+          // the run without a recover action.
           setError(friendlyCoachError(streamError));
-          beginPhase("failed");
+          beginPhase("disconnected");
         },
       );
     },
     [beginPhase, client, foldEvent],
   );
+
+  /**
+   * Central derived capability: any KNOWN nonterminal server run — or a
+   * pre-run operation — blocks a fresh submit / new analysis. The phase label
+   * alone is NOT enough: an EXPIRED_CURSOR or a generic stream failure still
+   * leaves a live run server-side that must never be silently abandoned.
+   */
+  const blocksFreshRun = useCallback((): boolean => {
+    if (runIdRef.current !== null && !terminatedRef.current) return true;
+    const current = phaseRef.current;
+    return (
+      current === "preparing" ||
+      current === "restoring" ||
+      current === "streaming" ||
+      current === "cancelling" ||
+      current === "disconnected" ||
+      current === "expired" ||
+      current === "unconfirmed"
+    );
+  }, []);
+
+  /**
+   * Central derived cancel capability: a known active run, or a pre-run
+   * operation that may yet create one. A recoverable restore failure with no
+   * verified run is NOT cancellable — it is retried instead.
+   */
+  const canCancelNow = useCallback((): boolean => {
+    if (runIdRef.current !== null && !terminatedRef.current) return true;
+    const current = phaseRef.current;
+    return current === "preparing" || current === "restoring" || current === "cancelling";
+  }, []);
 
   const submit = useCallback(
     async (input: CoachSubmitInput): Promise<void> => {
@@ -470,15 +515,10 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
         return;
       }
       // Synchronous duplicate guard: a second tap before re-render sees the
-      // in-flight phase immediately (item 5). An unconfirmed cancellation also
-      // blocks a fresh submit — it must be resolved with the same key.
-      if (
-        phaseRef.current === "preparing" ||
-        phaseRef.current === "streaming" ||
-        phaseRef.current === "cancelling" ||
-        phaseRef.current === "unconfirmed"
-      )
-        return;
+      // in-flight phase immediately. Any known live run (including an expired
+      // cursor or a failed tail) and an unconfirmed cancellation also block a
+      // fresh submit — the active run must be resolved first.
+      if (blocksFreshRun()) return;
       const gen = ++generationRef.current;
       beginPhase("preparing");
       cancelRequestedRef.current = false;
@@ -488,6 +528,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
       terminatedRef.current = false;
       lastConsumedRef.current = -1;
       pendingRetryRef.current = null;
+      restoreRecordRef.current = null;
       runIdRef.current = null;
       // Item 4: a fresh submit supersedes any persisted resume until the new
       // run is established below.
@@ -537,12 +578,44 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
         pendingRetryRef.current = { prompt: question, filter, idempotencyKey, snapshotHandle: handle };
         postDispatched = true;
         postInflightRef.current = true;
-        const submitted = await client.submitRun({
-          sessionId,
-          prompt: question,
-          idempotencyKey,
-          snapshot: handle,
-        });
+        let submitted: SubmitCoachingRunResult;
+        try {
+          submitted = await client.submitRun({
+            sessionId,
+            prompt: question,
+            idempotencyKey,
+            snapshot: handle,
+          });
+        } catch (caught) {
+          // An idle sessions is deleted server-side after its retention TTL. A
+          // definite SESSION_NOT_FOUND means NO run was created, so renew the
+          // session ONCE and re-send the SAME key. An ambiguous network failure
+          // is NOT renewed here — the caller's ambiguity path owns that and
+          // must never silently re-POST an unknown write.
+          if (!(caught instanceof ApiError && caught.code === "SESSION_NOT_FOUND")) throw caught;
+          const renewed = await client.createSession();
+          if (generationRef.current !== gen) return;
+          if (cancelRequestedRef.current) {
+            // A cancel landed during the awaited renewal. The FIRST POST was
+            // definitively rejected (SESSION_NOT_FOUND) before creating any
+            // run, so nothing exists server-side to cancel or stream: resolve
+            // cancelled honestly and never dispatch the renewed POST.
+            postInflightRef.current = false;
+            postDispatched = false;
+            pendingRetryRef.current = null;
+            clearStoredCoachResume();
+            beginPhase("cancelled");
+            return;
+          }
+          sessionId = renewed.id;
+          sessionIdRef.current = sessionId;
+          submitted = await client.submitRun({
+            sessionId,
+            prompt: question,
+            idempotencyKey,
+            snapshot: handle,
+          });
+        }
         postInflightRef.current = false;
         postDispatched = false;
         if (generationRef.current !== gen) return;
@@ -607,7 +680,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
         beginPhase("failed");
       }
     },
-    [attachStream, beginPhase, clearFold, client, persistResume],
+    [attachStream, beginPhase, blocksFreshRun, clearFold, client, persistResume],
   );
 
   /** Explicit retry of an AMBIGUOUS submit with the SAME key/snapshot (no implicit replay). */
@@ -645,8 +718,6 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     setRunError(null);
     setTerminal(null);
     setError(null);
-    setCanReconnect(false);
-    setCanReloadFromStart(false);
     try {
       if (!client.isBootstrapped) await client.bootstrap();
       if (generationRef.current !== gen) return;
@@ -710,22 +781,20 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
   const reconnect = useCallback((): void => {
     const sessionId = sessionIdRef.current;
     const runId = runIdRef.current;
+    if (phaseRef.current !== "disconnected") return;
     if (sessionId === null || runId === null || terminatedRef.current) return;
-    if (phaseRef.current === "preparing" || phaseRef.current === "streaming" || phaseRef.current === "cancelling")
-      return;
     const gen = generationRef.current;
     beginPhase("streaming");
     setError(null);
-    setCanReconnect(false);
     // Refresh an expired capability without repeating the run POST (item 5).
     void (async (): Promise<void> => {
       try {
         if (!client.isBootstrapped) await client.bootstrap();
       } catch (caught) {
         if (generationRef.current !== gen) return;
+        // Still disconnected: reconnect stays offered, never a resubmit.
         setError(friendlyCoachError(caught));
-        beginPhase("failed");
-        setCanReconnect(true);
+        beginPhase("disconnected");
         return;
       }
       if (generationRef.current !== gen || terminatedRef.current) return;
@@ -737,9 +806,8 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
   const reloadFromStart = useCallback((): void => {
     const sessionId = sessionIdRef.current;
     const runId = runIdRef.current;
+    if (phaseRef.current !== "expired") return;
     if (sessionId === null || runId === null || terminatedRef.current) return;
-    if (phaseRef.current === "preparing" || phaseRef.current === "streaming" || phaseRef.current === "cancelling")
-      return;
     const gen = generationRef.current;
     const fromSeq = expiredFirstSeq;
     lastConsumedRef.current = fromSeq - 1;
@@ -749,7 +817,6 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     setRunError(null);
     setTerminal(null);
     setError(null);
-    setCanReloadFromStart(false);
     beginPhase("streaming");
     void (async (): Promise<void> => {
       try {
@@ -757,8 +824,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
       } catch (caught) {
         if (generationRef.current !== gen) return;
         setError(friendlyCoachError(caught));
-        beginPhase("failed");
-        setCanReloadFromStart(true);
+        beginPhase("expired");
         return;
       }
       if (generationRef.current !== gen || terminatedRef.current) return;
@@ -768,7 +834,10 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
 
   const cancel = useCallback(async (): Promise<void> => {
     const current = phaseRef.current;
-    if (current !== "preparing" && current !== "streaming" && current !== "cancelling") return;
+    // Centralized cancellability: a known active run in ANY phase, or a
+    // pre-run operation. A recoverable restore failure with no verified run is
+    // not cancellable (it is retried), so it never claims a false cancelled.
+    if (!canCancelNow()) return;
     // Synchronous duplicate guard: concurrent cancel taps share one server
     // attempt until it fails and releases the inflight flag (item 5).
     if (cancelInflightRef.current) return;
@@ -780,6 +849,13 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     cancelRequestedRef.current = true;
     // A terminal that already won the race keeps its verdict.
     if (runId === null) {
+      if (current === "restoring") {
+        // A restore is verifying a KNOWN run: keep the cancel intent and let
+        // the restore continuation cancel the ACTUAL run once ownership is
+        // verified — never a local cancelled that later resumes the stream.
+        beginPhase("cancelling");
+        return;
+      }
       if (postInflightRef.current) {
         // The submit POST is out but unresolved: the server may already have
         // accepted the run, so do NOT claim cancelled. Stay cancelling; the
@@ -792,11 +868,10 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
       // exist yet, so resolving locally to cancelled is honest.
       beginPhase("cancelling");
       beginPhase("cancelled");
-      setCanReconnect(false);
       return;
     }
+    const resumeFrom = current === "expired" ? expiredFirstSeq : lastConsumedRef.current + 1;
     beginPhase("cancelling");
-    setCanReconnect(false);
     cancelInflightRef.current = true;
     try {
       if (!client.isBootstrapped) await client.bootstrap();
@@ -812,23 +887,23 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     }
     cancelInflightRef.current = false;
     if (terminatedRef.current) return;
-    // Keep the subscription attached until the server terminal confirms the
-    // cancellation — do not freeze the transcript early (item 2).
-  }, [beginPhase, client]);
+    if (!streamLiveRef.current) {
+      // No live tail (disconnect/expired/failed): re-open from the resume
+      // position so the server terminal that confirms the cancellation is
+      // observed. A live streaming tail is kept and simply folds the terminal.
+      const sessionId = sessionIdRef.current;
+      if (sessionId !== null) attachStream(generationRef.current, sessionId, runId, resumeFrom);
+    }
+    // Otherwise keep the subscription attached until the server terminal
+    // confirms the cancellation — do not freeze the transcript early (item 2).
+  }, [attachStream, beginPhase, canCancelNow, client, expiredFirstSeq]);
 
   /** Start over with a fresh question (the session is reused; the key is not). */
   const newAnalysis = useCallback((): void => {
-    // Never abandon a running or unconfirmed run (item 2/5): only terminal
-    // phases may reset. Checked synchronously so a double tap during a
-    // stream cannot drop the transcript.
-    const current = phaseRef.current;
-    if (
-      current === "preparing" ||
-      current === "streaming" ||
-      current === "cancelling" ||
-      current === "unconfirmed"
-    )
-      return;
+    // Never abandon a running, unconfirmed, or known nonterminal run (item 2/5):
+    // only a terminal or idle state may reset. Checked synchronously so a double
+    // tap during a stream cannot drop the transcript.
+    if (blocksFreshRun()) return;
     generationRef.current += 1;
     attemptRef.current += 1;
     cancelRequestedRef.current = false;
@@ -839,6 +914,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     terminatedRef.current = false;
     lastConsumedRef.current = -1;
     pendingRetryRef.current = null;
+    restoreRecordRef.current = null;
     runIdRef.current = null;
     clearStoredCoachResume();
     try {
@@ -850,7 +926,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     }
     clearFold();
     beginPhase("idle");
-  }, [beginPhase, clearFold]);
+  }, [beginPhase, blocksFreshRun, clearFold]);
 
   // Account switch / logout: abort the subscription, cancel the own active
   // run, forget credentials, and clear session/results/drafts + resume ids.
@@ -892,8 +968,12 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     sessionIdRef.current = null;
     lastConsumedRef.current = -1;
     pendingRetryRef.current = null;
+    restoreRecordRef.current = null;
     // The old account's resume ids must never restore under the new account.
-    clearStoredCoachResume();
+    // A null -> A transition (sign-in) is not a switch away from a known
+    // account, so a same-account resume is left for the restore effect; the
+    // account change on logout or A -> B clears it.
+    if (previousAccountId !== null) clearStoredCoachResume();
     // Item 3: capture A's capability, then discard it SYNCHRONOUSLY so a stale
     // capability (or an in-flight A bootstrap) can never be reused, and only
     // then fire the server cleanup with A's explicit credentials. Skipped when
@@ -913,8 +993,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
         .catch(() => undefined);
     }
     // The retained teardown belonged to A: its server cleanup already ran
-    // above, so drop the registry entry and reset the snapshot for B.
-    clearCoachLogoutCleanup();
+    // above, so reset the snapshot for B.
     retainedLogoutRef.current = { accountId, runId: null, capability: null, accessToken: null };
     // Adopt the new identity's client + live bearer for the next switch.
     prevClientRef.current = client;
@@ -937,10 +1016,9 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     if (token !== null) retained.accessToken = token;
   });
 
-  // Server teardown with the RETAINED credentials only: this runs even after
-  // the Coach unmounted (ordinary navigation keeps the run alive), and never
-  // reads a live bearer/getAccessToken — so a switched-in account's token can
-  // never be replayed for the old account. No React state is touched.
+  // Server teardown with the RETAINED credentials only: it never reads a live
+  // bearer/getAccessToken, so a switched-in account's token can never be
+  // replayed for the old account. No React state is touched.
   const runRetainedCoachCleanup = useCallback((): void => {
     const { capability, accessToken, runId } = retainedLogoutRef.current;
     if (capability === null) return;
@@ -953,14 +1031,15 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     void activeClient.logout({ capability, accessToken }).catch(() => undefined);
   }, []);
 
-  // Registered logout teardown: the Layout runs it BEFORE `signOutSession`,
-  // while the old session is still live, so the server-side cancel + logout
-  // carry the OLD account's credentials (the request is dispatched
-  // synchronously, before the auth sign-out). It also runs after an ordinary
-  // navigation unmounted the Coach — hence the retained credentials above and
-  // the deliberate absence of React state updates. Needs a live capability —
-  // without one there is nothing server-side to tear down.
-  const logoutCleanup = useCallback((): void => {
+  // Sign-out teardown: `Layout` runs it BEFORE `signOutSession`, while the old
+  // session is still live, so the server-side cancel + logout carry the OLD
+  // account's credentials (dispatched synchronously, before the auth sign-out).
+  // It also runs after an ordinary navigation unmounted the Coach — the owner
+  // itself survives navigation, and the retained credentials cover the case
+  // where the run outlived the last render. Idempotent: once the retained
+  // capability is dropped, the account-change effect below skips a second
+  // server teardown.
+  const teardown = useCallback((): void => {
     generationRef.current += 1;
     attemptRef.current += 1;
     cancelRequestedRef.current = false;
@@ -979,6 +1058,7 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     sessionIdRef.current = null;
     lastConsumedRef.current = -1;
     pendingRetryRef.current = null;
+    restoreRecordRef.current = null;
     // The account's resume ids must not restore a run after logout.
     clearStoredCoachResume();
     // Forget the live capability synchronously, then fire the server teardown
@@ -988,44 +1068,21 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     runRetainedCoachCleanup();
   }, [runRetainedCoachCleanup]);
 
-  useEffect(() => {
-    retainCoachLogoutCleanup({ accountId, run: logoutCleanup });
-  }, [accountId, logoutCleanup]);
-
-  // Item 4: restore a persisted run once per account identity. Only versioned,
-  // account-bound ids are stored; the transcript is reconstructed by reading
-  // the session/run and replaying the events from seq 0 — never by POSTing a
-  // fresh run. A stale (404) or expired store resets cleanly to idle.
-  useEffect(() => {
-    if (accountRef.current !== accountId) return;
-    if (restoreAttemptedRef.current === accountId) return;
-    restoreAttemptedRef.current = accountId;
-    const record = readStoredCoachResume();
-    if (record === null) return;
-    if (record.accountId !== accountId) {
-      clearStoredCoachResume();
-      return;
-    }
-    const gen = ++generationRef.current;
-    attemptRef.current += 1;
-    terminatedRef.current = false;
-    cancelRequestedRef.current = false;
-    lastConsumedRef.current = -1;
-    runIdRef.current = null;
-    sessionIdRef.current = null;
-    beginPhase("preparing");
-    let cancelled = false;
-    void (async (): Promise<void> => {
+  /**
+   * Verify a persisted resume server-side, then replay it (or, if a cancel was
+   * recorded meanwhile, cancel the ACTUAL verified run). Ownership is verified
+   * the server-side: a cross-account read is a 404, never returned, so no
+   * client-side account check is trusted here.
+   */
+  const runRestore = useCallback(
+    async (gen: number, record: CoachResumeRecord): Promise<void> => {
       try {
         if (!client.isBootstrapped) await client.bootstrap();
-        if (cancelled || generationRef.current !== gen) return;
-        // Ownership is verified server-side: a cross-account session read is
-        // SESSION_NOT_FOUND (never returned). The public session contract is
-        // id-only, so no client-side accountId check exists here.
+        if (generationRef.current !== gen) return;
         const session = await client.readSession(record.sessionId);
-        if (cancelled || generationRef.current !== gen) return;
+        if (generationRef.current !== gen) return;
         const read = await client.readRun(record.runId);
-        if (cancelled || generationRef.current !== gen) return;
+        if (generationRef.current !== gen) return;
         if (read.run.sessionId !== session.id) {
           throw new ApiError({
             code: "RUN_NOT_FOUND",
@@ -1040,38 +1097,134 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
             message: "Stored coaching run belongs to another account.",
           });
         }
+        // Ownership verified: the run is real and ours, so a later failure is
+        // a reconnect (never an ambiguous restore).
+        restoreRecordRef.current = null;
+        restoreCompletedRef.current = accountId;
         sessionIdRef.current = session.id;
         runIdRef.current = read.run.id;
         // Restore the source/scope metadata the refreshed result came from.
         setSnapshot(read.run.snapshot);
+        if (cancelRequestedRef.current) {
+          // A cancel recorded while bootstrap/session/read were in flight: the
+          // run is now verified, so cancel the ACTUAL run and await its
+          // terminal on the stream — never a local "cancelled" that later
+          // resumes the restored run.
+          beginPhase("cancelling");
+          try {
+            await client.cancelRun(read.run.id);
+          } catch (caught) {
+            if (generationRef.current !== gen) return;
+            setError(friendlyCoachError(caught));
+          }
+          if (generationRef.current !== gen) return;
+          attachStream(gen, session.id, read.run.id, 0);
+          return;
+        }
         beginPhase("streaming");
         attachStream(gen, session.id, read.run.id, 0);
       } catch (caught) {
-        if (cancelled || generationRef.current !== gen) return;
-        // Never leave a broken resume behind: clear and reset to idle. A
-        // network/auth failure is surfaced honestly; a missing/expired run is
-        // a clean reset (the store was restarted or the run aged out).
-        clearStoredCoachResume();
-        sessionIdRef.current = null;
-        runIdRef.current = null;
-        lastConsumedRef.current = -1;
-        beginPhase("idle");
-        if (!isStaleResumeError(caught)) setError(friendlyCoachError(caught));
+        if (generationRef.current !== gen) return;
+        if (isMissingRunError(caught)) {
+          // DEFINITIVE: the stored session/run does not exist for this account
+          // (gone, or owned by another identity). Only this may reset — and a
+          // cancel with no verifiable run is honestly cancelled.
+          clearStoredCoachResume();
+          restoreRecordRef.current = null;
+          restoreCompletedRef.current = accountId;
+          sessionIdRef.current = null;
+          runIdRef.current = null;
+          lastConsumedRef.current = -1;
+          const wasCancelling = cancelRequestedRef.current;
+          cancelRequestedRef.current = false;
+          beginPhase(wasCancelling ? "cancelled" : "idle");
+          return;
+        }
+        // AMBIGUOUS (network/auth): cannot prove the run is absent or
+        // terminated. Keep the account-bound resume AND any cancel intent and
+        // surface a recoverable state with an explicit retry — never a false
+        // cancelled and never a reset.
+        setError(friendlyCoachError(caught));
+        beginPhase("disconnected");
       }
-    })();
+    },
+    [accountId, attachStream, beginPhase, client],
+  );
+
+  /** Begin a restore attempt for `record` under a fresh generation. */
+  const startRestore = useCallback(
+    (record: CoachResumeRecord): void => {
+      const gen = ++generationRef.current;
+      attemptRef.current += 1;
+      streamLiveRef.current = false;
+      terminatedRef.current = false;
+      lastConsumedRef.current = -1;
+      runIdRef.current = null;
+      sessionIdRef.current = null;
+      restoreRecordRef.current = record;
+      setError(null);
+      beginPhase("restoring");
+      void runRestore(gen, record);
+    },
+    [beginPhase, runRestore],
+  );
+
+  /**
+   * Retry an AMBIGUOUS restore failure. The account-bound resume is still
+   * stored, so this re-verifies the SAME run and carries the preserved cancel
+   * intent through — it never POSTs a fresh run.
+   */
+  const retryRestore = useCallback((): void => {
+    if (phaseRef.current !== "disconnected") return;
+    if (runIdRef.current !== null && !terminatedRef.current) return;
+    const record = restoreRecordRef.current;
+    if (record === null) return;
+    if (record.accountId !== accountId) {
+      clearStoredCoachResume();
+      restoreRecordRef.current = null;
+      return;
+    }
+    startRestore(record);
+  }, [accountId, startRestore]);
+
+  // Item 4: restore a persisted run once the account is VERIFIED signed-in and
+  // coaching is enabled. Only versioned, account-bound ids are stored; the
+  // transcript is reconstructed by reading the session/run and replaying the
+  // events — never by POSTing a fresh run. The persisted resume is NOT read or
+  // cleared while the account is unverified (auth `loading`) or coaching is
+  // disabled, so a restored signed-in user never loses their run before
+  // validation completes. A stale (404) or foreign resume resets cleanly; an
+  // ambiguous failure keeps the resume for an explicit retry.
+  useEffect(() => {
+    if (!canOperate) return;
+    if (accountRef.current !== accountId) return;
+    if (restoreCompletedRef.current === accountId) return;
+    if (restoreAttemptedRef.current === accountId) return;
+    const record = readStoredCoachResume();
+    if (record === null) return;
+    restoreAttemptedRef.current = accountId;
+    if (record.accountId !== accountId) {
+      clearStoredCoachResume();
+      restoreCompletedRef.current = accountId;
+      return;
+    }
+    // Fresh attempt: a stale cancel intent from a previous identity must not
+    // leak into this restore.
+    cancelRequestedRef.current = false;
+    startRestore(record);
     return () => {
-      cancelled = true;
       // Allow a StrictMode remount (or a genuine account change) to retry the
-      // once-per-identity restore instead of being blocked by the reset guard.
+      // once-per-identity restore instead of being blocked by the guard. The
+      // first attempt is invalidated by the unmount effect's generation bump.
       if (restoreAttemptedRef.current === accountId) restoreAttemptedRef.current = undefined;
     };
-  }, [accountId, attachStream, beginPhase, client]);
+  }, [accountId, canOperate, startRestore]);
 
   // Unmount (ordinary navigation, refresh, or logout) detaches the stream,
   // bumps the generation/attempt so every pending bootstrap/restore/submit
   // callback is rejected, and forgets the in-memory capability. The persisted
-  // resume ids, the server-side run, AND the shell-owned logout teardown are
-  // deliberately KEPT so a return or refresh restores progress, and a later
+  // resume ids, the server-side run, AND the owner's retained logout teardown
+  // are deliberately KEPT so a return or refresh restores progress, and a later
   // sign-out can still cancel/logout with the retained account credentials —
   // an ordinary navigation never logs out.
   useEffect(
@@ -1095,9 +1248,20 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     [],
   );
 
+  const hasActiveRun = runIdRef.current !== null && !terminatedRef.current;
   return {
     phase,
-    isRunning: phase === "preparing" || phase === "streaming" || phase === "cancelling",
+    // Every button capability is DERIVED from the single phase plus the live
+    // run, never a scattered duplicate boolean. A known nonterminal run keeps
+    // `isRunning` true in ANY phase (expired/disconnected included) so fresh
+    // work is blocked and cancel/reconnect stay offered.
+    isRunning:
+      hasActiveRun ||
+      phase === "preparing" ||
+      phase === "restoring" ||
+      phase === "streaming" ||
+      phase === "cancelling" ||
+      phase === "disconnected",
     snapshot,
     text,
     tools,
@@ -1105,8 +1269,18 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     runError,
     terminal,
     error,
-    canReconnect,
-    canReloadFromStart,
+    canReconnect: phase === "disconnected" && hasActiveRun,
+    canReloadFromStart: phase === "expired" && hasActiveRun,
+    // A recoverable (ambiguous) restore failure keeps the resume and is retried
+    // explicitly; it is never locally cancelled.
+    canRetryRestore:
+      phase === "disconnected" && restoreRecordRef.current !== null && runIdRef.current === null,
+    // Cancellable: a known active run in any phase, or a pre-run operation.
+    canCancel:
+      hasActiveRun ||
+      phase === "preparing" ||
+      phase === "restoring" ||
+      phase === "cancelling",
     // Ambiguous-submit retry only: a run that reached the stream must
     // reconnect (or reload from retention), never resubmit (item 5). Never
     // offered after cancellation — the run is resolved, not ambiguous.
@@ -1115,11 +1289,24 @@ export function useCoach({ client: clientProp }: { client?: CoachingClient } = {
     hasRun: runIdRef.current !== null,
     submit,
     retrySubmit,
+    retryRestore,
     reconnect,
     reloadFromStart,
     cancel,
     newAnalysis,
+    teardown,
   };
 }
 
-export type UseCoachResult = ReturnType<typeof useCoach>;
+export type UseCoachResult = ReturnType<typeof useCoachSession>;
+
+export const CoachingContext = createContext<UseCoachResult | null>(null);
+
+/** Subscribe to the account-level coaching owner; throws outside a provider. */
+export function useCoach(): UseCoachResult {
+  const value = useContext(CoachingContext);
+  if (value === null) {
+    throw new Error("useCoach must be used within a <CoachingProvider>.");
+  }
+  return value;
+}

@@ -114,6 +114,77 @@ the reserved headroom. Both sides size frames with the same
 `encodeCoachingEventFrame`/`coachingEventFrameBytes` helper, so the framing +
 size rule lives in one place.
 
+## App client lifecycle (single account-level owner)
+
+The Coach UI is backed by ONE account-level owner
+(`app/src/coaching/useCoach.ts`, published through `CoachingProvider` and
+subscribed via `useCoach()`), not by the screen. `Layout` mounts the owner, so
+Coach↔History↔Coach navigation never unmounts it: one client, one session, and
+one run survive route changes, and a fresh submit REUSES the existing session
+instead of allocating a new one (otherwise navigation alone would exhaust the
+per-account session cap). Bootstrap/session/snapshot/run/subscribe sequencing,
+per-submission idempotency keys, last-consumed resume positions, and
+account-switch/logout cleanup all live in the owner; `CoachScreen` only renders.
+
+The owner is **auth/launcher gated**: every bootstrap, session, snapshot, run,
+and restore side effect runs only once the account is a *verified* signed-in
+user AND launcher coaching is enabled (`isCoachingEnabled()`, i.e. the launcher
+served the app on its loopback origin). During auth `loading` (a restored but
+unvalidated session) and in plain local/HTTP modes the owner stays inert and
+never reads or clears the persisted resume. An explicitly injected client
+(tests/embedding) is an explicit opt-in. The resume is stored versioned and
+account-bound in `sessionStorage` (`fit-trace.coach.resume.v1`, ids only — never
+tokens, transcripts, or native paths), and a stored resume for another account
+is ignored and cleared.
+
+### Stream phases and reconnect
+
+Phases are `idle` / `preparing` / `restoring` / `streaming` / `cancelling` /
+`disconnected` / `expired` / `done` / `failed` / `cancelled` / `unconfirmed`,
+and every button capability is DERIVED from the phase plus the known
+nonterminal run — never duplicated booleans. A known live run keeps fresh
+submits blocked and stays cancellable/reconnectable in ANY phase, so no run is
+silently abandoned.
+
+A stream failure that arrives BEFORE the terminal envelope is a **disconnect**,
+never a terminal: EOF before the terminal, an interrupted read, a
+malformed/unparsable frame, a bad content type, and an oversized body all keep
+the folded output, the run id, and the persisted resume, and offer
+Reconnect/Cancel (detaching or aborting the stream never cancels the run
+server-side). The one exception is `EXPIRED_CURSOR` (410), which is the distinct
+`expired` phase carrying the retention start in its details so the client
+refetches from `firstSeq` and re-folds without skipping. A confirmed server
+terminal (success or failure) is delivered as a terminal ENVELOPE and freezes
+the fold.
+
+Reconnect re-bootstraps an expired capability (without repeating the run POST)
+and resumes from `last-consumed + 1`; `EXPIRED_CURSOR` reloads from the
+retention start. Neither ever resubmits.
+
+### Restore and cancel carry-through
+
+A reload re-verifies the persisted session/run (`GET` session + run) and replays
+events from `0` without a POST. A cancel requested while a restore is still
+verifying bootstrap/session/read is carried to the ACTUAL restored run once
+ownership is verified — a real server cancel plus its terminal — never a local
+"cancelled" that later resumes the stream. Only a DEFINITIVE missing/ownership
+failure (`404` / `SESSION_NOT_FOUND` / `RUN_NOT_FOUND`) resets the resume; an
+ambiguous network/auth failure keeps the resume and the cancel intent and
+offers an explicit Retry restore. A read that proves no run exists still
+resolves to cancelled honestly.
+
+### Bounded session renewal
+
+An idle session is deleted server-side after its retention TTL. A new submit
+that gets a DEFINITE `SESSION_NOT_FOUND` recreates the session ONCE and re-sends
+the SAME `idempotencyKey` (the first POST was rejected before any run existed,
+so nothing was created). A cancel landing during that awaited renewal resolves
+cancelled honestly and never dispatches the renewed POST. An ambiguous network
+failure during any submit is never silently re-POSTed: the stable key is kept
+for an explicit user Retry, and a cancel that collides with an unresolved POST
+stays `unconfirmed` (resolved through the same key) rather than claiming a false
+cancellation.
+
 ## Capacity rule: `processExitConfirmed`
 
 Global capacity is one live run and one active run per session; the server
