@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, API_ERROR_CODES, MalformedResponseError } from "@pi-fit-trace/api-contracts";
+import {
+  ApiError,
+  API_ERROR_CODES,
+  MAX_COACHING_SSE_FRAME_BYTES,
+  MAX_COACHING_SSE_TOTAL_BYTES,
+  MalformedResponseError,
+  utf8ByteLength,
+} from "@pi-fit-trace/api-contracts";
 import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
 import { CoachingClient, COACHING_CAPABILITY_HEADER, parseSseEventsText } from "./coachingClient.ts";
 import type { CoachingAccessTokenProvider } from "./coachingClient.ts";
@@ -23,6 +30,44 @@ function envelope(seq: number, event: CoachingEventEnvelope["event"]): CoachingE
 
 function sseFrame(entry: CoachingEventEnvelope): string {
   return `id: ${entry.seq}\ndata: ${JSON.stringify(entry)}\n\n`;
+}
+
+/** A text_delta frame whose FULL wire bytes (block + `\n\n`) equal `totalBytes`. */
+function exactSizeFrame(totalBytes: number, seq = 0): string {
+  const encode = (delta: string): string =>
+    `id: ${seq}\ndata: ${JSON.stringify({
+      protocolVersion: 1,
+      sessionId: SESSION,
+      runId: RUN,
+      seq,
+      event: { type: "text_delta", delta },
+    })}\n\n`;
+  const overhead = utf8ByteLength(encode(""));
+  const frame = encode("x".repeat(totalBytes - overhead));
+  if (utf8ByteLength(frame) !== totalBytes) throw new Error("exact frame sizing failed");
+  return frame;
+}
+
+/**
+ * A text_delta frame whose FULL wire bytes equal `totalBytes`, filled with
+ * `unit` (a 2-byte character) so the body carries multibyte content.
+ */
+function exactSizeFrameUtf8(totalBytes: number, unit: string, seq = 0): string {
+  const encode = (delta: string): string =>
+    `id: ${seq}\ndata: ${JSON.stringify({
+      protocolVersion: 1,
+      sessionId: SESSION,
+      runId: RUN,
+      seq,
+      event: { type: "text_delta", delta },
+    })}\n\n`;
+  const overhead = utf8ByteLength(encode(""));
+  const unitBytes = utf8ByteLength(unit);
+  const count = Math.floor((totalBytes - overhead) / unitBytes);
+  const fill = totalBytes - overhead - count * unitBytes;
+  const frame = encode(unit.repeat(count) + "x".repeat(fill));
+  if (utf8ByteLength(frame) !== totalBytes) throw new Error("exact frame sizing failed");
+  return frame;
 }
 
 function snapshotHandle() {
@@ -555,11 +600,62 @@ describe("CoachingClient SSE transport fixes", () => {
 
     const seenBig: { url: string; init: RequestInit }[] = [];
     const big = await fixedClient(
-      sseFetchWith([new TextEncoder().encode(`data: ${"x".repeat(2 * 1024 * 1024)}\n\n`)], seenBig),
+      sseFetchWith([new TextEncoder().encode(`data: ${"x".repeat(MAX_COACHING_SSE_FRAME_BYTES + 1)}\n\n`)], seenBig),
     );
     await expect(big.subscribeRunEvents({ runId: RUN, sessionId: SESSION }, () => {}).done).rejects.toBeInstanceOf(
       MalformedResponseError,
     );
+  });
+
+  it("bounds frames against the shared full-frame budget at the exact boundary", async () => {
+    // Exactly at the budget: block + canonical delimiter == MAX → accepted.
+    // This is the alignment point: the client measures the SAME full frame the
+    // server writes, not the block alone.
+    {
+      const seen: { url: string; init: RequestInit }[] = [];
+      const wire = exactSizeFrame(MAX_COACHING_SSE_FRAME_BYTES) + sseFrame(envelope(1, { type: "terminal", status: "completed" }));
+      const client = await fixedClient(sseFetchWith([new TextEncoder().encode(wire)], seen));
+      const received: CoachingEventEnvelope[] = [];
+      const result = await client.subscribeRunEvents({ runId: RUN, sessionId: SESSION }, (e) => received.push(e)).done;
+      expect(result).toEqual({ aborted: false, lastConsumed: 1 });
+      expect(received.map((e) => e.seq)).toEqual([0, 1]);
+    }
+    // One byte over the budget rejects explicitly.
+    {
+      const seen: { url: string; init: RequestInit }[] = [];
+      const wire = exactSizeFrame(MAX_COACHING_SSE_FRAME_BYTES + 1) + sseFrame(envelope(1, { type: "terminal", status: "completed" }));
+      const client = await fixedClient(sseFetchWith([new TextEncoder().encode(wire)], seen));
+      const error = await client
+        .subscribeRunEvents({ runId: RUN, sessionId: SESSION }, () => {})
+        .done.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(MalformedResponseError);
+    }
+  });
+
+  it("rejects an SSE body over the shared total budget", async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    // A body larger than the whole-run total cap rejects before framing.
+    const body = new TextEncoder().encode("x".repeat(MAX_COACHING_SSE_TOTAL_BYTES + 1));
+    const client = await fixedClient(sseFetchWith([body], seen));
+    const error = await client
+      .subscribeRunEvents({ runId: RUN, sessionId: SESSION }, () => {})
+      .done.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(MalformedResponseError);
+    expect(String((error as Error).message)).toMatch(/body exceeds the size limit/);
+  });
+
+  it("frames many coalesced small frames in one buffer (cap is per frame)", async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    const parts: string[] = [];
+    for (let seq = 0; seq < 5; seq += 1) {
+      parts.push(sseFrame(envelope(seq, { type: "text_delta", delta: "y".repeat(1000) })));
+    }
+    parts.push(sseFrame(envelope(5, { type: "terminal", status: "completed" })));
+    const client = await fixedClient(sseFetchWith([new TextEncoder().encode(parts.join(""))], seen));
+    const received: CoachingEventEnvelope[] = [];
+    const result = await client.subscribeRunEvents({ runId: RUN, sessionId: SESSION }, (e) => received.push(e)).done;
+    expect(result).toEqual({ aborted: false, lastConsumed: 5 });
+    expect(received.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   it("sends redirect:error on JSON and SSE fetches", async () => {
@@ -603,6 +699,59 @@ describe("CoachingClient SSE transport fixes", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(received).toEqual([]);
     expect(sseSeen.length).toBe(0);
+  });
+
+  it("accepts an exact-limit frame split at every delimiter boundary (and rejects max+1)", async () => {
+    const terminal = sseFrame(envelope(1, { type: "terminal", status: "completed" }));
+    const bytes = new TextEncoder().encode(exactSizeFrame(MAX_COACHING_SSE_FRAME_BYTES) + terminal);
+    // The frame's trailing `\n\n` sits at [MAX-2, MAX). A split anywhere inside
+    // it leaves a pending buffer that already holds part of the delimiter, so
+    // the old unconditional `+2` falsely rejected these as oversized.
+    for (const splitAt of [
+      MAX_COACHING_SSE_FRAME_BYTES - 3,
+      MAX_COACHING_SSE_FRAME_BYTES - 2,
+      MAX_COACHING_SSE_FRAME_BYTES - 1,
+      MAX_COACHING_SSE_FRAME_BYTES,
+      MAX_COACHING_SSE_FRAME_BYTES + 1,
+    ]) {
+      const seen: { url: string; init: RequestInit }[] = [];
+      const client = await fixedClient(sseFetchWith([bytes.slice(0, splitAt), bytes.slice(splitAt)], seen));
+      const received: CoachingEventEnvelope[] = [];
+      const result = await client.subscribeRunEvents({ runId: RUN, sessionId: SESSION }, (e) => received.push(e)).done;
+      expect(result, `split at ${splitAt}`).toEqual({ aborted: false, lastConsumed: 1 });
+      expect(received.map((e) => e.seq)).toEqual([0, 1]);
+    }
+    // One byte over the limit still rejects explicitly.
+    {
+      const seen: { url: string; init: RequestInit }[] = [];
+      const over = new TextEncoder().encode(exactSizeFrame(MAX_COACHING_SSE_FRAME_BYTES + 1) + terminal);
+      const client = await fixedClient(
+        sseFetchWith([over.slice(0, MAX_COACHING_SSE_FRAME_BYTES), over.slice(MAX_COACHING_SSE_FRAME_BYTES)], seen),
+      );
+      const error = await client
+        .subscribeRunEvents({ runId: RUN, sessionId: SESSION }, () => {})
+        .done.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(MalformedResponseError);
+    }
+  });
+
+  it("keeps an exact-limit multibyte frame when split mid-codepoint and at the delimiter", async () => {
+    const terminal = sseFrame(envelope(1, { type: "terminal", status: "completed" }));
+    const bytes = new TextEncoder().encode(exactSizeFrameUtf8(MAX_COACHING_SSE_FRAME_BYTES, "é") + terminal);
+    const firstMulti = bytes.findIndex((byte) => byte > 127);
+    expect(firstMulti).toBeGreaterThan(0);
+    for (const splitAt of [
+      firstMulti + 1, // mid-codepoint
+      MAX_COACHING_SSE_FRAME_BYTES - 1, // inside the frame delimiter
+      bytes.length - 3, // inside the terminal frame's delimiter
+    ]) {
+      const seen: { url: string; init: RequestInit }[] = [];
+      const client = await fixedClient(sseFetchWith([bytes.slice(0, splitAt), bytes.slice(splitAt)], seen));
+      const received: CoachingEventEnvelope[] = [];
+      const result = await client.subscribeRunEvents({ runId: RUN, sessionId: SESSION }, (e) => received.push(e)).done;
+      expect(result, `split at ${splitAt}`).toEqual({ aborted: false, lastConsumed: 1 });
+      expect(received.map((e) => e.seq)).toEqual([0, 1]);
+    }
   });
 });
 

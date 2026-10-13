@@ -13,6 +13,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
@@ -250,6 +251,33 @@ function readSseEvents(text: string): { seq: number; envelope: { seq: number; ev
     out.push({ seq: Number(idLine.slice("id: ".length)), envelope });
   }
   return out;
+}
+
+/**
+ * Race a promise against a timeout, ALWAYS clearing the timer so a failing
+ * assertion cannot leak a pending handle or keep the test process alive.
+ */
+async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** A promise resolved when its `resolve` is invoked (deterministic gate). */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 test("unauthenticated requests are denied with 401 + WWW-Authenticate", async () => {
@@ -1282,10 +1310,10 @@ test("shutdown cleans snapshot tmpdirs and closes an open SSE stream", async () 
     const live = await fetch(`${base}/coaching/runs/${runId}/events?fromSeq=0`, { headers: creds });
     assert.equal(live.status, 200);
     // Bounded close: must settle promptly (no >10s hang) even with an open stream.
-    const closeResult = await Promise.race([
+    const closeResult = await settleWithin(
       server.close().then(() => "closed" as const, (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve("timeout" as const), 10000)),
-    ]);
+      10000,
+    );
     assert.notEqual(closeResult, "timeout", "server.close hung with open SSE stream");
     void closeResult;
     await live.text().catch(() => "");
@@ -1590,4 +1618,158 @@ test("expired capabilities release capacity for new bootstrap (existing creds)",
   } finally {
     await server.close();
   }
+});
+
+test("close stops accepting and force-destroys an unfinished raw-socket upload within a bounded grace", async () => {
+  const { server, base } = await startTestServer([], "success", {}, {
+    serverOptions: { shutdownGraceMs: 200 },
+  });
+  const port = Number(new URL(base).port);
+  const socket = createConnection({ host: "127.0.0.1", port });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", () => resolve());
+      socket.once("error", reject);
+    });
+    // A request whose body never completes: an unbounded shutdown would await
+    // this socket forever because the handler never produces a response.
+    socket.write(
+      `POST /coaching/runs HTTP/1.1\r\n` +
+        `Host: 127.0.0.1:${port}\r\n` +
+        `content-type: application/json\r\n` +
+        `content-length: 1000\r\n\r\n` +
+        `{"partial":`,
+    );
+    const settled = await settleWithin(
+      server.close().then(() => "closed" as const, (error: unknown) => error),
+      5000,
+    );
+    assert.equal(settled, "closed", "close must settle within the bounded grace, not await the socket");
+  } finally {
+    socket.destroy();
+    // Idempotent close in case the assertion threw before close() ran.
+    await server.close().catch(() => undefined);
+  }
+  // The port is released: a fresh server can bind it again.
+  const rebind = await startTestServer([], "success", {}, { serverOptions: { port } });
+  await rebind.server.close();
+});
+
+test("close aborts a pending fixed-upstream read and settles within the grace", async () => {
+  const { createServer: createStubServer } = await import("node:http");
+  // Deterministic gate: the stub confirms it RECEIVED the upstream read before
+  // the test closes (never a fixed sleep).
+  const reached = deferred();
+  const stub = createStubServer(() => {
+    // Never respond: the snapshot read stalls on the configured upstream.
+    reached.resolve();
+  });
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  const addr = stub.address();
+  const stubPort = typeof addr === "object" && addr !== null ? (addr as { port: number }).port : 0;
+  const server = await startCoachingServer({
+    verifier: createTestVerifier({ "token-a": { id: "user-a" } }),
+    upstream: { baseUrl: `http://127.0.0.1:${stubPort}` },
+    runtimeFactory: makeFactory([], "success"),
+    serviceOptions: { cancelGraceMs: 200 },
+    publicConfig: null,
+    shutdownGraceMs: 200,
+  });
+  try {
+    const creds = await bothCreds(server.url, AUTH_A);
+    // Fire a snapshot read that will stall on the upstream; do not await it.
+    const pending = postJson(server.url, "/coaching/snapshots", {}, creds).catch(() => undefined);
+    await reached.promise;
+    const settled = await settleWithin(
+      server.close().then(() => "closed" as const, (error: unknown) => error),
+      5000,
+    );
+    assert.equal(settled, "closed", "close must cancel the pending upstream read and settle");
+    await pending;
+  } finally {
+    await server.close().catch(() => undefined);
+    stub.closeAllConnections?.();
+    await new Promise<void>((resolve) => stub.close(() => resolve()));
+  }
+});
+
+test("close overlaps socket grace with bounded agent cleanup (hanging child + unfinished socket)", async () => {
+  const captures: LaunchCapture[] = [];
+  // kill-refusing: the runtime's close() never settles, so service.shutdown is
+  // bounded by cancelGraceMs and must reject (never silently release capacity).
+  const { server, base } = await startTestServer(captures, "kill-refusing", { cancelGraceMs: 200 }, {
+    serverOptions: { shutdownGraceMs: 150 },
+  });
+  const port = Number(new URL(base).port);
+  let socket: ReturnType<typeof createConnection> | null = null;
+  try {
+    const creds = await bothCreds(base, AUTH_A);
+    const { run } = await setupRun(base, creds);
+    assert.equal(run.status, 201, "a live hang-refusing run must exist before shutdown");
+    // Create + connect the socket only AFTER the setup awaits. A socket created
+    // before them connects while those awaits are pending, so registering its
+    // `connect` listener afterward would never fire (connect already happened)
+    // and the test would wait forever.
+    const connected = createConnection({ host: "127.0.0.1", port });
+    socket = connected;
+    await new Promise<void>((resolve, reject) => {
+      connected.once("connect", () => resolve());
+      connected.once("error", reject);
+    });
+    // Drain incoming bytes: a paused raw socket with buffered data (the
+    // server's shutdown FIN/response) may never advance its readable side, so
+    // its `close` event would not fire. `resume()` keeps it flowing.
+    connected.resume();
+    // The bounded shutdown grace force-destroys remaining sockets; capture the
+    // close event (event-based, no wall-clock assertion) before shutting down.
+    const socketClosed = new Promise<void>((resolve) => connected.once("close", () => resolve()));
+    connected.write(
+      `POST /coaching/runs HTTP/1.1\r\n` +
+        `Host: 127.0.0.1:${port}\r\n` +
+        `content-type: application/json\r\n` +
+        `content-length: 1000\r\n\r\n` +
+        `{"partial":`,
+    );
+    // The two waits overlap: total ≈ max(grace, cancelGrace), never their sum.
+    const settled = await settleWithin(
+      server.close().then(() => "closed" as const, (error: unknown) => error),
+      3000,
+    );
+    assert.ok(settled instanceof Error, "an unconfirmed live child must surface as a rejection");
+    assert.match(String(settled), /unconfirmed|incomplete|shutdown/);
+    assert.notEqual(
+      await settleWithin(socketClosed, 5000),
+      "timeout",
+      "the shutdown grace must force-close the unfinished socket",
+    );
+  } finally {
+    socket?.destroy();
+    await server.close().catch(() => undefined);
+  }
+});
+
+test("close is idempotent", async () => {
+  const { server } = await startTestServer();
+  await server.close();
+  await server.close();
+});
+
+test("bind failure rejects cleanly and the port stays reusable", async () => {
+  const first = await startTestServer();
+  const port = Number(new URL(first.base).port);
+  await assert.rejects(
+    startCoachingServer({
+      verifier: createTestVerifier(TOKENS),
+      stores: createPrincipalMemoryStores(),
+      runtimeFactory: makeFactory([], "success"),
+      serviceOptions: { cancelGraceMs: 200 },
+      publicConfig: null,
+      port,
+    }),
+    /EADDRINUSE|address already in use/i,
+  );
+  await first.server.close();
+  // The failed bind left no listener/timers holding the port.
+  const third = await startTestServer([], "success", {}, { serverOptions: { port } });
+  await third.server.close();
 });

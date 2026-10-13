@@ -126,6 +126,147 @@ export interface CoachingEventEnvelope {
   event: CoachingEventPayload;
 }
 
+/**
+ * Shared SSE wire budgets (single source of truth).
+ *
+ * The run service, the loopback HTTP server, and the browser client all
+ * consume these so the wire has one framing + size rule:
+ * - A single encoded frame (the full `id:`/`data:` envelope, measured in UTF-8
+ *   bytes with metadata overhead) must not exceed
+ *   {@link MAX_COACHING_SSE_FRAME_BYTES}.
+ * - The whole stream body for one run must not exceed
+ *   {@link MAX_COACHING_SSE_TOTAL_BYTES}.
+ *
+ * `MAX_COACHING_SSE_FRAME_BYTES <= MAX_COACHING_SSE_TOTAL_BYTES` so any event
+ * the service accepts is readable by the client. The service additionally
+ * reserves {@link COACHING_SSE_TERMINAL_RESERVE_BYTES} of the total budget for
+ * the cap-seal `run_error` frame and the terminal frame, so tripping the
+ * content budget still leaves a readable terminal (never a silent truncation).
+ * The service never exceeds the content budget (a configured per-run byte cap
+ * is clamped to `MAX_COACHING_SSE_TOTAL_BYTES - reserve`), bounds each reserved
+ * frame (cap-seal + terminal) to {@link COACHING_SSE_RESERVED_FRAME_BYTES} of
+ * ENCODED bytes with {@link boundCoachingDiagnostic}, and bounds session
+ * ids to {@link MAX_COACHING_SESSION_ID_LENGTH}, so content + cap-seal +
+ * terminal always fit `MAX_COACHING_SSE_TOTAL_BYTES`. The server emits NO
+ * heartbeat/keepalive frames, so the client's total counter sees only those
+ * accepted frames (the reserve is not shared with heartbeat overhead).
+ */
+export const MAX_COACHING_SSE_FRAME_BYTES = 1024 * 1024;
+export const MAX_COACHING_SSE_TOTAL_BYTES = 4 * 1024 * 1024;
+export const COACHING_SSE_TERMINAL_RESERVE_BYTES = 8 * 1024;
+
+/**
+ * Per-frame byte budget for the two frames that BYPASS the content cap: the
+ * cap-seal `run_error` frame and the terminal frame. Exactly two such frames
+ * exist and the reserve must cover BOTH, so each gets half of
+ * {@link COACHING_SSE_TERMINAL_RESERVE_BYTES}. Both diagnostics are bounded to
+ * this ENCODED-frame budget by {@link boundCoachingDiagnostic}, so
+ * `content + seal + terminal` can never exceed
+ * {@link MAX_COACHING_SSE_TOTAL_BYTES}.
+ */
+export const COACHING_SSE_RESERVED_FRAME_BYTES = COACHING_SSE_TERMINAL_RESERVE_BYTES / 2;
+
+/**
+ * Explicit marker appended when a diagnostic `reason`/`message` is shortened
+ * to fit the wire budget, so a shortened terminal is visible — never silently
+ * truncated. Ordinary small diagnostics are preserved verbatim.
+ */
+export const COACHING_TRUNCATION_MARKER = "…[truncated]";
+
+/**
+ * Max code units for a caller-supplied coaching session id.
+ *
+ * Every SSE frame carries `sessionId` in its metadata, so an unbounded id
+ * would inflate every frame (including the reserved terminal/cap-seal frames)
+ * past the wire budget. Ids longer than this reject at session creation with
+ * `VALIDATION_ERROR`. The bound is generous relative to generated
+ * `sess-<uuid>` ids (~41 code units) and keeps multibyte ids well inside the
+ * terminal reserve.
+ */
+export const MAX_COACHING_SESSION_ID_LENGTH = 128;
+
+const utf8Encoder = new TextEncoder();
+
+/** UTF-8 byte length of a string (never its code-unit/character length). */
+export function utf8ByteLength(value: string): number {
+  return utf8Encoder.encode(value).byteLength;
+}
+
+/**
+ * Truncate `value` to at most `maxBytes` UTF-8 bytes WITHOUT splitting a
+ * surrogate pair / multi-byte codepoint (the result is always valid UTF-8 and
+ * `utf8ByteLength(result) <= maxBytes`). Returns `value` unchanged when it
+ * already fits.
+ */
+export function truncateUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (utf8ByteLength(value) <= maxBytes) return value;
+  let bytes = 0;
+  let end = 0;
+  for (const char of value) {
+    const charBytes = utf8ByteLength(char);
+    if (bytes + charBytes > maxBytes) break;
+    bytes += charBytes;
+    end += char.length;
+  }
+  return value.slice(0, end);
+}
+
+/**
+ * The ONE framing rule: how an envelope becomes an SSE frame on the wire.
+ * The server writes exactly this string; size checks measure exactly this
+ * string, so the cap and the bytes on the wire can never drift apart.
+ */
+export function encodeCoachingEventFrame(envelope: CoachingEventEnvelope): string {
+  return `id: ${envelope.seq}\ndata: ${JSON.stringify(envelope)}\n\n`;
+}
+
+/** Encoded UTF-8 bytes of one full envelope frame, metadata overhead included. */
+export function coachingEventFrameBytes(envelope: CoachingEventEnvelope): number {
+  return utf8ByteLength(encodeCoachingEventFrame(envelope));
+}
+
+/**
+ * Fit a diagnostic text (a terminal `reason` or a cap-seal `message`) so the
+ * frame built by `buildEnvelope(text)` fits `maxFrameBytes` EXACTLY.
+ *
+ * Measured on the ENCODED frame — the same bytes the server writes — NOT on
+ * raw UTF-8 length. A raw-byte bound is unsound because JSON escaping expands
+ * characters: a control character is 1 raw byte but 6 wire bytes (`\u0000`),
+ * and `"`/`\` double, so a raw reason can overflow the reserve by up to 6x.
+ * Because the frame embeds the live `sessionId`/`runId`, a max-length escaped
+ * session id is accounted for too.
+ *
+ * Returns the text unchanged (`shortened: false`) when it already fits;
+ * otherwise the longest codepoint-safe prefix that fits WITH the explicit
+ * {@link COACHING_TRUNCATION_MARKER} appended (`shortened: true`). The scan is
+ * forward-only and only ever stops at the first overflow: completing a
+ * surrogate pair can only shrink the encoded length, so never over-admitting.
+ */
+export function boundCoachingDiagnostic(
+  buildEnvelope: (text: string) => CoachingEventEnvelope,
+  text: string,
+  maxFrameBytes: number,
+): { text: string; shortened: boolean } {
+  if (coachingEventFrameBytes(buildEnvelope(text)) <= maxFrameBytes) {
+    return { text, shortened: false };
+  }
+  const withMarker = (value: string): number =>
+    coachingEventFrameBytes(buildEnvelope(`${value}${COACHING_TRUNCATION_MARKER}`));
+  if (withMarker("") > maxFrameBytes) {
+    // Metadata alone already exceeds the budget (should never happen with the
+    // bounded session/run ids): drop the diagnostic rather than overflow.
+    return { text: "", shortened: true };
+  }
+  let prefix = "";
+  for (const char of text) {
+    const candidate = prefix + char;
+    if (withMarker(candidate) > maxFrameBytes) break;
+    prefix = candidate;
+  }
+  return { text: `${prefix}${COACHING_TRUNCATION_MARKER}`, shortened: true };
+}
+
 export interface CreateCoachingSessionInput {
   id?: string;
 }

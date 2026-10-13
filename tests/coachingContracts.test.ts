@@ -5,7 +5,16 @@ import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
 import {
   COACHING_PROTOCOL_VERSION,
+  COACHING_SSE_RESERVED_FRAME_BYTES,
+  COACHING_SSE_TERMINAL_RESERVE_BYTES,
+  COACHING_TRUNCATION_MARKER,
+  MAX_COACHING_SSE_FRAME_BYTES,
+  MAX_COACHING_SSE_TOTAL_BYTES,
+  MAX_COACHING_SESSION_ID_LENGTH,
+  boundCoachingDiagnostic,
+  coachingEventFrameBytes,
   dedupeEventsBySeq,
+  encodeCoachingEventFrame,
   isTerminalStatus,
   nextRunStatus,
   parseCancelCoachingRunBody,
@@ -20,6 +29,7 @@ import {
   parseSnapshotFilter,
   parseSubmitCoachingRunInput,
   replayRunState,
+  utf8ByteLength,
 } from "@pi-fit-trace/api-contracts";
 import type {
   CoachingEventEnvelope,
@@ -335,4 +345,88 @@ test("empty-string summary and reason are valid when present", () => {
     event: { type: "terminal", status: "completed", reason: "" },
   });
   assert.deepEqual(terminal.event, { type: "terminal", status: "completed", reason: "" });
+});
+
+test("SSE wire budgets are coherent and measured in UTF-8 full-frame bytes", () => {
+  // One framing rule: the frame the server writes is the one the helper sizes.
+  const env = envelope(7, { type: "text_delta", delta: "é" });
+  const frame = encodeCoachingEventFrame(env);
+  assert.equal(frame, `id: 7\ndata: ${JSON.stringify(env)}\n\n`);
+  assert.ok(frame.startsWith("id: 7\ndata: "));
+  assert.ok(frame.endsWith("\n\n"));
+  // Bytes, not characters: the 1-code-unit "é" is 2 UTF-8 bytes in the frame.
+  assert.equal(utf8ByteLength("é"), 2);
+  assert.equal(utf8ByteLength(frame), frame.length + 1);
+  assert.equal(coachingEventFrameBytes(env), utf8ByteLength(frame));
+  // Budgets are coherent: a single frame never exceeds the whole-stream budget.
+  assert.ok(MAX_COACHING_SSE_FRAME_BYTES > 0);
+  assert.ok(MAX_COACHING_SSE_FRAME_BYTES <= MAX_COACHING_SSE_TOTAL_BYTES);
+  assert.ok(COACHING_SSE_TERMINAL_RESERVE_BYTES > 0);
+  assert.ok(COACHING_SSE_TERMINAL_RESERVE_BYTES * 4 <= MAX_COACHING_SSE_FRAME_BYTES);
+});
+
+test("diagnostic text is bounded by ENCODED frame bytes, not raw UTF-8 (worst-case JSON escaping)", () => {
+  // A max-length session id made of control characters: 128 code units that
+  // JSON-escape to 6 wire bytes each (768 bytes of metadata in every frame).
+  const sessionId = "\u0000".repeat(MAX_COACHING_SESSION_ID_LENGTH);
+  const terminal = (reason: string): CoachingEventEnvelope => ({
+    protocolVersion: COACHING_PROTOCOL_VERSION,
+    sessionId,
+    runId: "run-1",
+    seq: 0,
+    event: { type: "terminal", status: "failed", reason },
+  });
+  const seal = (message: string): CoachingEventEnvelope => ({
+    protocolVersion: COACHING_PROTOCOL_VERSION,
+    sessionId,
+    runId: "run-1",
+    seq: 0,
+    event: { type: "run_error", code: "EVENT_CAP", message },
+  });
+  // Each U+0000 is 1 raw UTF-8 byte but `\u0000` (6 bytes) on the wire, so a
+  // raw-byte bound under-counts by 6x and can overflow the whole reserve.
+  const raw = "\u0000".repeat(4000);
+  assert.equal(utf8ByteLength(raw), 4000);
+  assert.ok(
+    utf8ByteLength(encodeCoachingEventFrame(terminal(raw))) > COACHING_SSE_TERMINAL_RESERVE_BYTES,
+    "the raw reason alone would already blow the reserve through escapes",
+  );
+
+  const boundedTerminal = boundCoachingDiagnostic(terminal, raw, COACHING_SSE_RESERVED_FRAME_BYTES);
+  const boundedSeal = boundCoachingDiagnostic(seal, raw, COACHING_SSE_RESERVED_FRAME_BYTES);
+  assert.equal(boundedTerminal.shortened, true);
+  assert.ok(boundedTerminal.text.endsWith(COACHING_TRUNCATION_MARKER), "shortening must be explicit");
+  assert.ok(boundedTerminal.text.startsWith("\u0000"), "a prefix of the diagnostic must survive");
+  assert.ok(coachingEventFrameBytes(terminal(boundedTerminal.text)) <= COACHING_SSE_RESERVED_FRAME_BYTES);
+  assert.ok(coachingEventFrameBytes(seal(boundedSeal.text)) <= COACHING_SSE_RESERVED_FRAME_BYTES);
+  // Both reserved frames (cap-seal + terminal) fit the reserve together.
+  assert.ok(
+    coachingEventFrameBytes(seal(boundedSeal.text)) + coachingEventFrameBytes(terminal(boundedTerminal.text)) <=
+      COACHING_SSE_TERMINAL_RESERVE_BYTES,
+  );
+  assert.equal(COACHING_SSE_RESERVED_FRAME_BYTES * 2, COACHING_SSE_TERMINAL_RESERVE_BYTES);
+});
+
+test("an ordinary short diagnostic is preserved verbatim with no truncation marker", () => {
+  const build = (reason: string): CoachingEventEnvelope => ({
+    protocolVersion: COACHING_PROTOCOL_VERSION,
+    sessionId: "s-1",
+    runId: "run-1",
+    seq: 0,
+    event: { type: "terminal", status: "cancelled", reason },
+  });
+  const bounded = boundCoachingDiagnostic(build, "user cancelled", COACHING_SSE_RESERVED_FRAME_BYTES);
+  assert.equal(bounded.shortened, false);
+  assert.equal(bounded.text, "user cancelled");
+  assert.ok(!bounded.text.includes(COACHING_TRUNCATION_MARKER));
+});
+
+test("frame byte measure includes envelope metadata overhead, not just payload length", () => {
+  const env = envelope(123, { type: "text_delta", delta: "abc" });
+  const payloadOnly = JSON.stringify(env.event).length;
+  const measured = coachingEventFrameBytes(env);
+  // The `id:` line, the `data: ` prefix, and the blank-line delimiter all
+  // count, so the measured frame is strictly larger than the bare payload.
+  assert.ok(measured > payloadOnly);
+  assert.ok(measured > JSON.stringify(env).length);
 });

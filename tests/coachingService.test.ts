@@ -17,10 +17,22 @@ import { test } from "node:test";
 import { stat } from "node:fs/promises";
 import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
-import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
+import type { CoachingEventEnvelope, CoachingEventPayload } from "@pi-fit-trace/api-contracts";
+import {
+  COACHING_PROTOCOL_VERSION,
+  COACHING_SSE_RESERVED_FRAME_BYTES,
+  COACHING_TRUNCATION_MARKER,
+  MAX_COACHING_SESSION_ID_LENGTH,
+  MAX_COACHING_SSE_FRAME_BYTES,
+  MAX_COACHING_SSE_TOTAL_BYTES,
+  coachingEventFrameBytes,
+  utf8ByteLength,
+} from "@pi-fit-trace/api-contracts";
 import { createPrincipalMemoryStores } from "../server/principalMemoryStore.ts";
 import {
   createCoachingService,
+  DEFAULT_MAX_EVENT_BYTES_PER_RUN,
+  normalizeMaxEventBytesPerRun,
   storeFactorySource,
 } from "../server/coaching/coachingService.ts";
 import type {
@@ -661,5 +673,283 @@ test("a cancelled reservation retains its idempotency mapping for identical retr
   } finally {
     gated.release();
     await service.shutdown();
+  }
+});
+
+/** Wait for a run to reach a terminal status (bounded). */
+async function waitForTerminal(service: CoachingService, runId: string): Promise<"completed" | "failed" | "cancelled"> {
+  const start = Date.now();
+  for (;;) {
+    const status = service.readRun(PRINCIPAL, runId).run.status;
+    if (status === "completed" || status === "failed" || status === "cancelled") return status;
+    assert.ok(Date.now() - start < 5000, `run did not settle (still ${status})`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function totalFrameBytes(service: CoachingService, runId: string): number {
+  return service
+    .readEvents(PRINCIPAL, runId)
+    .events.reduce((sum, envelope) => sum + coachingEventFrameBytes(envelope), 0);
+}
+
+test("a configured maxEventBytesPerRun above the shared content budget is clamped", async () => {
+  const captured: Captured[] = [];
+  const stores = await seedWorkouts();
+  // ~4.8 MB of content: above the shared content budget (~4.19 MB) but each
+  // frame stays under the 1 MiB frame cap.
+  const chunk = "x".repeat(800_000);
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: captureFactory(captured, {
+      onStart: (options) => {
+        for (let index = 0; index < 6; index += 1) {
+          options.onEvent({ type: "text_delta", delta: `${index}-${chunk}` });
+        }
+        options.onDone("completed", undefined, { processExitConfirmed: true });
+      },
+    }),
+    // Deliberately far ABOVE the shared content budget: it must be clamped so
+    // an accepted run can never exceed what the browser client will read.
+    maxEventBytesPerRun: MAX_COACHING_SSE_TOTAL_BYTES * 3,
+    cancelGraceMs: 30,
+  });
+  try {
+    const { runId } = await setupService(service);
+    assert.equal(await waitForTerminal(service, runId), "failed");
+    const page = service.readEvents(PRINCIPAL, runId);
+    // Content + cap-seal + terminal always fit the shared total budget.
+    assert.ok(
+      totalFrameBytes(service, runId) <= MAX_COACHING_SSE_TOTAL_BYTES,
+      "clamped content + seal + terminal must fit the shared total budget",
+    );
+    assert.ok(
+      page.events.some((envelope) =>
+        envelope.event.type === "run_error" && (envelope.event as { code: string }).code === "EVENT_CAP"
+      ),
+      "the clamp must still seal explicitly",
+    );
+    assert.equal(page.events.filter((envelope) => envelope.event.type === "terminal").length, 1);
+    // Without the clamp all 6 chunks would be stored; the clamp stops content.
+    assert.ok(page.events.length < 8, "content must be clamped, not all six chunks retained");
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("caller/runtime terminal reasons are bounded so the terminal frame fits the reserve", async () => {
+  // Runtime-supplied reason (onDone): ASCII, far above the reserve.
+  {
+    const captured: Captured[] = [];
+    const stores = await seedWorkouts();
+    const service = createCoachingService({
+      source: storeFactorySource(stores),
+      runtimeFactory: captureFactory(captured, {
+        onStart: (options) => {
+          options.onEvent({ type: "analysis_result", result: analyzeProgress([]) });
+          options.onDone("failed", "Z".repeat(200_000), { processExitConfirmed: true });
+        },
+      }),
+      cancelGraceMs: 30,
+    });
+    try {
+      const { runId } = await setupService(service);
+      const page = service.readEvents(PRINCIPAL, runId);
+      const terminal = page.events.find((envelope) => envelope.event.type === "terminal");
+      assert.ok(terminal, "a terminal must be emitted");
+      const reason = (terminal.event as { reason?: string }).reason ?? "";
+      assert.ok(reason.includes(COACHING_TRUNCATION_MARKER), "a shortened reason must say so");
+      assert.ok(utf8ByteLength(reason) > 1000, "a meaningful prefix must survive");
+      assert.ok(coachingEventFrameBytes(terminal) <= COACHING_SSE_RESERVED_FRAME_BYTES);
+      assert.ok(totalFrameBytes(service, runId) <= MAX_COACHING_SSE_TOTAL_BYTES);
+    } finally {
+      await service.shutdown();
+    }
+  }
+  // Caller-supplied cancel reason: multibyte, truncated WITHOUT splitting a codepoint.
+  {
+    const captured: Captured[] = [];
+    const stores = await seedWorkouts();
+    const service = createCoachingService({
+      source: storeFactorySource(stores),
+      runtimeFactory: captureFactory(captured, {}),
+      cancelGraceMs: 30,
+    });
+    try {
+      const { runId } = await setupService(service);
+      service.cancelRun(PRINCIPAL, runId, "é".repeat(100_000));
+      assert.equal(await waitForTerminal(service, runId), "cancelled");
+      const page = service.readEvents(PRINCIPAL, runId);
+      const terminal = page.events.find((envelope) => envelope.event.type === "terminal");
+      assert.ok(terminal);
+      const reason = (terminal.event as { reason?: string }).reason ?? "";
+      assert.ok(reason.includes(COACHING_TRUNCATION_MARKER), "a shortened reason must say so");
+      assert.ok(!reason.includes("\uFFFD"), "truncation must not split a multibyte codepoint");
+      assert.ok(coachingEventFrameBytes(terminal) <= COACHING_SSE_RESERVED_FRAME_BYTES);
+      assert.ok(totalFrameBytes(service, runId) <= MAX_COACHING_SSE_TOTAL_BYTES);
+    } finally {
+      await service.shutdown();
+    }
+  }
+});
+
+test("session ids are bounded so every frame (including the terminal) fits the wire budget", async () => {
+  const captured: Captured[] = [];
+  const stores = createPrincipalMemoryStores();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: captureFactory(captured, {}),
+    cancelGraceMs: 30,
+  });
+  try {
+    const atBound = service.createSession(PRINCIPAL, "é".repeat(MAX_COACHING_SESSION_ID_LENGTH));
+    assert.equal(atBound.id.length, MAX_COACHING_SESSION_ID_LENGTH);
+    assert.throws(
+      () => service.createSession(PRINCIPAL, "s".repeat(MAX_COACHING_SESSION_ID_LENGTH + 1)),
+      /at most/,
+    );
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("a control-character session id + terminal reason stay inside the reserved frame budget (JSON escapes counted)", async () => {
+  const captured: Captured[] = [];
+  const stores = await seedWorkouts();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: captureFactory(captured, {
+      onStart: (options) => {
+        options.onEvent({ type: "text_delta", delta: "ok" });
+        // 4000 NULs: 4000 raw bytes but ~24 KB once JSON-escaped.
+        options.onDone("failed", "\u0000".repeat(4000), { processExitConfirmed: true });
+      },
+    }),
+    cancelGraceMs: 30,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL, "\u0000".repeat(MAX_COACHING_SESSION_ID_LENGTH));
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const submitted = await service.submitRun(PRINCIPAL, {
+      sessionId: session.id,
+      prompt: "analyze my training",
+      idempotencyKey: "key-control",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    });
+    assert.equal(await waitForTerminal(service, submitted.run.id), "failed");
+    const page = service.readEvents(PRINCIPAL, submitted.run.id);
+    const terminal = page.events.find((envelope) => envelope.event.type === "terminal");
+    assert.ok(terminal, "a terminal must be emitted");
+    assert.ok(
+      coachingEventFrameBytes(terminal) <= COACHING_SSE_RESERVED_FRAME_BYTES,
+      "the escaped session id + escaped reason must still fit the reserved frame budget",
+    );
+    const reason = (terminal.event as { reason?: string }).reason ?? "";
+    assert.ok(reason.includes(COACHING_TRUNCATION_MARKER));
+    assert.ok(reason.startsWith("\u0000"), "a diagnostic prefix must survive");
+    assert.ok(totalFrameBytes(service, submitted.run.id) <= MAX_COACHING_SSE_TOTAL_BYTES);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("nonfinite/negative byte-budget options normalize to a safe finite bound", () => {
+  // NaN defeats Math.min (Math.min(NaN, x) === NaN), which would leave the byte
+  // cap permanently untripped; every invalid value normalizes to the shared
+  // content budget instead. Behavioral clamp coverage shares the clamp test.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+    const normalized = normalizeMaxEventBytesPerRun(bad);
+    assert.ok(Number.isFinite(normalized), `${String(bad)} must normalize to a finite bound`);
+    assert.equal(normalized, DEFAULT_MAX_EVENT_BYTES_PER_RUN);
+  }
+  assert.equal(normalizeMaxEventBytesPerRun(undefined), DEFAULT_MAX_EVENT_BYTES_PER_RUN);
+  assert.equal(normalizeMaxEventBytesPerRun(4096), 4096);
+  assert.equal(
+    normalizeMaxEventBytesPerRun(MAX_COACHING_SSE_TOTAL_BYTES * 3),
+    DEFAULT_MAX_EVENT_BYTES_PER_RUN,
+    "an over-budget value is clamped, never raised",
+  );
+});
+
+test("the per-run byte cap is exact and counted in UTF-8 full-frame bytes (boundary + nonASCII)", async () => {
+  const CAP = 4096;
+  // ASCII: a frame EXACTLY at the cap is accepted; the next event seals.
+  {
+    const captured: Captured[] = [];
+    const stores = await seedWorkouts();
+    const service = createCoachingService({
+      source: storeFactorySource(stores),
+      runtimeFactory: captureFactory(captured, {
+        onStart: (options) => {
+          const build = (delta: string): CoachingEventEnvelope => ({
+            protocolVersion: COACHING_PROTOCOL_VERSION,
+            sessionId: options.sessionId,
+            runId: options.runId,
+            seq: 0,
+            event: { type: "text_delta", delta },
+          });
+          const overhead = coachingEventFrameBytes(build(""));
+          const delta = "x".repeat(CAP - overhead);
+          assert.equal(coachingEventFrameBytes(build(delta)), CAP, "probe frame must be exactly at the cap");
+          options.onEvent({ type: "text_delta", delta });
+          options.onEvent({ type: "text_delta", delta: "overflow" });
+          options.onDone("completed", undefined, { processExitConfirmed: true });
+        },
+      }),
+      maxEventBytesPerRun: CAP,
+      cancelGraceMs: 30,
+    });
+    try {
+      const { runId } = await setupService(service);
+      assert.equal(await waitForTerminal(service, runId), "failed");
+      const page = service.readEvents(PRINCIPAL, runId);
+      // Exactly-at-cap delta + seal run_error + terminal.
+      assert.equal(page.events.length, 3);
+      assert.equal(coachingEventFrameBytes(page.events[0] as CoachingEventEnvelope), CAP);
+      assert.equal(page.events.filter((envelope) => envelope.event.type === "terminal").length, 1);
+    } finally {
+      await service.shutdown();
+    }
+  }
+  // nonASCII: a near-cap multibyte frame is accepted; overflow seals. Bytes,
+  // not characters, decide the boundary.
+  {
+    const captured: Captured[] = [];
+    const stores = await seedWorkouts();
+    const service = createCoachingService({
+      source: storeFactorySource(stores),
+      runtimeFactory: captureFactory(captured, {
+        onStart: (options) => {
+          const build = (delta: string): CoachingEventEnvelope => ({
+            protocolVersion: COACHING_PROTOCOL_VERSION,
+            sessionId: options.sessionId,
+            runId: options.runId,
+            seq: 0,
+            event: { type: "text_delta", delta },
+          });
+          const overhead = coachingEventFrameBytes(build(""));
+          const count = Math.floor((CAP - overhead) / 2);
+          const delta = "é".repeat(count);
+          const frame = coachingEventFrameBytes(build(delta));
+          assert.ok(frame <= CAP && CAP - frame < 2, "multibyte probe must sit within one byte of the cap");
+          options.onEvent({ type: "text_delta", delta });
+          options.onEvent({ type: "text_delta", delta: "é" });
+          options.onDone("completed", undefined, { processExitConfirmed: true });
+        },
+      }),
+      maxEventBytesPerRun: CAP,
+      cancelGraceMs: 30,
+    });
+    try {
+      const { runId } = await setupService(service);
+      assert.equal(await waitForTerminal(service, runId), "failed");
+      const page = service.readEvents(PRINCIPAL, runId);
+      const deltas = page.events.filter((envelope) => envelope.event.type === "text_delta");
+      assert.equal(deltas.length, 1, "the near-cap multibyte frame is accepted and the overflow is not stored");
+      assert.ok(page.events.some((envelope) => envelope.event.type === "run_error"));
+      assert.equal(page.events.filter((envelope) => envelope.event.type === "terminal").length, 1);
+    } finally {
+      await service.shutdown();
+    }
   }
 });

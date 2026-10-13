@@ -63,6 +63,13 @@ import type {
 } from "@pi-fit-trace/api-contracts";
 import {
   COACHING_PROTOCOL_VERSION,
+  COACHING_SSE_RESERVED_FRAME_BYTES,
+  COACHING_SSE_TERMINAL_RESERVE_BYTES,
+  MAX_COACHING_SESSION_ID_LENGTH,
+  MAX_COACHING_SSE_FRAME_BYTES,
+  MAX_COACHING_SSE_TOTAL_BYTES,
+  boundCoachingDiagnostic,
+  coachingEventFrameBytes,
   isTerminalStatus,
   nextRunStatus,
   parseAnalysisResult,
@@ -143,7 +150,7 @@ export interface CoachingServiceOptions {
   runtimeFactory: RuntimeFactory;
   /** Max stored events per run (tripping the cap fails the run explicitly). */
   maxEventsPerRun?: number;
-  /** Max stored event bytes per run (tripping the cap fails the run explicitly). */
+  /** Max stored event bytes per run (UTF-8 frame bytes; tripping the cap fails the run explicitly). */
   maxEventBytesPerRun?: number;
   /** Max retained runs; oldest terminal runs evicted first. */
   maxRuns?: number;
@@ -170,7 +177,35 @@ export interface CoachingServiceOptions {
 }
 
 export const DEFAULT_MAX_EVENTS_PER_RUN = 1000;
-export const DEFAULT_MAX_EVENT_BYTES_PER_RUN = 512 * 1024;
+/**
+ * Per-run stored-event wire budget (UTF-8 frame bytes). Derived from the
+ * shared SSE total budget so any run the service accepts fits the stream the
+ * client reads; the terminal reserve keeps a cap-seal error + terminal frame
+ * inside the total after the content budget is exhausted. A configured
+ * `maxEventBytesPerRun` ABOVE this shared content budget is clamped down to it
+ * (see {@link createCoachingService}): the run service can never accept more
+ * content bytes than the client will read.
+ */
+export const DEFAULT_MAX_EVENT_BYTES_PER_RUN =
+  MAX_COACHING_SSE_TOTAL_BYTES - COACHING_SSE_TERMINAL_RESERVE_BYTES;
+
+/**
+ * Normalize the `maxEventBytesPerRun` option to a SAFE FINITE bound.
+ *
+ * A non-finite value (`NaN`/`±Infinity`) would defeat `Math.min`
+ * (`Math.min(NaN, x)` is `NaN`), leaving the per-run byte cap permanently
+ * untripped, and a negative value is invalid. Any such value falls back to
+ * {@link DEFAULT_MAX_EVENT_BYTES_PER_RUN}; a finite value above the shared
+ * content budget is clamped down to it so the service can never accept more
+ * content bytes than the client will read.
+ */
+export function normalizeMaxEventBytesPerRun(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return DEFAULT_MAX_EVENT_BYTES_PER_RUN;
+  }
+  return Math.min(value, DEFAULT_MAX_EVENT_BYTES_PER_RUN);
+}
+
 export const DEFAULT_MAX_RUNS = 200;
 export const DEFAULT_MAX_SESSIONS_PER_ACCOUNT = 50;
 export const DEFAULT_MAX_SNAPSHOTS_PER_ACCOUNT = 50;
@@ -285,10 +320,6 @@ function canonicalizeSubmit(input: {
   });
 }
 
-function estimatePayloadBytes(payload: CoachingEventPayload): number {
-  return JSON.stringify(payload).length;
-}
-
 export interface CoachingService {
   createSession(principal: AuthPrincipal, id?: string): CoachingSession;
   readSession(principal: AuthPrincipal, id: string): CoachingSession;
@@ -320,7 +351,11 @@ export interface CoachingService {
 
 export function createCoachingService(options: CoachingServiceOptions): CoachingService {
   const maxEventsPerRun = options.maxEventsPerRun ?? DEFAULT_MAX_EVENTS_PER_RUN;
-  const maxEventBytesPerRun = options.maxEventBytesPerRun ?? DEFAULT_MAX_EVENT_BYTES_PER_RUN;
+  // Normalize a possibly non-finite/out-of-range override: a run the service
+  // accepts must fit the client's total stream budget, so `maxEventBytesPerRun`
+  // is clamped to `total - terminal reserve` and NaN/Infinity/negative values
+  // fall back to that bound instead of defeating the cap.
+  const maxEventBytesPerRun = normalizeMaxEventBytesPerRun(options.maxEventBytesPerRun);
   const maxRuns = options.maxRuns ?? DEFAULT_MAX_RUNS;
   const maxSessionsPerAccount = options.maxSessionsPerAccount ?? DEFAULT_MAX_SESSIONS_PER_ACCOUNT;
   const maxSnapshotsPerAccount = options.maxSnapshotsPerAccount ?? DEFAULT_MAX_SNAPSHOTS_PER_ACCOUNT;
@@ -493,6 +528,28 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     }
   }
 
+  /** The next envelope for a run: `seq` is the current log length and the
+   * stream identity comes from the run. One place builds every stored event,
+   * so all paths measure the SAME frame bytes. */
+  function buildEventEnvelope(stored: StoredRun, event: CoachingEventPayload): CoachingEventEnvelope {
+    return {
+      protocolVersion: COACHING_PROTOCOL_VERSION,
+      sessionId: stored.run.sessionId,
+      runId: stored.run.id,
+      seq: stored.events.length,
+      event,
+    };
+  }
+
+  /** Push an envelope and count its exact wire-frame bytes. Returns the bytes
+   * added so callers can reason about the budget consistently. */
+  function pushCountedEvent(stored: StoredRun, envelope: CoachingEventEnvelope): number {
+    const bytes = coachingEventFrameBytes(envelope);
+    stored.events.push(envelope);
+    stored.eventBytes += bytes;
+    return bytes;
+  }
+
   /** Terminal transition. Capacity + snapshot release happen ONLY when
    * `confirmed` (runtime exit confirmed). Unconfirmed runs keep their handle,
    * snapshot dir, and capacity so orphans are visible, never silently freed. */
@@ -508,14 +565,25 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     stored.cleanupConfirmed = confirmed;
     stored.processExitConfirmed = confirmed;
     let finalStatus: CoachingTerminalStatus = nextRunStatus(stored.run.status, status) as CoachingTerminalStatus;
-    let finalReason = reason;
+    // Compose the FULL final reason first (caller/runtime-supplied text plus any
+    // internal suffix), then bound it by the ENCODED terminal frame bytes below
+    // so the frame — escapes + live session id included — fits the reserved
+    // budget. Raw UTF-8 length under-counts JSON escapes by up to 6x.
+    let candidateReason = reason;
     if (!confirmed && finalStatus === "completed") {
       // Success is withheld while the child may still be alive.
       finalStatus = "failed";
-      finalReason = finalReason !== undefined
-        ? `${finalReason}: process exit unconfirmed; completion withheld`
+      candidateReason = candidateReason !== undefined
+        ? `${candidateReason}: process exit unconfirmed; completion withheld`
         : "process exit unconfirmed; completion withheld";
     }
+    const finalReason = candidateReason === undefined
+      ? undefined
+      : boundCoachingDiagnostic(
+        (text) => buildEventEnvelope(stored, { type: "terminal", status: finalStatus, reason: text }),
+        candidateReason,
+        COACHING_SSE_RESERVED_FRAME_BYTES,
+      ).text;
     stored.run = {
       ...stored.run,
       status: finalStatus,
@@ -523,13 +591,14 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         ? { failure: { code: "RUN_FAILED", message: finalReason ?? "coached run failed" } }
         : {}),
     };
-    stored.events.push({
-      protocolVersion: COACHING_PROTOCOL_VERSION,
-      sessionId: stored.run.sessionId,
-      runId: stored.run.id,
-      seq: stored.events.length,
-      event: { type: "terminal", status: finalStatus, ...(finalReason === undefined ? {} : { reason: finalReason }) },
-    });
+    // The terminal frame BYPASSES appendEvent (it is not subject to the content
+    // cap), so it must be counted here with the same exact measure — content +
+    // cap-seal + terminal then never exceeds the shared total budget.
+    pushCountedEvent(stored, buildEventEnvelope(stored, {
+      type: "terminal",
+      status: finalStatus,
+      ...(finalReason === undefined ? {} : { reason: finalReason }),
+    }));
     stored.expiresAt = Date.now() + retentionMs;
     const timer = cancelTimers.get(stored.run.id);
     if (timer !== undefined) {
@@ -556,14 +625,19 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   function sealRunForCap(stored: StoredRun, reason: string): void {
     if (stored.terminated || stored.sealed !== null) return;
     stored.sealed = { status: "failed", reason };
-    const terminal: CoachingEventEnvelope = {
-      protocolVersion: COACHING_PROTOCOL_VERSION,
-      sessionId: stored.run.sessionId,
-      runId: stored.run.id,
-      seq: stored.events.length,
-      event: { type: "run_error", code: "EVENT_CAP", message: reason },
-    };
-    stored.events.push(terminal);
+    // The cap-seal run_error also bypasses the content cap. Bound + count it so
+    // the seal frame plus the terminal frame both fit the reserved headroom;
+    // the bound measures ENCODED bytes (escapes + live session id included).
+    const message = boundCoachingDiagnostic(
+      (text) => buildEventEnvelope(stored, { type: "run_error", code: "EVENT_CAP", message: text }),
+      reason,
+      COACHING_SSE_RESERVED_FRAME_BYTES,
+    ).text;
+    pushCountedEvent(stored, buildEventEnvelope(stored, {
+      type: "run_error",
+      code: "EVENT_CAP",
+      message,
+    }));
     notify(stored);
     const handle = stored.runtime;
     if (handle !== null) {
@@ -590,20 +664,22 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
 
   function appendEvent(stored: StoredRun, payload: CoachingEventPayload): void {
     if (stored.terminated || stored.sealed !== null || stored.terminalIntent !== null) return;
-    const bytes = estimatePayloadBytes(payload);
+    const envelope = buildEventEnvelope(stored, payload);
+    // Size the exact frame the server will write (UTF-8, metadata included),
+    // using the shared budget so anything the service accepts is readable by
+    // the browser client. A single event that cannot fit one frame is rejected
+    // explicitly (cap-seal → safe terminal); it is never stored or truncated.
+    const bytes = coachingEventFrameBytes(envelope);
+    if (bytes > MAX_COACHING_SSE_FRAME_BYTES) {
+      sealRunForCap(stored, "event exceeds the maximum SSE frame size");
+      return;
+    }
     if (stored.events.length >= maxEventsPerRun || stored.eventBytes + bytes > maxEventBytesPerRun) {
       // Caps are explicit: stop the child and fail the run — never silently drop.
       sealRunForCap(stored, "event cap exceeded");
       return;
     }
-    stored.events.push({
-      protocolVersion: COACHING_PROTOCOL_VERSION,
-      sessionId: stored.run.sessionId,
-      runId: stored.run.id,
-      seq: stored.events.length,
-      event: payload,
-    });
-    stored.eventBytes += bytes;
+    pushCountedEvent(stored, envelope);
     if (payload.type !== "terminal" && stored.run.status === "queued") {
       stored.run = { ...stored.run, status: "running" };
     }
@@ -780,6 +856,15 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       const sessionId = id !== undefined ? id : `sess-${randomUUID()}`;
       if (sessionId.trim() === "") {
         throw new CoachingServiceError("VALIDATION_ERROR", "Session id must be non-blank.");
+      }
+      // Every SSE frame carries the session id in its metadata, so an unbounded
+      // id would inflate (even) the reserved terminal frame past the wire
+      // budget. Bound it at creation; generated ids are ~41 code units.
+      if (sessionId.length > MAX_COACHING_SESSION_ID_LENGTH) {
+        throw new CoachingServiceError(
+          "VALIDATION_ERROR",
+          `Session id must be at most ${MAX_COACHING_SESSION_ID_LENGTH} characters.`,
+        );
       }
       const existing = sessions.get(sessionId);
       if (existing !== undefined) {

@@ -83,6 +83,37 @@ silently skips. `GET /runs/:id` returns coherent `{ run, lastSeq, firstSeq,
 expiresAt }` for gap recovery. SSE replays stored events, then tails live
 events; client abort detaches only (never cancels the run).
 
+### SSE wire budgets (shared, single source)
+
+The run service, the HTTP server, and the browser client consume ONE set of
+limits from `@pi-fit-trace/api-contracts`, so an event the service accepts is
+always readable by the client:
+
+- A single SSE frame — the full `id:`/`data:` envelope measured in UTF-8
+  bytes with metadata overhead — is capped at `MAX_COACHING_SSE_FRAME_BYTES`
+  (1 MiB).
+- One run's whole stream body is capped at `MAX_COACHING_SSE_TOTAL_BYTES`
+  (4 MiB); the frame cap is always ≤ the total cap.
+- The service reserves `COACHING_SSE_TERMINAL_RESERVE_BYTES` (8 KiB) of the
+  total for the two frames that bypass the content cap: the cap-seal
+  `run_error` and the terminal. Each is bounded to
+  `COACHING_SSE_RESERVED_FRAME_BYTES` (half the reserve) by its ENCODED frame
+  bytes via `boundCoachingDiagnostic`, which measures the exact wire frame —
+  so JSON escaping is counted (a raw-byte bound under-counts control
+  characters, `"`, and `\` by up to 6x) and a max-length escaped session id is
+  included. A diagnostic that must be shortened carries an explicit
+  `COACHING_TRUNCATION_MARKER` (`…[truncated]`) suffix; ordinary small reasons
+  pass through unchanged. Analysis content is never truncated: an over-budget
+  frame fails the run explicitly.
+
+A runtime event whose frame would exceed the frame budget is rejected
+explicitly: the run stops and fails with a readable terminal — the event is
+never stored, truncated, or delivered. Tripping the per-run byte budget emits
+an explicit `run_error` (`EVENT_CAP`) followed by the terminal; both still fit
+the reserved headroom. Both sides size frames with the same
+`encodeCoachingEventFrame`/`coachingEventFrameBytes` helper, so the framing +
+size rule lives in one place.
+
 ## Capacity rule: `processExitConfirmed`
 
 Global capacity is one live run and one active run per session; the server
@@ -93,6 +124,18 @@ the handle/snapshot, and keeps capacity held (`RUN_BUSY` for new runs).
 Cancel wins over late completion via a bounded grace that invokes `close()`;
 shutdown and logout report failure (never silent success) while a live child
 is retained, and workspaces are preserved.
+
+## Shutdown is bounded
+
+`CoachingServer.close()` stops accepting new connections immediately, then
+cancels in-flight configured-upstream reads, ends tracked SSE responses, and
+stops the run service. It waits at most `shutdownGraceMs` (default `2000` ms)
+for existing sockets — unfinished request bodies, idle keep-alive sockets,
+open streams — then destroys the remainder with `closeAllConnections()`, so
+close never awaits a socket indefinitely. `close()` is idempotent. An
+unconfirmed live child still surfaces as a rejection (capacity held, workspace
+preserved): close failures are never suppressed, and the process is never
+exited.
 
 ## Workout data upstream (fixed, configured)
 

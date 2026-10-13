@@ -3,6 +3,8 @@ import {
   ApiError,
   MalformedResponseError,
   NetworkError,
+  MAX_COACHING_SSE_FRAME_BYTES,
+  MAX_COACHING_SSE_TOTAL_BYTES,
   parseCancelCoachingRunBody,
   parseCancelCoachingRunResult,
   parseCoachingBootstrapResult,
@@ -15,6 +17,7 @@ import {
   parseSnapshotFilter,
   parseSubmitCoachingRunInput,
   parseSubmitCoachingRunResult,
+  utf8ByteLength,
 } from "@pi-fit-trace/api-contracts";
 import type {
   CancelCoachingRunResult,
@@ -49,10 +52,14 @@ import type {
 export const COACHING_CAPABILITY_HEADER = "x-fit-trace-capability";
 
 const SSE_ACCEPT = "text/event-stream";
-/** Mirror the server's per-stream buffer cap; oversized frames reject. */
-const MAX_SSE_FRAME_BYTES = 256 * 1024;
-/** Total SSE body cap so an unbounded live tail cannot grow forever. */
-const MAX_SSE_TOTAL_BYTES = 1024 * 1024;
+/**
+ * Shared wire budgets (single source in `@pi-fit-trace/api-contracts`): the
+ * server sizes stored events with the SAME frame measure, so anything it
+ * accepts is readable here. An over-budget frame rejects explicitly.
+ */
+const MAX_SSE_FRAME_BYTES = MAX_COACHING_SSE_FRAME_BYTES;
+/** Total SSE body cap: matches the service's per-run budget + terminal reserve. */
+const MAX_SSE_TOTAL_BYTES = MAX_COACHING_SSE_TOTAL_BYTES;
 
 export type CoachingAccessTokenProvider = () => string | null | Promise<string | null>;
 
@@ -212,8 +219,20 @@ function lengthOfLineBreakAt(value: string, index: number): number {
   return 0;
 }
 
-function takeSseFrames(buffer: string): { frames: string[]; rest: string } {
-  const frames: string[] = [];
+interface SseFrame {
+  /** Frame text WITHOUT its terminating blank line. */
+  block: string;
+  /**
+   * Bytes of the blank-line delimiter that terminated the frame. CR/LF are
+   * single-byte ASCII, so the delimiter's code-unit count IS its byte length.
+   * Carried so the frame cap can measure the SAME full frame the server writes
+   * (payload + delimiter) instead of the block alone.
+   */
+  delimiterBytes: number;
+}
+
+function takeSseFrames(buffer: string): { frames: SseFrame[]; rest: string } {
+  const frames: SseFrame[] = [];
   let frameStart = 0;
   let cursor = 0;
   while (cursor < buffer.length) {
@@ -233,9 +252,9 @@ function takeSseFrames(buffer: string): { frames: string[]; rest: string } {
     if (cursor + first + second === buffer.length && buffer[buffer.length - 1] === "\r" && second === 1) {
       break;
     }
-    const frame = buffer.slice(frameStart, cursor);
+    const block = buffer.slice(frameStart, cursor);
     // Skip zero-length keepalive pings without emitting empty frames.
-    if (frame !== "") frames.push(frame);
+    if (block !== "") frames.push({ block, delimiterBytes: first + second });
     cursor += first + second;
     frameStart = cursor;
   }
@@ -245,8 +264,9 @@ function takeSseFrames(buffer: string): { frames: string[]; rest: string } {
 /** Split finished SSE text (replay helper): CRLF-aware, keeps a trailing unterminated frame. */
 function splitSseText(text: string): string[] {
   const { frames, rest } = takeSseFrames(text);
-  if (rest !== "") frames.push(rest);
-  return frames;
+  const blocks = frames.map((frame) => frame.block);
+  if (rest !== "") blocks.push(rest);
+  return blocks;
 }
 /** Parse one raw SSE block (`null` for keepalive/empty frames). */
 function parseSseBlock(block: string, expected: CoachingStreamIdentity): CoachingEventEnvelope | null {
@@ -274,10 +294,6 @@ export function parseSseEventsText(text: string, expected: CoachingStreamIdentit
     if (envelope !== null && !bySeq.has(envelope.seq)) bySeq.set(envelope.seq, envelope);
   }
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
-}
-
-function sseFrameBytes(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
 }
 
 function assertSseContentType(response: Response): void {
@@ -719,38 +735,54 @@ export class CoachingClient {
         };
 
         const drainFrames = (flush: boolean): void => {
-          if (flush) {
-            for (const block of splitSseText(buffer)) {
-              if (sseFrameBytes(block) > MAX_SSE_FRAME_BYTES) {
-                finishError(new MalformedResponseError("events", "SSE frame exceeds the size limit"));
-                return;
-              }
-              deliverBlock(block);
-              if (settled) return;
-            }
-            buffer = "";
-            return;
-          }
           const taken = takeSseFrames(buffer);
           buffer = taken.rest;
-          for (const block of taken.frames) {
-            if (sseFrameBytes(block) > MAX_SSE_FRAME_BYTES) {
-              finishError(new MalformedResponseError("events", "SSE frame exceeds the size limit"));
+          const rejectOversizeFrame = (): void => {
+            finishError(new MalformedResponseError("events", "SSE frame exceeds the size limit"));
+          };
+          // The cap measures the SAME full frame the server writes: payload +
+          // delimiter (metadata included).
+          for (const frame of taken.frames) {
+            if (utf8ByteLength(frame.block) + frame.delimiterBytes > MAX_SSE_FRAME_BYTES) {
+              rejectOversizeFrame();
               return;
             }
           }
-          if (sseFrameBytes(buffer) > MAX_SSE_FRAME_BYTES) {
-            finishError(new MalformedResponseError("events", "SSE frame exceeds the size limit"));
+          if (flush) {
+            // A trailing unterminated block is bounded as a frame too.
+            if (buffer !== "" && utf8ByteLength(buffer) > MAX_SSE_FRAME_BYTES) {
+              rejectOversizeFrame();
+              return;
+            }
+            const blocks = taken.frames.map((frame) => frame.block);
+            if (buffer !== "") blocks.push(buffer);
+            buffer = "";
+            for (const block of blocks) {
+              deliverBlock(block);
+              if (settled) return;
+            }
             return;
           }
-          for (const block of taken.frames) {
-            deliverBlock(block);
+          // Pending partial frame: bound the ACTUAL buffered bytes. The exact
+          // full-frame check above (block + measured delimiter) validates the
+          // frame once its delimiter completes; adding the delimiter
+          // unconditionally here over-counted, because `buffer` may already hold
+          // part of it (a frame split immediately before its final newline) and
+          // falsely rejected an exact-limit frame. A delimiter only ever ADDS
+          // bytes, so any pending buffer already over the frame budget can never
+          // become a valid frame — a safe early bound.
+          if (utf8ByteLength(buffer) > MAX_SSE_FRAME_BYTES) {
+            rejectOversizeFrame();
+            return;
+          }
+          for (const frame of taken.frames) {
+            deliverBlock(frame.block);
             if (settled) return;
           }
         };
 
         for (;;) {
-          let read: ReadableStreamReadResult<Uint8Array>;
+          let read: Awaited<ReturnType<typeof reader.read>>;
           try {
             read = await reader.read();
           } catch (error) {
@@ -780,7 +812,7 @@ export class CoachingClient {
             break;
           }
           buffer += decoder.decode(read.value, { stream: true });
-          if (sseFrameBytes(buffer) > MAX_SSE_TOTAL_BYTES) {
+          if (utf8ByteLength(buffer) > MAX_SSE_TOTAL_BYTES) {
             finishError(new MalformedResponseError("events", "SSE frame exceeds the size limit"));
             break;
           }

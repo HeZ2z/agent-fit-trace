@@ -32,6 +32,14 @@
  * SSE events are resumable by `fromSeq` with the contract cursor semantics
  * (`lastSeq` = last stored seq, `-1` when empty); expired cursors are
  * explicit 410s directing a refetch from `firstSeq`, never a silent skip.
+ * Frames and whole-stream bodies use the SHARED budgets in
+ * `@pi-fit-trace/api-contracts` (`encodeCoachingEventFrame`); the run service
+ * sizes stored events with the same measure, so an accepted event is always
+ * readable by the browser client. `close()` stops accepting immediately and
+ * is bounded: open streams end, in-flight upstream reads are aborted, and any
+ * remaining sockets are destroyed after `shutdownGraceMs` — awaited
+ * CONCURRENTLY with the service's own bounded agent cleanup so the total is
+ * `max(http grace, agent cleanup)`, not their sum.
  * Client abort of an SSE/HTTP stream never cancels the run.
  */
 
@@ -44,11 +52,14 @@ import type { PrincipalStoreFactory } from "../auth/verifier.ts";
 import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
 import { ApiError, API_ERROR_CODES, HTTP_STATUS, parseWorkoutList } from "@pi-fit-trace/api-contracts";
 import {
+  MAX_COACHING_SSE_TOTAL_BYTES,
+  encodeCoachingEventFrame,
   parseCancelCoachingRunInput,
   parseCreateCoachingSessionInput,
   parseSnapshotFilter,
   parseSubmitCoachingRunInput,
 } from "@pi-fit-trace/api-contracts";
+import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
 import { MalformedResponseError } from "@pi-fit-trace/api-contracts";
 import { DEFAULT_MAX_BODY_BYTES } from "../authenticatedHandler.ts";
 import { getPublicConfig } from "../publicConfig.ts";
@@ -78,8 +89,13 @@ export const DEFAULT_CAPABILITY_TTL_MS = 10 * 60 * 1000;
 export const MAX_CAPABILITIES_PER_ACCOUNT = 5;
 /** Max active launcher capabilities total across accounts (same fail-closed rule). */
 export const MAX_CAPABILITIES_TOTAL = 100;
-/** Max bytes a single SSE stream may buffer before it is cut. */
-const MAX_SSE_BUFFERED_BYTES = 256 * 1024;
+/** Max bytes a single SSE stream may buffer before it is cut (shared total
+ * budget: anything larger than one run's whole stream is already invalid). */
+const MAX_SSE_BUFFERED_BYTES = MAX_COACHING_SSE_TOTAL_BYTES;
+
+/** Explicit bound for teardown: after this grace, remaining sockets are
+ * force-destroyed instead of awaiting them indefinitely. */
+export const DEFAULT_SHUTDOWN_GRACE_MS = 2000;
 
 export interface CoachingServerOptions {
   verifier: TokenVerifier | null;
@@ -96,6 +112,11 @@ export interface CoachingServerOptions {
   host?: string;
   port?: number;
   capabilityTtlMs?: number;
+  /**
+   * Bounded teardown grace: `close()` stops accepting immediately, then waits
+   * at most this long for existing sockets to end before destroying them.
+   */
+  shutdownGraceMs?: number;
   /**
    * Optional trusted handler for non-coaching routes on the SAME HTTP
    * listener. Invoked ONLY after exact canonical Host/Origin validation;
@@ -272,7 +293,7 @@ async function readBoundedUpstreamText(response: Response): Promise<string> {
  * read. Upstream 401/403 surfaces as FORBIDDEN (auth failure); every other
  * outage is WorkoutSourceUnavailable (→ 503). No raw-array/envelope fallback.
  */
-function createAuthenticatedUpstreamSource(baseUrl: string): WorkoutSource {
+function createAuthenticatedUpstreamSource(baseUrl: string, shutdownSignal?: AbortSignal): WorkoutSource {
   const base = normalizeUpstreamBaseUrl(baseUrl);
   return {
     async listWorkouts(principal: AuthPrincipal, ctx?: WorkoutReadContext): Promise<WorkoutRecord[]> {
@@ -282,13 +303,18 @@ function createAuthenticatedUpstreamSource(baseUrl: string): WorkoutSource {
         // Fail closed: production reads always require the current bearer.
         throw new WorkoutSourceUnavailable("Upstream workout read requires the current user bearer token.");
       }
+      // A per-request timeout holds through the body; the optional server
+      // shutdown signal cancels an in-flight read so teardown never awaits a
+      // stalled upstream.
+      const timeoutSignal = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
+      const signal = shutdownSignal === undefined ? timeoutSignal : AbortSignal.any([timeoutSignal, shutdownSignal]);
       let response: Response;
       try {
         response = await fetch(`${base}/workouts`, {
           method: "GET",
           headers: { accept: "application/json", authorization: `Bearer ${bearer}` },
           redirect: "manual",
-          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+          signal,
         });
       } catch {
         throw new WorkoutSourceUnavailable();
@@ -393,9 +419,13 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
   assertLoopbackBindHost(host);
   const port = options.port ?? 0;
   const capabilityTtlMs = options.capabilityTtlMs ?? DEFAULT_CAPABILITY_TTL_MS;
+  const shutdownGraceMs = options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+  // Aborted on close so any in-flight configured-upstream read settles instead
+  // of holding teardown open until the upstream timeout.
+  const shutdownController = new AbortController();
 
   const fixedUpstream = options.upstream !== undefined && options.upstream !== null
-    ? createAuthenticatedUpstreamSource(options.upstream.baseUrl)
+    ? createAuthenticatedUpstreamSource(options.upstream.baseUrl, shutdownController.signal)
     : null;
   const staticSource: WorkoutSource | null =
     options.source !== undefined
@@ -849,8 +879,8 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
             poll = null;
             stopStreamPoll(response);
           };
-          const writeEnvelope = (envelope: { seq: number }): boolean => {
-            const ok = response.write(`id: ${envelope.seq}\ndata: ${JSON.stringify(envelope)}\n\n`);
+          const writeEnvelope = (envelope: CoachingEventEnvelope): boolean => {
+            const ok = response.write(encodeCoachingEventFrame(envelope));
             cursor = envelope.seq + 1;
             const buffered = (response.writableLength ?? 0);
             if (buffered > MAX_SSE_BUFFERED_BYTES) {
@@ -983,56 +1013,104 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
 
   const address = server.address();
   const actualPort = typeof address === "object" && address !== null ? address.port : port;
+
+  let closing: Promise<void> | null = null;
+
+  const performClose = async (): Promise<void> => {
+    // 1. Stop accepting new connections IMMEDIATELY. The callback fires once
+    // the listener is down and every socket has ended (or was destroyed below).
+    let serverCloseError: unknown = null;
+    const serverClosed = new Promise<void>((resolve) => {
+      try {
+        server.close((error) => {
+          if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+            serverCloseError = error;
+          }
+          resolve();
+        });
+      } catch (error) {
+        // Already closed / never listening: not a shutdown failure.
+        if ((error as NodeJS.ErrnoException)?.code !== "ERR_SERVER_NOT_RUNNING") {
+          serverCloseError = error;
+        }
+        resolve();
+      }
+    });
+    // 2. Cancel in-flight configured-upstream reads so a stalled upstream does
+    // not hold teardown open until its own timeout.
+    shutdownController.abort();
+    // 3. End tracked SSE responses + their poll timers before waiting.
+    for (const stream of [...openStreams]) {
+      stopStreamPoll(stream);
+      try {
+        stream.end();
+      } catch {
+        // Client already gone.
+      }
+      try {
+        stream.removeAllListeners("close");
+      } catch {
+        // Best-effort.
+      }
+    }
+    openStreams.clear();
+    for (const timer of [...openPolls.values()]) clearInterval(timer);
+    openPolls.clear();
+    clearInterval(sweepTimer);
+    // 4. Stop the run service CONCURRENTLY with the socket grace below: its own
+    // bound is the per-run cancel grace, but it must not DELAY socket teardown,
+    // so the two waits overlap (total ≈ max(bounded agent cleanup, http grace),
+    // never their sum). An unconfirmed live child surfaces as a rejection and
+    // is never silently released.
+    let shutdownError: unknown = null;
+    const serviceShutdown = service.shutdown().then(
+      () => undefined,
+      (error: unknown) => {
+        // Propagate: an unconfirmed live child must report failure and the
+        // workspace is preserved by the service — never claim success.
+        shutdownError = error;
+      },
+    );
+    // 5. Bounded wait for existing sockets (unfinished request bodies, idle
+    // keep-alive, open streams), started as soon as close starts — not after
+    // agent cleanup. Past the grace, force-destroy the rest so `close()` can
+    // never await a socket forever.
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      serverClosed.then(() => false),
+      new Promise<boolean>((resolve) => {
+        graceTimer = setTimeout(() => resolve(true), shutdownGraceMs);
+      }),
+    ]);
+    if (graceTimer !== undefined) clearTimeout(graceTimer);
+    if (timedOut) {
+      if (typeof server.closeAllConnections === "function") server.closeAllConnections();
+      await serverClosed;
+    }
+    // Bounded agent cleanup still completes (bounded by its own cancel grace);
+    // an unconfirmed child is reported, never silently released.
+    await serviceShutdown;
+    server.removeAllListeners();
+    if (shutdownError !== null) {
+      throw shutdownError instanceof Error ? shutdownError : new Error(String(shutdownError));
+    }
+    if (serverCloseError !== null) {
+      throw serverCloseError instanceof Error ? serverCloseError : new Error(String(serverCloseError));
+    }
+    if (service.activeRunCount() > 0) {
+      throw new Error("coaching shutdown unconfirmed: a live child is retained with capacity held; workspace preserved");
+    }
+  };
+
   return {
     url: `http://${host}:${actualPort}`,
     port: actualPort,
     service,
-    close: async (): Promise<void> => {
-      // End open SSE responses BEFORE awaiting shutdown so neither the
-      // streams nor their poll timers hang teardown; then clear every
-      // server-owned timer/listener before closing the HTTP server.
-      for (const stream of [...openStreams]) {
-        stopStreamPoll(stream);
-        try {
-          stream.end();
-        } catch {
-          // Client already gone.
-        }
-        try {
-          stream.removeAllListeners("close");
-        } catch {
-          // Best-effort.
-        }
-      }
-      openStreams.clear();
-      for (const timer of [...openPolls.values()]) clearInterval(timer);
-      openPolls.clear();
-      clearInterval(sweepTimer);
-      let shutdownError: unknown = null;
-      try {
-        await service.shutdown();
-      } catch (error) {
-        // Propagate: an unconfirmed live child must report failure and the
-        // workspace is preserved by the service — never claim success.
-        shutdownError = error;
-      }
-      try {
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-      } catch (error) {
-        if (shutdownError === null) shutdownError = error;
-      }
-      server.removeAllListeners();
-      if (shutdownError !== null) {
-        throw shutdownError instanceof Error ? shutdownError : new Error(String(shutdownError));
-      }
-      if (service.activeRunCount() > 0) {
-        throw new Error("coaching shutdown unconfirmed: a live child is retained with capacity held; workspace preserved");
-      }
+    // Idempotent: the first call performs teardown, later calls share the same
+    // settled promise (a second teardown is never attempted).
+    close: (): Promise<void> => {
+      if (closing === null) closing = performClose();
+      return closing;
     },
   };
 }
