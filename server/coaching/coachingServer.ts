@@ -89,10 +89,6 @@ export const DEFAULT_CAPABILITY_TTL_MS = 10 * 60 * 1000;
 export const MAX_CAPABILITIES_PER_ACCOUNT = 5;
 /** Max active launcher capabilities total across accounts (same fail-closed rule). */
 export const MAX_CAPABILITIES_TOTAL = 100;
-/** Max bytes a single SSE stream may buffer before it is cut (shared total
- * budget: anything larger than one run's whole stream is already invalid). */
-const MAX_SSE_BUFFERED_BYTES = MAX_COACHING_SSE_TOTAL_BYTES;
-
 /** Explicit bound for teardown: after this grace, remaining sockets are
  * force-destroyed instead of awaiting them indefinitely. */
 export const DEFAULT_SHUTDOWN_GRACE_MS = 2000;
@@ -883,7 +879,8 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
             const ok = response.write(encodeCoachingEventFrame(envelope));
             cursor = envelope.seq + 1;
             const buffered = (response.writableLength ?? 0);
-            if (buffered > MAX_SSE_BUFFERED_BYTES) {
+            // One run's whole stream is the buffer ceiling: anything larger is already invalid.
+            if (buffered > MAX_COACHING_SSE_TOTAL_BYTES) {
               closed = true;
               stopPoll();
               untrack();

@@ -65,9 +65,10 @@ import {
   classifyExtensionUiRequest,
   toSafeToolError,
 } from "./coachedToolPolicy.ts";
+import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
 import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
 
-export const COACHED_TOOLS_FLAG = "get_training_history,analyze_progress";
+export const COACHED_TOOLS_FLAG = COACHED_TOOL_NAMES.join(",");
 
 /**
  * Explicit analysis instructions. `--no-skills` disables ALL skill
@@ -298,17 +299,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-}
-
-/**
- * Deprecated compat shim: stderr is now drained and discarded (never
- * surfaced), so this redactor is no longer on the hot path. Kept exported
- * so existing imports keep resolving.
- */
-export function redactStderrLine(line: string): string {
-  return line
-    .replace(/(api[_-]?key|token|secret|password|service[_-]?role[_-]?key)(\s*[:=]\s*)(['"]?)[^\s'"]+/gi, "$1$2$3[redacted]")
-    .replace(/\b(eyJ[A-Za-z0-9_-]{10,}|sk-[A-Za-z0-9_-]{8,}|sb_[A-Za-z0-9_-]{8,})\b/g, "[redacted]");
 }
 
 function assistantStopFailed(message: unknown): string | null {

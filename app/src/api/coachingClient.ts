@@ -52,14 +52,6 @@ import type {
 export const COACHING_CAPABILITY_HEADER = "x-fit-trace-capability";
 
 const SSE_ACCEPT = "text/event-stream";
-/**
- * Shared wire budgets (single source in `@pi-fit-trace/api-contracts`): the
- * server sizes stored events with the SAME frame measure, so anything it
- * accepts is readable here. An over-budget frame rejects explicitly.
- */
-const MAX_SSE_FRAME_BYTES = MAX_COACHING_SSE_FRAME_BYTES;
-/** Total SSE body cap: matches the service's per-run budget + terminal reserve. */
-const MAX_SSE_TOTAL_BYTES = MAX_COACHING_SSE_TOTAL_BYTES;
 
 export type CoachingAccessTokenProvider = () => string | null | Promise<string | null>;
 
@@ -743,14 +735,14 @@ export class CoachingClient {
           // The cap measures the SAME full frame the server writes: payload +
           // delimiter (metadata included).
           for (const frame of taken.frames) {
-            if (utf8ByteLength(frame.block) + frame.delimiterBytes > MAX_SSE_FRAME_BYTES) {
+            if (utf8ByteLength(frame.block) + frame.delimiterBytes > MAX_COACHING_SSE_FRAME_BYTES) {
               rejectOversizeFrame();
               return;
             }
           }
           if (flush) {
             // A trailing unterminated block is bounded as a frame too.
-            if (buffer !== "" && utf8ByteLength(buffer) > MAX_SSE_FRAME_BYTES) {
+            if (buffer !== "" && utf8ByteLength(buffer) > MAX_COACHING_SSE_FRAME_BYTES) {
               rejectOversizeFrame();
               return;
             }
@@ -771,7 +763,7 @@ export class CoachingClient {
           // falsely rejected an exact-limit frame. A delimiter only ever ADDS
           // bytes, so any pending buffer already over the frame budget can never
           // become a valid frame — a safe early bound.
-          if (utf8ByteLength(buffer) > MAX_SSE_FRAME_BYTES) {
+          if (utf8ByteLength(buffer) > MAX_COACHING_SSE_FRAME_BYTES) {
             rejectOversizeFrame();
             return;
           }
@@ -807,12 +799,12 @@ export class CoachingClient {
             break;
           }
           totalBytes += read.value.byteLength;
-          if (totalBytes > MAX_SSE_TOTAL_BYTES) {
+          if (totalBytes > MAX_COACHING_SSE_TOTAL_BYTES) {
             finishError(new MalformedResponseError("events", "SSE body exceeds the size limit"));
             break;
           }
           buffer += decoder.decode(read.value, { stream: true });
-          if (utf8ByteLength(buffer) > MAX_SSE_TOTAL_BYTES) {
+          if (utf8ByteLength(buffer) > MAX_COACHING_SSE_TOTAL_BYTES) {
             finishError(new MalformedResponseError("events", "SSE frame exceeds the size limit"));
             break;
           }

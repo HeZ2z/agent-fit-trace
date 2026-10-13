@@ -62,6 +62,7 @@ import type {
   SubmitCoachingRunInput,
 } from "@pi-fit-trace/api-contracts";
 import {
+  COACHED_TOOL_NAMES,
   COACHING_PROTOCOL_VERSION,
   COACHING_SSE_RESERVED_FRAME_BYTES,
   COACHING_SSE_TERMINAL_RESERVE_BYTES,
@@ -178,26 +179,18 @@ export interface CoachingServiceOptions {
 
 export const DEFAULT_MAX_EVENTS_PER_RUN = 1000;
 /**
- * Per-run stored-event wire budget (UTF-8 frame bytes). Derived from the
- * shared SSE total budget so any run the service accepts fits the stream the
- * client reads; the terminal reserve keeps a cap-seal error + terminal frame
- * inside the total after the content budget is exhausted. A configured
- * `maxEventBytesPerRun` ABOVE this shared content budget is clamped down to it
- * (see {@link createCoachingService}): the run service can never accept more
- * content bytes than the client will read.
+ * Per-run content budget: the shared SSE total minus the terminal reserve, so
+ * any run the service accepts fits the stream the client reads.
  */
 export const DEFAULT_MAX_EVENT_BYTES_PER_RUN =
   MAX_COACHING_SSE_TOTAL_BYTES - COACHING_SSE_TERMINAL_RESERVE_BYTES;
 
 /**
- * Normalize the `maxEventBytesPerRun` option to a SAFE FINITE bound.
- *
- * A non-finite value (`NaN`/`±Infinity`) would defeat `Math.min`
- * (`Math.min(NaN, x)` is `NaN`), leaving the per-run byte cap permanently
- * untripped, and a negative value is invalid. Any such value falls back to
- * {@link DEFAULT_MAX_EVENT_BYTES_PER_RUN}; a finite value above the shared
- * content budget is clamped down to it so the service can never accept more
- * content bytes than the client will read.
+ * Normalize `maxEventBytesPerRun` to a SAFE FINITE bound: a non-finite value
+ * (`NaN`/`±Infinity`, which defeats `Math.min` and leaves the cap untripped) or
+ * a negative one falls back to {@link DEFAULT_MAX_EVENT_BYTES_PER_RUN}, and a
+ * finite value above it is clamped down so the service never accepts more
+ * content than the client will read.
  */
 export function normalizeMaxEventBytesPerRun(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
@@ -214,10 +207,7 @@ export const DEFAULT_RETENTION_MS = 30 * 60 * 1000;
 export const DEFAULT_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
 export const DEFAULT_CANCEL_GRACE_MS = 5000;
 
-export const COACHED_SERVICE_ALLOWLIST = [
-  "get_training_history",
-  "analyze_progress",
-] as const;
+export const COACHED_SERVICE_ALLOWLIST = COACHED_TOOL_NAMES;
 
 function isServiceToolAllowed(tool: string): boolean {
   return (COACHED_SERVICE_ALLOWLIST as readonly string[]).includes(tool);
@@ -297,7 +287,6 @@ interface StoredRun {
    * or runtime run_error): completion is withheld. */
   fatalError: { code: string; message: string } | null;
   expiresAt: number;
-  waiters: Array<() => void>;
 }
 
 function canonicalizeSubmit(input: {
@@ -440,17 +429,6 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     return stored;
   }
 
-  function notify(stored: StoredRun): void {
-    const waiters = stored.waiters.splice(0, stored.waiters.length);
-    for (const fn of waiters) {
-      try {
-        fn();
-      } catch {
-        // Subscriber wakeups are best-effort.
-      }
-    }
-  }
-
   function releaseCapacity(stored: StoredRun): void {
     if (stored.capacityHeld) {
       stored.capacityHeld = false;
@@ -485,7 +463,6 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       stored.snapshotDir = null;
       void cleanupSnapshotDir(dir).catch(() => undefined);
     }
-    notify(stored);
   }
 
   function expireSweep(): void {
@@ -616,7 +593,6 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         }
       }
     }
-    notify(stored);
     evictOverflow();
   }
 
@@ -638,7 +614,6 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       code: "EVENT_CAP",
       message,
     }));
-    notify(stored);
     const handle = stored.runtime;
     if (handle !== null) {
       try {
@@ -665,10 +640,9 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   function appendEvent(stored: StoredRun, payload: CoachingEventPayload): void {
     if (stored.terminated || stored.sealed !== null || stored.terminalIntent !== null) return;
     const envelope = buildEventEnvelope(stored, payload);
-    // Size the exact frame the server will write (UTF-8, metadata included),
-    // using the shared budget so anything the service accepts is readable by
-    // the browser client. A single event that cannot fit one frame is rejected
-    // explicitly (cap-seal → safe terminal); it is never stored or truncated.
+    // Size the exact frame the server will write (UTF-8, metadata included). A
+    // single event that cannot fit one frame is rejected explicitly (cap-seal →
+    // safe terminal); it is never stored or truncated.
     const bytes = coachingEventFrameBytes(envelope);
     if (bytes > MAX_COACHING_SSE_FRAME_BYTES) {
       sealRunForCap(stored, "event exceeds the maximum SSE frame size");
@@ -683,7 +657,6 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     if (payload.type !== "terminal" && stored.run.status === "queued") {
       stored.run = { ...stored.run, status: "running" };
     }
-    notify(stored);
   }
 
   /** Validate runtime analysis output before forwarding; malformed analysis
@@ -1068,7 +1041,6 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         hasAnalysis: false,
         fatalError: null,
         expiresAt: Date.now() + retentionMs,
-        waiters: [],
       };
       // Reserve BEFORE any await (concurrent dedup race): capacity is held
       // synchronously so a racing duplicate sees the reservation.

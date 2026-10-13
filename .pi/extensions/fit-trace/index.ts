@@ -56,10 +56,12 @@ import {
   validateWorkoutRecord,
 } from "@pi-fit-trace/core";
 
+import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
+
 import { JsonFileStorage, WorkoutStore } from "./store.ts";
 
-/** Read-only tools exposed to coached runs. */
-export const COACHED_TOOL_NAMES = ["get_training_history", "analyze_progress"] as const;
+/** Read-only tools exposed to coached runs (shared, browser-safe single source). */
+export { COACHED_TOOL_NAMES };
 
 /**
  * Trusted coached-mode flag. Set ONLY by the local coaching bridge when it

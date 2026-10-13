@@ -50,6 +50,14 @@ export const COACHING_RUNTIME_IDS = ["pi"] as const;
 export type CoachingRuntimeId = (typeof COACHING_RUNTIME_IDS)[number];
 
 /**
+ * Read-only tools a coached (analysis-only) run may expose. Single source of
+ * the names; each trust boundary (extension registration probe, RPC adapter
+ * allowlist, service-side event allowlist, host `--tools` flag) still applies
+ * its own check against this list.
+ */
+export const COACHED_TOOL_NAMES = ["get_training_history", "analyze_progress"] as const;
+
+/**
  * Cursor semantics (shared by the run service, HTTP server, and SSE):
  * - Event `seq` values are dense 0-based indexes into the run's event log.
  * - `lastSeq` is the seq of the last stored event, or `-1` when the log is
@@ -190,26 +198,6 @@ const utf8Encoder = new TextEncoder();
 /** UTF-8 byte length of a string (never its code-unit/character length). */
 export function utf8ByteLength(value: string): number {
   return utf8Encoder.encode(value).byteLength;
-}
-
-/**
- * Truncate `value` to at most `maxBytes` UTF-8 bytes WITHOUT splitting a
- * surrogate pair / multi-byte codepoint (the result is always valid UTF-8 and
- * `utf8ByteLength(result) <= maxBytes`). Returns `value` unchanged when it
- * already fits.
- */
-export function truncateUtf8(value: string, maxBytes: number): string {
-  if (maxBytes <= 0) return "";
-  if (utf8ByteLength(value) <= maxBytes) return value;
-  let bytes = 0;
-  let end = 0;
-  for (const char of value) {
-    const charBytes = utf8ByteLength(char);
-    if (bytes + charBytes > maxBytes) break;
-    bytes += charBytes;
-    end += char.length;
-  }
-  return value.slice(0, end);
 }
 
 /**

@@ -992,20 +992,48 @@ test("snapshots are validated store files with 0600 mode, isolated per run", asy
   await assert.rejects(readFile(a.snapshotFile, "utf8"));
 });
 
-test("snapshots drop unknown keys by construction and reject invalid records", async () => {
+test("snapshots drop unknown keys at every level by construction and reject invalid records", async () => {
   const raw = await loadFixture<Record<string, unknown>>("valid-strength.json");
+  const nested = JSON.parse(JSON.stringify(raw)) as {
+    exercises: Array<{ extra_exercise_key?: unknown; sets: Array<Record<string, unknown>> }>;
+  };
+  nested.exercises[0].extra_exercise_key = "sekret-exercise";
+  nested.exercises[0].sets[0].extra_set_key = "sekret-set";
   const snap = await writeSnapshotDir([
-    { ...raw, api_key: "sekret", nested: { service_role_key: "sekret" } },
+    {
+      ...nested,
+      pain: [{ area: "knee", level: 3, extra_pain_key: "sekret-pain" }],
+      api_key: "sekret",
+      nested: { service_role_key: "sekret" },
+    },
   ]);
   try {
     const text = await readFile(snap.snapshotFile, "utf8");
-    assert.ok(!text.includes("api_key"));
-    assert.ok(!text.includes("service_role_key"));
-    assert.ok(!text.includes("sekret"));
-    const parsed = JSON.parse(text) as { records: Array<Record<string, unknown>> };
+    for (const leaked of [
+      "api_key",
+      "service_role_key",
+      "extra_exercise_key",
+      "extra_set_key",
+      "extra_pain_key",
+      "sekret",
+    ]) {
+      assert.ok(!text.includes(leaked), `snapshot must not contain ${leaked}`);
+    }
+    const parsed = JSON.parse(text) as {
+      records: Array<{
+        api_key?: unknown;
+        nested?: unknown;
+        exercises: Array<{ extra_exercise_key?: unknown; sets: Array<{ extra_set_key?: unknown }> }>;
+        pain: Array<{ extra_pain_key?: unknown }>;
+      }>;
+    };
     assert.equal(parsed.records.length, 1);
-    assert.ok(!("api_key" in parsed.records[0]));
-    assert.ok(!("nested" in parsed.records[0]));
+    const record = parsed.records[0];
+    assert.ok(!("api_key" in record));
+    assert.ok(!("nested" in record));
+    assert.ok(!("extra_exercise_key" in record.exercises[0]));
+    assert.ok(!("extra_set_key" in record.exercises[0].sets[0]));
+    assert.ok(!("extra_pain_key" in record.pain[0]));
     const store = new WorkoutStore(new JsonFileStorage(snap.snapshotFile));
     assert.equal((await store.all()).length, 1);
   } finally {
