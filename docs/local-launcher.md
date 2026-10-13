@@ -93,7 +93,17 @@ listener — one port for the App shell, the data proxy, and coaching. The
 runtime bootstrap advertises `coaching: "same-origin"` (plus `piAvailable`
 when the presence probe ran).
 
+The App ships a Coach screen (`app/src/screens/CoachScreen.tsx`) gated on that
+exact runtime flag: it appears in the nav only when the launcher wires local
+coaching, and the same-origin `/coaching/*` client drives session/snapshot/run
+lifecycle, streamed text and tool progress, explicit cancel/reconnect, and a
+versioned account-bound resume. When the launcher probe reports
+`piAvailable: false` the screen shows a clear pi-not-installed notice and
+disables asking — workout logging and history keep working. Plain local/HTTP
+builds (no runtime flag) never show the Coach route.
+
 ## Limitations (current slice)
 
-- No coach screen, no run lifecycle UI, no packaged `npx` install.
+- The Coach UI is launcher-gated and local-only: there is no hosted cloud
+  coach, no Codex/OpenCode agent execution, and no packaged `npx` install.
 - No automatic migration between local/memory/Supabase stores.

@@ -715,6 +715,41 @@ p[data-testid$="-source"] {
 }
 
 /* ---------------------------------------------------------------------------
+ * Coach
+ * ------------------------------------------------------------------------- */
+
+.coach-lede {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.coach-meta {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.coach-text {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--panel);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.coach-tools {
+  padding-left: 1.25rem;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+/* ---------------------------------------------------------------------------
  * Responsive
  * ------------------------------------------------------------------------- */
 

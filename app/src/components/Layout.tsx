@@ -1,13 +1,22 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
+import { isCoachingEnabled } from "../api/runtimeMode.ts";
+import { runCoachLogoutCleanup } from "../coaching/coachLogoutRegistry.ts";
 
-const navLinks = [
+const baseNavLinks = [
   { to: "/", label: "History" },
   { to: "/workout/new", label: "Log Workout" },
   { to: "/analysis", label: "Analysis" },
   { to: "/plan", label: "Plan" },
 ];
+
+function navLinks() {
+  // The Coach entry is launcher-gated: only the explicit same-origin runtime
+  // flag shows it, so the App never advertises a fake cloud coach.
+  if (isCoachingEnabled()) return [...baseNavLinks, { to: "/coach", label: "Coach" }];
+  return baseNavLinks;
+}
 
 function AccountArea() {
   const { status, user, signOutSession } = useAuth();
@@ -19,6 +28,12 @@ function AccountArea() {
         <button
           type="button"
           onClick={() => {
+            // Tear down the mounted coach with A's still-live credentials
+            // BEFORE the auth session is cleared (the gate then unmounts the
+            // coach, so its own effects can never observe the transition).
+            // The registry may also retain a teardown from an already-unmounted
+            // Coach: it runs only when it belongs to this same account.
+            runCoachLogoutCleanup(user.id);
             void signOutSession().then(() => navigate("/login", { replace: true }));
           }}
         >
@@ -34,10 +49,10 @@ export function Layout() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <span className="app-title">pi-fit-trace</span>
+        <span className="app-title">agent-fit-trace</span>
         <nav aria-label="Primary">
           <ul className="nav-list">
-            {navLinks.map((link) => (
+            {navLinks().map((link) => (
               <li key={link.to}>
                 <NavLink
                   to={link.to}

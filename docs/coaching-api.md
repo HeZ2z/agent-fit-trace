@@ -4,9 +4,10 @@ Implemented by `server/coaching/coachingServer.ts` + `server/coaching/coachingSe
 shaped by `@pi-fit-trace/api-contracts` (`src/coaching.ts`).
 Loopback-only. The source-run launcher (`agent-fit-trace start`, see
 [`local-launcher.md`](local-launcher.md)) serves this server on the same
-origin as the App shell and data proxy; no app coach UI and no hosted cloud
-execution are shipped. This document covers only what the local server
-implements today.
+origin as the App shell and data proxy, and the App's launcher-gated Coach
+screen consumes it. Hosted cloud execution and Codex/OpenCode agent execution
+are not shipped; this document covers only what the local server implements
+today.
 
 Related contract: [`api-contract.md`](api-contract.md) (workout/analysis/plan shapes and envelopes).
 

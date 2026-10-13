@@ -333,6 +333,18 @@ export class CoachingClient {
     this.capabilityExpiresAt = 0;
   }
 
+  /**
+   * Non-throwing snapshot of the live capability for account-switch cleanup.
+   * Returns `null` when missing/expired so the caller skips server cleanup
+   * instead of sending another account's credentials (item 3).
+   */
+  capabilitySnapshot(): string | null {
+    if (this.capability === null || this.capability === "" || Date.now() >= this.capabilityExpiresAt) {
+      return null;
+    }
+    return this.capability;
+  }
+
   private requireCapability(): string {
     if (this.capability === null || this.capability === "" || Date.now() >= this.capabilityExpiresAt) {
       throw new ApiError({
@@ -345,10 +357,15 @@ export class CoachingClient {
 
   private async request<T>(
     path: string,
-    opts: { method?: string; jsonBody?: unknown; capability: string | null },
+    opts: { method?: string; jsonBody?: unknown; capability: string | null; accessTokenOverride?: string | null },
     parse: (data: unknown) => T,
   ): Promise<T> {
-    const accessToken = this.getAccessToken === undefined ? null : await this.getAccessToken();
+    const accessToken =
+      opts.accessTokenOverride !== undefined
+        ? opts.accessTokenOverride
+        : this.getAccessToken === undefined
+          ? null
+          : await this.getAccessToken();
     const headers: Record<string, string> = { accept: "application/json" };
     if (opts.jsonBody !== undefined) headers["content-type"] = "application/json";
     if (accessToken !== null && accessToken !== "") headers.authorization = `Bearer ${accessToken}`;
@@ -423,6 +440,11 @@ export class CoachingClient {
     );
   }
 
+  /**
+   * Read one of the caller's own sessions. Public contract is id-only:
+   * ownership is verified server-side, so no `accountId` is returned or
+   * trusted here.
+   */
   async readSession(id: string): Promise<CoachingSession> {
     assertNonBlankId(id, "sessionId");
     return this.request(
@@ -464,12 +486,29 @@ export class CoachingClient {
   }
 
   /** The run id travels in the path; the body carries only `{ reason? }`. */
-  async cancelRun(runId: string, reason?: string): Promise<CancelCoachingRunResult> {
+  async cancelRun(
+    runId: string,
+    reason?: string,
+    cleanup?: { accessToken?: string | null; capability?: string | null },
+  ): Promise<CancelCoachingRunResult> {
     assertNonBlankId(runId, "runId");
     const body = parseCancelCoachingRunBody(reason === undefined ? undefined : { reason });
+    const capability =
+      cleanup?.capability !== undefined ? (cleanup.capability ?? "") : this.requireCapability();
+    if (capability === "") {
+      throw new ApiError({
+        code: API_ERROR_CODES.UNAUTHENTICATED,
+        message: "Coaching capability is missing or expired; bootstrap again.",
+      });
+    }
     return this.request(
       `/coaching/runs/${encodeURIComponent(runId)}/cancel`,
-      { method: "POST", jsonBody: body, capability: this.requireCapability() },
+      {
+        method: "POST",
+        jsonBody: body,
+        capability,
+        ...(cleanup?.accessToken !== undefined ? { accessTokenOverride: cleanup.accessToken } : {}),
+      },
       parseCancelCoachingRunResult,
     );
   }
@@ -477,13 +516,27 @@ export class CoachingClient {
   /**
    * Cancel own active runs and invalidate own sessions server-side, then
    * forget the in-memory capability even when the call fails (stale caps
-   * must never survive logout or account switch).
+   * must never survive logout or account switch). Pass the captured cleanup
+   * credentials so an account-switch logout never sends the new account's
+   * bearer for the old account (item 3).
    */
-  async logout(): Promise<CoachingLogoutResult> {
+  async logout(cleanup?: { accessToken?: string | null; capability?: string | null }): Promise<CoachingLogoutResult> {
     try {
+      const capability =
+        cleanup?.capability !== undefined ? (cleanup.capability ?? "") : this.requireCapability();
+      if (capability === "") {
+        throw new ApiError({
+          code: API_ERROR_CODES.UNAUTHENTICATED,
+          message: "Coaching capability is missing or expired; bootstrap again.",
+        });
+      }
       return await this.request(
         "/coaching/logout",
-        { method: "POST", capability: this.requireCapability() },
+        {
+          method: "POST",
+          capability,
+          ...(cleanup?.accessToken !== undefined ? { accessTokenOverride: cleanup.accessToken } : {}),
+        },
         parseCoachingLogoutResult,
       );
     } finally {

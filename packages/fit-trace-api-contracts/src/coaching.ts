@@ -651,16 +651,16 @@ export function parseReadCoachingEventsResult(value: unknown): ReadCoachingEvent
   };
 }
 
-/** Guard the create/read session response (`{ id }`; stored rows also carry `accountId`). */
-export function parseCoachingSession(value: unknown): CoachingSession & { accountId?: string } {
+/**
+ * Guard the create/read session response (`{ id }` only).
+ *
+ * The public session contract is id-only: ownership is verified server-side
+ * (a cross-account read is `SESSION_NOT_FOUND`), so no `accountId` is exposed
+ * or trusted here.
+ */
+export function parseCoachingSession(value: unknown): CoachingSession {
   if (!isObject(value)) fail("(root)", "must be an object");
-  const session: CoachingSession & { accountId?: string } = {
-    id: assertNonBlankString(value.id, "id"),
-  };
-  if (value.accountId !== undefined) {
-    session.accountId = assertNonBlankString(value.accountId, "accountId");
-  }
-  return session;
+  return { id: assertNonBlankString(value.id, "id") };
 }
 
 /** Guard the snapshot-create response: the server-resolved snapshot. */

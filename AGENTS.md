@@ -6,7 +6,7 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md) when preparing commits and PRs. Use [.
 
 ## What this repo is
 
-`agent-fit-trace` is an Agent-powered workout tracking and coaching application that turns training logs into evidence-based progress analysis and draft training plans. The product targets a hosted cloud coach that requires no local Agent installation and local coaching through the user's Codex, pi, or OpenCode CLI. These Agent execution paths are planned; the current implementation includes the App, deterministic shared core, local/authenticated HTTP data access, and a pi Extension + training-coach Skill integration. The docs in `docs/` remain the product contract.
+`agent-fit-trace` is an Agent-powered workout tracking and coaching application that turns training logs into evidence-based progress analysis and draft training plans. The product targets local coaching through the user's existing Codex, pi, or OpenCode CLI and a hosted cloud coach that requires no local Agent installation. Local coaching through the user's pi CLI is implemented (launcher-gated via `agent-fit-trace start`); the Codex/OpenCode and hosted cloud execution paths are planned. The current implementation includes the App, deterministic shared core, local/authenticated HTTP data access, a pi Extension + training-coach Skill integration, and the local coaching flow. The docs in `docs/` remain the product contract.
 
 ## Layout
 
@@ -45,4 +45,4 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md) when preparing commits and PRs. Use [.
 
 ## Planned Agent integration
 
-Hosted cloud coaching and local Codex/pi/OpenCode execution are not implemented. Agent session transport, lifecycle, and shared tool access remain to be designed and verified. Existing local/HTTP data clients select storage access, not the Agent execution backend.
+Local coaching through the user's pi CLI IS implemented: the launcher-gated flow runs pi locally over the loopback coaching server. Hosted cloud coaching, and local coaching through the user's Codex or OpenCode CLI, are not implemented. Agent session transport, lifecycle, and shared tool access for those remaining backends remain to be designed and verified. Existing local/HTTP data clients select storage access, not the Agent execution backend.

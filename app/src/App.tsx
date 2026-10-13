@@ -1,15 +1,16 @@
 import { useMemo } from "react";
-import { BrowserRouter, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
 import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
 import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./api/httpFitTraceClient.ts";
-import { isHttpModeActive } from "./api/runtimeMode.ts";
+import { isCoachingEnabled, isHttpModeActive } from "./api/runtimeMode.ts";
 import { HistoryScreen } from "./screens/HistoryScreen.tsx";
 import { WorkoutEditorScreen } from "./screens/WorkoutEditorScreen.tsx";
 import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
 import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
+import { CoachScreen } from "./screens/CoachScreen.tsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.tsx";
 import {
   AuthCallbackScreen,
@@ -238,6 +239,18 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
               <RequireAuth legacyLoopback={legacyLoopback} client={client}>
                 <PlanScreen />
               </RequireAuth>
+            }
+          />
+          <Route
+            path="/coach"
+            element={
+              isCoachingEnabled() ? (
+                <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+                  <CoachScreen />
+                </RequireAuth>
+              ) : (
+                <Navigate to="/" replace />
+              )
             }
           />
           <Route path="/login" element={<SignInScreen />} />

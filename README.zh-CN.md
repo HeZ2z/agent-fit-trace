@@ -6,9 +6,9 @@
 
 ## 状态
 
-当前已实现 Web App、确定性共享核心、本地与认证 HTTP 数据访问，以及包含 Extension 工具和 `training-coach` Skill 的 pi 集成。
+当前已实现 Web App、确定性共享核心、本地与认证 HTTP 数据访问、包含 Extension 工具和 `training-coach` Skill 的 pi 集成，以及本地、由启动器开关控制的教练流程：`agent-fit-trace start` 启动器在同一源上提供 App 与回环教练服务器，App 的 Coach 界面（仅在该运行时标志存在时显示）驱动会话、流式运行、取消/重连，以及带版本、绑定账户的恢复。教练通过用户本地的 pi CLI 运行；`piAvailable: false` 会在界面中明确提示，而不是笼统的失败。
 
-计划支持两条 Agent 路径：无需本地安装 Agent 的托管云端教练，以及使用用户已有 Codex、pi、OpenCode CLI 的本地教练。这两条执行路径尚未实现。
+计划支持的 Agent 能力：无需本地安装 Agent 的托管云端教练，以及通过用户已有的 Codex 或 OpenCode CLI 进行的本地教练。这些执行路径尚未实现。
 
 ## 工作方式
 
