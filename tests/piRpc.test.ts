@@ -34,6 +34,9 @@ import {
 import { cleanupSnapshotDir, writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
 import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createCoachingService, storeFactorySource } from "../server/coaching/coachingService.ts";
+import type { CoachingService } from "../server/coaching/coachingService.ts";
+import { createPrincipalMemoryStores } from "../server/principalMemoryStore.ts";
 import { loadFixture } from "./helpers.ts";
 
 // --- framing unit tests (LF-only, CRLF, split chunks, U+2028/U+2029) ---
@@ -1304,7 +1307,12 @@ test("transient assistant error recovers via retry and settles completed", async
   proc.start();
   await waitForDone(c);
   assert.equal(c.done?.status, "completed");
-  assert.ok(c.events.some((e) => e.type === "run_error" && e.code === "AGENT_STOPPED"));
+  // A provider hiccup a retry resolved must stay private: no transient
+  // run_error may reach the service (it would be recorded as fatal).
+  assert.ok(
+    !c.events.some((e) => e.type === "run_error"),
+    "a retry-resolved transient error must not be published as a run_error",
+  );
   assert.ok(c.events.some((e) => e.type === "analysis_result"));
   await proc.close();
   await rm(dir, { recursive: true, force: true });
@@ -1896,4 +1904,137 @@ test("failed finish then close(): close rejects, no false success, snapshot reta
   assert.equal(doneCalls, 1);
   assert.equal(await readFile(snapshotFile, "utf8"), "{}");
   await rm(dir, { recursive: true, force: true });
+});
+
+// --- cross-layer: real adapter events folded by the real service ---
+// These wire the ACTUAL CoachedPiProcess (fake OS subprocess) into the actual
+// coaching service so adapter and service adjudication cannot disagree.
+
+const CROSS_PRINCIPAL = { id: "user-cross", email: "cross@example.com" };
+
+interface CrossLayerRun {
+  service: CoachingService;
+  runId: string;
+  dir: string;
+}
+
+/** Spawn a fake pi subprocess and feed its real adapter events into a live service. */
+async function adapterIntoService(script: string, analysis: unknown): Promise<CrossLayerRun> {
+  const dir = await mkdtemp(join(tmpdir(), "pi-cross-"));
+  const raw = await loadFixture("valid-strength.json");
+  const stores = createPrincipalMemoryStores();
+  await stores.storeFor(CROSS_PRINCIPAL).createWorkout(validateWorkoutRecord(raw).record);
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: (options) =>
+      new CoachedPiProcess({
+        sessionId: options.sessionId,
+        runId: options.runId,
+        prompt: options.prompt,
+        snapshotFile: options.snapshotFile,
+        snapshotDir: options.snapshotDir,
+        sessionDir: options.sessionDir,
+        extensionPath: "/tmp/ext.ts",
+        cwd: dir,
+        runTimeoutMs: 8000,
+        spawn: spawnReal(fakeScript(sessFile(dir), script), dir, {}, { FAKE_DETAILS: JSON.stringify(analysis) }),
+        onEvent: options.onEvent,
+        onDone: options.onDone,
+      }),
+    cancelGraceMs: 100,
+  });
+  const session = service.createSession(CROSS_PRINCIPAL);
+  const snapshot = await service.createSnapshot(CROSS_PRINCIPAL);
+  const submitted = await service.submitRun(CROSS_PRINCIPAL, {
+    sessionId: session.id,
+    prompt: "analyze my training",
+    idempotencyKey: `cross-${Math.random().toString(36).slice(2)}`,
+    snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+  });
+  return { service, runId: submitted.run.id, dir };
+}
+
+async function waitForRunTerminal(
+  service: CoachingService,
+  runId: string,
+  timeoutMs = 8000,
+): Promise<ReturnType<CoachingService["readRun"]>> {
+  const start = Date.now();
+  for (;;) {
+    const read = service.readRun(CROSS_PRINCIPAL, runId);
+    if (read.run.status === "completed" || read.run.status === "failed" || read.run.status === "cancelled") {
+      return read;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for the service run to terminate");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function cleanupCrossLayer(run: CrossLayerRun): Promise<void> {
+  await run.service.shutdown().catch(() => undefined);
+  await rm(run.dir, { recursive: true, force: true });
+}
+
+test("cross-layer: a retry-resolved provider error completes with no stale error", async () => {
+  const raw = await loadFixture("valid-strength.json");
+  const analysis = analyzeProgress([validateWorkoutRecord(raw).record], {});
+  const run = await adapterIntoService(
+    `send({ type: "agent_end", willRetry: true,
+       messages: [{ role: "assistant", stopReason: "error", errorMessage: "overloaded" }] });
+     send({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
+     send({ type: "auto_retry_end", success: true });
+     send({ type: "tool_execution_start", toolName: "analyze_progress", toolCallId: "c1" });
+     send({ type: "tool_execution_end", toolName: "analyze_progress", toolCallId: "c1",
+       result: { content: [{ type: "text", text: "ok" }], details: JSON.parse(process.env.FAKE_DETAILS) },
+       isError: false });
+     send({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
+     send({ type: "agent_settled" });`,
+    analysis,
+  );
+  try {
+    const read = await waitForRunTerminal(run.service, run.runId);
+    assert.equal(read.run.status, "completed");
+    const events = run.service.readEvents(CROSS_PRINCIPAL, run.runId).events;
+    assert.ok(
+      !events.some((envelope) => envelope.event.type === "run_error"),
+      "a successfully retried provider error must not leave a fatal run_error in the log",
+    );
+    assert.ok(events.some((envelope) => envelope.event.type === "terminal" && envelope.event.status === "completed"));
+  } finally {
+    await cleanupCrossLayer(run);
+  }
+});
+
+test("cross-layer: an unresolved provider error still fails the run", async () => {
+  const run = await adapterIntoService(
+    `send({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "overloaded" } });
+     send({ type: "agent_settled" });`,
+    {},
+  );
+  try {
+    const read = await waitForRunTerminal(run.service, run.runId);
+    assert.equal(read.run.status, "failed");
+    const events = run.service.readEvents(CROSS_PRINCIPAL, run.runId).events;
+    assert.ok(events.some((envelope) => envelope.event.type === "run_error" && envelope.event.code === "AGENT_STOPPED"));
+  } finally {
+    await cleanupCrossLayer(run);
+  }
+});
+
+test("cross-layer: exhausted auto-retry still fails the run", async () => {
+  const run = await adapterIntoService(
+    `send({ type: "auto_retry_end", success: false, finalError: "overloaded" });
+     send({ type: "agent_settled" });`,
+    {},
+  );
+  try {
+    const read = await waitForRunTerminal(run.service, run.runId);
+    assert.equal(read.run.status, "failed");
+    const events = run.service.readEvents(CROSS_PRINCIPAL, run.runId).events;
+    assert.ok(
+      events.some((envelope) => envelope.event.type === "run_error" && envelope.event.code === "AUTO_RETRY_EXHAUSTED"),
+    );
+  } finally {
+    await cleanupCrossLayer(run);
+  }
 });

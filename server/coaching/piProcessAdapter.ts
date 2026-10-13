@@ -903,7 +903,9 @@ export class CoachedPiProcess {
       for (const message of obj.messages) {
         const failure = assistantStopFailed(message);
         if (failure !== null) {
-          this.emit({ type: "run_error", code: "AGENT_STOPPED", message: failure });
+          // Transient provider failure: kept PRIVATE until settle or retry
+          // exhaustion. Publishing run_error here would make the service
+          // record it as fatal even when a later auto-retry succeeds.
           this.transientFailure = failure;
         }
       }
@@ -981,7 +983,13 @@ export class CoachedPiProcess {
         if (payload.code === "CANCELLED") {
           // Never a failure.
         } else if (payload.code === "AGENT_STOPPED") {
+          // Transient provider failure: keep it PRIVATE until settle/retry
+          // exhaustion. `run_error` is FINAL to the service, so a hiccup a
+          // retry still resolves must never be published here. A later clean
+          // message/turn end (or auto_retry_end success) clears it; the
+          // settle branch emits it only when it is still unresolved.
           this.transientFailure = payload.message;
+          continue;
         } else {
           this.failed = true;
           this.failMessage = payload.message;

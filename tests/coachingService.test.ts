@@ -28,6 +28,8 @@ import type {
   RuntimeFactory,
   RuntimeLaunchOptions,
 } from "../server/coaching/coachingService.ts";
+import { writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
+import type { SnapshotDir } from "../server/coaching/snapshotFile.ts";
 
 const PRINCIPAL = { id: "user-a", email: "a@example.com" };
 
@@ -403,6 +405,261 @@ test("completed onDone with a tool-end failure becomes failed", async () => {
     assert.equal(read.run.status, "failed");
     assert.match(read.run.failure?.message ?? "", /boom/i);
   } finally {
+    await service.shutdown();
+  }
+});
+
+// --- startup cancellation race: an awaited workspace write must re-verify ---
+
+/**
+ * Injected snapshot writer that writes the real per-run workspace, then parks
+ * inside the awaited window so cancel/logout/shutdown can win deterministically.
+ */
+function gatedWrite(): {
+  writeSnapshot: (records: WorkoutRecord[]) => Promise<SnapshotDir>;
+  started: Promise<void>;
+  release: () => void;
+  dir: () => string;
+} {
+  let dir = "";
+  let signalStarted: () => void = () => undefined;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    writeSnapshot: async (records) => {
+      const written = await writeSnapshotDir(records);
+      dir = written.dir;
+      signalStarted();
+      await gate;
+      return written;
+    },
+    started,
+    release,
+    dir: () => dir,
+  };
+}
+
+function idleRuntimeFactory(starts: RuntimeLaunchOptions[]): RuntimeFactory {
+  return (options) => {
+    starts.push(options);
+    return { start(): void {}, cancel(): void {}, async close(): Promise<void> {} };
+  };
+}
+
+test("logout during the snapshot write never starts an orphan runtime and cleans the new dir", async () => {
+  const starts: RuntimeLaunchOptions[] = [];
+  const stores = await seedWorkouts();
+  const gated = gatedWrite();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: idleRuntimeFactory(starts),
+    writeSnapshot: gated.writeSnapshot,
+    cancelGraceMs: 50,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const submitted = service.submitRun(PRINCIPAL, {
+      sessionId: session.id,
+      prompt: "analyze",
+      idempotencyKey: "race-logout",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    });
+    await gated.started;
+    // Logout wins the awaited workspace window: the reservation is removed.
+    await service.logoutAccount(PRINCIPAL);
+    assert.equal(service.activeRunCount(), 0);
+    gated.release();
+    await assert.rejects(submitted, /cancelled before it started/i);
+    assert.equal(starts.length, 0, "no runtime may be constructed/started after the run was removed");
+    assert.ok(gated.dir() !== "");
+    assert.equal(await exists(gated.dir()), false, "the fresh run workspace must be cleaned up");
+  } finally {
+    gated.release();
+    await service.shutdown();
+  }
+});
+
+test("shutdown during the snapshot write reports cancelled without an orphan runtime", async () => {
+  const starts: RuntimeLaunchOptions[] = [];
+  const stores = await seedWorkouts();
+  const gated = gatedWrite();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: idleRuntimeFactory(starts),
+    writeSnapshot: gated.writeSnapshot,
+    cancelGraceMs: 50,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const submitted = service.submitRun(PRINCIPAL, {
+      sessionId: session.id,
+      prompt: "analyze",
+      idempotencyKey: "race-shutdown",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    });
+    await gated.started;
+    await service.shutdown();
+    assert.equal(service.activeRunCount(), 0);
+    gated.release();
+    const result = await submitted;
+    assert.equal(result.run.status, "cancelled");
+    assert.equal(starts.length, 0, "no runtime may be constructed/started for a cancelled reservation");
+    assert.ok(gated.dir() !== "");
+    assert.equal(await exists(gated.dir()), false, "the fresh run workspace must be cleaned up");
+  } finally {
+    gated.release();
+    await service.shutdown().catch(() => undefined);
+  }
+});
+
+test("a pending snapshot-write failure after logout does not erase a newer run's idempotency record", async () => {
+  const stores = await seedWorkouts();
+  const control: { failFirst?: (error: Error) => void } = {};
+  let calls = 0;
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: idleRuntimeFactory([]),
+    writeSnapshot: (records) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<SnapshotDir>((_resolve, reject) => {
+          control.failFirst = reject;
+        });
+      }
+      return writeSnapshotDir(records);
+    },
+    cancelGraceMs: 50,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL, "sess-race");
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const input = {
+      sessionId: session.id,
+      prompt: "analyze",
+      idempotencyKey: "shared-key",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    };
+    const first = service.submitRun(PRINCIPAL, input);
+    const firstRejected = assert.rejects(first, /workspace is temporarily unavailable/i);
+    await service.logoutAccount(PRINCIPAL);
+    // Same user returns and reuses the same session id + idempotency key.
+    service.createSession(PRINCIPAL, "sess-race");
+    const snapshot2 = await service.createSnapshot(PRINCIPAL);
+    const secondInput = {
+      ...input,
+      snapshot: { snapshotId: snapshot2.snapshotId, source: snapshot2.source, accountId: snapshot2.accountId },
+    };
+    const second = await service.submitRun(PRINCIPAL, secondInput);
+    const failFirst = control.failFirst;
+    assert.ok(failFirst !== undefined);
+    failFirst(new Error("workspace write failed"));
+    await firstRejected;
+    const replay = await service.submitRun(PRINCIPAL, secondInput);
+    assert.equal(replay.replayed, true, "the newer run's idempotency record must survive the stale failure");
+    assert.equal(replay.run.id, second.run.id);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("direct cancelRun during the gated snapshot write never starts an orphan runtime", async () => {
+  const starts: RuntimeLaunchOptions[] = [];
+  const stores = await seedWorkouts();
+  const gated = gatedWrite();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: idleRuntimeFactory(starts),
+    writeSnapshot: gated.writeSnapshot,
+    cancelGraceMs: 50,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const input = {
+      sessionId: session.id,
+      prompt: "analyze",
+      idempotencyKey: "race-cancel",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    };
+    const submitted = service.submitRun(PRINCIPAL, input);
+    await gated.started;
+    // The reservation is published synchronously BEFORE the gated write, so an
+    // identical idempotency-key submit replays the SAME reserved queued run.
+    // This discovers the run id through the production service — no internal
+    // map is exposed and no path is bypassed.
+    const duplicate = await service.submitRun(PRINCIPAL, input);
+    assert.equal(duplicate.replayed, true, "the reserved run must be replayable mid-submit");
+    assert.equal(duplicate.run.status, "queued");
+    const runId = duplicate.run.id;
+    // No runtime handle exists yet: the confirmed cancel is terminal and
+    // releases the reservation's held capacity immediately.
+    const cancelled = service.cancelRun(PRINCIPAL, runId, "user cancel");
+    assert.equal(cancelled.run.status, "cancelled");
+    assert.equal(service.activeRunCount(), 0, "a confirmed cancel releases the reservation's capacity");
+    gated.release();
+    const result = await submitted;
+    assert.equal(result.run.id, runId);
+    assert.equal(result.run.status, "cancelled", "the submit must report the real cancelled run");
+    assert.equal(starts.length, 0, "no runtime may be constructed/started after a direct cancelRun");
+    assert.ok(gated.dir() !== "");
+    assert.equal(await exists(gated.dir()), false, "the fresh run workspace must be cleaned up");
+  } finally {
+    gated.release();
+    await service.shutdown();
+  }
+});
+
+test("a cancelled reservation retains its idempotency mapping for identical retries until retention", async () => {
+  const starts: RuntimeLaunchOptions[] = [];
+  const stores = await seedWorkouts();
+  const gated = gatedWrite();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: idleRuntimeFactory(starts),
+    writeSnapshot: gated.writeSnapshot,
+    retentionMs: 200,
+    cancelGraceMs: 50,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL, "sess-cancel-idem");
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const input = {
+      sessionId: session.id,
+      prompt: "analyze",
+      idempotencyKey: "cancel-idem-key",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    };
+    const submitted = service.submitRun(PRINCIPAL, input);
+    await gated.started;
+    const runId = (await service.submitRun(PRINCIPAL, input)).run.id;
+    service.cancelRun(PRINCIPAL, runId, "user cancel");
+    gated.release();
+    const first = await submitted;
+    assert.equal(first.run.id, runId);
+    assert.equal(first.run.status, "cancelled");
+
+    // Identical retry while the cancelled run is retained: the SAME cancelled
+    // run is replayed and no second run is ever launched under the key.
+    const replay = await service.submitRun(PRINCIPAL, input);
+    assert.equal(replay.replayed, true, "the cancelled run's idempotency mapping must be retained");
+    assert.equal(replay.run.id, runId);
+    assert.equal(replay.run.status, "cancelled");
+    assert.equal(service.runCount(), 1, "an identical retry must not create a second run");
+    assert.equal(starts.length, 0, "an identical retry must never launch another run");
+
+    // Retention drops the run (and its mapping with it): the key no longer
+    // resolves to the removed reservation.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await assert.rejects(service.submitRun(PRINCIPAL, input), /not found/i);
+  } finally {
+    gated.release();
     await service.shutdown();
   }
 });

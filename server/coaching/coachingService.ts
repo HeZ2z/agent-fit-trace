@@ -78,6 +78,7 @@ import {
 } from "@pi-fit-trace/core";
 import type { PrincipalStoreFactory } from "../auth/verifier.ts";
 import { cleanupSnapshotDir, writeSnapshotDir } from "./snapshotFile.ts";
+import type { SnapshotDir } from "./snapshotFile.ts";
 
 /** Per-request read context. The bearer token is ephemeral: it is used only
  * as an `Authorization` header value against the fixed server-configured
@@ -160,6 +161,12 @@ export interface CoachingServiceOptions {
   cancelGraceMs?: number;
   /** Snapshot source label attached to created snapshots. */
   snapshotSource?: string;
+  /**
+   * Test seam for the per-run snapshot workspace writer: replaces the real
+   * validated {@link writeSnapshotDir} so tests can bound/observe the awaited
+   * workspace write window. Production never overrides it.
+   */
+  writeSnapshot?: (records: WorkoutRecord[]) => Promise<SnapshotDir>;
 }
 
 export const DEFAULT_MAX_EVENTS_PER_RUN = 1000;
@@ -322,6 +329,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   const snapshotTtlMs = options.snapshotTtlMs ?? DEFAULT_SNAPSHOT_TTL_MS;
   const cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   const snapshotSource = options.snapshotSource ?? "authenticated-store";
+  const writeSnapshot = options.writeSnapshot ?? writeSnapshotDir;
 
   const sessions = new Map<string, StoredSession>();
   const snapshots = new Map<string, StoredSnapshot>();
@@ -998,12 +1006,53 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       let dir: string;
       let snapshotFile: string;
       try {
-        ({ dir, snapshotFile } = await writeSnapshotDir(stored.records));
+        ({ dir, snapshotFile } = await writeSnapshot(stored.records));
       } catch {
-        runs.delete(runId);
-        idempotency.delete(key);
+        // Release ONLY what this reservation still owns: after a concurrent
+        // cancel/logout/shutdown the idempotency mapping may already describe
+        // a NEWER run (same account/session/key), so an unconditional delete
+        // would erase unrelated idempotency state.
+        if (runs.get(runId) === entry) runs.delete(runId);
+        if (idempotency.get(key) === runId) idempotency.delete(key);
         releaseCapacity(entry);
         throw new CoachingServiceError("STORAGE_UNAVAILABLE", "Snapshot workspace is temporarily unavailable.");
+      }
+
+      // The await yielded: logout/cancel/shutdown may have terminated or
+      // removed this reservation and released its capacity meanwhile. Re-verify
+      // run + session ownership and service liveness BEFORE constructing the
+      // runtime: a stale continuation must never spawn an orphan child, must
+      // not recreate removed state, and only cleans up its OWN fresh dir (the
+      // session dir belongs to the session and is never touched here).
+      const stillReserved =
+        !shutDown &&
+        runs.get(runId) === entry &&
+        !entry.terminated &&
+        !entry.cancelRequested &&
+        // This reservation must still hold global execution AUTHORITY, not
+        // merely nonterminal identity: a confirmed cancel/shutdown releases
+        // capacity (capacityHeld=false) while keeping the run for reads, and a
+        // stale continuation must never spawn a child after that.
+        entry.capacityHeld &&
+        sessions.get(session.id) === session &&
+        session.accountId === principal.id;
+      if (!stillReserved) {
+        // Await the cleanup: the caller must never observe a completed
+        // cancellation while the fresh workspace is still on disk.
+        await cleanupSnapshotDir(dir).catch(() => undefined);
+        releaseCapacity(entry);
+        if (runs.get(runId) === entry) {
+          // cancelRun/shutdown keep the run: report its real terminal state and
+          // RETAIN the idempotency mapping so an identical retry replays this
+          // same cancelled run (never launches a second run under the key). The
+          // mapping is dropped with the run on retention/eviction, keeping the
+          // idempotency contract honest for as long as the run itself survives.
+          return { run: cloneRun(entry.run), lastSeq: lastSeqOf(entry), replayed: false, created: true };
+        }
+        // Removed (logout/eviction): nothing remains to serve, so the mapping is
+        // dropped only here — never erasing another reservation's mapping.
+        if (idempotency.get(key) === runId) idempotency.delete(key);
+        throw new CoachingServiceError("RUN_NOT_FOUND", "Coaching run was cancelled before it started.");
       }
       entry.snapshotDir = dir;
 
