@@ -69,16 +69,16 @@ function clearStoredCoachResume(): void {
   }
 }
 
-function isMissingRunError(error: unknown): boolean {
-  if (error instanceof ApiError) {
-    return (
-      error.code === "NOT_FOUND" ||
-      error.code === "RUN_NOT_FOUND" ||
-      error.code === "SESSION_NOT_FOUND" ||
-      error.status === 404
-    );
-  }
-  return false;
+/** Structured missing-run proof only: RUN_NOT_FOUND. Generic 404/network/auth never resets. */
+function isDefinitiveMissingRunError(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "RUN_NOT_FOUND";
+}
+
+/** Resume-read proof only: RUN_NOT_FOUND or SESSION_NOT_FOUND. Generic NOT_FOUND stays ambiguous. */
+function isDefinitiveMissingResumeError(error: unknown): boolean {
+  return (
+    error instanceof ApiError && (error.code === "RUN_NOT_FOUND" || error.code === "SESSION_NOT_FOUND")
+  );
 }
 
 /**
@@ -319,6 +319,45 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     setError(null);
   }, []);
 
+  /**
+   * Release a definitively-missing run. No-op on stale generation/run
+   * identity or an already-terminal run — callers must verify operation
+   * (generation/account/run) before invoking. Keeps coherent output, marks
+   * it unavailable, and offers New analysis without a reload.
+   */
+  const releaseMissingRun = useCallback(
+    (gen: number, expectedRunId: string, message: string): void => {
+      if (generationRef.current !== gen) return;
+      if (runIdRef.current !== expectedRunId) return;
+      if (terminatedRef.current) return;
+      try {
+        subscriptionRef.current?.close();
+      } catch {
+        // Detach is best-effort.
+      } finally {
+        subscriptionRef.current = null;
+      }
+      // Invalidate old stream attempts so a late frame can never fold.
+      attemptRef.current += 1;
+      streamLiveRef.current = false;
+      runIdRef.current = null;
+      lastConsumedRef.current = -1;
+      setExpiredFirstSeq(0);
+      pendingRetryRef.current = null;
+      restoreRecordRef.current = null;
+      cancelRequestedRef.current = false;
+      cancelInflightRef.current = false;
+      cancelUnconfirmedRef.current = false;
+      resolvingCancelRef.current = false;
+      postInflightRef.current = false;
+      terminatedRef.current = false;
+      clearStoredCoachResume();
+      setError(message);
+      beginPhase("failed");
+    },
+    [beginPhase],
+  );
+
   // Item 3: when the account identity changes, reset the visible fold during
   // render — before React paints — so a switch never flashes the previous
   // account's results, even for one frame. The server cleanup (cancel/logout
@@ -458,6 +497,15 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
             beginPhase("expired");
             return;
           }
+          if (isDefinitiveMissingRunError(streamError)) {
+            // Structured proof the run is gone; identity already verified above.
+            releaseMissingRun(
+              gen,
+              runId,
+              "Coach run is no longer available (RUN_NOT_FOUND). Previous output is kept; start a new analysis.",
+            );
+            return;
+          }
           // Any nonterminal stream failure is a disconnect: no terminal
           // envelope arrived (a real run failure IS a terminal ENVELOPE folded
           // into `terminatedRef`, handled above), so the run is still live
@@ -473,7 +521,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         },
       );
     },
-    [beginPhase, client, foldEvent],
+    [beginPhase, client, foldEvent, releaseMissingRun],
   );
 
   /**
@@ -893,8 +941,21 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       if (generationRef.current !== opGen) return;
       if (accountRef.current !== opAccount) return;
       if (runIdRef.current !== opRunId) return;
+      // Terminal wins over a late cancel reply: never change done/cancelled/failed.
+      if (terminatedRef.current) {
+        cancelInflightRef.current = false;
+        return;
+      }
+      if (isDefinitiveMissingRunError(caught)) {
+        // Structured proof the target is gone; ownership verified above.
+        releaseMissingRun(
+          opGen,
+          opRunId,
+          "Coach run is no longer available (RUN_NOT_FOUND). Previous output is kept; start a new analysis.",
+        );
+        return;
+      }
       cancelInflightRef.current = false;
-      if (terminatedRef.current) return;
       // Never claim cancelled without server confirmation (item 2): surface
       // the failure and stay cancelling so the user can retry the cancel.
       // The subscription stays attached; a late completed terminal still wins.
@@ -915,7 +976,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     }
     // Otherwise keep the subscription attached until the server terminal
     // confirms the cancellation — do not freeze the transcript early (item 2).
-  }, [attachStream, beginPhase, canCancelNow, client, expiredFirstSeq]);
+  }, [attachStream, beginPhase, canCancelNow, client, expiredFirstSeq, releaseMissingRun]);
 
   /** Start over with a fresh question (the session is reused; the key is not). */
   const newAnalysis = useCallback((): void => {
@@ -1144,7 +1205,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         attachStream(gen, session.id, read.run.id, 0);
       } catch (caught) {
         if (generationRef.current !== gen) return;
-        if (isMissingRunError(caught)) {
+        if (isDefinitiveMissingResumeError(caught)) {
           // DEFINITIVE: the stored session/run does not exist for this account
           // (gone, or owned by another identity). Only this may reset — and a
           // cancel with no verifiable run is honestly cancelled.

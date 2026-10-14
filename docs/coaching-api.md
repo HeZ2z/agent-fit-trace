@@ -159,7 +159,12 @@ the fold.
 
 Reconnect re-bootstraps an expired capability (without repeating the run POST)
 and resumes from `last-consumed + 1`; `EXPIRED_CURSOR` reloads from the
-retention start. Neither ever resubmits.
+retention start. Neither ever resubmits. The one exception is a DEFINITIVE
+structured `RUN_NOT_FOUND` on the reconnected stream (or on cancel): the run
+is proven gone, so the owner releases it — run/resume/cursor/inflight ids
+cleared, coherent output kept, honest unavailable error — and offers New
+analysis without a reload. A generic route `NOT_FOUND`, network/auth, or
+parser failure never releases: the run is retained and reconnect stays.
 
 ### Restore and cancel carry-through
 
@@ -167,9 +172,10 @@ A reload re-verifies the persisted session/run (`GET` session + run) and replays
 events from `0` without a POST. A cancel requested while a restore is still
 verifying bootstrap/session/read is carried to the ACTUAL restored run once
 ownership is verified — a real server cancel plus its terminal — never a local
-"cancelled" that later resumes the stream. Only a DEFINITIVE missing/ownership
-failure (`404` / `SESSION_NOT_FOUND` / `RUN_NOT_FOUND`) resets the resume; an
-ambiguous network/auth failure keeps the resume and the cancel intent and
+"cancelled" that later resumes the stream. Only a DEFINITIVE structured
+missing failure (`RUN_NOT_FOUND`, or `SESSION_NOT_FOUND` on the session read)
+resets the resume; a generic route `NOT_FOUND` (bare 404), network/auth, or
+parser failure keeps the resume and the cancel intent and
 offers an explicit Retry restore. A read that proves no run exists still
 resolves to cancelled honestly.
 
