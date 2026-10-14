@@ -849,10 +849,13 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     cancelRequestedRef.current = true;
     // A terminal that already won the race keeps its verdict.
     if (runId === null) {
-      if (current === "restoring") {
-        // A restore is verifying a KNOWN run: keep the cancel intent and let
-        // the restore continuation cancel the ACTUAL run once ownership is
-        // verified — never a local cancelled that later resumes the stream.
+      if (current === "restoring" || restoreRecordRef.current !== null) {
+        // A restore is verifying a KNOWN run (or a cancel already recorded
+        // that intent and moved to cancelling while the restore is still
+        // pending): keep the cancel intent and let the restore continuation
+        // cancel the ACTUAL run once ownership is verified — never a local
+        // cancelled that later resumes the stream. Repeated taps stay
+        // idempotent until ownership is verified.
         beginPhase("cancelling");
         return;
       }
@@ -873,10 +876,23 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     const resumeFrom = current === "expired" ? expiredFirstSeq : lastConsumedRef.current + 1;
     beginPhase("cancelling");
     cancelInflightRef.current = true;
+    // Operation identity: a late bootstrap/cancel settlement after an account
+    // switch, logout, teardown, or superseding run must never touch the new
+    // owner's inflight flag, error, or stream. Checked after every await
+    // BEFORE shared state is touched or the tail is reattached.
+    const opGen = generationRef.current;
+    const opAccount = accountRef.current;
+    const opRunId = runId;
     try {
       if (!client.isBootstrapped) await client.bootstrap();
-      await client.cancelRun(runId);
+      if (generationRef.current !== opGen) return;
+      if (accountRef.current !== opAccount) return;
+      if (runIdRef.current !== opRunId) return;
+      await client.cancelRun(opRunId);
     } catch (caught) {
+      if (generationRef.current !== opGen) return;
+      if (accountRef.current !== opAccount) return;
+      if (runIdRef.current !== opRunId) return;
       cancelInflightRef.current = false;
       if (terminatedRef.current) return;
       // Never claim cancelled without server confirmation (item 2): surface
@@ -885,6 +901,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       setError(friendlyCoachError(caught));
       return;
     }
+    if (generationRef.current !== opGen) return;
+    if (accountRef.current !== opAccount) return;
+    if (runIdRef.current !== opRunId) return;
     cancelInflightRef.current = false;
     if (terminatedRef.current) return;
     if (!streamLiveRef.current) {
