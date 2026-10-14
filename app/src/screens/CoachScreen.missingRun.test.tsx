@@ -1,5 +1,5 @@
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
@@ -454,6 +454,7 @@ describe("definitive missing-run recovery", () => {
     const cancelGate = new Promise<Response>((resolve) => {
       releaseCancel = resolve;
     });
+    let emitTerminal!: () => void;
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       const target = String(url);
       const method = (init?.method ?? "GET").toUpperCase();
@@ -471,15 +472,17 @@ describe("definitive missing-run recovery", () => {
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(first);
-            // Terminal wins while the cancel below is still pending.
-            setTimeout(() => {
+            // Deterministic gate: the completed terminal is emitted only
+            // after the test observes the cancel POST held server-side.
+            // No timer, so slow CI cannot reorder terminal before cancel.
+            emitTerminal = () => {
               try {
                 controller.enqueue(terminal);
                 controller.close();
               } catch {
                 // Detach is best-effort.
               }
-            }, 20);
+            };
           },
         });
         return new Response(stream, { headers: { "content-type": "text/event-stream" } });
@@ -498,11 +501,15 @@ describe("definitive missing-run recovery", () => {
     await user.click(screen.getByRole("button", { name: /ask coach/i }));
     expect(await screen.findByTestId("coach-text")).toHaveTextContent(/partial/);
 
-    // Cancel is dispatched and held server-side; the terminal wins meanwhile.
+    // Cancel is dispatched and held server-side; the terminal is emitted
+    // only after the held cancel is observed, so ordering is deterministic.
     await user.click(screen.getByRole("button", { name: /^cancel$/i }));
     await waitFor(() => expect(cancelCalls).toBe(1));
 
     // Completed terminal wins while the cancel is still pending.
+    await act(async () => {
+      emitTerminal();
+    });
     await waitFor(() => expect(screen.queryByText(/cancelling coach run/i)).not.toBeInTheDocument());
     expect(await screen.findAllByRole("button", { name: /new analysis/i })).not.toHaveLength(0);
     expect(await screen.findByTestId("coach-text")).toHaveTextContent(/partial/);
@@ -510,7 +517,11 @@ describe("definitive missing-run recovery", () => {
 
     // The late same-generation cancel reply proves nothing new: completed stays.
     releaseCancel(apiError("RUN_NOT_FOUND", "Coaching run not found.", 404));
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Flush the held cancel reply deterministically (no sleep): give the
+    // ignored late reply a chance to reach UI state, then assert stability.
+    await act(async () => {
+      await cancelGate;
+    });
     expect(await screen.findByTestId("coach-text")).toHaveTextContent(/partial/);
     expect(screen.queryByTestId("coach-error")).not.toBeInTheDocument();
     expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
