@@ -103,6 +103,41 @@ test("supabase verifier resolves sub/email and rejects bad responses", async () 
   });
 });
 
+test("supabase verifier carries only a trusted boolean is_anonymous classification", async () => {
+  async function verifyBody(body: unknown) {
+    const verifier = createSupabaseVerifier({
+      supabaseUrl: "http://auth.invalid",
+      publishableKey: "pub-key",
+      fetchImpl: (async () => jsonResponse(200, body)) as typeof fetch,
+    });
+    return verifier.verify("token");
+  }
+
+  assert.deepEqual(await verifyBody({ id: "guest-1", is_anonymous: true }), {
+    id: "guest-1",
+    isAnonymous: true,
+  });
+  assert.deepEqual(await verifyBody({ id: "user-1", email: "u@example.com", is_anonymous: false }), {
+    id: "user-1",
+    email: "u@example.com",
+    isAnonymous: false,
+  });
+
+  // Missing, null, or non-boolean classification is not trusted; an absent
+  // email is also not evidence of anonymity.
+  for (const body of [
+    { id: "user-2" },
+    { id: "user-2", is_anonymous: null },
+    { id: "user-2", is_anonymous: "false" },
+    { id: "user-2", is_anonymous: 0 },
+  ]) {
+    const principal = await verifyBody(body);
+    assert.equal(principal.id, "user-2");
+    assert.equal(principal.isAnonymous, undefined);
+    assert.ok(!("isAnonymous" in principal));
+  }
+});
+
 function rowFor(record: WorkoutRecord, ownerId = "user-1"): unknown {
   return { payload: record, owner_id: ownerId, id: record.id, date: record.date };
 }

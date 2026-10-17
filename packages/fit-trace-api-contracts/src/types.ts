@@ -66,6 +66,18 @@ export const FIT_TRACE_API_VERSION = "v1";
 export interface AuthPrincipal {
   id: string;
   email?: string;
+  /**
+   * Trusted anonymous classification copied from the identity provider's
+   * verified user response (`GET /auth/v1/user` → `is_anonymous`).
+   *
+   * `undefined` means the provider did not return a usable classification
+   * (or this principal came from a verifier that cannot classify it). It is
+   * deliberately not inferred from a missing email, request body, client
+   * cache, or user metadata. Account-only capabilities must treat both
+   * `true` and `undefined` as ineligible; cloud policy and quotas are owned by
+   * the sibling identity slice, not by a helper here.
+   */
+  isAnonymous?: boolean;
 }
 
 /** Public (unauthenticated) bootstrap configuration served by the API. */

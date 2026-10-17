@@ -18,6 +18,13 @@
 export interface SupabaseAuthUser {
   id: string;
   email?: string;
+  /**
+   * Trusted anonymous classification from `GET /auth/v1/user` only. Token
+   * responses, stored sessions, request bodies, and metadata are never
+   * authoritative. `undefined` means "not verified yet" or "provider did not
+   * classify"; callers must fail closed for account-only capabilities.
+   */
+  isAnonymous?: boolean;
 }
 
 export interface SupabaseSession {
@@ -55,6 +62,18 @@ function toUser(raw: unknown): SupabaseAuthUser | null {
     id,
     ...(typeof email === "string" && email !== "" ? { email } : {}),
   };
+}
+
+/**
+ * Parse the verified `GET /auth/v1/user` response. This is the only place the
+ * client accepts `is_anonymous`; token-grant responses are not used for
+ * classification, and cached sessions never carry it.
+ */
+function toVerifiedUser(raw: unknown): SupabaseAuthUser | null {
+  const user = toUser(raw);
+  if (user === null) return null;
+  const isAnonymous = (raw as { is_anonymous?: unknown }).is_anonymous;
+  return typeof isAnonymous === "boolean" ? { ...user, isAnonymous } : user;
 }
 
 function sessionFromTokenResponse(body: unknown): SupabaseSession | null {
@@ -142,6 +161,52 @@ export async function signInWithPassword(
   return session;
 }
 
+/**
+ * Create an anonymous guest session.
+ *
+ * GoTrue routes `POST /auth/v1/signup` to `SignupAnonymously` when the body
+ * carries neither `email` nor `phone` (pinned source:
+ * `supabase/auth@ce9a8eee0...`, `internal/api/api.go`), and rejects it with 422
+ * when anonymous sign-ins are disabled or global signup is disabled.
+ *
+ * The token response is used for tokens only: guest classification is read
+ * from the subsequent verified `GET /auth/v1/user` call, and a missing
+ * `is_anonymous` stays `undefined` (fail closed). Callers must not treat this
+ * as account eligibility. Public AuthContext hook names planned for the next
+ * slice: `signInAsGuest`, `beginGuestUpgrade`, `refreshVerifiedUser`.
+ */
+export async function signInAnonymously(
+  config: SupabaseAuthConfig,
+  fetchImpl: AuthFetch = fetch,
+): Promise<SupabaseSession> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${config.supabaseUrl}/auth/v1/signup`, {
+      method: "POST",
+      headers: authHeaders(config),
+      body: JSON.stringify({}),
+    });
+  } catch {
+    throw unavailableError();
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    // 429/5xx are transient; 4xx (422 disabled, 400 invalid) are terminal.
+    if (response.status === 429 || response.status >= 500) throw unavailableError();
+    throw new AuthError(
+      "GUEST_SIGN_IN_FAILED",
+      authErrorMessage(body, "Guest sessions are unavailable. Try again later."),
+      response.status,
+    );
+  }
+  const session = sessionFromTokenResponse(body);
+  if (session === null) {
+    throw new AuthError("GUEST_SIGN_IN_FAILED", "Guest sign-in returned an invalid session.");
+  }
+  const verified = await fetchAuthUser(config, session.accessToken, fetchImpl);
+  return { ...session, user: verified };
+}
+
 /** Global sign-out; failures still clear local state (see AuthProvider). */
 export async function signOut(
   config: SupabaseAuthConfig,
@@ -209,7 +274,7 @@ export async function fetchAuthUser(
     );
   }
   const body: unknown = await response.json().catch(() => null);
-  const user = toUser(body);
+  const user = toVerifiedUser(body);
   if (user === null) throw new AuthError("SESSION_EXPIRED", "Session is no longer valid.");
   return user;
 }
@@ -296,7 +361,13 @@ export function parseAuthCallbackHash(hash: string): CallbackSession | null {
   };
 }
 
-/** Deserialize a stored session; anything malformed is discarded (null). */
+/**
+ * Deserialize a stored session; anything malformed is discarded (null).
+ *
+ * Only the stable id/email are restored. `isAnonymous` is intentionally not
+ * read from storage: cached classification must never authorize anything
+ * before `GET /auth/v1/user` verifies the session.
+ */
 export function loadStoredSession(raw: string | null): SupabaseSession | null {
   if (raw === null || raw === "") return null;
   try {
@@ -331,7 +402,13 @@ export function serializeSession(session: SupabaseSession): string {
     accessToken: session.accessToken,
     refreshToken: session.refreshToken,
     expiresAt: session.expiresAt,
-    user: session.user,
+    // Never persist the trusted classification: it is re-read from the Auth
+    // server after restore. A stale "false" in localStorage must not look
+    // like a verified account.
+    user: {
+      id: session.user.id,
+      ...(session.user.email === undefined ? {} : { email: session.user.email }),
+    },
   });
 }
 

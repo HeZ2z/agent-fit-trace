@@ -163,6 +163,57 @@ describe("AuthProvider", () => {
     expect(screen.getByTestId("email").textContent).toBe("verified@example.com");
   });
 
+  it("does not authorize from a cached anonymous classification before verification", async () => {
+    // A stale/tampered cache claims a formal account; the verified endpoint
+    // says guest. Nothing may treat the cached `false` as trustworthy.
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-user-1",
+        refreshToken: "refresh-user-1",
+        expiresAt: Date.now() + 3600_000,
+        user: { id: "user-1", isAnonymous: false },
+      }),
+    );
+    let resolveUser!: (value: Response) => void;
+    const userCall = new Promise<Response>((res) => {
+      resolveUser = res;
+    });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/auth/v1/user")) return userCall;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    function AnonProbe() {
+      const { status, user } = useAuth();
+      return (
+        <div>
+          <span data-testid="status">{status}</span>
+          <span data-testid="anon">{user?.isAnonymous === undefined ? "none" : String(user.isAnonymous)}</span>
+        </div>
+      );
+    }
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={{ supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub" }}
+        fetchImpl={fetchImpl}
+      >
+        <AnonProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("status").textContent).toBe("loading");
+    expect(screen.getByTestId("anon").textContent).toBe("none");
+
+    await act(async () => {
+      resolveUser(
+        new Response(JSON.stringify({ id: "user-1", is_anonymous: true }), { status: 200 }),
+      );
+    });
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+  });
+
   it("ignores a pending refresh after logout (generation guard) and shares inflight refreshes", async () => {
     let resolveRefresh!: (value: Response) => void;
     const refreshCall = new Promise<Response>((res) => {

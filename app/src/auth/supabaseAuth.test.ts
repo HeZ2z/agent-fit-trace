@@ -15,6 +15,7 @@ import {
   resetRecoveryTokenMemoryForTests,
   saveRecoveryToken,
   serializeSession,
+  signInAnonymously,
   signInWithPassword,
   signOut,
   updatePassword,
@@ -171,6 +172,185 @@ describe("supabaseAuth", () => {
     expect(loadStoredSession(JSON.stringify({ accessToken: "a" }))).toBeNull();
     const restored = loadStoredSession(serializeSession(session()));
     expect(restored?.user.id).toBe("user-1");
+  });
+
+  it("trusts is_anonymous only from the verified /auth/v1/user response", async () => {
+    const guest = await fetchAuthUser(
+      config,
+      "access",
+      jsonFetch(200, { id: "guest-1", is_anonymous: true }),
+    );
+    expect(guest).toEqual({ id: "guest-1", isAnonymous: true });
+
+    const account = await fetchAuthUser(
+      config,
+      "access",
+      jsonFetch(200, { id: "user-1", email: "u@example.com", is_anonymous: false }),
+    );
+    expect(account).toEqual({ id: "user-1", email: "u@example.com", isAnonymous: false });
+
+    // Missing or malformed provider classification stays unclassified
+    // (fail closed); it is never inferred from the absent email.
+    const missing = await fetchAuthUser(config, "access", jsonFetch(200, { id: "user-2" }));
+    expect(missing).toEqual({ id: "user-2" });
+    expect(missing.isAnonymous).toBeUndefined();
+
+    const malformed = await fetchAuthUser(
+      config,
+      "access",
+      jsonFetch(200, { id: "user-3", is_anonymous: "false" }),
+    );
+    expect(malformed).toEqual({ id: "user-3" });
+    expect(malformed.isAnonymous).toBeUndefined();
+  });
+
+  it("does not classify a password-grant session from its token response", async () => {
+    const next = await signInWithPassword(
+      config,
+      "u@example.com",
+      "password",
+      jsonFetch(200, {
+        access_token: "a",
+        refresh_token: "r",
+        expires_in: 3600,
+        user: { id: "user-1", email: "u@example.com", is_anonymous: true },
+      }),
+    );
+    expect(next.user).toEqual({ id: "user-1", email: "u@example.com" });
+    expect(next.user.isAnonymous).toBeUndefined();
+  });
+
+  it("creates a guest session and classifies it only from /auth/v1/user", async () => {
+    const calls: {
+      path: string;
+      method: string | undefined;
+      body: string | undefined;
+      authorization: string | undefined;
+    }[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      calls.push({
+        path: new URL(String(url)).pathname,
+        method: init?.method,
+        body: typeof init?.body === "string" ? init.body : undefined,
+        authorization: headers?.Authorization,
+      });
+      if (String(url).endsWith("/auth/v1/signup")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "guest-access",
+            refresh_token: "guest-refresh",
+            expires_in: 3600,
+            // Token responses are not authoritative: this forged `false` must
+            // be replaced by the verified `/user` classification.
+            user: { id: "guest-1", is_anonymous: false },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: "guest-1", is_anonymous: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const guest = await signInAnonymously(config, fetchImpl);
+    expect(calls.map((call) => call.path)).toEqual(["/auth/v1/signup", "/auth/v1/user"]);
+    expect(calls[0]).toMatchObject({ method: "POST", body: "{}", authorization: undefined });
+    expect(calls[1]?.authorization).toBe("Bearer guest-access");
+    expect(guest.accessToken).toBe("guest-access");
+    expect(guest.refreshToken).toBe("guest-refresh");
+    expect(guest.user).toEqual({ id: "guest-1", isAnonymous: true });
+  });
+
+  it("keeps missing guest classification undefined and fails closed on verification errors", async () => {
+    let step = 0;
+    const fetchImpl = (async () => {
+      step += 1;
+      if (step === 1) {
+        return new Response(
+          JSON.stringify({
+            access_token: "guest-access",
+            refresh_token: "guest-refresh",
+            user: { id: "guest-2", is_anonymous: true },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: "guest-2" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const guest = await signInAnonymously(config, fetchImpl);
+    expect(guest.user).toEqual({ id: "guest-2" });
+    expect(guest.user.isAnonymous).toBeUndefined();
+
+    let verifyStep = 0;
+    const expiredFetch = (async () => {
+      verifyStep += 1;
+      if (verifyStep === 1) {
+        return new Response(
+          JSON.stringify({ access_token: "a", refresh_token: "r", user: { id: "guest-3" } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ msg: "invalid token" }), { status: 401 });
+    }) as unknown as typeof fetch;
+
+    const expired = await signInAnonymously(config, expiredFetch).catch((caught: unknown) => caught);
+    expect(expired).toBeInstanceOf(AuthError);
+    expect((expired as AuthError).code).toBe("SESSION_EXPIRED");
+  });
+
+  it("maps disabled and transient guest sign-in failures", async () => {
+    const disabled = await signInAnonymously(
+      config,
+      jsonFetch(422, { msg: "Anonymous sign-ins are disabled" }),
+    ).catch((caught: unknown) => caught);
+    expect(disabled).toBeInstanceOf(AuthError);
+    expect((disabled as AuthError).code).toBe("GUEST_SIGN_IN_FAILED");
+    expect((disabled as AuthError).status).toBe(422);
+    expect((disabled as Error).message).toContain("Anonymous sign-ins are disabled");
+
+    for (const failing of [
+      (async () => {
+        throw new TypeError("offline");
+      }) as unknown as typeof fetch,
+      jsonFetch(429, { message: "limited" }),
+      jsonFetch(503, { message: "overloaded" }),
+    ]) {
+      const error = await signInAnonymously(config, failing).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AuthError);
+      expect((error as AuthError).code).toBe("AUTH_UNAVAILABLE");
+    }
+
+    const invalid = await signInAnonymously(
+      config,
+      jsonFetch(200, { user: { id: "guest-4" } }),
+    ).catch((caught: unknown) => caught);
+    expect(invalid).toBeInstanceOf(AuthError);
+    expect((invalid as AuthError).code).toBe("GUEST_SIGN_IN_FAILED");
+  });
+
+  it("never persists or restores anonymous classification from cached sessions", () => {
+    const serialized = serializeSession({
+      ...session(),
+      user: { id: "user-1", email: "u@example.com", isAnonymous: false },
+    });
+    expect(serialized).not.toContain("isAnonymous");
+    expect((JSON.parse(serialized) as { user: unknown }).user).toEqual({
+      id: "user-1",
+      email: "u@example.com",
+    });
+
+    // A tampered/legacy cache claiming an account classification is ignored
+    // until the Auth server verifies the session.
+    const restored = loadStoredSession(
+      JSON.stringify({
+        accessToken: "a",
+        refreshToken: "r",
+        expiresAt: Date.now() + 3600_000,
+        user: { id: "user-1", isAnonymous: false },
+      }),
+    );
+    expect(restored?.user).toEqual({ id: "user-1" });
+    expect(restored?.user.isAnonymous).toBeUndefined();
   });
 
   it("prefers the newest in-memory token when sessionStorage set fails", () => {
