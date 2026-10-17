@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -107,6 +108,33 @@ function analysisAtRequestSize(target: number): AnalysisResult {
 
 function analysisInput(): ImportArtifactInput<"analysis"> {
   return { kind: "analysis", payload_schema_version: 1, payload: analysisPayload() };
+}
+
+function byteLengthUtf8(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/**
+ * Upper bound for PostgreSQL's `jsonb::text` size: the compact stable JSON
+ * plus the one space it inserts after every comma and colon. (Object key order
+ * does not change the length.)
+ */
+function estimateJsonbTextBytes(value: unknown): number {
+  let separators = 0;
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      separators += Math.max(0, node.length - 1);
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node === "object" && node !== null) {
+      const members = Object.entries(node);
+      separators += members.length + Math.max(0, members.length - 1);
+      for (const [, child] of members) walk(child);
+    }
+  };
+  walk(value);
+  return byteLengthUtf8(stableStringify(value)) + separators;
 }
 
 function planInput(): ImportArtifactInput<"plan"> {
@@ -538,6 +566,55 @@ test("artifact files validate and include their final source filename", () => {
       }),
     /\(request\)/,
   );
+});
+
+test("the shared request cap stays below both SQL jsonb text guards", async () => {
+  const sql = await readFile(
+    new URL("../supabase/migrations/20261017000000_imported_artifacts.sql", import.meta.url),
+    "utf8",
+  );
+  const guards = [...sql.matchAll(/octet_length\(p(?:_payload|ayload)?::text\)\s*(?:<=|>)\s*(\d+)/g)]
+    .map((match) => Number(match[1]));
+  assert.equal(guards.length, 2, "expected the table and RPC payload guards");
+  assert.deepEqual([...new Set(guards)], [65536]);
+
+  // PostgreSQL inserts one space after every comma/colon. Even the worst case
+  // (arrays of one-byte values) therefore adds at most 50%, so the largest
+  // accepted request remains below the 64 KiB SQL checks instead of passing
+  // preview and failing at save time.
+  const worstCaseJsonbTextBytes = Math.ceil(IMPORT_MAX_REQUEST_BYTES * 1.5);
+  assert.ok(
+    worstCaseJsonbTextBytes <= guards[0]!,
+    `${IMPORT_MAX_REQUEST_BYTES} B compact can expand to ${worstCaseJsonbTextBytes} B jsonb text`,
+  );
+});
+
+test("separator-heavy payloads are rejected by the shared cap, not the database", () => {
+  const payload = analysisPayload();
+  payload.flags = [
+    ...Array.from({ length: 14 }, (_, index) => ({
+      code: `ZERO_${index}`,
+      severity: "info" as const,
+      message: "zeros",
+      evidence: { zeros: Array.from({ length: 1000 }, () => 0) },
+    })),
+    ...Array.from({ length: 10 }, (_, index) => ({
+      code: `MESSAGE_${index}`,
+      severity: "info" as const,
+      message: "m".repeat(2800),
+      evidence: {},
+    })),
+  ];
+  const input = { kind: "analysis" as const, payload_schema_version: 1, payload };
+
+  // Shape of the reported bug: compact JSON fits under the old 60 KiB cap but
+  // PostgreSQL's separator spaces would push it over the 64 KiB SQL guard.
+  assert.ok(byteLengthUtf8(stableStringify(input)) < 60 * 1024);
+  assert.ok(estimateJsonbTextBytes(payload) > 65536);
+
+  // The aligned shared cap rejects it during preview/file validation, so it
+  // never reaches the SQL save path with a false "valid" result.
+  assert.throws(() => parseImportArtifactInput(input), /\(request\)/);
 });
 
 test("whitespace-only source filenames normalize to null", () => {

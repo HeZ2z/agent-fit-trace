@@ -219,7 +219,7 @@ export const API_ERROR_CODES = {
 - `VALIDATION_ERROR` — invalid record or filter (including an inverted date
   range, a missing `{ record }` field, or unparseable JSON). Maps to `400`.
   Oversized general request bodies (over the 64 KiB HTTP cap) are also `400`;
-  import requests have the stricter shared 60 KiB normalized bound described
+  import requests have the stricter shared 40 KiB normalized bound described
   in section 9.
 - `CONFLICT` — the id already exists with different content. Maps to `409`.
 - `CORRUPT_STORE` / `STORAGE_UNAVAILABLE` — store-layer failures; surfaced with
@@ -427,7 +427,7 @@ The shared contract (`src/imports.ts`) enforces these limits before any write:
 | --- | --- |
 | Backup file bytes | 1 MiB (`IMPORT_MAX_FILE_BYTES`) |
 | Records per backup file | 1000 |
-| Normalized single-record/import request | 60 KiB (`IMPORT_MAX_REQUEST_BYTES`) |
+| Normalized single-record/import request | 40 KiB (`IMPORT_MAX_REQUEST_BYTES`) |
 | JSON depth | 16 |
 | JSON object key length | 256 characters |
 | String length | 4096 characters |
@@ -439,9 +439,14 @@ The shared contract (`src/imports.ts`) enforces these limits before any write:
 | Import list limit | default 20, maximum 100 |
 
 The file is a container: workout restore submits one normalized record at a
-time, so each request uses the 60 KiB request bound while the whole backup
+time, so each request uses the 40 KiB request bound while the whole backup
 uses the 1 MiB file bound. An imported analysis/plan body is likewise bounded
-as one normalized request.
+as one normalized request. The 40 KiB compact limit is deliberately lower
+than the database's 64 KiB `jsonb::text` guard: PostgreSQL adds one space
+after every comma and colon, so the worst-case expansion (arrays of one-byte
+values) is 50%, or 60 KiB. A request accepted by preview is therefore also
+accepted by the SQL save path. Workout export splits large histories into
+numbered files that each satisfy these restore bounds.
 
 Identity is content-addressed:
 `id = "<kind>:v1:<sha256(stableStringify(payload))>"`. Saving is idempotent:

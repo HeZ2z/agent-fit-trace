@@ -27,8 +27,15 @@ export const IMPORTED_PAYLOAD_SCHEMA_VERSION = 1;
 export const IMPORT_MAX_FILE_BYTES = 1024 * 1024;
 export const IMPORT_MAX_FILE_RECORDS = 1000;
 
-/** A single normalized import request must stay below the existing 64 KiB HTTP cap. */
-export const IMPORT_MAX_REQUEST_BYTES = 60 * 1024;
+/**
+ * A single normalized import request must stay at or below 40 KiB of compact
+ * JSON. PostgreSQL renders `jsonb` with one space after every comma and colon;
+ * the worst case (arrays of one-byte values) adds 50%, so 40 KiB compact can
+ * never exceed 60 KiB as `jsonb::text`. That stays below the SQL RPC/table
+ * guard of 64 KiB, keeping the pre-save contract and the database check in
+ * agreement instead of accepting a file the database would reject.
+ */
+export const IMPORT_MAX_REQUEST_BYTES = 40 * 1024;
 
 /** Additional structural bounds applied before trusting any imported JSON. */
 export const IMPORT_MAX_JSON_DEPTH = 16;

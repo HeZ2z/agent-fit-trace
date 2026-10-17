@@ -67,8 +67,9 @@ create table if not exists public.imported_artifacts (
   payload jsonb not null check (
     jsonb_typeof(payload) = 'object'
     -- Defensive SQL bound (64 KiB). The shared TS contract already limits the
-    -- normalized request to 60 KiB; jsonb text can add separators, so this
-    -- slightly larger guard must not reject a valid near-60-KiB request.
+    -- normalized request to 40 KiB compact JSON; jsonb text adds one space
+    -- after every comma/colon (worst case +50%, i.e. at most 60 KiB), so this
+    -- slightly larger guard never rejects a valid near-limit request.
     and octet_length(payload::text) <= 65536
   ),
   created_at timestamptz not null default now(),
@@ -301,9 +302,10 @@ begin
   if p_payload is null or jsonb_typeof(p_payload) <> 'object' then
     raise exception 'IMPORT_INVALID' using errcode = '22023', detail = 'invalid payload';
   end if;
-  -- Defensive SQL bound (64 KiB) independent of the shared TS 60-KiB
-  -- normalized-request guard. jsonb text can add separators, so the SQL guard
-  -- is slightly larger and never rejects a valid near-60-KiB payload.
+  -- Defensive SQL bound (64 KiB) independent of the shared TS 40-KiB
+  -- compact normalized-request guard. jsonb text adds one space after every
+  -- comma/colon (worst case +50%, i.e. at most 60 KiB), so the SQL guard is
+  -- larger and never rejects a valid near-limit payload.
   if octet_length(p_payload::text) > 65536 then
     raise exception 'IMPORT_INVALID' using errcode = '22023', detail = 'payload too large';
   end if;
