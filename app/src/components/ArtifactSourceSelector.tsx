@@ -56,6 +56,12 @@ export function ArtifactSourceSelector({ source }: { source: ArtifactSource }) {
         </button>
       </div>
 
+      {source.selectionWarning !== null && (
+        <p role="status" className="me-help" data-testid={`${kind}-selection-warning`}>
+          {source.selectionWarning}
+        </p>
+      )}
+
       {source.selectionError !== null && (
         <div role="alert" className="validation-summary" data-testid={`${kind}-selection-error`}>
           <p>{source.selectionError}</p>

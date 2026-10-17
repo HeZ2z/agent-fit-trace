@@ -75,6 +75,7 @@ function Probe({
       <span data-testid="selected">{source.selected?.id ?? "none"}</span>
       <span data-testid="busy">{String(source.selectionBusy)}</span>
       <span data-testid="error">{source.selectionError ?? ""}</span>
+      <span data-testid="warning">{source.selectionWarning ?? ""}</span>
     </div>
   );
 }
@@ -181,13 +182,48 @@ describe("useArtifactSource selection races", () => {
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(b.id));
     await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent(b.id));
     expect(screen.getByTestId("status")).toHaveTextContent("ready");
-    expect(screen.getByTestId("error")).toHaveTextContent(/response lost/i);
+    // The write response was lost, but the authoritative re-read succeeded and
+    // B is shown; that is a warning, not a blocking selection error.
+    expect(screen.getByTestId("error").textContent).toBe("");
+    expect(screen.getByTestId("warning")).toHaveTextContent(/response lost/i);
 
     await act(async () => {
       await api.current?.retrySelected();
     });
     expect(screen.getByTestId("selection")).toHaveTextContent(b.id);
     expect(screen.getByTestId("selected")).toHaveTextContent(b.id);
+    expect(screen.getByTestId("warning").textContent).toBe("");
+  });
+
+  it("does not block computed results after recovering a lost response", async () => {
+    const client = clientFor();
+    const a = await saveAnalysis(client, "a.json");
+    await client.setArtifactSelection("analysis", a.id);
+
+    // The server commits the computed source (null), then the response is lost.
+    const commit = client.setArtifactSelection.bind(client);
+    client.setArtifactSelection = async (kind, artifactId) => {
+      await commit(kind, artifactId);
+      throw new Error("response lost");
+    };
+
+    const api = { current: null as ArtifactSource<"analysis"> | null };
+    render(<Probe client={client} api={api} />);
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent(a.id));
+
+    await act(async () => {
+      await api.current?.select(null);
+    });
+
+    // The catch re-reads the server's null selection and loads the computed
+    // source. That is authoritative, so no blocking error may remain: both
+    // AnalysisScreen and PlanScreen hide computed results while it is set.
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("null"));
+    expect(screen.getByTestId("selected")).toHaveTextContent("none");
+    expect(screen.getByTestId("status")).toHaveTextContent("ready");
+    expect(screen.getByTestId("busy")).toHaveTextContent("false");
+    expect(screen.getByTestId("error").textContent).toBe("");
+    expect(screen.getByTestId("warning")).toHaveTextContent(/response lost/i);
   });
 
   it("re-reads the authoritative selection when retrying a failed selection read", async () => {

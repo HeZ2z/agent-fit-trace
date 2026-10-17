@@ -176,6 +176,33 @@ describe("PlanScreen", () => {
     expect(screen.getByTestId("plan-snapshot-linkage")).toHaveTextContent(/2 missing/i);
   });
 
+  it("shows the computed plan after recovering a lost source-switch response", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client);
+    await client.setArtifactSelection("plan", artifact.id);
+
+    // The server commits the computed source (null), then the response is lost.
+    const commit = client.setArtifactSelection.bind(client);
+    client.setArtifactSelection = async (kind, artifactId) => {
+      await commit(kind, artifactId);
+      throw new Error("response lost");
+    };
+
+    const { user } = renderPlan(client);
+    await screen.findByText(/imported goal/i);
+    await user.click(screen.getByRole("button", { name: /show current computed plan/i }));
+
+    // The recovery re-read confirms null and loads the computed draft, so the
+    // page must not stay hidden behind a blocking selection error.
+    expect(await screen.findByTestId("plan-status")).toBeInTheDocument();
+    expect(screen.getByTestId("plan-source")).toHaveTextContent(/current computed/i);
+    expect(screen.queryByText(/imported goal/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plan-selection-error")).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-selection-warning")).toHaveTextContent(/response lost/i);
+  });
+
   it("adopts only the exact imported snapshot after explicit confirmation", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());

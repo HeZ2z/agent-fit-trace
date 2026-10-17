@@ -25,7 +25,10 @@ export interface ArtifactSource<K extends ImportedArtifactKind = ImportedArtifac
   selectionBusy: boolean;
   selection: string | null;
   selected: ImportedArtifact<K> | null;
+  /** Blocking selection failure: the authoritative source could not be shown. */
   selectionError: string | null;
+  /** Non-blocking notice, e.g. a lost write response recovered by re-reading. */
+  selectionWarning: string | null;
   selectingId: string | null;
   loadingMore: boolean;
   refreshVersion: number;
@@ -61,6 +64,7 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
   const [selection, setSelection] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail<K>>({ status: "empty" });
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [selectionWarning, setSelectionWarning] = useState<string | null>(null);
   const [selectionBusy, setSelectionBusy] = useState(false);
   const [selectingId, setSelectingId] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -106,12 +110,14 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
 
       if (artifactId === null) {
         if (!current()) return false;
+        setSelectionWarning(null);
         setDetail({ status: "empty" });
         setSelectionError(null);
         return true;
       }
 
       if (!current()) return false;
+      setSelectionWarning(null);
       setDetail({ status: "loading", artifactId });
       try {
         const artifact = (await captured.getImportedArtifact(artifactId)) as ImportedArtifact<K>;
@@ -155,6 +161,7 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
     setSelection(null);
     setDetail({ status: "empty" });
     setSelectionError(null);
+    setSelectionWarning(null);
     setSelectionBusy(false);
     setSelectingId(null);
     setLoadingMore(false);
@@ -207,6 +214,7 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
       setSelectionBusy(true);
       setSelectingId(artifactId);
       setSelectionError(null);
+      setSelectionWarning(null);
       setDetail({ status: "empty" });
       try {
         // Reflect the server's answer, not the requested value.
@@ -235,7 +243,12 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
             saved.artifact_id,
           );
           if (!current() || !loaded) return;
-          setSelectionError(
+          // The authoritative selection was re-read and presented. This is no
+          // longer a blocking error: if it were reported as `selectionError`,
+          // a recovered computed source would stay hidden even though the
+          // screen now truthfully shows it. Keep the lost response as a
+          // non-blocking warning instead.
+          setSelectionWarning(
             `Could not confirm the ${kind} source change: ${message(caught)}. The saved selection was re-read from the server; showing ${
               saved.artifact_id === null
                 ? "the current computed result"
@@ -333,6 +346,7 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
     selection: safeSelection,
     selected,
     selectionError: inScope ? selectionError : null,
+    selectionWarning: inScope ? selectionWarning : null,
     selectingId: inScope ? selectingId : null,
     loadingMore: inScope && loadingMore,
     refreshVersion,

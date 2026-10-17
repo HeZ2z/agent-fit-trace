@@ -230,6 +230,32 @@ describe("AnalysisScreen", () => {
     expect(screen.getByTestId("analysis-source")).toHaveTextContent(/current computed/i);
   });
 
+  it("shows computed results after recovering a lost source-switch response", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await saveAnalysis(client);
+    await client.setArtifactSelection("analysis", artifact.id);
+
+    // The server commits the computed source (null), then the response is lost.
+    const commit = client.setArtifactSelection.bind(client);
+    client.setArtifactSelection = async (kind, artifactId) => {
+      await commit(kind, artifactId);
+      throw new Error("response lost");
+    };
+
+    const { user } = renderAnalysis(client);
+    await screen.findByText(/Sessions: 7/);
+    await user.click(screen.getByRole("button", { name: /show current computed analysis/i }));
+
+    // The authoritative re-read confirms null and loads the computed result,
+    // so the page must not remain blank behind a blocking selection error.
+    expect(await screen.findByText(/Sessions: 1/)).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/current computed/i);
+    expect(screen.queryByTestId("analysis-selection-error")).not.toBeInTheDocument();
+    expect(screen.getByTestId("analysis-selection-warning")).toHaveTextContent(/response lost/i);
+  });
+
   it("restores the saved selection after a hard remount", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
