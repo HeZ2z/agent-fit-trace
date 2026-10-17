@@ -580,7 +580,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const selectBackend = useCallback(
     (backendId: CoachingBackendId): void => {
       if (backendPinnedNow()) return;
-      if (!backendsRef.current.some((option) => option.id === backendId)) return;
+      const option = backendsRef.current.find((candidate) => candidate.id === backendId);
+      if (option === undefined || !option.available) return;
       selectedBackendRef.current = backendId;
       setSelectedBackend(backendId);
       if (accountId !== null) writeBackendPreference(accountId, backendId);
@@ -1428,6 +1429,15 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     const previousAccountId = accountRef.current;
     const previousClient = prevClientRef.current ?? client;
     const previousBackend = activeBackendRef.current;
+    // `previousClient` may be the mutable router, whose active backend can be
+    // changed by a later selection. Capture the leaf transport that owns the
+    // run so cleanup can never be redirected.
+    const cleanupClient =
+      previousClient === router && previousBackend !== null
+        ? isCloudBackend(previousBackend)
+          ? cloudClient
+          : localClient
+        : previousClient;
     const captured = accountTokenRef.current;
     accountRef.current = accountId;
     generationRef.current += 1;
@@ -1461,21 +1471,21 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     // then fire the server cleanup with A's explicit credentials. Skipped when
     // A's capability was already gone: cleanup then stays local instead of
     // sending another account's credentials.
-    const previousCapability = previousClient.capabilitySnapshot();
-    previousClient.discardCredentials();
+    const previousCapability = cleanupClient.capabilitySnapshot();
+    cleanupClient.discardCredentials();
     const previousToken = captured.accountId === previousAccountId ? captured.token : null;
     // A cloud run carries no capability, so its teardown is authorized by the
-    // captured bearer only. `previousClient` is the account-bound instance that
+    // captured bearer only. `cleanupClient` is the account-bound leaf that
     // already pins the run's backend; a later mutable selection/router must not
     // redirect this cleanup.
     const previousWasCloud = previousBackend !== null && isCloudBackend(previousBackend);
     if (previousCapability !== null || (previousWasCloud && previousToken !== null)) {
       if (runId !== null) {
-        void previousClient
+        void cleanupClient
           .cancelRun(runId, undefined, { capability: previousCapability, accessToken: previousToken })
           .catch(() => undefined);
       }
-      void previousClient
+      void cleanupClient
         .logout({ capability: previousCapability, accessToken: previousToken })
         .catch(() => undefined);
     }
@@ -1509,9 +1519,12 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     beginPhase,
     clearFold,
     client,
+    cloudClient,
     coachMode,
     getAccessToken,
     isGuest,
+    localClient,
+    router,
     unpinBackend,
   ]);
 
@@ -1523,12 +1536,20 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     const retained = retainedLogoutRef.current;
     retained.accountId = accountId;
     retained.runId = runIdRef.current;
-    retained.backendId = activeBackendRef.current;
-    // Capture the client that owns this account/run. Teardown must not consult
-    // `clientRef.current` later, when an account switch may have replaced it
-    // with another account's backend.
-    retained.client = client;
-    const capability = client.capabilitySnapshot();
+    const active = activeBackendRef.current;
+    retained.backendId = active;
+    // Capture the LEAF transport that owns this account/run. Teardown must not
+    // consult a later mutable router or `clientRef.current`, which an account
+    // switch or selection change could have redirected.
+    if (active !== null) {
+      retained.client = explicitClient
+        ? client
+        : isCloudBackend(active)
+          ? cloudClient
+          : localClient;
+    }
+    const ownerClient = retained.client ?? client;
+    const capability = ownerClient.capabilitySnapshot();
     if (capability !== null) retained.capability = capability;
     const token = getAccessToken();
     if (token !== null) retained.accessToken = token;

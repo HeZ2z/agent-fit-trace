@@ -111,7 +111,7 @@ async function main(): Promise<void> {
   }
   if (config.runtimeId !== "pi") {
     console.log(
-      `configured runtime ${config.runtimeId} has no adapter yet; discovery reports it unavailable (legacy pi requests still map to local-pi).`,
+      `configured runtime ${config.runtimeId} is experimental and fail-closed: this build wires no production tool-isolation verifier for it, so discovery reports it unavailable (legacy pi requests still map to local-pi).`,
     );
   }
 

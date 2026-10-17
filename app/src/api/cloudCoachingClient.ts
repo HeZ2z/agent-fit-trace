@@ -68,6 +68,8 @@ export interface CloudCoachingClientOptions {
 
 /** Error bodies are diagnostics only; never buffer an unbounded hostile body. */
 const MAX_CLOUD_ERROR_BODY_BYTES = 64 * 1024;
+/** Non-SSE JSON responses are small; cap them too instead of `response.text()`. */
+const MAX_CLOUD_JSON_BODY_BYTES = 1024 * 1024;
 const DEFAULT_TAIL_INITIAL_BACKOFF_MS = 250;
 const DEFAULT_TAIL_MAX_BACKOFF_MS = 5_000;
 const DEFAULT_TAIL_MAX_MS = 30 * 60_000;
@@ -155,6 +157,40 @@ async function readBoundedErrorBody(response: Response, signal: AbortSignal): Pr
     }
   } finally {
     signal.removeEventListener("abort", onAbort);
+    cancelReaderBestEffort(reader);
+  }
+  return text;
+}
+
+/**
+ * Read a non-SSE response with a hard byte cap. `response.text()` would buffer
+ * an unbounded body from a buggy or hostile upstream, including on the error
+ * path. Anything over the cap is a malformed response, never parsed.
+ */
+async function readBoundedJsonBody(response: Response, limit: number): Promise<string> {
+  const body = response.body;
+  if (body === null) return "";
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let text = "";
+  let bytes = 0;
+  try {
+    for (;;) {
+      const read = await reader.read();
+      if (read.done) {
+        text += decoder.decode();
+        break;
+      }
+      if (read.value.byteLength > limit - bytes) {
+        throw new MalformedResponseError(
+          "(root)",
+          `response body exceeds the ${String(limit)}-byte limit`,
+        );
+      }
+      bytes += read.value.byteLength;
+      text += decoder.decode(read.value, { stream: true });
+    }
+  } finally {
     cancelReaderBestEffort(reader);
   }
   return text;
@@ -617,8 +653,13 @@ export class CloudCoachingClient {
     }
     let text: string;
     try {
-      text = await response.text();
+      text = await readBoundedJsonBody(
+        response,
+        isOkStatus(response.status) ? MAX_CLOUD_JSON_BODY_BYTES : MAX_CLOUD_ERROR_BODY_BYTES,
+      );
     } catch (error) {
+      if (!isOkStatus(response.status)) throw toApiError(undefined, response.status);
+      if (error instanceof MalformedResponseError) throw error;
       throw new NetworkError("Network response body could not be read.", { cause: error });
     }
     let parsed: unknown;

@@ -61,9 +61,9 @@ describe("cloud backend availability", () => {
 });
 
 describe("mode-bound restore compatibility", () => {
-  it("lets the launcher replay both local and cloud runs", () => {
+  it("lets the launcher replay local runs but not cloud runs it cannot serve", () => {
     expect(isBackendSupportedInMode("local-pi", "launcher")).toBe(true);
-    expect(isBackendSupportedInMode("cloud-default", "launcher")).toBe(true);
+    expect(isBackendSupportedInMode("cloud-default", "launcher")).toBe(false);
   });
 
   it("never replays a local launcher run through a plain browser", () => {

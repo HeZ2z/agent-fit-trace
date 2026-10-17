@@ -225,3 +225,38 @@ describe("CloudCoachingClient.subscribeRunEvents", () => {
     expect(seen.every((entry) => entry.method === "GET")).toBe(true);
   });
 });
+
+describe("CloudCoachingClient non-SSE body bounds", () => {
+  function hugeResponse(status: number): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(2 * 1024 * 1024));
+        // Stay open: an unbounded reader would keep buffering.
+      },
+    });
+    return new Response(stream, {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  function jsonClient(status: number): CloudCoachingClient {
+    return new CloudCoachingClient({
+      fetchImpl: (async () => hugeResponse(status)) as typeof fetch,
+      getAccessToken: () => "token-a",
+    });
+  }
+
+  it("refuses an oversized success body instead of buffering it", async () => {
+    await expect(jsonClient(200).readCapabilities()).rejects.toBeInstanceOf(
+      MalformedResponseError,
+    );
+  });
+
+  it("turns an oversized error body into a bounded API failure", async () => {
+    await expect(jsonClient(500).readCapabilities()).rejects.toMatchObject({
+      code: API_ERROR_CODES.API_ERROR,
+      status: 500,
+    });
+  });
+});

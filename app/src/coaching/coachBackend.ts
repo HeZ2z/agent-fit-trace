@@ -237,17 +237,19 @@ export function isCloudBackend(backendId: CoachingBackendId): boolean {
 }
 
 /**
- * Mode-bound restore compatibility. The launcher serves BOTH the local
- * connector routes and the shared cloud routes, so it can replay either
- * origin. A plain browser cannot address a local launcher run; that record is
- * retained and surfaced as "start the original connector", never cleared or
- * replayed through cloud.
+ * Mode-bound restore compatibility. The launcher serves only the local
+ * connector routes; it does not mount `/api/v1/coaching/cloud`. A cloud origin
+ * is therefore not replayable there. A plain browser cannot address a local
+ * launcher run. In both cases the v2 record is retained and surfaced as
+ * "start the original connector", never cleared or replayed through another
+ * backend.
  */
 export function isBackendSupportedInMode(
   backendId: CoachingBackendId,
   mode: CoachMode,
 ): boolean {
-  if (mode === "explicit" || mode === "launcher") return true;
+  if (mode === "explicit") return true;
+  if (mode === "launcher") return !isCloudBackend(backendId);
   if (mode === "browser") return isCloudBackend(backendId);
   return false;
 }
