@@ -388,6 +388,58 @@ describe("MeScreen", () => {
     expect(await client.getPlanAdoption()).toBeNull();
   });
 
+  it("rejects a malformed bare analysis file without saving or selecting it", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const client = clientFor(adapter);
+    renderMe(adapter);
+    await screen.findByText(/local session/i);
+
+    await upload(
+      "Choose analysis file",
+      JSON.stringify({ period: { from: null, to: null }, metrics: {} }),
+      "analysis.json",
+    );
+
+    const alert = await screen.findByTestId("me-analysis-read-error");
+    expect(alert).toHaveTextContent(/metrics/i);
+    expect(screen.queryByTestId("me-analysis-preview")).not.toBeInTheDocument();
+    expect(await client.listImportedArtifacts({ kind: "analysis" })).toEqual({
+      items: [],
+      next_cursor: null,
+    });
+    expect(await client.getArtifactSelection("analysis")).toEqual({ artifact_id: null });
+  });
+
+  it("rejects a malformed bare plan file without saving, selecting or adopting it", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const client = clientFor(adapter);
+    renderMe(adapter);
+    await screen.findByText(/local session/i);
+
+    await upload(
+      "Choose plan file",
+      JSON.stringify({
+        is_draft: true,
+        requires_confirmation: true,
+        based_on: { period: { from: null, to: null }, sessions: 1, source_records: [] },
+        recommendations: {},
+        safety_notes: [],
+        professional_care_prompt: null,
+      }),
+      "plan.json",
+    );
+
+    const alert = await screen.findByTestId("me-plan-read-error");
+    expect(alert).toHaveTextContent(/recommendations/i);
+    expect(screen.queryByTestId("me-plan-preview")).not.toBeInTheDocument();
+    expect(await client.listImportedArtifacts({ kind: "plan" })).toEqual({
+      items: [],
+      next_cursor: null,
+    });
+    expect(await client.getArtifactSelection("plan")).toEqual({ artifact_id: null });
+    expect(await client.getPlanAdoption()).toBeNull();
+  });
+
   it("combines preview and server warnings without dropping either", async () => {
     const adapter = new MemoryStorageAdapter();
     const client = clientFor(adapter);

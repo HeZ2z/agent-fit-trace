@@ -130,8 +130,8 @@ describe.each([
     expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
     const beforeRecords = await setup.storedRecords();
     const beforePosts = setup.postCount();
-    await user.click(screen.getByRole("button", { name: /confirm plan/i }));
-    expect(await screen.findByText(/adopted/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /confirm plan for this view only/i }));
+    expect(await screen.findByTestId("plan-status")).toHaveTextContent(/only in this view/i);
     expect(await setup.storedRecords()).toEqual(beforeRecords);
     expect(setup.postCount()).toBe(beforePosts);
   });
@@ -144,7 +144,7 @@ describe.each([
     await fillAndSave(user);
     await screen.findByRole("heading", { level: 1, name: /workout summary/i });
 
-    await user.click(screen.getByRole("link", { name: /^history$/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
     await screen.findByRole("button", { name: /export workouts \(json\)/i });
     await user.click(screen.getByRole("button", { name: /export workouts \(json\)/i }));
 

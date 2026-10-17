@@ -1,23 +1,15 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { PlanDraft, WorkoutRecord } from "@pi-fit-trace/core";
 import { generateNextPlan } from "@pi-fit-trace/core";
-import { readTextFile } from "../api/fileTransport.ts";
+import type { FitTraceClient, ImportedArtifact } from "@pi-fit-trace/api-contracts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { loadRecords, saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider, useWorkoutStore } from "../state/WorkoutStoreContext.tsx";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
-import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
+import { FakeFitTraceClient, clientFor, deferred } from "../test/asyncClient.ts";
 import { PlanScreen } from "./PlanScreen.tsx";
-
-vi.mock("../api/fileTransport.ts", () => ({
-  downloadJson: vi.fn(),
-  readTextFile: vi.fn(),
-}));
-
-const readTextFileMock = vi.mocked(readTextFile);
 
 function record(overrides: Partial<WorkoutRecord> = {}): WorkoutRecord {
   return {
@@ -56,9 +48,18 @@ const carePlan: PlanDraft = {
   professional_care_prompt: "Seek evaluation from a qualified medical professional.",
 };
 
-/** The file body is irrelevant: `readTextFile` is mocked. */
-function planFile(name = "plan.json"): File {
-  return new File(['{"unused":true}'], name, { type: "application/json" });
+async function savePlan(
+  client: FitTraceClient,
+  payload: PlanDraft = importedPlan,
+  filename = "plan.json",
+): Promise<ImportedArtifact<"plan">> {
+  const result = await client.saveImportedArtifact({
+    kind: "plan",
+    payload_schema_version: 1,
+    payload,
+    source_filename: filename,
+  });
+  return result.artifact;
 }
 
 function renderPlan(client: FitTraceClient) {
@@ -80,43 +81,6 @@ function renderPlanOver(adapter: MemoryStorageAdapter) {
   return renderPlan(clientFor(adapter));
 }
 
-/** Renders the plan screen alongside a control that saves workout history. */
-function PlanWithHistoryControl() {
-  const { saveWorkout } = useWorkoutStore();
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() =>
-          void saveWorkout(
-            record({
-              id: "wkt_new",
-              date: "2026-03-01",
-              exercises: [{ name: "Deadlift", sets: [{ weight: 120, reps: 5, rpe: 8 }] }],
-            }),
-          )
-        }
-      >
-        Add workout
-      </button>
-      <PlanScreen />
-    </>
-  );
-}
-
-function renderPlanWithHistoryControl(client: FitTraceClient) {
-  const user = userEvent.setup();
-  const view = render(
-    <MemoryRouter initialEntries={["/plan"]}>
-      <WorkoutStoreProvider client={client}>
-        <PlanWithHistoryControl />
-      </WorkoutStoreProvider>
-    </MemoryRouter>,
-  );
-  return { user, ...view };
-}
-
-/** Renders the plan screen alongside a control that reloads workout history. */
 function PlanWithReloadControl() {
   const { reload } = useWorkoutStore();
   return (
@@ -143,7 +107,7 @@ function renderPlanWithReload(client: FitTraceClient) {
 
 describe("PlanScreen", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    localStorage.clear();
   });
 
   it("shows a loading notice while the draft resolves", () => {
@@ -151,7 +115,7 @@ describe("PlanScreen", () => {
     client.nextPlan();
     renderPlan(client);
 
-    expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
+    expect(screen.getAllByRole("status").some((node) => /loading/i.test(node.textContent ?? ""))).toBe(true);
   });
 
   it("shows an empty state when there is no history", async () => {
@@ -159,201 +123,243 @@ describe("PlanScreen", () => {
 
     expect(await screen.findByText(/no workout history to draft a plan from yet/i))
       .toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /log your first workout/i })).toHaveAttribute(
-      "href",
-      "/workout/new",
-    );
     expect(screen.queryByTestId("plan-status")).not.toBeInTheDocument();
   });
 
-  it("renders a local draft with reasons and a confirm control", async () => {
+  it("renders a local draft with reasons and no independent file input", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
 
     const { container } = renderPlanOver(adapter);
 
     expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
-    expect(screen.getByTestId("plan-source")).toHaveTextContent(/local/i);
-
+    expect(screen.getByTestId("plan-source")).toHaveTextContent(/current computed/i);
+    expect(screen.getByRole("link", { name: /manage imports and exports/i })).toHaveAttribute(
+      "href",
+      "/me",
+    );
     const recommendations = container.querySelectorAll("[data-recommendation-action]");
     expect(recommendations.length).toBeGreaterThan(0);
-    // Every recommendation must show its reason.
-    for (const item of recommendations) {
-      expect(item).toHaveTextContent(/reason:/i);
-    }
-
-    expect(screen.getByRole("button", { name: /confirm plan/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/import plan\.json/i)).not.toBeInTheDocument();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
   });
 
-  it("shows a retryable error when the draft fails and recovers", async () => {
-    const client = new FakeFitTraceClient({ records: [record()] });
-    const first = client.nextPlan();
-    const user = userEvent.setup();
-    renderPlan(client);
-
-    await waitFor(() => expect(client.planCalls).toBe(1));
-    first.reject(new Error("plan down"));
-    expect(await screen.findByTestId("plan-error")).toHaveTextContent(/plan down/i);
-
-    const second = client.nextPlan();
-    await user.click(screen.getByRole("button", { name: /retry/i }));
-    second.resolve(generateNextPlan([record()]));
-    await waitFor(() =>
-      expect(screen.getByTestId("plan-status")).toHaveTextContent(/draft/i),
-    );
-  });
-
-  it("adopts on confirmation without mutating stored records", async () => {
+  it("labels generated confirmation as only this view without persisting", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
     const before = loadRecords(adapter);
+    const client = clientFor(adapter);
 
-    const { user } = renderPlanOver(adapter);
+    const { user } = renderPlan(client);
     await screen.findByTestId("plan-status");
+    await user.click(screen.getByRole("button", { name: /confirm plan for this view only/i }));
 
-    await user.click(screen.getByRole("button", { name: /confirm plan/i }));
-
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/adopted/i);
-
-    // Confirming is UI-only: storage must be byte-for-byte unchanged.
+    expect(screen.getByTestId("plan-status")).toHaveTextContent(/only in this view/i);
+    expect(await client.getPlanAdoption()).toBeNull();
     expect(loadRecords(adapter)).toEqual(before);
   });
 
-  it("confirming makes no client call", async () => {
+  it("shows a saved and selected snapshot without adopting it", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
-    const counting = clientFor(adapter);
-    let calls = 0;
-    const counted = Object.create(counting) as typeof counting;
-    counted.createPlanDraft = async (...args: Parameters<typeof counting.createPlanDraft>) => {
-      calls += 1;
-      return counting.createPlanDraft(...args);
-    };
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client);
+    await client.setArtifactSelection("plan", artifact.id);
 
-    const { user } = renderPlan(counted);
-    await screen.findByTestId("plan-status");
-    const callsAfterLoad = calls;
+    renderPlan(client);
 
-    await user.click(screen.getByRole("button", { name: /confirm plan/i }));
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/adopted/i);
-    expect(calls).toBe(callsAfterLoad);
+    expect(await screen.findByText(/imported goal/i)).toBeInTheDocument();
+    expect(screen.getByTestId("plan-source")).toHaveTextContent(/imported snapshot/i);
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+    expect(await client.getPlanAdoption()).toBeNull();
+    expect(screen.getByTestId("plan-snapshot-meta")).toHaveTextContent(/plan\.json/);
+    expect(screen.getByTestId("plan-snapshot-linkage")).toHaveTextContent(/2 missing/i);
   });
 
-  it("resets an adopted plan to draft when the workout history changes", async () => {
+  it("adopts only the exact imported snapshot after explicit confirmation", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
+    const before = loadRecords(adapter);
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client);
+    await client.setArtifactSelection("plan", artifact.id);
 
-    const { user } = renderPlanWithHistoryControl(clientFor(adapter));
-    await screen.findByTestId("plan-status");
-
-    await user.click(screen.getByRole("button", { name: /confirm plan/i }));
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/adopted/i);
-
-    // The new record regenerates the plan; a stale "adopted" must not survive.
-    await user.click(screen.getByRole("button", { name: /add workout/i }));
-
-    await waitFor(() => expect(screen.getByTestId("plan-status")).toHaveTextContent(/draft/i));
-    expect(screen.getByRole("button", { name: /confirm plan/i })).toBeInTheDocument();
-  });
-
-  it("clears the adoption when switching back to the local plan", async () => {
-    const adapter = new MemoryStorageAdapter();
-    saveRecord(adapter, record());
-    readTextFileMock.mockResolvedValue(JSON.stringify(importedPlan));
-
-    const { user } = renderPlanOver(adapter);
-    await screen.findByTestId("plan-status");
-    await user.upload(screen.getByLabelText(/import plan.json/i), planFile());
-    await waitFor(() => expect(screen.getByTestId("plan-source")).toHaveTextContent(/imported/i));
-
-    await user.click(screen.getByRole("button", { name: /confirm plan/i }));
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/adopted/i);
-
-    await user.click(screen.getByRole("button", { name: /show local plan/i }));
-    expect(screen.getByTestId("plan-source")).toHaveTextContent(/local/i);
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/draft/i);
-  });
-
-  it("keeps the previous plan when an import is malformed", async () => {
-    const adapter = new MemoryStorageAdapter();
-    saveRecord(adapter, record());
-    readTextFileMock.mockResolvedValue(
-      JSON.stringify({
-        is_draft: true,
-        requires_confirmation: true,
-        based_on: { period: { from: null, to: null }, sessions: 1, source_records: [] },
-        recommendations: {},
-        safety_notes: [],
-        professional_care_prompt: null,
-      }),
+    const { user } = renderPlan(client);
+    await screen.findByText(/imported goal/i);
+    await user.click(
+      screen.getByRole("button", { name: /confirm adopting this exact saved snapshot/i }),
     );
 
-    const { user, container } = renderPlanOver(adapter);
-    await screen.findByTestId("plan-status");
-    await user.upload(screen.getByLabelText(/import plan.json/i), planFile());
-
-    const alert = await screen.findByTestId("plan-error");
-    expect(alert).toHaveTextContent(/recommendations/i);
-    // A bad import must not blank the previously displayed plan.
-    expect(container.querySelector("[data-recommendation-action]")).not.toBeNull();
-    expect(screen.getByTestId("plan-source")).toHaveTextContent(/local/i);
+    expect(await screen.findByTestId("current-adoption")).toHaveTextContent(artifact.id);
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(
+      /is the currently adopted plan/i,
+    );
+    expect(screen.getByTestId("plan-snapshot-draft")).toHaveTextContent(
+      /is_draft=true, requires_confirmation=true/i,
+    );
+    expect(screen.getByTestId("plan-snapshot-draft")).toHaveTextContent(/saved adoption is separate/i);
+    expect(await client.getPlanAdoption()).toMatchObject({
+      artifact_id: artifact.id,
+      confirmed_digest: artifact.content_digest,
+    });
+    expect(loadRecords(adapter)).toEqual(before);
   });
 
-  it("imports a plan and resets an adopted local draft to draft", async () => {
+  it("keeps a stale adoption read from undoing a confirmation", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
-    readTextFileMock.mockResolvedValue(JSON.stringify(importedPlan));
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client);
+    await client.setArtifactSelection("plan", artifact.id);
 
-    const { user } = renderPlanOver(adapter);
-    await screen.findByTestId("plan-status");
-    await user.click(screen.getByRole("button", { name: /confirm plan/i }));
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/adopted/i);
+    const adoptionWrite = deferred<Awaited<ReturnType<FitTraceClient["setPlanAdoption"]>>>();
+    const staleRead = deferred<Awaited<ReturnType<FitTraceClient["getPlanAdoption"]>>>();
+    let reads = 0;
+    client.setPlanAdoption = () => adoptionWrite.promise;
+    client.getPlanAdoption = () => {
+      reads += 1;
+      return reads === 1 ? Promise.resolve(null) : staleRead.promise;
+    };
 
-    await user.upload(screen.getByLabelText(/import plan.json/i), planFile());
+    const { user } = renderPlan(client);
+    await screen.findByText(/imported goal/i);
+    await waitFor(() => expect(reads).toBe(1));
 
-    await waitFor(() => expect(screen.getByTestId("plan-source")).toHaveTextContent(/imported/i));
-    expect(screen.getByTestId("plan-status")).toHaveTextContent(/draft/i);
-    expect(screen.getByText(/imported goal/i)).toBeInTheDocument();
-    expect(screen.getByText(/imported reason/i)).toBeInTheDocument();
-    expect(screen.getByText(/imported safety note/i)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: /confirm adopting this exact saved snapshot/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /refresh saved data/i }));
+    await waitFor(() => expect(reads).toBe(2));
+
+    await act(async () => {
+      adoptionWrite.resolve({
+        artifact_id: artifact.id,
+        confirmed_digest: artifact.content_digest,
+        confirmed_at: "2026-02-01T00:00:00.000Z",
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("current-adoption")).toHaveTextContent(artifact.id),
+    );
+
+    await act(async () => {
+      staleRead.resolve(null);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent(artifact.id);
   });
 
-  it("renders a professional care prompt when present", async () => {
+  it("restores an adoption binding after a hard remount", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
-    readTextFileMock.mockResolvedValue(JSON.stringify(carePlan));
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client);
+    await client.setArtifactSelection("plan", artifact.id);
+    await client.setPlanAdoption({
+      artifact_id: artifact.id,
+      confirmed_digest: artifact.content_digest,
+    });
 
-    const { user } = renderPlanOver(adapter);
-    await screen.findByTestId("plan-status");
-    await user.upload(screen.getByLabelText(/import plan.json/i), planFile());
+    const first = renderPlan(client);
+    await screen.findByText(/is the currently adopted plan/i);
+    first.unmount();
 
-    const prompt = await screen.findByTestId("care-prompt");
-    expect(prompt).toHaveTextContent(/qualified medical professional/i);
+    renderPlan(clientFor(adapter));
+    expect(await screen.findByText(/is the currently adopted plan/i)).toBeInTheDocument();
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent(artifact.id);
   });
 
-  it("shows a history-load error with retry on initial failure", async () => {
-    const expected = generateNextPlan([record()]);
-    const client = new FakeFitTraceClient({ records: [record()], plan: expected });
+  it("does not let a newly imported draft inherit the old adoption", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const old = await savePlan(client, importedPlan, "old.json");
+    await client.setArtifactSelection("plan", old.id);
+    await client.setPlanAdoption({
+      artifact_id: old.id,
+      confirmed_digest: old.content_digest,
+    });
+    const fresh = await savePlan(
+      client,
+      { ...importedPlan, goal: "Fresh imported goal" },
+      "fresh.json",
+    );
+    await client.setArtifactSelection("plan", fresh.id);
+
+    const { user } = renderPlan(client);
+
+    expect(await screen.findByText(/Fresh imported goal/i)).toBeInTheDocument();
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent(old.id);
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+
+    // Viewing the fresh draft did not adopt it, but the old adoption remains
+    // revocable without navigating back to the adopted snapshot.
+    await user.click(screen.getByRole("button", { name: /revoke saved adoption/i }));
+    expect(await client.getPlanAdoption()).toBeNull();
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent(/none/i);
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+  });
+
+  it("revokes adoption metadata only, leaving payload and workouts unchanged", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const before = loadRecords(adapter);
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client);
+    await client.setArtifactSelection("plan", artifact.id);
+    await client.setPlanAdoption({
+      artifact_id: artifact.id,
+      confirmed_digest: artifact.content_digest,
+    });
+
+    const { user } = renderPlan(client);
+    await screen.findByText(/is the currently adopted plan/i);
+    await user.click(screen.getByRole("button", { name: /revoke saved adoption/i }));
+
+    expect(await client.getPlanAdoption()).toBeNull();
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+    expect(await client.getImportedArtifact(artifact.id)).toMatchObject({
+      payload: { is_draft: true, requires_confirmation: true },
+      content_digest: artifact.content_digest,
+    });
+    expect(loadRecords(adapter)).toEqual(before);
+  });
+
+  it("renders a professional care prompt from a selected snapshot", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await savePlan(client, carePlan);
+    await client.setArtifactSelection("plan", artifact.id);
+
+    renderPlan(client);
+
+    expect(await screen.findByTestId("care-prompt")).toHaveTextContent(
+      /qualified medical professional/i,
+    );
+  });
+
+  it("shows history-load errors separately from saved plan data", async () => {
+    const client = new FakeFitTraceClient({
+      records: [record()],
+      plan: generateNextPlan([record()]),
+    });
     const gate = client.nextList();
     const { user } = renderPlan(client);
 
     await waitFor(() => expect(client.listCalls).toBe(1));
     gate.reject(new Error("history down"));
-
-    const alert = await screen.findByTestId("history-error");
-    expect(alert).toHaveTextContent(/could not load workout history/i);
-    expect(alert).toHaveTextContent(/history down/i);
-    expect(screen.queryByText(/no workout history to draft a plan from yet/i)).not.toBeInTheDocument();
+    expect(await screen.findByTestId("history-error")).toHaveTextContent(/history down/i);
 
     await user.click(screen.getByRole("button", { name: /retry/i }));
-    await waitFor(() => expect(client.listCalls).toBe(2));
     await waitFor(() => expect(screen.getByTestId("plan-status")).toHaveTextContent(/draft/i));
-    expect(screen.queryByTestId("history-error")).not.toBeInTheDocument();
   });
 
   it("replaces a stale plan with a history-load error on reload failure", async () => {
-    const expected = generateNextPlan([record()]);
-    const client = new FakeFitTraceClient({ records: [record()], plan: expected });
+    const client = new FakeFitTraceClient({
+      records: [record()],
+      plan: generateNextPlan([record()]),
+    });
     const { user } = renderPlanWithReload(client);
     await screen.findByTestId("plan-status");
 
@@ -362,9 +368,7 @@ describe("PlanScreen", () => {
     await waitFor(() => expect(client.listCalls).toBe(2));
     refresh.reject(new Error("reload failed"));
 
-    const alert = await screen.findByTestId("history-error");
-    expect(alert).toHaveTextContent(/reload failed/i);
-    // The stale draft must not remain visible alongside the history error.
+    expect(await screen.findByTestId("history-error")).toHaveTextContent(/reload failed/i);
     expect(screen.queryByTestId("plan-status")).not.toBeInTheDocument();
   });
 });

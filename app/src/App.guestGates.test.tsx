@@ -158,7 +158,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     const guestButton = await screen.findByRole("button", { name: /continue as guest/i });
     await waitFor(() => expect(guestButton).toBeEnabled());
     await user.click(guestButton);
-    expect(await screen.findByRole("heading", { name: /plan/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /^training plan$/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /sign in to an existing account/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
@@ -167,7 +167,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.type(screen.getByLabelText("Email"), "b@example.com");
     await user.type(screen.getByLabelText("Password"), "pw-b-1234");
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
-    expect(await screen.findByRole("heading", { name: /plan/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /^training plan$/i })).toBeInTheDocument();
     expect(state.guestSignupCalls).toBe(1);
   });
 
@@ -181,7 +181,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.type(await screen.findByLabelText("Email"), "b@example.com");
     await user.type(screen.getByLabelText("Password"), "pw-b-1234");
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
-    expect(await screen.findByRole("heading", { name: /plan/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /^training plan$/i })).toBeInTheDocument();
   });
 
   it("keeps guest entry disabled when the deployment capability is off", async () => {
