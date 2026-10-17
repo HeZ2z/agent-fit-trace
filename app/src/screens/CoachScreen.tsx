@@ -2,10 +2,12 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { filterRecords } from "@pi-fit-trace/core";
+import type { CoachingBackendId } from "@pi-fit-trace/api-contracts";
 import { runtimePiAvailable } from "../api/runtimeMode.ts";
 import { AnalysisView } from "../components/AnalysisView.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useCoach } from "../coaching/useCoach.ts";
+import { isCloudBackend } from "../coaching/coachBackend.ts";
 
 export function CoachScreen() {
   const { records, status: historyStatus, loadError, reload } = useWorkouts();
@@ -14,10 +16,22 @@ export function CoachScreen() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
+  // The run's own backend wins for disclosure while one is pinned; otherwise
+  // show what the NEXT run would use. Backend availability is per-option:
+  // a missing pi CLI must never disable an available cloud/Codex/OpenCode
+  // backend.
+  const disclosedBackend: CoachingBackendId | null = coach.activeBackend ?? coach.selectedBackend;
+  const disclosedOption =
+    coach.backends.find((option) => option.id === disclosedBackend) ?? null;
+  const disclosedLabel = disclosedOption?.label ?? disclosedBackend;
+  const disclosedLocation =
+    disclosedOption?.location ??
+    (disclosedBackend === null ? null : isCloudBackend(disclosedBackend) ? "cloud" : "local");
   // piAvailable === false means the launcher published a presence probe that
-  // found no pi CLI: coaching cannot run, so asking is disabled with a clear
-  // notice — workout history/tracking stays fully usable.
-  const piUnavailable = runtimePiAvailable() === false;
+  // found no pi CLI. Scope that to the local pi backend actually in use: the
+  // cloud and other local runtimes stay selectable when they are available.
+  const piUnavailable = disclosedBackend === "local-pi" && runtimePiAvailable() === false;
+  const backendLocked = coach.isBackendPinned || coach.isRunning;
 
   const historyEmpty = historyStatus === "ready" && records.length === 0;
 
@@ -38,7 +52,7 @@ export function CoachScreen() {
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    if (piUnavailable) return;
+    if (piUnavailable || !coach.canAsk) return;
     void coach.submit({ question, from, to });
   }
 
@@ -50,10 +64,90 @@ export function CoachScreen() {
         account and the selected range — your records are never rewritten by a run.
       </p>
 
+      {coach.mode === "browser" && coach.isGuest && (
+        <div
+          role="note"
+          data-testid="coach-guest-local"
+          className="validation-warnings"
+        >
+          Guests can use their own local coach only: install pi, then run{" "}
+          <code>agent-fit-trace start</code> from this machine. Cloud coaching requires a formal
+          account.
+        </div>
+      )}
+
+      {coach.mode !== "inactive" && (
+        <div className="field coach-backend">
+          <label htmlFor="coach-backend">Coach backend</label>
+          {coach.backends.length === 0 ? (
+            <p className="coach-meta" data-testid="coach-no-backends">
+              No coach backend is available in this session.
+            </p>
+          ) : (
+            <select
+              id="coach-backend"
+              data-testid="coach-backend-select"
+              value={coach.selectedBackend ?? ""}
+              disabled={backendLocked}
+              onChange={(event) =>
+                coach.selectBackend(event.currentTarget.value as CoachingBackendId)
+              }
+            >
+              {coach.selectedBackend === null && (
+                <option value="" disabled>
+                  Select a backend
+                </option>
+              )}
+              {coach.backends.map((option) => (
+                <option key={option.id} value={option.id} disabled={!option.available}>
+                  {option.available
+                    ? option.label
+                    : `${option.label} — unavailable${
+                        option.unavailableReason === undefined
+                          ? ""
+                          : `: ${option.unavailableReason.message}`
+                      }`}
+                </option>
+              ))}
+            </select>
+          )}
+          {coach.activeBackend !== null && (
+            <p className="coach-meta" data-testid="coach-active-backend">
+              {`This run is pinned to ${disclosedLabel ?? coach.activeBackend}. Replay, cancel, and restore keep using that backend even if the selection changes.`}
+            </p>
+          )}
+        </div>
+      )}
+
+      {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (
+        <p role="note" data-testid="coach-backend-notice" className="coach-meta">
+          {coach.backendNotice}
+        </p>
+      )}
+
+      {disclosedBackend !== null && disclosedLocation !== null && (
+        <p
+          className="coach-meta"
+          data-testid={
+            disclosedLocation === "cloud" ? "coach-cloud-disclosure" : "coach-local-disclosure"
+          }
+        >
+          {disclosedLocation === "cloud"
+            ? "Cloud coach: the run executes in the hosted cloud and spends cloud coaching credits. Your question and the selected workout snapshot are sent to the configured cloud provider."
+            : `Local coach (${disclosedLabel ?? disclosedBackend}): the run executes on this machine through that local CLI. Your question and snapshot go to the model provider configured for it; workout storage stays local.`}
+        </p>
+      )}
+
+      {coach.blockedResume !== null && (
+        <div role="alert" data-testid="coach-resume-blocked" className="validation-warnings">
+          {coach.blockedResume.message}
+        </div>
+      )}
+
       {piUnavailable && (
         <div role="alert" data-testid="coach-pi-unavailable" className="validation-warnings">
-          pi is not installed on this machine, so coaching cannot run. Workout logging and history
-          still work — install pi to enable the coach.
+          pi is not installed on this machine, so the local pi coach cannot run. Select an available
+          cloud or other local backend, install pi, or keep using workout logging and history.
         </div>
       )}
 
@@ -87,6 +181,11 @@ export function CoachScreen() {
                 placeholder="How is my squat progressing?"
                 disabled={coach.isRunning || piUnavailable}
               />
+              {!coach.canAsk && !piUnavailable && (
+                <p className="coach-meta" data-testid="coach-backend-required">
+                  Select an available coach backend to ask.
+                </p>
+              )}
             </div>
             <div className="field">
               <label htmlFor="coach-from">From (optional)</label>
@@ -113,6 +212,7 @@ export function CoachScreen() {
               disabled={
                 coach.isRunning ||
                 piUnavailable ||
+                !coach.canAsk ||
                 question.trim() === ""
               }
             >

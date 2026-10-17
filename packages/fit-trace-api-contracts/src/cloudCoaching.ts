@@ -17,7 +17,7 @@ import type {
   CoachingEventEnvelope,
   CoachingSnapshotReference,
 } from "./coaching.ts";
-import { parseCoachingEventEnvelope } from "./coaching.ts";
+import { COACHED_TOOL_NAMES, parseCoachingEventEnvelope } from "./coaching.ts";
 
 export const CLOUD_RUN_STATUSES = [
   "queued",
@@ -328,5 +328,48 @@ export function parseCloudCancelRunResult(value: unknown): CloudCancelRunResult 
   return {
     run: parseCloudCoachingRun(value.run),
     lastSeq: assertSafeInt(value.lastSeq, "lastSeq", -1),
+  };
+}
+
+function assertBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") fail(field, "must be a boolean");
+  return value;
+}
+
+/**
+ * Guard the server-derived cloud availability response.
+ *
+ * Availability is never inferred from the presence of this payload: a client
+ * still must name the cloud backend explicitly and the server re-checks the
+ * verified account, provider, and quota on every run submission.
+ */
+export function parseCloudCapabilities(value: unknown): CloudCapabilities {
+  if (!isObject(value)) fail("(root)", "must be an object");
+  if (!Array.isArray(value.tools)) fail("tools", "must be an array");
+  const tools = value.tools.map((entry, index) => {
+    const name = assertNonBlank(entry, `tools[${index}]`);
+    if (!(COACHED_TOOL_NAMES as readonly string[]).includes(name)) {
+      fail(`tools[${index}]`, `must be a read-only coached tool (${COACHED_TOOL_NAMES.join(", ")})`);
+    }
+    return name;
+  });
+  return {
+    enabled: assertBoolean(value.enabled, "enabled"),
+    providerConfigured: assertBoolean(value.providerConfigured, "providerConfigured"),
+    providerEnabled: assertBoolean(value.providerEnabled, "providerEnabled"),
+    accountFormal: assertBoolean(value.accountFormal, "accountFormal"),
+    quotaConfigured: assertBoolean(value.quotaConfigured, "quotaConfigured"),
+    budgetConfigured: assertBoolean(value.budgetConfigured, "budgetConfigured"),
+    concurrentLimit: assertSafeInt(value.concurrentLimit, "concurrentLimit", 0),
+    reservedCount: assertSafeInt(value.reservedCount, "reservedCount", 0),
+    tokensRemaining: assertSafeInt(value.tokensRemaining, "tokensRemaining", 0),
+    tokensReserved: assertSafeInt(value.tokensReserved, "tokensReserved", 0),
+    perRunTokenBudget: assertSafeInt(value.perRunTokenBudget, "perRunTokenBudget", 0),
+    perStepTokenBudget: assertSafeInt(value.perStepTokenBudget, "perStepTokenBudget", 0),
+    perRunRequestLimit: assertSafeInt(value.perRunRequestLimit, "perRunRequestLimit", 0),
+    tools,
+    maxSteps: assertSafeInt(value.maxSteps, "maxSteps", 0),
+    maxTokens: assertSafeInt(value.maxTokens, "maxTokens", 0),
+    timeoutMs: assertSafeInt(value.timeoutMs, "timeoutMs", 0),
   };
 }

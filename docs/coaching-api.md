@@ -76,9 +76,13 @@ cannot assert availability, entitlement, or quota.
   durability.
 - `cloud-default` is available only when all of the following hold: the caller
   has a server-verified formal account (`isAnonymous: false`), the server has
-  cloud quota configured with `remaining >= 1`, a provider is configured, and a
-  cloud adapter is registered. Missing identity, a guest account, or missing
-  configuration fails closed. Guests may use their own local agent only.
+  cloud quota configured, a provider is configured, and a cloud adapter is
+  registered. The remaining budget must be able to reserve one configured run:
+  `tokensRemaining - tokensReserved >= perRunTokenBudget` with a positive
+  `perRunTokenBudget`. A positive balance below that budget is reported
+  unavailable (`quota-exhausted`) rather than advertised as a usable run.
+  Missing identity, a guest account, or missing configuration fails closed.
+  Guests may use their own local agent only.
 - Capabilities stay conservative: pi advertises `nativeContinuation: true` and
   `cancelConfirmation: "process-exit"`; unimplemented engines advertise
   `false`/`"unsupported"`.
@@ -184,6 +188,14 @@ an explicit `run_error` (`EVENT_CAP`) followed by the terminal; both still fit
 the reserved headroom. Both sides size frames with the same
 `encodeCoachingEventFrame`/`coachingEventFrameBytes` helper, so the framing +
 size rule lives in one place.
+
+Cloud event GETs are bounded long-poll pages, each bounded by the same stream
+budgets. A page that ends without the terminal is a NORMAL page boundary, not a
+disconnect: the cloud client incrementally folds the page and automatically
+GETs the same run from the consumed cursor + 1 using abortable bounded
+backoff, within a bounded tail time budget. It never repeats the run POST. Only
+a transport/HTTP failure or tail-budget expiry is surfaced as a disconnect
+(keeping the run id, backend, and resume refs for an explicit reconnect).
 
 ## App client lifecycle (single account-level owner)
 

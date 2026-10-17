@@ -8,6 +8,7 @@ import {
   parseCancelCoachingRunBody,
   parseCancelCoachingRunResult,
   parseCoachingBootstrapResult,
+  parseCoachingCapabilityDiscovery,
   parseCoachingEventEnvelope,
   parseCoachingLogoutResult,
   parseCoachingSession,
@@ -22,6 +23,7 @@ import {
 import type {
   CancelCoachingRunResult,
   CoachingBootstrapResult,
+  CoachingCapabilityDiscovery,
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingLogoutResult,
@@ -211,7 +213,7 @@ function lengthOfLineBreakAt(value: string, index: number): number {
   return 0;
 }
 
-interface SseFrame {
+export interface SseFrame {
   /** Frame text WITHOUT its terminating blank line. */
   block: string;
   /**
@@ -223,7 +225,7 @@ interface SseFrame {
   delimiterBytes: number;
 }
 
-function takeSseFrames(buffer: string): { frames: SseFrame[]; rest: string } {
+export function takeSseFrames(buffer: string): { frames: SseFrame[]; rest: string } {
   const frames: SseFrame[] = [];
   let frameStart = 0;
   let cursor = 0;
@@ -261,7 +263,7 @@ function splitSseText(text: string): string[] {
   return blocks;
 }
 /** Parse one raw SSE block (`null` for keepalive/empty frames). */
-function parseSseBlock(block: string, expected: CoachingStreamIdentity): CoachingEventEnvelope | null {
+export function parseSseBlock(block: string, expected: CoachingStreamIdentity): CoachingEventEnvelope | null {
   const payload = extractSseData(block);
   if (payload === null || payload === "") return null;
   let raw: unknown;
@@ -288,14 +290,14 @@ export function parseSseEventsText(text: string, expected: CoachingStreamIdentit
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
-function assertSseContentType(response: Response): void {
+export function assertSseContentType(response: Response): void {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("text/event-stream")) {
     throw new MalformedResponseError("events", "unexpected content-type (expected text/event-stream)");
   }
 }
 
-function cancelReaderBestEffort(reader: ReadableStreamDefaultReader<Uint8Array> | null): void {
+export function cancelReaderBestEffort(reader: ReadableStreamDefaultReader<Uint8Array> | null): void {
   if (reader === null) return;
   try {
     const pending = reader.cancel() as unknown as Promise<void> | void;
@@ -445,6 +447,20 @@ export class CoachingClient {
       "/coaching/sessions",
       { method: "POST", jsonBody: body, capability: this.requireCapability() },
       parseCoachingSession,
+    );
+  }
+
+  /**
+   * Versioned, server-derived backend/capability discovery for this account.
+   * Availability is never asserted by the browser. The launcher may return
+   * local-pi plus other local adapters; cloud eligibility is informational
+   * here (the shared cloud routes are reached by their own client).
+   */
+  async discoverBackends(): Promise<CoachingCapabilityDiscovery> {
+    return this.request(
+      "/coaching/capabilities",
+      { capability: this.requireCapability() },
+      parseCoachingCapabilityDiscovery,
     );
   }
 

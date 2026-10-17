@@ -1,48 +1,123 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalysisResult } from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError, COACHING_ERROR_CODES, NetworkError } from "@pi-fit-trace/api-contracts";
+import { API_ERROR_CODES, ApiError, COACHING_ERROR_CODES, NetworkError, isCoachingBackendId } from "@pi-fit-trace/api-contracts";
 import type {
+  CoachingBackendId,
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingTerminalStatus,
-  SubmitCoachingRunResult,
 } from "@pi-fit-trace/api-contracts";
+import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
 import { CoachingClient } from "../api/coachingClient.ts";
-import { isCoachingEnabled } from "../api/runtimeMode.ts";
+import { isCoachingEnabled, isHttpModeActive, runtimePiAvailable } from "../api/runtimeMode.ts";
 import { useAuth } from "../auth/AuthContext.tsx";
+import {
+  cloudOptionFromCapabilities,
+  defaultCoachBackend,
+  descriptorToOption,
+  initialBackendOptions,
+  isBackendSupportedInMode,
+  isCloudBackend,
+  localBackendSelection,
+  localPiOption,
+  unavailableCloudOption,
+  writeBackendPreference,
+} from "./coachBackend.ts";
+import type { CoachBackendOption, CoachMode, CoachRunClient } from "./coachBackend.ts";
+import { CoachClientRouter } from "./coachClientRouter.ts";
 
 /**
- * Item 4: persisted resume holds ONLY versioned, account-bound IDs in
- * sessionStorage — never tokens, transcripts, or native paths.
+ * Resume v1 remains the compact pi-compatible record. Resume v2 adds the
+ * backend/origin and last-consumed cursor so a reload replays through the
+ * backend that created the run, never through the current selector. Neither
+ * version ever stores a prompt, transcript, token, or native path.
  */
 const COACH_RESUME_STORAGE_KEY = "fit-trace.coach.resume.v1";
-const COACH_RESUME_VERSION = 1;
+const COACH_RESUME_V2_STORAGE_KEY = "fit-trace.coach.resume.v2";
 
 interface CoachResumeRecord {
-  version: number;
+  version: 1 | 2;
   accountId: string;
+  backendId: CoachingBackendId;
+  origin: "local" | "cloud";
   sessionId: string;
   runId: string;
+  /** Highest folded event seq, or -1 before the first event. */
+  lastSeq: number;
 }
 
 function isNonBlank(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
+function isResumeCursor(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= -1;
+}
+
+function originFor(backendId: CoachingBackendId): "local" | "cloud" {
+  return isCloudBackend(backendId) ? "cloud" : "local";
+}
+
+function resumeBackendName(backendId: CoachingBackendId): string {
+  switch (backendId) {
+    case "local-pi":
+      return "the local pi coach";
+    case "local-codex":
+      return "the local Codex coach";
+    case "local-opencode":
+      return "the local OpenCode coach";
+    case "cloud-default":
+      return "the cloud coach";
+  }
+}
+
 function readStoredCoachResume(): CoachResumeRecord | null {
   try {
     const storage = globalThis.sessionStorage;
     if (storage === undefined || storage === null) return null;
+    const v2Raw = storage.getItem(COACH_RESUME_V2_STORAGE_KEY);
+    if (v2Raw !== null) {
+      const parsed: unknown = JSON.parse(v2Raw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        if (
+          record.version === 2 &&
+          isNonBlank(record.accountId) &&
+          isCoachingBackendId(record.backendId) &&
+          isNonBlank(record.sessionId) &&
+          isNonBlank(record.runId) &&
+          isResumeCursor(record.lastSeq)
+        ) {
+          return {
+            version: 2,
+            accountId: record.accountId,
+            backendId: record.backendId,
+            origin: originFor(record.backendId),
+            sessionId: record.sessionId,
+            runId: record.runId,
+            lastSeq: record.lastSeq,
+          };
+        }
+      }
+    }
     const raw = storage.getItem(COACH_RESUME_STORAGE_KEY);
     if (raw === null) return null;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
-    if (record.version !== COACH_RESUME_VERSION) return null;
+    if (record.version !== 1) return null;
     if (!isNonBlank(record.accountId) || !isNonBlank(record.sessionId) || !isNonBlank(record.runId)) {
       return null;
     }
-    return { version: COACH_RESUME_VERSION, accountId: record.accountId, sessionId: record.sessionId, runId: record.runId };
+    return {
+      version: 1,
+      accountId: record.accountId,
+      backendId: "local-pi",
+      origin: "local",
+      sessionId: record.sessionId,
+      runId: record.runId,
+      lastSeq: -1,
+    };
   } catch {
     // Storage unavailable or corrupt: resume is best-effort, never fatal.
     return null;
@@ -53,7 +128,31 @@ function writeStoredCoachResume(record: CoachResumeRecord): void {
   try {
     const storage = globalThis.sessionStorage;
     if (storage === undefined || storage === null) return;
-    storage.setItem(COACH_RESUME_STORAGE_KEY, JSON.stringify(record));
+    storage.setItem(
+      COACH_RESUME_V2_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        accountId: record.accountId,
+        backendId: record.backendId,
+        origin: originFor(record.backendId),
+        sessionId: record.sessionId,
+        runId: record.runId,
+        lastSeq: record.lastSeq,
+      }),
+    );
+    // Old pi clients read only v1; keep the exact compact shape for local-pi
+    // runs. Cloud/non-pi runs never masquerade as a pi resume.
+    if (record.backendId === "local-pi") {
+      storage.setItem(
+        COACH_RESUME_STORAGE_KEY,
+        JSON.stringify({
+          version: 1,
+          accountId: record.accountId,
+          sessionId: record.sessionId,
+          runId: record.runId,
+        }),
+      );
+    }
   } catch {
     // Storage failures must not break the run; the live refs still win.
   }
@@ -64,6 +163,7 @@ function clearStoredCoachResume(): void {
     const storage = globalThis.sessionStorage;
     if (storage === undefined || storage === null) return;
     storage.removeItem(COACH_RESUME_STORAGE_KEY);
+    storage.removeItem(COACH_RESUME_V2_STORAGE_KEY);
   } catch {
     // Best-effort only.
   }
@@ -158,6 +258,9 @@ export interface CoachSubmitInput {
   to?: string;
 }
 
+/** Transport-neutral submit result: local and cloud runs share these ids. */
+type CoachSubmittedRun = Awaited<ReturnType<CoachRunClient["submitRun"]>>;
+
 interface PendingSubmit {
   prompt: string;
   filter: { from?: string; to?: string };
@@ -165,6 +268,8 @@ interface PendingSubmit {
   snapshotHandle: { snapshotId: string; source: string; accountId: string };
   /** Session the ambiguous POST was sent under; retry reuses it verbatim. */
   sessionId: string;
+  /** Backend pinned for the ambiguous request; retry never switches. */
+  backendId: CoachingBackendId;
 }
 
 function newIdempotencyKey(): string {
@@ -211,8 +316,8 @@ function toFilter(input: CoachSubmitInput): { from?: string; to?: string } {
 }
 
 /**
- * Account-level coaching owner over the approved {@link CoachingClient}
- * transport.
+ * Account-level coaching owner over the approved local and cloud coaching
+ * transports.
  *
  * One instance per account lives in `CoachingProvider` (mounted by `Layout`,
  * which survives child-route changes): it keeps a single client/session/run
@@ -221,35 +326,61 @@ function toFilter(input: CoachSubmitInput): { from?: string; to?: string } {
  * snapshot/run/subscribe sequencing, per-submission idempotency keys,
  * last-consumed resume positions, and account-switch/logout cleanup with the
  * captured credentials. Rendering stays in `CoachScreen`, which only subscribes.
+ *
+ * Backend selection is for the NEXT run. A run pins its backend at
+ * submit/resume time, and replay/cancel/cleanup keep addressing that pinned
+ * transport even if the selector changes.
  */
-export function useCoachSession({ client: clientProp }: { client?: CoachingClient } = {}) {
+export function useCoachSession({ client: clientProp }: { client?: CoachRunClient } = {}) {
   const { status, getAccessToken, user } = useAuth();
   const accountId = user?.id ?? null;
-  // The owner must not touch coaching endpoints until the account is VERIFIED
-  // signed-in AND launcher coaching is actually enabled. An explicitly injected
-  // client (tests / embedding) is an explicit opt-in. During auth `loading` (a
-  // restored, unvalidated session) the provider stays inert and the persisted
-  // resume is left untouched; plain local/HTTP modes never restore a stale
-  // resume either.
   const explicitClient = clientProp !== undefined;
-  const coachingActive = explicitClient || isCoachingEnabled();
+  const launcherMode = !explicitClient && isCoachingEnabled();
+  const browserMode = !explicitClient && !launcherMode && isHttpModeActive();
+  const coachMode: CoachMode = explicitClient
+    ? "explicit"
+    : launcherMode
+      ? "launcher"
+      : browserMode
+        ? "browser"
+        : "inactive";
+  // `isAnonymous === true` is the only verified guest signal. `undefined`/
+  // missing classification fails cloud closed: it is never treated as formal.
+  const isGuest = user?.isAnonymous === true;
+  const identityUnverified = user !== null && user.isAnonymous !== false;
+  // The owner must not touch coaching endpoints until the account is VERIFIED
+  // signed-in and a coaching mode is active. An explicitly injected client
+  // (tests / embedding) is an explicit opt-in. During auth `loading` (a
+  // restored, unvalidated session) the provider stays inert and the persisted
+  // resume is left untouched; plain local mode never restores a stale resume.
+  const coachingActive = coachMode !== "inactive";
   const canOperate = coachingActive && status === "signed-in" && accountId !== null;
-  // Item 3: the default client is bound to the account identity that created
-  // it. After a switch the old instance's token accessor returns null so B's
+  // Item 3: the default clients are bound to the account identity that created
+  // them. After a switch the old instance's token accessor returns null so B's
   // bearer can never leak into A's cleanup (or vice versa); cleanup uses the
   // captured A credentials explicitly (see the account effect below).
   const accountRef = useRef<string | null | undefined>(undefined);
-  const defaultClient = useMemo(() => {
+  const boundTokenProvider = useMemo(() => {
     const boundAccount = accountId;
     const currentRef = accountRef;
-    return new CoachingClient({
-      getAccessToken: () => {
-        if (currentRef.current !== undefined && currentRef.current !== boundAccount) return null;
-        return getAccessToken();
-      },
-    });
+    return (): string | null => {
+      if (currentRef.current !== undefined && currentRef.current !== boundAccount) return null;
+      return getAccessToken();
+    };
   }, [accountId, getAccessToken]);
-  const client = clientProp ?? defaultClient;
+  const localClient = useMemo(
+    () => new CoachingClient({ getAccessToken: boundTokenProvider }),
+    [boundTokenProvider],
+  );
+  const cloudClient = useMemo(
+    () => new CloudCoachingClient({ getAccessToken: boundTokenProvider }),
+    [boundTokenProvider],
+  );
+  const router = useMemo(
+    () => new CoachClientRouter({ local: localClient, cloud: cloudClient }),
+    [localClient, cloudClient],
+  );
+  const client: CoachRunClient = clientProp ?? router;
   // Latest committed client for the unmount cleanup (which runs once and must
   // not re-run on client-identity changes).
   const clientRef = useRef(client);
@@ -266,6 +397,23 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
   // Expired-cursor retention start for reloadFromStart; the reconnect/reload/
   // cancel capabilities are DERIVED from the single phase, not duplicated state.
   const [expiredFirstSeq, setExpiredFirstSeq] = useState(0);
+  // Backend selection (next run) is separate from the run's pinned backend.
+  const [selectedBackend, setSelectedBackend] = useState<CoachingBackendId | null>(() =>
+    defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest }),
+  );
+  const [activeBackend, setActiveBackend] = useState<CoachingBackendId | null>(null);
+  const [backends, setBackends] = useState<CoachBackendOption[]>(() =>
+    initialBackendOptions({ mode: coachMode, piAvailable: runtimePiAvailable() }),
+  );
+  const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
+  // A persisted run whose origin cannot be addressed in THIS session mode.
+  // The v2 record (including its backend/origin) stays untouched: the user is
+  // told to start the original connector instead of silently clearing it or
+  // replaying it through the current backend.
+  const [blockedResume, setBlockedResume] = useState<{
+    backendId: CoachingBackendId;
+    message: string;
+  } | null>(null);
   // Item 3: the account whose fold is currently on screen. When `accountId`
   // changes, the visible fold is reset during render (below) so the previous
   // account's transcript can never paint under the new identity.
@@ -273,6 +421,14 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
 
   const phaseRef = useRef<CoachPhase>("idle");
   phaseRef.current = phase;
+  // The selector is the NEXT run; the active/pinned backend belongs to the
+  // run that is (or may be) live. They are deliberately separate so a
+  // selection change never redirects an in-flight replay/cancel.
+  const selectedBackendRef = useRef<CoachingBackendId | null>(selectedBackend);
+  selectedBackendRef.current = selectedBackend;
+  const activeBackendRef = useRef<CoachingBackendId | null>(null);
+  const backendsRef = useRef<CoachBackendOption[]>(backends);
+  backendsRef.current = backends;
   const generationRef = useRef(0);
   const attemptRef = useRef(0);
   const cancelInflightRef = useRef(false);
@@ -297,13 +453,16 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
   // Last committed client instance: on an account switch the `client` binding
   // above may already be the new per-account instance, so cleanup reads the
   // old capability from here (updated only after cleanup runs).
-  const prevClientRef = useRef<CoachingClient | null>(null);
+  const prevClientRef = useRef<CoachRunClient | null>(null);
   // Last known bearer per account, captured while that account is current so
   // switch cleanup can replay A's token explicitly (never B's).
   const accountTokenRef = useRef<{ accountId: string | null; token: string | null }>({
     accountId,
     token: null,
   });
+  // Backend discovery runs once per (mode, account, classification) identity;
+  // cleared by an account switch so B never inherits A's options.
+  const discoveryKeyRef = useRef<string | null>(null);
   // Item 4 restore runs once per account identity per mount.
   const restoreAttemptedRef = useRef<string | null | undefined>(undefined);
   // Account identity whose restore already reached a verdict (verified run or
@@ -320,7 +479,17 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     runId: string | null;
     capability: string | null;
     accessToken: string | null;
-  }>({ accountId: null, runId: null, capability: null, accessToken: null });
+    backendId: CoachingBackendId | null;
+    /** Client that owns the run; cleanup must not consult a later mutable router. */
+    client: CoachRunClient | null;
+  }>({
+    accountId: null,
+    runId: null,
+    capability: null,
+    accessToken: null,
+    backendId: null,
+    client: null,
+  });
   // The in-flight restore's account-bound record, kept ONLY so an ambiguous
   // restore failure can be re-verified on an explicit retry without inventing
   // state. Cleared as soon as the run is verified (or definitively reset).
@@ -338,13 +507,28 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     accountTokenRef.current.token = getAccessToken();
   }
 
+  /**
+   * Persist the v2 record with the run's own backend/origin and the highest
+   * folded seq. A reload replays through THIS backend even if the next-run
+   * selector has since changed. Local-pi runs also mirror v1 for old pi
+   * clients; never a prompt, transcript, token, or native path.
+   */
   const persistResume = useCallback((): void => {
     const currentAccount = accountRef.current ?? accountId;
     const sessionId = sessionIdRef.current;
     const runId = runIdRef.current;
+    const backendId = activeBackendRef.current;
     if (currentAccount === null || currentAccount === undefined) return;
-    if (sessionId === null || runId === null) return;
-    writeStoredCoachResume({ version: COACH_RESUME_VERSION, accountId: currentAccount, sessionId, runId });
+    if (sessionId === null || runId === null || backendId === null) return;
+    writeStoredCoachResume({
+      version: 2,
+      accountId: currentAccount,
+      backendId,
+      origin: originFor(backendId),
+      sessionId,
+      runId,
+      lastSeq: lastConsumedRef.current,
+    });
   }, [accountId]);
 
   // Synchronous phase authority: set the ref NOW so rapid duplicate taps see
@@ -353,6 +537,56 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     phaseRef.current = next;
     setPhase(next);
   }, []);
+
+  /**
+   * Pin every subsequent transport operation (bootstrap/read/replay/cancel) to
+   * one backend BEFORE the first request of the run. The router is mutated
+   * synchronously so an awaited callback cannot race a later selection.
+   */
+  const pinBackend = useCallback(
+    (backendId: CoachingBackendId) => {
+      activeBackendRef.current = backendId;
+      if (!explicitClient) router.setActiveBackend(backendId);
+      setActiveBackend(backendId);
+    },
+    [explicitClient, router],
+  );
+
+  const unpinBackend = useCallback(() => {
+    activeBackendRef.current = null;
+    setActiveBackend(null);
+  }, []);
+
+  /** True while a backend is pinned for an active/unresolved run. */
+  const backendPinnedNow = useCallback((): boolean => {
+    if (activeBackendRef.current === null) return false;
+    if (pendingRetryRef.current !== null) return true;
+    if (runIdRef.current !== null && !terminatedRef.current) return true;
+    const current = phaseRef.current;
+    return (
+      current === "preparing" ||
+      current === "restoring" ||
+      current === "cancelling" ||
+      current === "unconfirmed" ||
+      current === "disconnected"
+    );
+  }, []);
+
+  /**
+   * Select the backend for the NEXT run. Pinned while a run is active/unknown:
+   * switching mid-run would misroute reconnect/cancel, so it is ignored. The
+   * preference is account-scoped, never global.
+   */
+  const selectBackend = useCallback(
+    (backendId: CoachingBackendId): void => {
+      if (backendPinnedNow()) return;
+      if (!backendsRef.current.some((option) => option.id === backendId)) return;
+      selectedBackendRef.current = backendId;
+      setSelectedBackend(backendId);
+      if (accountId !== null) writeBackendPreference(accountId, backendId);
+    },
+    [accountId, backendPinnedNow],
+  );
 
   const clearFold = useCallback(() => {
     setSnapshot(null);
@@ -397,10 +631,12 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       postInflightRef.current = false;
       terminatedRef.current = false;
       clearStoredCoachResume();
+      setBlockedResume(null);
+      unpinBackend();
       setError(message);
       beginPhase("failed");
     },
-    [beginPhase],
+    [beginPhase, unpinBackend],
   );
 
   // Item 3: when the account identity changes, reset the visible fold during
@@ -476,13 +712,16 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
           // verdict: the cancelling UI resolves to the server truth.
           if (payload.status === "completed") cancelRequestedRef.current = false;
           lastConsumedRef.current = envelope.seq;
+          persistResume();
+          // A terminal rejects the backend: the next run may select another one.
+          unpinBackend();
           return;
       }
       // Advance only after a successful fold (item 1): reconnect resumes from
       // last consumed + 1 instead of replaying from 0.
       lastConsumedRef.current = envelope.seq;
     },
-    [beginPhase],
+    [beginPhase, persistResume, unpinBackend],
   );
 
   const attachStream = useCallback(
@@ -523,6 +762,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
           // run/resume so reconnect or cancel stays possible.
           setError("The coach stream ended without a terminal event. Reconnect to resume.");
           lastConsumedRef.current = result.lastConsumed;
+          persistResume();
           beginPhase("disconnected");
         },
         (streamError: unknown) => {
@@ -566,7 +806,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         },
       );
     },
-    [beginPhase, client, foldEvent, releaseMissingRun],
+    [beginPhase, client, foldEvent, persistResume, releaseMissingRun],
   );
 
   /**
@@ -615,6 +855,26 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       // cursor or a failed tail) and an unconfirmed cancellation also block a
       // fresh submit — the active run must be resolved first.
       if (blocksFreshRun()) return;
+      // The NEXT run's backend is only what the user explicitly selected. No
+      // silent fallback: a missing/unavailable backend refuses before any
+      // capability/snapshot/session allocation.
+      const backendId = selectedBackendRef.current;
+      const backendOption =
+        backendId === null
+          ? null
+          : (backendsRef.current.find((option) => option.id === backendId) ?? null);
+      if (backendId === null || backendOption === null || !backendOption.available) {
+        setError(
+          backendOption?.unavailableReason?.message ??
+            (backendId === null
+              ? "Choose a coaching backend before asking the coach."
+              : "The selected coaching backend is not available."),
+        );
+        return;
+      }
+      // Pin the run to this backend BEFORE the first request. Replay, cancel,
+      // and cleanup will keep addressing it even if the selector changes.
+      pinBackend(backendId);
       const gen = ++generationRef.current;
       beginPhase("preparing");
       cancelRequestedRef.current = false;
@@ -629,6 +889,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       // Item 4: a fresh submit supersedes any persisted resume until the new
       // run is established below.
       clearStoredCoachResume();
+      setBlockedResume(null);
       clearFold();
       setError(null);
       // Stable for this submission: reused by the explicit retry below, never
@@ -667,20 +928,29 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
           // Coach UI shows "record first" and keeps the form for a new range.
           pendingRetryRef.current = null;
           clearStoredCoachResume();
+          unpinBackend();
           beginPhase("idle");
           return;
         }
         const handle = { snapshotId: created.snapshotId, source: created.source, accountId: created.accountId };
-        pendingRetryRef.current = { prompt: question, filter, idempotencyKey, snapshotHandle: handle, sessionId };
+        pendingRetryRef.current = {
+          prompt: question,
+          filter,
+          idempotencyKey,
+          snapshotHandle: handle,
+          sessionId,
+          backendId,
+        };
         postDispatched = true;
         postInflightRef.current = true;
-        let submitted: SubmitCoachingRunResult;
+        let submitted: CoachSubmittedRun;
         try {
           submitted = await client.submitRun({
             sessionId,
             prompt: question,
             idempotencyKey,
             snapshot: handle,
+            ...localBackendSelection(backendId),
           });
         } catch (caught) {
           // An idle sessions is deleted server-side after its retention TTL. A
@@ -700,6 +970,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
             postDispatched = false;
             pendingRetryRef.current = null;
             clearStoredCoachResume();
+            unpinBackend();
             beginPhase("cancelled");
             return;
           }
@@ -715,6 +986,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
             prompt: question,
             idempotencyKey,
             snapshot: handle,
+            ...localBackendSelection(backendId),
           });
         }
         if (generationRef.current === gen) postInflightRef.current = false;
@@ -777,16 +1049,28 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
             // already prevents new work.
           }
           if (generationRef.current !== gen) return;
+          unpinBackend();
           beginPhase("cancelled");
           return;
         }
         setError(friendlyCoachError(caught));
         // pendingRetry stays set only when no run was established (ambiguous
         // submit); stream failures clear it above so only Retry shows there.
+        // With no pending key and no run, nothing is pinned any more.
+        if (pendingRetryRef.current === null && runIdRef.current === null) unpinBackend();
         beginPhase("failed");
       }
     },
-    [attachStream, beginPhase, blocksFreshRun, clearFold, client, persistResume],
+    [
+      attachStream,
+      beginPhase,
+      blocksFreshRun,
+      clearFold,
+      client,
+      persistResume,
+      pinBackend,
+      unpinBackend,
+    ],
   );
 
   /** Explicit retry of an AMBIGUOUS submit with the SAME key/snapshot (no implicit replay). */
@@ -810,6 +1094,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     const keepCancelIntent = cancelUnconfirmedRef.current;
     cancelUnconfirmedRef.current = false;
     resolvingCancelRef.current = keepCancelIntent;
+    // The retry resolves the ORIGINAL request on its ORIGINAL backend: a
+    // selector change meanwhile must never redirect the same-key re-POST.
+    pinBackend(pending.backendId);
     const gen = ++generationRef.current;
     beginPhase("preparing");
     cancelRequestedRef.current = keepCancelIntent;
@@ -850,6 +1137,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         prompt: pending.prompt,
         idempotencyKey: pending.idempotencyKey,
         snapshot: pending.snapshotHandle,
+        ...localBackendSelection(pending.backendId),
       });
       if (generationRef.current === gen) postInflightRef.current = false;
       if (generationRef.current !== gen) return;
@@ -899,6 +1187,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
             expiredProof === "session" ? "SESSION_NOT_FOUND" : "SNAPSHOT_NOT_FOUND"
           }). Start a new analysis.`,
         );
+        unpinBackend();
         beginPhase("failed");
         return;
       }
@@ -918,11 +1207,14 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         return;
       }
       setError(friendlyCoachError(caught));
+      // An unresolved same-key retry keeps the pin (pendingRetryRef); once the
+      // key is released with no run, nothing remains pinned.
+      if (pendingRetryRef.current === null && runIdRef.current === null) unpinBackend();
       beginPhase("failed");
     } finally {
       if (generationRef.current === gen) resolvingCancelRef.current = false;
     }
-  }, [attachStream, beginPhase, client, persistResume]);
+  }, [attachStream, beginPhase, client, persistResume, pinBackend, unpinBackend]);
 
   /** Explicit resume of a disconnected stream from last consumed + 1. */
   const reconnect = useCallback((): void => {
@@ -1112,8 +1404,10 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       subscriptionRef.current = null;
     }
     clearFold();
+    setBlockedResume(null);
+    unpinBackend();
     beginPhase("idle");
-  }, [beginPhase, blocksFreshRun, clearFold]);
+  }, [beginPhase, blocksFreshRun, clearFold, unpinBackend]);
 
   // Account switch / logout: abort the subscription, cancel the own active
   // run, forget credentials, and clear session/results/drafts + resume ids.
@@ -1133,6 +1427,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     }
     const previousAccountId = accountRef.current;
     const previousClient = prevClientRef.current ?? client;
+    const previousBackend = activeBackendRef.current;
     const captured = accountTokenRef.current;
     accountRef.current = accountId;
     generationRef.current += 1;
@@ -1169,7 +1464,12 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     const previousCapability = previousClient.capabilitySnapshot();
     previousClient.discardCredentials();
     const previousToken = captured.accountId === previousAccountId ? captured.token : null;
-    if (previousCapability !== null) {
+    // A cloud run carries no capability, so its teardown is authorized by the
+    // captured bearer only. `previousClient` is the account-bound instance that
+    // already pins the run's backend; a later mutable selection/router must not
+    // redirect this cleanup.
+    const previousWasCloud = previousBackend !== null && isCloudBackend(previousBackend);
+    if (previousCapability !== null || (previousWasCloud && previousToken !== null)) {
       if (runId !== null) {
         void previousClient
           .cancelRun(runId, undefined, { capability: previousCapability, accessToken: previousToken })
@@ -1181,13 +1481,39 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     }
     // The retained teardown belonged to A: its server cleanup already ran
     // above, so reset the snapshot for B.
-    retainedLogoutRef.current = { accountId, runId: null, capability: null, accessToken: null };
+    retainedLogoutRef.current = {
+      accountId,
+      runId: null,
+      capability: null,
+      accessToken: null,
+      backendId: null,
+      client: null,
+    };
     // Adopt the new identity's client + live bearer for the next switch.
     prevClientRef.current = client;
     accountTokenRef.current = { accountId, token: getAccessToken() };
+    // The next account starts from ITS OWN preference (never A's selection),
+    // with no pin and no inherited discovery result.
+    unpinBackend();
+    const nextDefault = defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest });
+    selectedBackendRef.current = nextDefault;
+    setSelectedBackend(nextDefault);
+    setBackends(initialBackendOptions({ mode: coachMode, piAvailable: runtimePiAvailable() }));
+    discoveryKeyRef.current = null;
+    setDiscoveryNotice(null);
+    setBlockedResume(null);
     clearFold();
     beginPhase("idle");
-  }, [accountId, beginPhase, clearFold, client, getAccessToken]);
+  }, [
+    accountId,
+    beginPhase,
+    clearFold,
+    client,
+    coachMode,
+    getAccessToken,
+    isGuest,
+    unpinBackend,
+  ]);
 
   // Keep the retained, account-bound cleanup credentials current while this
   // account is on screen (runs after every commit, so the last render before an
@@ -1197,6 +1523,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     const retained = retainedLogoutRef.current;
     retained.accountId = accountId;
     retained.runId = runIdRef.current;
+    retained.backendId = activeBackendRef.current;
+    // Capture the client that owns this account/run. Teardown must not consult
+    // `clientRef.current` later, when an account switch may have replaced it
+    // with another account's backend.
+    retained.client = client;
     const capability = client.capabilitySnapshot();
     if (capability !== null) retained.capability = capability;
     const token = getAccessToken();
@@ -1207,15 +1538,21 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
   // bearer/getAccessToken, so a switched-in account's token can never be
   // replayed for the old account. No React state is touched.
   const runRetainedCoachCleanup = useCallback((): void => {
-    const { capability, accessToken, runId } = retainedLogoutRef.current;
-    if (capability === null) return;
-    const activeClient = clientRef.current;
+    const { capability, accessToken, runId, backendId, client: cleanupClient } =
+      retainedLogoutRef.current;
+    const isCloudRun = backendId !== null && isCloudBackend(backendId);
+    // A local capability is mandatory for the local transport; a cloud run is
+    // cleaned up with its captured bearer and has no capability at all.
+    if (capability === null && !(isCloudRun && accessToken !== null)) return;
+    if (cleanupClient === null) return;
+    // `cleanupClient` was captured from the account/backend that owns the run.
+    // Never route this through a later mutable active client/router.
     if (runId !== null) {
-      void activeClient
+      void cleanupClient
         .cancelRun(runId, undefined, { capability, accessToken })
         .catch(() => undefined);
     }
-    void activeClient.logout({ capability, accessToken }).catch(() => undefined);
+    void cleanupClient.logout({ capability, accessToken }).catch(() => undefined);
   }, []);
 
   // Sign-out teardown: `Layout` runs it BEFORE `signOutSession`, while the old
@@ -1248,12 +1585,15 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     restoreRecordRef.current = null;
     // The account's resume ids must not restore a run after logout.
     clearStoredCoachResume();
+    setBlockedResume(null);
     // Forget the live capability synchronously, then fire the server teardown
     // with the retained credentials (explicit capability, never the client's
     // current handle or a live bearer).
     clientRef.current.discardCredentials();
     runRetainedCoachCleanup();
-  }, [runRetainedCoachCleanup]);
+    retainedLogoutRef.current.backendId = null;
+    unpinBackend();
+  }, [runRetainedCoachCleanup, unpinBackend]);
 
   /**
    * Verify a persisted resume server-side, then replay it (or, if a cancel was
@@ -1290,6 +1630,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         restoreCompletedRef.current = accountId;
         sessionIdRef.current = session.id;
         runIdRef.current = read.run.id;
+        // Migrate/refresh the v2 record with the verified ids, origin, and
+        // cursor. Replay always comes from this record, not the selector.
+        persistResume();
         // Restore the source/scope metadata the refreshed result came from.
         setSnapshot(read.run.snapshot);
         if (cancelRequestedRef.current) {
@@ -1322,6 +1665,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
           sessionIdRef.current = null;
           runIdRef.current = null;
           lastConsumedRef.current = -1;
+          setBlockedResume(null);
+          unpinBackend();
           const wasCancelling = cancelRequestedRef.current;
           cancelRequestedRef.current = false;
           beginPhase(wasCancelling ? "cancelled" : "idle");
@@ -1335,12 +1680,15 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         beginPhase("disconnected");
       }
     },
-    [accountId, attachStream, beginPhase, client],
+    [accountId, attachStream, beginPhase, client, persistResume, unpinBackend],
   );
 
   /** Begin a restore attempt for `record` under a fresh generation. */
   const startRestore = useCallback(
     (record: CoachResumeRecord): void => {
+      // The stored record owns the origin: replay pinning never consults the
+      // current selector, so a changed selection cannot redirect a restore.
+      pinBackend(record.backendId);
       const gen = ++generationRef.current;
       attemptRef.current += 1;
       streamLiveRef.current = false;
@@ -1353,7 +1701,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       beginPhase("restoring");
       void runRestore(gen, record);
     },
-    [beginPhase, runRestore],
+    [beginPhase, pinBackend, runRestore],
   );
 
   /**
@@ -1395,9 +1743,28 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       restoreCompletedRef.current = accountId;
       return;
     }
+    // A plain browser cannot address a local launcher run. Keep the v2 record
+    // (backend/origin included) and tell the user to start the original
+    // connector; never clear it or replay it through the current/cloud backend.
+    if (!isBackendSupportedInMode(record.backendId, coachMode)) {
+      restoreCompletedRef.current = accountId;
+      const localRun = !isCloudBackend(record.backendId);
+      setBlockedResume({
+        backendId: record.backendId,
+        message: localRun
+          ? `A saved run belongs to ${resumeBackendName(
+              record.backendId,
+            )}, which is unavailable in this browser session. Start the original local connector with \`agent-fit-trace start\` on the machine that owns the run to resume it. Its saved resume was kept and it was not replayed through another backend.`
+          : `A saved run belongs to ${resumeBackendName(
+              record.backendId,
+            )}, which is unavailable in this session. Start the cloud-enabled app to resume it. Its saved resume was kept and it was not replayed through another backend.`,
+      });
+      return;
+    }
     // Fresh attempt: a stale cancel intent from a previous identity must not
     // leak into this restore.
     cancelRequestedRef.current = false;
+    setBlockedResume(null);
     startRestore(record);
     return () => {
       // Allow a StrictMode remount (or a genuine account change) to retry the
@@ -1405,7 +1772,90 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       // first attempt is invalidated by the unmount effect's generation bump.
       if (restoreAttemptedRef.current === accountId) restoreAttemptedRef.current = undefined;
     };
-  }, [accountId, canOperate, startRestore]);
+  }, [accountId, canOperate, coachMode, startRestore]);
+
+  /**
+   * Discover the backends this session may choose from. Launcher mode asks the
+   * local capability route (falling back to the legacy local-pi option); plain
+   * browser mode asks the shared cloud capability route for FORMAL accounts
+   * only. Guests and unverified identities never issue a cloud request.
+   */
+  const discoveryKey = `${coachMode}:${accountId ?? "none"}:${
+    isGuest ? "guest" : identityUnverified ? "unverified" : "formal"
+  }`;
+  useEffect(() => {
+    if (!canOperate) return;
+    if (accountRef.current !== accountId) return;
+    if (coachMode === "explicit") return;
+    if (discoveryKeyRef.current === discoveryKey) return;
+    discoveryKeyRef.current = discoveryKey;
+    const key = discoveryKey;
+    if (coachMode === "browser" && (isGuest || identityUnverified)) {
+      // No cloud request: a guest can only be told how to run a local coach.
+      setBackends([]);
+      setDiscoveryNotice(null);
+      return;
+    }
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        if (coachMode === "browser") {
+          const capabilities = await cloudClient.readCapabilities();
+          if (cancelled) return;
+          setBackends([cloudOptionFromCapabilities(capabilities)]);
+        } else {
+          if (!client.isBootstrapped) await client.bootstrap();
+          if (cancelled) return;
+          const discovery = await localClient.discoverBackends();
+          if (cancelled) return;
+          const piAvailable = runtimePiAvailable();
+          setBackends(
+            discovery.backends.map((descriptor) =>
+              descriptor.backendId === "local-pi" && piAvailable === false
+                ? localPiOption(false)
+                : descriptorToOption(descriptor),
+            ),
+          );
+        }
+        if (cancelled) return;
+        setDiscoveryNotice(null);
+      } catch (caught) {
+        if (cancelled) return;
+        if (coachMode === "browser") {
+          setBackends([
+            unavailableCloudOption("Cloud availability could not be verified; cloud coaching stays off."),
+          ]);
+          setDiscoveryNotice(
+            `Cloud availability could not be verified (${friendlyCoachError(caught)}). Cloud coaching stays off.`,
+          );
+        } else {
+          // Keep the already-truthful local default instead of inventing a
+          // backend: the launcher already published whether pi is present.
+          setDiscoveryNotice(
+            `Backend discovery failed (${friendlyCoachError(
+              caught,
+            )}). Showing the local pi default.`,
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // Let a StrictMode/same-identity re-run retry discovery; an account
+      // switch has already cleared the key.
+      if (discoveryKeyRef.current === key) discoveryKeyRef.current = null;
+    };
+  }, [
+    accountId,
+    canOperate,
+    client,
+    cloudClient,
+    coachMode,
+    discoveryKey,
+    identityUnverified,
+    isGuest,
+    localClient,
+  ]);
 
   // Unmount (ordinary navigation, refresh, or logout) detaches the stream,
   // bumps the generation/attempt so every pending bootstrap/restore/submit
@@ -1436,8 +1886,57 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
   );
 
   const hasActiveRun = runIdRef.current !== null && !terminatedRef.current;
+  const selectedOption =
+    selectedBackend === null
+      ? null
+      : (backends.find((option) => option.id === selectedBackend) ?? null);
+  const isBackendPinned = backendPinnedNow();
+  // Ask is offered only for an explicitly chosen, AVAILABLE backend. There is
+  // no implicit default: the cloud is opt-in and a guest has no cloud option.
+  const canAsk =
+    status === "signed-in" &&
+    accountId !== null &&
+    selectedOption !== null &&
+    selectedOption.available;
+  const backendNotice = useMemo((): string | null => {
+    if (coachMode === "browser") {
+      if (isGuest) {
+        return "Cloud coaching requires a formal account. Guests can use their own local coach only: install pi, then run `agent-fit-trace start` on this machine.";
+      }
+      if (identityUnverified) {
+        return "Cloud coaching is unavailable until your account identity is verified.";
+      }
+    }
+    if (discoveryNotice !== null) return discoveryNotice;
+    if (selectedOption === null) {
+      if (coachMode === "browser") {
+        return "Cloud coaching is off by default because every run spends cloud coaching credits. Select Cloud coach for the next run.";
+      }
+      return null;
+    }
+    if (!selectedOption.available) {
+      return selectedOption.unavailableReason?.message ?? "The selected coach backend is unavailable.";
+    }
+    if (coachMode === "browser" && selectedOption.location === "cloud") {
+      return "Cloud coaching is selected for the next run. It uses your cloud coaching credits.";
+    }
+    return null;
+  }, [coachMode, discoveryNotice, identityUnverified, isGuest, selectedOption]);
   return {
     phase,
+    mode: coachMode,
+    isGuest,
+    identityUnverified,
+    backends,
+    selectedBackend,
+    // The run's own backend, exposed only while it is pinned (active,
+    // unresolved, restoring, cancelling, or awaiting a same-key retry).
+    activeBackend: isBackendPinned ? activeBackend : null,
+    isBackendPinned,
+    canAsk,
+    backendNotice,
+    blockedResume,
+    selectBackend,
     // Every button capability is DERIVED from the single phase plus the live
     // run, never a scattered duplicate boolean. A known nonterminal run keeps
     // `isRunning` true in ANY phase (expired/disconnected/unconfirmed included,

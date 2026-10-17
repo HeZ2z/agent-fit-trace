@@ -5,7 +5,7 @@ import {
   GuestAccountControls,
   GuestUpgradePasswordNotice,
 } from "../auth/GuestAccountControls.tsx";
-import { isCoachingEnabled } from "../api/runtimeMode.ts";
+import { isCoachVisible } from "../api/runtimeMode.ts";
 import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { useCoach } from "../coaching/useCoach.ts";
 
@@ -17,9 +17,10 @@ const baseNavLinks = [
 ];
 
 function navLinks() {
-  // The Coach entry is launcher-gated: only the explicit same-origin runtime
-  // flag shows it, so the App never advertises a fake cloud coach.
-  if (isCoachingEnabled()) return [...baseNavLinks, { to: "/coach", label: "Coach" }];
+  // The Coach entry is visible where coaching can exist at all: the launcher's
+  // local flag and authenticated HTTP deployments. Visible is not available —
+  // the screen itself explains backend eligibility (guest/credits/provider).
+  if (isCoachVisible()) return [...baseNavLinks, { to: "/coach", label: "Coach" }];
   return baseNavLinks;
 }
 
