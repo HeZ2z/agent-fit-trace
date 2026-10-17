@@ -101,10 +101,8 @@ const DEPLOYED_FUNCTION_WRAPPERS = {
   "import-selections/[kind].mjs": "../../../build/server/vercel.mjs",
   "plan-adoption.mjs": "../../build/server/vercel.mjs",
   "coaching/cloud/[...path].mjs": "../../../../build/server/vercel.mjs",
-  "coaching/cloud/sessions/[id].mjs": "../../../../../build/server/vercel.mjs",
-  "coaching/cloud/runs/[id].mjs": "../../../../../build/server/vercel.mjs",
-  "coaching/cloud/runs/[id]/events.mjs": "../../../../../../build/server/vercel.mjs",
-  "coaching/cloud/runs/[id]/cancel.mjs": "../../../../../../build/server/vercel.mjs",
+  "coaching/cloud/runs/[...path].mjs": "../../../../../build/server/vercel.mjs",
+  "coaching/cloud/sessions/[...path].mjs": "../../../../../build/server/vercel.mjs",
 } as const;
 
 test("vercel adapter: every client route has a deployed Function wrapper", async () => {
