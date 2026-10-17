@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILENAME_LENGTH,
+  WORKOUT_MAX_ID_BYTES,
   parseWorkoutImportFile,
 } from "@pi-fit-trace/api-contracts";
 import type { FitTraceClient, PublicApiConfig } from "@pi-fit-trace/api-contracts";
@@ -188,6 +189,34 @@ describe("MeScreen", () => {
     );
   });
 
+  it("exports restorable history and names a record above the btree-safe id bound", async () => {
+    const legacy = record({ id: "w".repeat(300), date: "2026-01-05" });
+    const overBoundId = "w".repeat(WORKOUT_MAX_ID_BYTES + 1);
+    const overBound = record({ id: overBoundId, date: "2026-01-06" });
+    const normal = record({ id: "wkt_normal", date: "2026-01-07" });
+    renderMe(new FakeFitTraceClient({ records: [legacy, overBound, normal] }));
+    await screen.findByText(/local session/i);
+    const exportButton = screen.getByRole("button", { name: /export workouts \(json\)/i });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+
+    await userEvent.click(exportButton);
+
+    const restoredIds = downloadJsonMock.mock.calls.flatMap(([, text]) =>
+      parseWorkoutImportFile(text).entries.map((entry) => entry.record.id),
+    );
+    expect(restoredIds).toEqual([legacy.id, normal.id]);
+    expect(restoredIds).not.toContain(overBoundId);
+    expect(await screen.findByTestId("me-export-result")).toHaveTextContent(
+      /2 record\(s\)/,
+    );
+    const excluded = await screen.findByTestId("me-export-excluded");
+    expect(excluded).toHaveTextContent(/1 workout record was left out/i);
+    expect(excluded).toHaveTextContent(
+      new RegExp(`at most ${WORKOUT_MAX_ID_BYTES} UTF-8 bytes`),
+    );
+    expect(excluded).toHaveTextContent(/remain in your history/i);
+  });
+
   it("previews and sequentially appends workout records with an indexed receipt", async () => {
     const adapter = new MemoryStorageAdapter();
     renderMe(adapter);
@@ -247,7 +276,7 @@ describe("MeScreen", () => {
     );
 
     expect(await screen.findByTestId("me-workout-file-error")).toHaveTextContent(
-      /records\[1\]\.id.*must be at most 256 characters/,
+      new RegExp(`records\\[1\\]\\.id.*must be at most ${WORKOUT_MAX_ID_BYTES} UTF-8 bytes`),
     );
     expect(screen.queryByTestId("me-workout-preview")).not.toBeInTheDocument();
     expect(screen.queryByTestId("me-workout-receipt")).not.toBeInTheDocument();

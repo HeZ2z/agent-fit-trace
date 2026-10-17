@@ -433,7 +433,8 @@ The shared contract (`src/imports.ts`) enforces these limits before any write:
 | JSON depth (all imported JSON) | 16 |
 | JSON object key length (all imported JSON) | 256 characters |
 | Snapshot string length | 4096 characters |
-| Snapshot/source/workout id length | 256 characters (`IMPORT_MAX_ID_LENGTH`) |
+| Snapshot/source/artifact id length | 256 characters (`IMPORT_MAX_ID_LENGTH`) |
+| Workout restore/export id length | 1024 UTF-8 bytes (`WORKOUT_MAX_ID_BYTES`) |
 | Snapshot collection length | 1000 entries |
 | Source filename | 255 characters after path normalization |
 | Import list limit | default 20, maximum 100 |
@@ -445,17 +446,29 @@ can save locally is therefore not rejected merely because it is larger than a
 snapshot request. Workout records are validated by the core workout validator
 and are bounded by the file byte/record caps; the stricter snapshot field caps
 (string/collection length) do not apply to their notes, exercise names, or
-collections. Workout ids are the exception: they keep the shared 256-character
-`IMPORT_MAX_ID_LENGTH` bound because they index the `workouts` primary key
-`(owner_id, id)`. A PostgreSQL btree entry cannot hold an arbitrarily large
-string, so an oversized id must fail preview rather than stop a sequential
-restore after earlier records were saved. Snapshot imports remain
-bounded by the 40 KiB compact request limit, which is deliberately lower than
-the database's 64 KiB `jsonb::text` guard: PostgreSQL adds one space after
-every comma and colon, so the worst-case expansion (arrays of one-byte values)
-is 50%, or 60 KiB. A snapshot accepted by preview is therefore also accepted
-by the SQL save path. Workout export splits large histories into numbered
-files that each satisfy these restore bounds.
+collections. Workout ids use a separate btree-safe bound: they index the
+`workouts` primary key `(owner_id, id)`, and PostgreSQL sizes btree entries in
+UTF-8 bytes, so `WORKOUT_MAX_ID_BYTES` (1024) stays comfortably below the
+roughly 2.7 KiB btree entry limit. That bound is deliberately wider than the
+snapshot/source contract so existing history with a moderately long id (for
+example 300 characters) restores and exports normally. A workout id above the
+bound still fails preview, so a sequential restore cannot save earlier records
+and then stop at an oversized id. Snapshot source ids reference workout ids but
+keep the narrower 256-character artifact contract, which matches the SQL
+`char_length` guard on `source_record_ids`; they are not themselves
+btree-indexed workout keys. Snapshot imports remain bounded by the 40 KiB
+compact request limit, which is deliberately lower than the database's 64 KiB
+`jsonb::text` guard: PostgreSQL adds one space after every comma and colon, so
+the worst-case expansion (arrays of one-byte values) is 50%, or 60 KiB. A
+snapshot accepted by preview is therefore also accepted by the SQL save path.
+
+Workout export splits large histories into numbered files that each satisfy
+these restore bounds. When a stored record cannot be represented in a
+restorable file (for example an id above the btree-safe bound, or a single
+record larger than the 1 MiB file limit), export still writes every restorable
+record and reports the excluded record id with the reason instead of aborting
+the whole backup. Excluded records remain in history; the UI labels the
+backup as incomplete rather than silently dropping them.
 
 Identity is content-addressed:
 `id = "<kind>:v1:<sha256(stableStringify(payload))>"`. Saving is idempotent:

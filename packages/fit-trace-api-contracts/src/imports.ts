@@ -55,20 +55,35 @@ export const IMPORT_MAX_REQUEST_BYTES = 40 * 1024;
  */
 export const WORKOUT_MAX_REQUEST_BYTES = IMPORT_MAX_FILE_BYTES;
 
+/**
+ * Btree-safe UTF-8 byte bound for one workout id during restore/export.
+ *
+ * A workout id indexes the Supabase `workouts` primary key `(owner_id, id)`,
+ * and a PostgreSQL btree index entry cannot hold an arbitrarily large string.
+ * Rejecting an oversized id only when the database sees it would stop a
+ * sequential restore halfway through, after earlier records were already
+ * saved. PostgreSQL sizes index entries in bytes, not characters, and its
+ * btree entry limit is about 2.7 KiB; 1024 UTF-8 bytes leaves ample room for
+ * the owner key and tuple overhead while still accepting existing ids such as
+ * a 300-character id. Snapshot/source ids have their own narrower bound
+ * ({@link IMPORT_MAX_ID_LENGTH}) because they are a separate artifact
+ * contract, also enforced by the SQL `char_length` guard.
+ */
+export const WORKOUT_MAX_ID_BYTES = 1024;
+
 /** Additional structural bounds applied before trusting any imported JSON. */
 export const IMPORT_MAX_JSON_DEPTH = 16;
 export const IMPORT_MAX_JSON_KEY_LENGTH = 256;
 export const IMPORT_MAX_STRING_LENGTH = 4096;
 /**
- * Storage-safe id length shared by snapshot/source ids and workout restores.
+ * Storage-safe id length for snapshot/source/artifact ids.
  *
- * A workout id indexes the Supabase `workouts` primary key `(owner_id, id)`,
- * and a btree index entry cannot hold an arbitrarily large string. Rejecting
- * an oversized id only when the database sees it would stop a sequential
- * restore halfway through, after earlier records were already saved. At 256
- * UTF-16 code units the UTF-8 encoding is at most about 1 KiB even for the
- * widest code points, comfortably below PostgreSQL's btree entry limit.
- * Snapshot source ids reference workout ids, so they share the bound.
+ * Imported-artifact ids are content-addressed (`kind:v1:<digest>`) and source
+ * ids are denormalized references in JSONB, not btree-indexed workout keys.
+ * They keep the existing 256-character artifact contract, which the SQL
+ * `char_length` guards also enforce. Workout restore/export ids are measured
+ * separately in btree-safe UTF-8 bytes ({@link WORKOUT_MAX_ID_BYTES}), because
+ * `workouts` is the table whose primary-key btree stores the id.
  */
 export const IMPORT_MAX_ID_LENGTH = 256;
 export const IMPORT_MAX_COLLECTION_LENGTH = 1000;
@@ -188,6 +203,11 @@ function assertStringOrNull(value: unknown, field: string, fail: Fail): string |
 
 function byteLengthUtf8(value: string): number {
   return new TextEncoder().encode(value).length;
+}
+
+/** True when a workout id exceeds the btree-safe UTF-8 byte bound. */
+export function exceedsWorkoutIdBound(id: string): boolean {
+  return byteLengthUtf8(id) > WORKOUT_MAX_ID_BYTES;
 }
 
 export function isImportedArtifactKind(value: unknown): value is ImportedArtifactKind {

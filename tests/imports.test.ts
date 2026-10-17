@@ -13,9 +13,9 @@ import type { AnalysisResult, PlanDraft, WorkoutRecord } from "@pi-fit-trace/cor
 import {
   API_ERROR_CODES,
   IMPORT_MAX_FILENAME_LENGTH,
-  IMPORT_MAX_ID_LENGTH,
   IMPORT_MAX_JSON_KEY_LENGTH,
   IMPORT_MAX_REQUEST_BYTES,
+  WORKOUT_MAX_ID_BYTES,
   WORKOUT_MAX_REQUEST_BYTES,
   artifactContentDigest,
   applyImportedArtifactKeyset,
@@ -430,35 +430,50 @@ test("workout files accept large valid records that local saves allow", () => {
   );
 });
 
-test("workout files reject ids that cannot fit the workouts primary key", () => {
-  // The shared 256-character bound keeps the id inside PostgreSQL's btree
-  // entry limit. Without it, an 8 KiB id would pass the 1 MiB file bound and
-  // preview, then fail the Supabase `workouts` primary key during a sequential
-  // restore after earlier records had already been saved.
-  assert.equal(IMPORT_MAX_ID_LENGTH, 256);
-  const oversized = seedRecord({ id: "w".repeat(8 * 1024), date: "2026-09-01" });
+test("workout files accept 300-character ids and enforce the btree-safe byte bound", () => {
+  // Workout ids index the Supabase `workouts` primary key `(owner_id, id)`.
+  // PostgreSQL sizes btree entries in UTF-8 bytes, and 1024 bytes stays far
+  // below the roughly 2.7 KiB btree entry limit. The wider bound keeps an
+  // existing 300-character id restorable instead of letting the backup/restore
+  // contract reject history the app once accepted.
+  assert.equal(WORKOUT_MAX_ID_BYTES, 1024);
+  const legacy = seedRecord({ id: "w".repeat(300), date: "2026-09-01" });
+  assert.equal(
+    parseWorkoutImportFile(workoutFile([legacy])).entries[0]?.record.id.length,
+    300,
+  );
+
+  // Without the bound, an 8 KiB id would pass the 1 MiB file bound and preview,
+  // then fail the Supabase `workouts` primary key during a sequential restore
+  // after earlier records had already been saved.
+  const oversized = seedRecord({ id: "w".repeat(8 * 1024), date: "2026-09-02" });
   // The first record is valid; the whole file must still fail preview, so the
   // sequential restore can never save it and then stop at the oversized id.
   assert.throws(
     () => parseWorkoutImportFile(workoutFile([workout, oversized])),
     new RegExp(
-      `\`records\\[1\\]\\.id\` must be at most ${IMPORT_MAX_ID_LENGTH} characters`,
+      `\`records\\[1\\]\\.id\` must be at most ${WORKOUT_MAX_ID_BYTES} UTF-8 bytes`,
     ),
   );
 
-  // The bound is inclusive and only applies to the indexed id: a normal id
-  // with notes beyond every snapshot field cap stays restorable.
-  const atBound = seedRecord({
-    id: "w".repeat(IMPORT_MAX_ID_LENGTH),
-    date: "2026-09-02",
-  });
+  // The bound counts bytes, not UTF-16 code units: two-byte characters cost
+  // two bytes each. 512 of them is exactly at the inclusive bound.
+  const atByteBound = seedRecord({ id: "é".repeat(512), date: "2026-09-03" });
   assert.equal(
-    parseWorkoutImportFile(workoutFile([atBound])).entries[0]?.record.id.length,
-    IMPORT_MAX_ID_LENGTH,
+    parseWorkoutImportFile(workoutFile([atByteBound])).entries[0]?.record.id.length,
+    512,
   );
+  const overByteBound = seedRecord({ id: "é".repeat(513), date: "2026-09-04" });
+  assert.throws(
+    () => parseWorkoutImportFile(workoutFile([overByteBound])),
+    new RegExp(`at most ${WORKOUT_MAX_ID_BYTES} UTF-8 bytes`),
+  );
+
+  // The id bound only applies to the indexed id: a normal id with notes beyond
+  // every snapshot field cap stays restorable.
   const largeNotes = seedRecord({
     id: "w-large-notes",
-    date: "2026-09-03",
+    date: "2026-09-05",
     notes: "n".repeat(50_000),
   });
   assert.equal(

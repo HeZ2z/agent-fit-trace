@@ -215,7 +215,11 @@ explicit replay.
    limits is `workout.json`; larger histories are split into numbered
    `workout-01-of-NN.json` files so every file stays within 1 MiB and 1000
    records, and every record fits one restore request. Restore or replay every
-   file.
+   file. A stored record that cannot satisfy the restore contract (for example
+   an id above the btree-safe 1024-UTF-8-byte bound) is left out of those files
+   and reported explicitly in the UI with its id and reason; the rest of the
+   history still downloads and the backup is labeled incomplete rather than
+   aborting or silently dropping the record.
 2. To move records into an authenticated store, replay each exported record
    explicitly through the normal create endpoint; validate and reconcile IDs
    rather than copying raw storage keys:

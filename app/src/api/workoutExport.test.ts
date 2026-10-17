@@ -10,6 +10,7 @@ import {
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILE_RECORDS,
   IMPORT_MAX_REQUEST_BYTES,
+  WORKOUT_MAX_ID_BYTES,
   WORKOUT_MAX_REQUEST_BYTES,
   parseWorkoutImportFile,
 } from "@pi-fit-trace/api-contracts";
@@ -68,11 +69,12 @@ describe("serializeWorkoutExport", () => {
 describe("planWorkoutExport", () => {
   it("keeps a small history in the existing workout.json file", () => {
     const records = [record(), record({ id: "wkt_b", date: "2026-01-07" })];
-    const parts = planWorkoutExport(records);
+    const plan = planWorkoutExport(records);
 
-    expect(parts.map((part) => part.filename)).toEqual(["workout.json"]);
-    expect(parts[0]?.text).toBe(serializeWorkoutExport(records));
-    expect(parts[0]?.recordCount).toBe(2);
+    expect(plan.files.map((part) => part.filename)).toEqual(["workout.json"]);
+    expect(plan.files[0]?.text).toBe(serializeWorkoutExport(records));
+    expect(plan.files[0]?.recordCount).toBe(2);
+    expect(plan.excluded).toEqual([]);
   });
 
   it("splits a history above the restore record cap into restorable files", () => {
@@ -80,14 +82,15 @@ describe("planWorkoutExport", () => {
       record({ id: `wkt_${index}` }),
     );
 
-    const parts = planWorkoutExport(records);
-    expect(parts).toHaveLength(2);
-    expect(parts.map((part) => part.filename)).toEqual([
+    const plan = planWorkoutExport(records);
+    expect(plan.excluded).toEqual([]);
+    expect(plan.files).toHaveLength(2);
+    expect(plan.files.map((part) => part.filename)).toEqual([
       "workout-01-of-02.json",
       "workout-02-of-02.json",
     ]);
 
-    const restoredIds = parts.flatMap((part) => {
+    const restoredIds = plan.files.flatMap((part) => {
       expect(byteLength(part.text)).toBeLessThanOrEqual(IMPORT_MAX_FILE_BYTES);
       const parsed = parseWorkoutImportFile(part.text);
       expect(parsed.entries.length).toBeGreaterThan(0);
@@ -106,9 +109,10 @@ describe("planWorkoutExport", () => {
     expect(requestBytes).toBeGreaterThan(IMPORT_MAX_REQUEST_BYTES);
     expect(requestBytes).toBeLessThanOrEqual(WORKOUT_MAX_REQUEST_BYTES);
 
-    const parts = planWorkoutExport([large, record({ id: "wkt_small" })]);
-    expect(parts).toHaveLength(1);
-    const restored = parseWorkoutImportFile(parts[0]?.text as string).entries;
+    const plan = planWorkoutExport([large, record({ id: "wkt_small" })]);
+    expect(plan.excluded).toEqual([]);
+    expect(plan.files).toHaveLength(1);
+    const restored = parseWorkoutImportFile(plan.files[0]?.text as string).entries;
     expect(restored.map((entry) => entry.record.id)).toEqual(["wkt_large", "wkt_small"]);
     expect(restored[0]?.record.notes).toHaveLength(50_000);
   });
@@ -122,18 +126,85 @@ describe("planWorkoutExport", () => {
       record({ id: `wkt_${index}`, notes: "n".repeat(4_000), exercises }),
     );
 
-    const parts = planWorkoutExport(records);
-    expect(parts.length).toBeGreaterThan(1);
-    const restored = parts.flatMap((part) =>
+    const plan = planWorkoutExport(records);
+    expect(plan.excluded).toEqual([]);
+    expect(plan.files.length).toBeGreaterThan(1);
+    const restored = plan.files.flatMap((part) =>
       parseWorkoutImportFile(part.text).entries.map((entry) => entry.record.id),
     );
     expect(restored).toEqual(records.map((entry) => entry.id));
   });
 
-  it("fails explicitly instead of downloading a file restore would reject", () => {
+  it("exports and restores a 300-character id under the btree-safe byte bound", () => {
+    // Existing history can contain ids longer than the snapshot/source-id
+    // contract. Workout ids are bounded in UTF-8 bytes, not characters, so a
+    // 300-character legacy id must still round-trip through backup and restore.
+    const legacy = record({ id: "w".repeat(300) });
+    expect(legacy.id).toHaveLength(300);
+    expect(byteLength(legacy.id)).toBeLessThanOrEqual(WORKOUT_MAX_ID_BYTES);
+
+    const plan = planWorkoutExport([legacy]);
+    expect(plan.excluded).toEqual([]);
+    expect(plan.files).toHaveLength(1);
+    const restored = parseWorkoutImportFile(plan.files[0]?.text as string).entries;
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.record.id).toBe(legacy.id);
+  });
+
+  it("reports an over-bound record without blocking the rest of the export", () => {
+    const overBoundId = "w".repeat(WORKOUT_MAX_ID_BYTES + 1);
+    expect(byteLength(overBoundId)).toBeGreaterThan(WORKOUT_MAX_ID_BYTES);
+    const records = [
+      record({ id: "wkt_first" }),
+      record({ id: overBoundId, date: "2026-01-06" }),
+      record({ id: "wkt_last", date: "2026-01-07" }),
+    ];
+
+    const plan = planWorkoutExport(records);
+    expect(plan.excluded).toHaveLength(1);
+    expect(plan.excluded[0]?.id).toBe(overBoundId);
+    expect(plan.excluded[0]?.reason).toMatch(
+      new RegExp(`at most ${WORKOUT_MAX_ID_BYTES} UTF-8 bytes`),
+    );
+
+    const restoredIds = plan.files.flatMap((part) =>
+      parseWorkoutImportFile(part.text).entries.map((entry) => entry.record.id),
+    );
+    expect(restoredIds).toEqual(["wkt_first", "wkt_last"]);
+    // No silent loss: every input record is either in a restorable file or
+    // explicitly reported as excluded.
+    expect([...restoredIds, ...plan.excluded.map((entry) => entry.id)].sort()).toEqual(
+      records.map((entry) => entry.id).sort(),
+    );
+  });
+
+  it("reports a single record that cannot fit any restorable file instead of throwing", () => {
     const oversized = record({ notes: "n".repeat(IMPORT_MAX_FILE_BYTES) });
 
-    expect(() => planWorkoutExport([oversized])).toThrow(/cannot export record/i);
+    const plan = planWorkoutExport([oversized]);
+    expect(plan.files).toEqual([]);
+    expect(plan.excluded).toHaveLength(1);
+    expect(plan.excluded[0]?.id).toBe("wkt_a");
+    expect(plan.excluded[0]?.reason).toMatch(
+      new RegExp(`above the ${IMPORT_MAX_FILE_BYTES} byte restore limit`),
+    );
+  });
+
+  it("reports a record the core validator rejects while exporting valid history", () => {
+    const invalid = record({ id: "wkt_invalid", exercises: [] });
+
+    const plan = planWorkoutExport([
+      record({ id: "wkt_first" }),
+      invalid,
+      record({ id: "wkt_last" }),
+    ]);
+    expect(plan.excluded).toEqual([
+      { id: "wkt_invalid", reason: expect.stringMatching(/workout validator/) },
+    ]);
+    const restoredIds = plan.files.flatMap((part) =>
+      parseWorkoutImportFile(part.text).entries.map((entry) => entry.record.id),
+    );
+    expect(restoredIds).toEqual(["wkt_first", "wkt_last"]);
   });
 });
 

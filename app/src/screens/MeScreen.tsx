@@ -45,6 +45,11 @@ function mergeWarnings(...lists: readonly ValidationWarning[][]): ValidationWarn
   return merged;
 }
 
+/** Keep an over-bound legacy id readable without rendering kilobytes of text. */
+function shortRecordId(id: string): string {
+  return id.length <= 80 ? id : `${id.slice(0, 77)}…`;
+}
+
 function Warnings({ warnings }: { warnings: readonly ValidationWarning[] }) {
   if (warnings.length === 0) return null;
   return (
@@ -622,9 +627,11 @@ export function MeScreen() {
       <section className="me-section" aria-labelledby="me-export">
         <h2 id="me-export">Export workouts</h2>
         <p className="me-help">
-          Downloads every record as <code>workout.json</code> in the v1 backup format.
-          Histories that exceed the restore limits are split into numbered files, each
-          within 1 MiB and 1000 records, so every downloaded file can be restored.
+          Downloads every restorable record as <code>workout.json</code> in the v1
+          backup format. Histories that exceed the restore limits are split into numbered
+          files, each within 1 MiB and 1000 records, so every downloaded file can be
+          restored. A record that cannot be represented in a restorable file is left out
+          and reported explicitly instead of blocking the rest of the backup.
         </p>
         <button type="button" onClick={exportWorkouts} disabled={records.length === 0}>
           Export workouts (JSON)
@@ -636,10 +643,32 @@ export function MeScreen() {
         )}
         {exportResult !== null && (
           <p role="status" className="me-help" data-testid="me-export-result">
-            {exportResult.files === 1
-              ? `Downloaded 1 backup file with ${exportResult.records} record(s).`
-              : `Downloaded ${exportResult.files} backup files with ${exportResult.records} record(s) total. Restore each file separately; the numbered filenames keep them in order.`}
+            {exportResult.files === 0
+              ? `No backup files were downloaded; ${exportResult.excluded.length} record(s) could not be exported.`
+              : exportResult.files === 1
+                ? `Downloaded 1 backup file with ${exportResult.records} record(s).`
+                : `Downloaded ${exportResult.files} backup files with ${exportResult.records} record(s) total. Restore each file separately; the numbered filenames keep them in order.`}
           </p>
+        )}
+        {exportResult !== null && exportResult.excluded.length > 0 && (
+          <div role="alert" className="validation-summary" data-testid="me-export-excluded">
+            <p>
+              {exportResult.excluded.length === 1
+                ? "1 workout record was left out of this backup because it cannot be represented in a restorable file:"
+                : `${exportResult.excluded.length} workout records were left out of this backup because they cannot be represented in restorable files:`}
+            </p>
+            <ul>
+              {exportResult.excluded.map((entry, index) => (
+                <li key={`${entry.id}:${index}`}>
+                  <code title={entry.id}>{shortRecordId(entry.id)}</code>: {entry.reason}
+                </li>
+              ))}
+            </ul>
+            <p>
+              The rest of your history was exported. The listed records remain in your
+              history and are not lost, but this backup is incomplete.
+            </p>
+          </div>
         )}
       </section>
 
