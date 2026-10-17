@@ -5,6 +5,8 @@
  * touches the DOM and can be tested without browser quirks.
  */
 
+import { IMPORT_MAX_FILE_BYTES } from "@pi-fit-trace/api-contracts";
+
 /** Trigger a file download. No-op-safe in tests where this is mocked. */
 export function downloadJson(filename: string, text: string): void {
   if (
@@ -32,10 +34,25 @@ export function downloadJson(filename: string, text: string): void {
   }
 }
 
-/** Read a user-selected file as UTF-8 text. */
-export async function readTextFile(file: File): Promise<string> {
+/** Read a user-selected file as UTF-8 text, bounded before and after reading. */
+export async function readTextFile(
+  file: File,
+  maxBytes: number = IMPORT_MAX_FILE_BYTES,
+): Promise<string> {
   if (file === null || file === undefined || typeof file.text !== "function") {
     throw new Error("Cannot read file: the provided value is not a File.");
   }
-  return file.text();
+  if (file.size > maxBytes) {
+    throw new Error(
+      `Cannot read file: ${file.size} bytes exceeds the ${maxBytes} byte import limit.`,
+    );
+  }
+  const text = await file.text();
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes > maxBytes) {
+    throw new Error(
+      `Cannot read file: ${bytes} UTF-8 bytes exceeds the ${maxBytes} byte import limit.`,
+    );
+  }
+  return text;
 }

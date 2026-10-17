@@ -78,6 +78,33 @@ function planPayload(): PlanDraft {
   return generateNextPlan([workout], { goal: "add 5 kg to bench" });
 }
 
+/** Build a valid analysis whose normalized request body is close to `target` bytes. */
+function analysisAtRequestSize(target: number): AnalysisResult {
+  const payload = analysisPayload();
+  payload.flags = [];
+  const request = {
+    kind: "analysis" as const,
+    payload_schema_version: 1,
+    payload,
+  };
+  const encoder = new TextEncoder();
+  const size = () => encoder.encode(stableStringify(request)).length;
+  let index = 0;
+  while (size() < target - 3_200) {
+    payload.flags.push({
+      code: `F${index}`,
+      severity: "info",
+      message: "m".repeat(3_000),
+      evidence: {},
+    });
+    index += 1;
+  }
+  const last = { code: "LAST", severity: "info" as const, message: "", evidence: {} };
+  payload.flags.push(last);
+  last.message = "m".repeat(Math.max(1, target - size()));
+  return payload;
+}
+
 function analysisInput(): ImportArtifactInput<"analysis"> {
   return { kind: "analysis", payload_schema_version: 1, payload: analysisPayload() };
 }
@@ -432,7 +459,7 @@ test("analysis and plan files support bare payloads and the explicit v1 envelope
   );
 });
 
-test("artifact files apply the normalized request bound but not the raw envelope size", () => {
+test("artifact files count unknown envelope metadata toward the request bound", () => {
   const oversized = structuredClone(analysisPayload());
   oversized.flags = Array.from({ length: 20 }, (_, index) => ({
     code: `F${index}`,
@@ -445,22 +472,72 @@ test("artifact files apply the normalized request bound but not the raw envelope
     /\(request\)/,
   );
 
-  // ~60 KiB of unknown envelope metadata is dropped during normalization, so
-  // it must not trip the request bound (the 1 MiB file cap still applies).
-  const metadata = Array.from({ length: 20 }, () => "m".repeat(3000));
+  // Small unknown envelope metadata is still bounded by the request limit and
+  // reported as a warning; it is not silently dropped from the size check.
   const accepted = parseArtifactImportFile(
     JSON.stringify({
       kind: "analysis",
       schema_version: 1,
       payload_schema_version: 1,
       payload: analysisPayload(),
-      metadata,
+      metadata: true,
     }),
     "analysis",
   );
   assert.equal(accepted.input.kind, "analysis");
   assert.deepEqual(accepted.input.payload, analysisPayload());
-  assert.ok(accepted.warnings.some((warning) => warning.path === "metadata"));
+  assert.deepEqual(
+    accepted.warnings.map((warning) => warning.path),
+    ["metadata"],
+  );
+
+  const oversizedMetadata = Array.from({ length: 30 }, () => "m".repeat(3000));
+  assert.throws(
+    () =>
+      parseArtifactImportFile(
+        JSON.stringify({
+          kind: "analysis",
+          schema_version: 1,
+          payload_schema_version: 1,
+          payload: analysisPayload(),
+          metadata: oversizedMetadata,
+        }),
+        "analysis",
+      ),
+    /\(request\)/,
+  );
+});
+
+test("artifact files validate and include their final source filename", () => {
+  const text = JSON.stringify(analysisPayload());
+
+  const named = parseArtifactImportFile(text, "analysis", {
+    sourceFilename: "/tmp/exports/analysis.json",
+  });
+  assert.equal(named.input.source_filename, "analysis.json");
+
+  assert.throws(
+    () =>
+      parseArtifactImportFile(text, "analysis", {
+        sourceFilename: "f".repeat(IMPORT_MAX_FILENAME_LENGTH + 1),
+      }),
+    /source_filename/,
+  );
+
+  // The normalized request bound must include the final filename: a payload
+  // that just fits without the name must not sneak past once it is attached.
+  // Leave room for the normalized `source_filename: null` envelope field; the
+  // attached 255-character name still pushes the same payload over the bound.
+  const nearLimit = analysisAtRequestSize(IMPORT_MAX_REQUEST_BYTES - 100);
+  const nearLimitText = JSON.stringify(nearLimit);
+  assert.doesNotThrow(() => parseArtifactImportFile(nearLimitText, "analysis"));
+  assert.throws(
+    () =>
+      parseArtifactImportFile(nearLimitText, "analysis", {
+        sourceFilename: "f".repeat(IMPORT_MAX_FILENAME_LENGTH),
+      }),
+    /\(request\)/,
+  );
 });
 
 test("whitespace-only source filenames normalize to null", () => {

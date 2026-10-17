@@ -212,6 +212,15 @@ export interface ParsedArtifactImportFile<K extends ImportedArtifactKind> {
   warnings: ValidationWarning[];
 }
 
+export interface ArtifactImportFileOptions {
+  /**
+   * Final display filename supplied by the file picker. It is validated and
+   * included in the normalized request-byte bound at preview time, so Save
+   * cannot silently attach or truncate a different name later.
+   */
+  sourceFilename?: string | null;
+}
+
 const ENVELOPE_KEYS = new Set([
   "kind",
   "schema_version",
@@ -230,6 +239,7 @@ const ENVELOPE_KEYS = new Set([
 export function parseArtifactImportFile<K extends ImportedArtifactKind>(
   text: string,
   kind: K,
+  options: ArtifactImportFileOptions = {},
 ): ParsedArtifactImportFile<K> {
   assertFileSize(text);
   const root = parseJsonObject(text, kind);
@@ -290,35 +300,62 @@ export function parseArtifactImportFile<K extends ImportedArtifactKind>(
   }
 
   const envelopeWarnings = warnings;
-  // Route the normalized candidate through the common request validator so the
-  // per-request byte bound, payload bounds, and payload warnings are identical
-  // to `POST /imports`. Unknown envelope metadata is intentionally excluded:
-  // the request bound applies to what is actually submitted, not to the raw
-  // container (the separate 1 MiB file cap still bounds that).
+  // Unknown envelope metadata is untrusted input too: carry it into the common
+  // validator so its bounds and the per-request byte limit include it. (The
+  // normalized input drops it, but its size must not be hidden from the limit.)
+  const unknownEnvelopeFields: Record<string, unknown> = {};
+  if (looksEnveloped) {
+    for (const [key, value] of Object.entries(root)) {
+      if (!ENVELOPE_KEYS.has(key)) unknownEnvelopeFields[key] = value;
+    }
+  }
+  const unknownEnvelopeWarningPaths = new Set(
+    Object.keys(unknownEnvelopeFields).flatMap((key) => [key, `(root).${key}`]),
+  );
   const parsed = parseImportArtifactInput({
+    ...unknownEnvelopeFields,
     kind,
     payload_schema_version: payloadSchemaVersion,
     payload,
+    ...(options.sourceFilename === undefined
+      ? {}
+      : { source_filename: options.sourceFilename }),
   });
   return {
     input: parsed.input as ImportArtifactInput<K>,
     warnings: [
       ...envelopeWarnings,
-      ...parsed.warnings.map((warning) =>
-        looksEnveloped && warning.path !== undefined
-          ? { ...warning, path: `payload.${warning.path}` }
-          : warning,
-      ),
+      // The root-level unknown warnings are already represented above; keep
+      // every payload warning (including envelope-nested paths) exactly once.
+      ...parsed.warnings
+        .filter(
+          (warning) =>
+            !(
+              warning.path !== undefined &&
+              unknownEnvelopeWarningPaths.has(warning.path)
+            ),
+        )
+        .map((warning) =>
+          looksEnveloped && warning.path !== undefined
+            ? { ...warning, path: `payload.${warning.path}` }
+            : warning,
+        ),
     ],
   };
 }
 
-export function parseAnalysisImportFile(text: string): ParsedArtifactImportFile<"analysis"> {
-  return parseArtifactImportFile(text, "analysis");
+export function parseAnalysisImportFile(
+  text: string,
+  options: ArtifactImportFileOptions = {},
+): ParsedArtifactImportFile<"analysis"> {
+  return parseArtifactImportFile(text, "analysis", options);
 }
 
-export function parsePlanImportFile(text: string): ParsedArtifactImportFile<"plan"> {
-  return parseArtifactImportFile(text, "plan");
+export function parsePlanImportFile(
+  text: string,
+  options: ArtifactImportFileOptions = {},
+): ParsedArtifactImportFile<"plan"> {
+  return parseArtifactImportFile(text, "plan", options);
 }
 
 /** Bounds shared with callers that only need to precheck a selected file. */

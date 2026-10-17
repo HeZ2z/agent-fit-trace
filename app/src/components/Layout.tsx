@@ -14,6 +14,7 @@ const baseNavLinks = [
   { to: "/workout/new", label: "Log Workout" },
   { to: "/analysis", label: "Analysis" },
   { to: "/plan", label: "Plan" },
+  { to: "/me", label: "Me" },
 ];
 
 function navLinks() {
