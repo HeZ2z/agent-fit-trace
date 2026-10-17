@@ -11,5 +11,7 @@ export * from "./types.ts";
 export * from "./errors.ts";
 export * from "./deriveWorkoutId.ts";
 export * from "./validators.ts";
+export * from "./imports.ts";
+export * from "./importFiles.ts";
 export * from "./coaching.ts";
 export * from "./cloudCoaching.ts";

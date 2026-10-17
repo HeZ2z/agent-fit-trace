@@ -1,7 +1,17 @@
-import { stableStringify, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import {
+  analyzeProgress,
+  generateNextPlan,
+  stableStringify,
+  validateWorkoutRecord,
+} from "@pi-fit-trace/core";
+import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
 import { API_ERROR_CODES } from "../errors.ts";
 import { deriveWorkoutId } from "../deriveWorkoutId.ts";
+import type {
+  ImportArtifactInput,
+  ImportedArtifact,
+  ImportedArtifactPage,
+} from "../imports.ts";
 import type { FitTraceClient } from "../types.ts";
 
 /**
@@ -164,5 +174,191 @@ export function runFitTraceClientContractSuite(
     const client = await newClient();
     await client.createWorkout(record({ id: "w-stable", date: "2026-09-01" }));
     assertEquals(await client.listWorkouts(), await client.listWorkouts(), "repeat list");
+  });
+
+  /* --------------------------------------------------------------------- */
+  /* Imported artifacts                                                     */
+  /* --------------------------------------------------------------------- */
+
+  const analysisInput = (over: { weight?: number; date?: string } = {}): ImportArtifactInput<"analysis"> => ({
+    kind: "analysis",
+    payload_schema_version: 1,
+    payload: analyzeProgress([
+      record({
+        id: `w-analysis-${over.weight ?? 80}`,
+        date: over.date ?? "2026-09-01",
+        exercises: [
+          { name: "bench_press", sets: [{ weight: over.weight ?? 80, reps: 5, rpe: 7 }] },
+        ],
+      }),
+    ]),
+  });
+
+  const planInput = (): ImportArtifactInput<"plan"> => ({
+    kind: "plan",
+    payload_schema_version: 1,
+    payload: generateNextPlan(
+      [record({ id: "w-plan-source", date: "2026-09-01" })],
+      { goal: "add 5 kg to bench" },
+    ),
+    source_filename: "../exports/plan.json",
+  });
+
+  const firstAnalysisPage = async (
+    client: FitTraceClient,
+    limit: number,
+  ): Promise<ImportedArtifactPage> => client.listImportedArtifacts({ limit });
+
+  test(`${name}: imported artifact identity is content-addressed and immutable`, async () => {
+    const client = await newClient();
+    const first = await client.saveImportedArtifact(analysisInput());
+    assertEquals(first.duplicate, false, "first save is not a duplicate");
+    if (!/^analysis:v1:[0-9a-f]{64}$/.test(first.artifact.id)) {
+      throw new Error(label(`unexpected artifact id ${first.artifact.id}`));
+    }
+    const retry = await client.saveImportedArtifact(analysisInput());
+    assertEquals(retry.duplicate, true, "identical retry is a duplicate");
+    assertEquals(retry.artifact.id, first.artifact.id, "duplicate keeps the id");
+    assertEquals(retry.artifact.created_at, first.artifact.created_at, "duplicate keeps created_at");
+
+    const stored = await client.getImportedArtifact(first.artifact.id);
+    assertEquals(stored, first.artifact, "stored artifact round-trips");
+  });
+
+  test(`${name}: filename is normalized and never part of the identity`, async () => {
+    const client = await newClient();
+    const named = await client.saveImportedArtifact({
+      ...analysisInput(),
+      source_filename: "/tmp/exports/analysis.json",
+    });
+    assertEquals(named.artifact.source_filename, "analysis.json", "basename only");
+
+    // A duplicate keeps the original immutable metadata: the retry cannot
+    // rewrite the stored filename, only confirm the payload matches.
+    const bare = await client.saveImportedArtifact(analysisInput());
+    assertEquals(bare.artifact.id, named.artifact.id, "filename does not change the id");
+    assertEquals(bare.duplicate, true, "same payload is a duplicate");
+    assertEquals(bare.artifact.source_filename, "analysis.json", "original filename preserved");
+  });
+
+  test(`${name}: missing artifact reads as NOT_FOUND`, async () => {
+    const client = await newClient();
+    await expectRejection(API_ERROR_CODES.NOT_FOUND, () =>
+      client.getImportedArtifact("analysis:v1:" + "0".repeat(64)),
+    );
+  });
+
+  test(`${name}: imported list returns metadata only and paginates without gaps`, async () => {
+    const client = await newClient();
+    const saved: ImportedArtifact[] = [];
+    saved.push((await client.saveImportedArtifact(analysisInput({ weight: 80 }))).artifact);
+    saved.push((await client.saveImportedArtifact(analysisInput({ weight: 90 }))).artifact);
+    saved.push((await client.saveImportedArtifact(planInput())).artifact);
+
+    const first = await firstAnalysisPage(client, 2);
+    assertEquals(first.items.length, 2, "first page length");
+    if (first.next_cursor === null) throw new Error(label("expected a next cursor"));
+    for (const item of first.items) {
+      if ((item as unknown as Record<string, unknown>).payload !== undefined) {
+        throw new Error(label("list metadata must not include payloads"));
+      }
+    }
+
+    const second = await client.listImportedArtifacts({ limit: 2, cursor: first.next_cursor });
+    assertEquals(second.items.length, 1, "second page length");
+    assertEquals(second.next_cursor, null, "last page has no cursor");
+
+    const ids = [...first.items, ...second.items].map((item) => item.id).sort();
+    assertEquals(ids, saved.map((artifact) => artifact.id).sort(), "paged ids");
+    assertEquals(new Set(ids).size, saved.length, "no duplicates across pages");
+  });
+
+  test(`${name}: imported list filters by kind and rejects invalid windows`, async () => {
+    const client = await newClient();
+    const analysis = (await client.saveImportedArtifact(analysisInput())).artifact;
+    const plan = (await client.saveImportedArtifact(planInput())).artifact;
+
+    const analyses = await client.listImportedArtifacts({ kind: "analysis" });
+    assertEquals(analyses.items.map((item) => item.id), [analysis.id], "analysis filter");
+    const plans = await client.listImportedArtifacts({ kind: "plan" });
+    assertEquals(plans.items.map((item) => item.id), [plan.id], "plan filter");
+
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.listImportedArtifacts({ limit: 0 }),
+    );
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.listImportedArtifacts({ limit: 101 }),
+    );
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.listImportedArtifacts({ cursor: "not-a-cursor" }),
+    );
+  });
+
+  test(`${name}: selection and adoption are explicit, separate mutations`, async () => {
+    const client = await newClient();
+    const analysis = (await client.saveImportedArtifact(analysisInput())).artifact;
+    const plan = (await client.saveImportedArtifact(planInput())).artifact;
+
+    assertEquals(await client.getArtifactSelection("analysis"), { artifact_id: null }, "default");
+    assertEquals(await client.getArtifactSelection("plan"), { artifact_id: null }, "default plan");
+    assertEquals(await client.getPlanAdoption(), null, "saving never adopts");
+
+    const selected = await client.setArtifactSelection("analysis", analysis.id);
+    assertEquals(selected, { artifact_id: analysis.id }, "selection set");
+    assertEquals(await client.getArtifactSelection("analysis"), selected, "selection read");
+    assertEquals(await client.getPlanAdoption(), null, "selection never adopts");
+
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.setArtifactSelection("plan", analysis.id),
+    );
+
+    const adopted = await client.setPlanAdoption({
+      artifact_id: plan.id,
+      confirmed_digest: plan.content_digest,
+    });
+    if (adopted === null) throw new Error(label("expected an adoption"));
+    assertEquals(adopted.artifact_id, plan.id, "adoption id");
+    assertEquals(adopted.confirmed_digest, plan.content_digest, "adoption digest");
+    assertEquals(await client.getPlanAdoption(), adopted, "adoption read");
+
+    assertEquals(await client.setArtifactSelection("analysis", null), { artifact_id: null }, "clear selection");
+    assertEquals((await client.getPlanAdoption())?.artifact_id, plan.id, "clearing a selection keeps adoption");
+
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.setPlanAdoption({ artifact_id: analysis.id, confirmed_digest: analysis.content_digest }),
+    );
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.setPlanAdoption({ artifact_id: plan.id, confirmed_digest: "0".repeat(64) }),
+    );
+    assertEquals(await client.setPlanAdoption(null), null, "revoke adoption");
+  });
+
+  test(`${name}: imported payloads are bounded before they are stored`, async () => {
+    const client = await newClient();
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.saveImportedArtifact({
+        ...analysisInput(),
+        payload_schema_version: 2,
+      } as unknown as ImportArtifactInput<"analysis">),
+    );
+    const huge = structuredClone(analysisInput().payload) as AnalysisResult;
+    (huge as unknown as { source_records: string[] }).source_records = ["x".repeat(5000)];
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.saveImportedArtifact({ kind: "analysis", payload_schema_version: 1, payload: huge }),
+    );
+    const deep = structuredClone(analysisInput().payload) as unknown as Record<string, unknown>;
+    let cursor: Record<string, unknown> = deep;
+    for (let i = 0; i < 20; i += 1) {
+      const next: Record<string, unknown> = {};
+      cursor.extra = next;
+      cursor = next;
+    }
+    await expectRejection(API_ERROR_CODES.VALIDATION_ERROR, () =>
+      client.saveImportedArtifact({
+        kind: "analysis",
+        payload_schema_version: 1,
+        payload: deep as unknown as AnalysisResult,
+      }),
+    );
   });
 }

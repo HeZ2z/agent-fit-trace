@@ -103,6 +103,66 @@ shut it down separately with `supabase stop`.
   appears on the next reload instead — it is still never returned twice in
   the same read. Products needing a strict snapshot must read in a single
   transaction; keyset pagination does not claim that.
+- `supabase/migrations/20261017000000_imported_artifacts.sql` adds the
+  imported-snapshot slice (additive; it does not modify either workout
+  migration or existing workout rows/data):
+  - `public.imported_artifacts` is append-only and content-addressed
+    (`id = kind || ':v1:' || content_digest`, `content_digest` is lowercase
+    hex SHA-256). CHECKs bind id, kind, source refs, payload shape, and the
+    unconfirmed-draft invariant for plans. API roles have `SELECT` only; there
+    is no INSERT/UPDATE/DELETE/TRUNCATE grant, so snapshots cannot be edited
+    or deleted through the API.
+  - `public.artifact_preferences` stores one per-owner/per-kind "currently
+    viewing" selection (null clears it). `public.plan_adoptions` stores the
+    separate explicit plan confirmation and its confirmed digest; revoking
+    adoption deletes only this metadata row.
+  - `public.save_imported_artifact(...)` is **SECURITY DEFINER** and the only
+    snapshot write path because `authenticated` has no INSERT grant. It takes
+    **no owner argument**: `owner_id` is read from `auth.uid()` inside the
+    RPC, and it re-checks kind/id/digest/version/shape/source-ref/draft
+    invariants before insert. An identical canonical payload is a duplicate
+    no-op; the same id with different content raises `IMPORT_CONFLICT`.
+  - the read/selection/adoption RPCs
+    (`list_imported_artifacts_page`, `get_imported_artifact`,
+    `get_artifact_selection`, `set_artifact_selection`,
+    `get_plan_adoption`, `set_plan_adoption`) are **SECURITY INVOKER** and
+    rely on RLS plus explicit `auth.uid()` predicates. Every RPC pins
+    `search_path = ''`, schema-qualifies relations, and grants `EXECUTE` to
+    `authenticated` only (`anon`/`public` denied).
+  - reads return `owner_id`; the TypeScript client re-verifies it against the
+    bearer principal and re-parses every row as defense in depth.
+  - two independent payload bounds: the shared TypeScript contract rejects a
+    normalized snapshot import request over **40 KiB** compact JSON, while the
+    SQL RPC/table keeps a defensive **64 KiB** `octet_length(payload::text)`
+    guard. jsonb text adds one space after every comma/colon (worst case +50%),
+    so a request at the 40-KiB limit is at most 60 KiB as jsonb text and never
+    passes preview only to fail the database check. (Workout restore requests
+    are bounded separately by the backup file limit; they are not saved through
+    this RPC. Their `id` uses the btree-safe 1024-UTF-8-byte
+    `WORKOUT_MAX_ID_BYTES` bound because it indexes the `workouts` primary key,
+    so an id the btree cannot hold fails preview instead of a partial restore.
+    Snapshot `source_record_ids` keep the narrower 256-character
+    `IMPORT_MAX_ID_LENGTH` contract enforced by this migration's
+    `char_length` guard.)
+  - digest verification stays in TypeScript on both save and read:
+    `sha256(stableStringify(payload))` cannot be reproduced reliably by
+    Postgres because `jsonb::text` orders keys differently. SQL enforces the
+    id/kind/source/draft structure and read-only tables; a direct RPC caller
+    can only create a self-owned, internally inconsistent row, which every
+    TypeScript read rejects as `CORRUPT_STORE`.
+
+### Rollback
+
+Rollback the app/API deployment only; preserve the database tables and all
+user data. The imported-artifacts migration is additive and forward-only, and
+the earlier `workouts`/pagination migrations are untouched by it. Rolling back
+the app or API therefore leaves `imported_artifacts`,
+`artifact_preferences`, `plan_adoptions`, invites, workouts, and history in
+place for a forward re-deploy. Do not drop these tables, do not run a
+destructive reset on the shared project, and do not edit the old workout
+migration to compensate. If the guest signup gate must be disabled, the
+documented partial rollback remains the narrow `DROP TRIGGER`/function path;
+retain `signup_invites` and all user/workout data.
 
 ## 3. Production dashboard (invite-only)
 
@@ -131,7 +191,27 @@ Local config does not change the cloud project. Before releasing auth:
 - The server forwards the caller's token to PostgREST/RPC so RLS applies;
   `owner_id` always comes from `auth.uid()`. Records are validated through
   core on write and re-validated on read (`CORRUPT_STORE` on history rot).
-  Draft plans never write.
+  Draft plans never write. This data path uses the user's access token and the
+  publishable key only — there is **no service-role path** in request
+  handling. The service-role key is used only by opt-in test setup/cleanup.
+- Imported analysis/plan artifacts are saved as immutable, content-addressed
+  snapshots (`analysis:v1:<digest>` / `plan:v1:<digest>`). Saving never
+  selects or adopts; selection and plan adoption are separate explicit calls.
+  The API exposes no snapshot update or delete route. Imported artifacts are
+  external, unverified evidence: their stored payloads are displayed as
+  imported, and the deterministic analysis/plan computations are unchanged.
+- Workout backup restore is sequential per record, not a batch and not
+  atomic. The app reports a per-file-index receipt (`created`, `duplicate`,
+  `conflict`, `failed`, `unknown`, `not_attempted`); a failure can leave
+  earlier records committed. Existing ids are never overwritten, and an
+  ambiguous write is read back instead of being called created.
+- Persistence is backend-specific: browser-local mode stays in that browser's
+  `localStorage`; the memory loopback API clears on restart; authenticated
+  Supabase mode persists per-owner rows in Postgres. There is no automatic
+  upload or migration between them. An anonymous guest's data can be reached
+  from another device only after the same UID is upgraded to a real account;
+  signing in as a different account is a switch with no merge. This is not a
+  cloud trial or a hosted coaching entitlement.
 - The app stores the session under `pi-fit-trace:auth:v1:session`, attaches
   the token per request, refreshes expired sessions, and clears all cached
   workout/analysis state on logout or account change. Writes are never
@@ -170,12 +250,18 @@ SUPABASE_URL=http://127.0.0.1:54321 SUPABASE_PUBLISHABLE_KEY=<local-key> \
 ```
 
 The integration suite validates migrations, RLS isolation (A/B), CHECK
-rejection of mismatched direct inserts, denied public signup, and concurrent
-idempotent creates against the local stack. It skips explicitly only when the
-suite is not enabled; when enabled (`FIT_TRACE_SUPABASE_INTEGRATION=1`) it
-fails — never skips — on missing keys, non-loopback URLs, or an unavailable
-stack. It refuses non-loopback URLs and never writes to cloud. Mocked tests
-never claim to prove database isolation — only the local-stack run does.
+rejection of mismatched direct inserts, denied public signup, concurrent
+idempotent creates, and the imported-artifact boundary against the local
+stack: anonymous callers cannot execute import RPCs or read the table;
+owners are isolated; direct INSERT/UPDATE/DELETE/TRUNCATE is denied; selections
+and adoption are owner/kind/digest bound; and invalid drafts/forged refs are
+rejected. It skips explicitly only when the suite is not enabled; when enabled
+(`FIT_TRACE_SUPABASE_INTEGRATION=1`) it fails — never skips — on missing keys,
+non-loopback URLs, or an unavailable stack. It refuses non-loopback URLs and
+never writes to cloud. Mocked tests never claim to prove database isolation —
+only the local-stack run does. The automated app suite covers the Me/header
+integration behavior, but this docs pass did not run browser/manual UI
+acceptance, so no visual or cross-browser verification is claimed.
 
 Auth endpoint shapes are tested through unit tests and the local stack.
 The separate anonymous-guest compatibility suite (section 6) is opt-in with
@@ -347,9 +433,11 @@ transaction:
    Signing in to an existing account is an explicit switch with **no data
    merge**, and a failed account login preserves the guest session.
 
-The UI exposes both actions through the reusable `GuestAccountControls`
-component (header and future `/me` reuse); the verified-but-passwordless notice
-renders outside that guest-only control. `guestUpgradeEnabled` is a public
+The UI exposes the full upgrade/switch/sign-out actions through the reusable
+`GuestAccountControls` component on `/me`; the compact header keeps only a
+badge, an account link, and the safe two-step sign-out. The
+verified-but-passwordless notice renders outside that guest-only control but
+in the same Me account section. `guestUpgradeEnabled` is a public
 capability, default false, and is enabled only by an explicit server env flag
 after real-stack tests. `updateUser` has no CAPTCHA field in GoTrue v2.197.0;
 this endpoint therefore does not pretend to enforce CAPTCHA. The anonymous
@@ -411,6 +499,10 @@ Current verification status:
   still-anonymous rejection, external-verification resume, concurrent/stale
   initiation (serialized mutation), explicit-only resend, password-finish
   identity guards, CAPTCHA fail-closed behavior, and cleanup on sign-out.
+  `app/src/screens/MeScreen.test.tsx` covers the full guest upgrade/switch
+  entry on Me and same-guest sign-out with coach teardown; the App guest-gate
+  suite covers the compact header and the Me route. These are component/route
+  tests, not browser UI acceptance.
 - **Live results are owned by the supervisor**, who runs this suite against the
   distinct `agent-fit-trace-issues-test55321` project with Supabase CLI 2.120.0
   (which bundles GoTrue v2.197.0). The tracked Auth integration passed **5/5

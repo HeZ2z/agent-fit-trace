@@ -82,7 +82,9 @@ describe("App workflow against the real loopback API", () => {
     // Plan stays an unconfirmed draft without an explicit confirmation.
     await user.click(screen.getByRole("link", { name: /^plan$/i }));
     expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
-    expect(screen.getByRole("button", { name: /confirm plan/i })).toBeInTheDocument();
-    expect(screen.queryByText(/adopted/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /confirm plan for this view only/i }),
+    ).toBeInTheDocument();
+    expect(await screen.findByTestId("current-adoption")).toHaveTextContent(/none/i);
   });
 });

@@ -17,6 +17,7 @@ import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
 import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
 import type { CreateWorkoutResult, FitTraceClient } from "@pi-fit-trace/api-contracts";
 import { ValidationError } from "@pi-fit-trace/core";
+import { createSupabaseImportMethods } from "./supabaseImports.ts";
 
 /**
  * Supabase-backed `FitTraceClient` scoped to one verified principal.
@@ -264,7 +265,7 @@ export function createSupabaseWorkoutStore(
     return sortRecords(records);
   }
 
-  return {
+  const workoutMethods = {
     async listWorkouts(): Promise<WorkoutRecord[]> {
       return listStored();
     },
@@ -392,4 +393,8 @@ export function createSupabaseWorkoutStore(
       }
     },
   };
+
+  // Import resources live in their own module but share the caller's RLS
+  // scope and token; composing here keeps `FitTraceClient` one surface.
+  return { ...workoutMethods, ...createSupabaseImportMethods(principal, options) };
 }

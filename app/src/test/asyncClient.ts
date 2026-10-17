@@ -5,7 +5,19 @@ import type {
   PlanDraft,
   WorkoutRecord,
 } from "@pi-fit-trace/core";
-import type { CreateWorkoutResult, FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type {
+  ArtifactSelection,
+  CreateWorkoutResult,
+  FitTraceClient,
+  ImportArtifactInput,
+  ImportedArtifact,
+  ImportedArtifactKind,
+  ImportedArtifactPage,
+  ListImportedArtifactsQuery,
+  PlanAdoption,
+  PlanAdoptionInput,
+  SaveImportedArtifactResult,
+} from "@pi-fit-trace/api-contracts";
 import { LocalFitTraceClient } from "../api/localFitTraceClient.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
@@ -47,6 +59,9 @@ export class FakeFitTraceClient implements FitTraceClient {
   pendingCreates: Deferred<CreateWorkoutResult>[] = [];
   pendingAnalyses: Deferred<AnalysisResult>[] = [];
   pendingPlans: Deferred<PlanDraft>[] = [];
+
+  /** Import resources are not part of the ordering tests; delegate locally. */
+  private readonly imports = new LocalFitTraceClient(new MemoryStorageAdapter());
 
   constructor(
     private defaults: {
@@ -121,5 +136,38 @@ export class FakeFitTraceClient implements FitTraceClient {
     const d = deferred<PlanDraft>();
     this.pendingPlans.push(d);
     return d;
+  }
+
+  saveImportedArtifact<K extends ImportedArtifactKind>(
+    input: ImportArtifactInput<K>,
+  ): Promise<SaveImportedArtifactResult<K>> {
+    return this.imports.saveImportedArtifact(input);
+  }
+
+  listImportedArtifacts(query?: ListImportedArtifactsQuery): Promise<ImportedArtifactPage> {
+    return this.imports.listImportedArtifacts(query);
+  }
+
+  getImportedArtifact(id: string): Promise<ImportedArtifact> {
+    return this.imports.getImportedArtifact(id);
+  }
+
+  getArtifactSelection(kind: ImportedArtifactKind): Promise<ArtifactSelection> {
+    return this.imports.getArtifactSelection(kind);
+  }
+
+  setArtifactSelection(
+    kind: ImportedArtifactKind,
+    artifactId: string | null,
+  ): Promise<ArtifactSelection> {
+    return this.imports.setArtifactSelection(kind, artifactId);
+  }
+
+  getPlanAdoption(): Promise<PlanAdoption | null> {
+    return this.imports.getPlanAdoption();
+  }
+
+  setPlanAdoption(input: PlanAdoptionInput | null): Promise<PlanAdoption | null> {
+    return this.imports.setPlanAdoption(input);
   }
 }

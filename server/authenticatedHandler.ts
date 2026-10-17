@@ -4,11 +4,20 @@ import {
   API_ERROR_CODES,
   ApiError,
   HTTP_STATUS,
+  IMPORT_MAX_REQUEST_BYTES,
+  ImportValidationError,
+  WORKOUT_MAX_REQUEST_BYTES,
+  encodeArtifactCursor,
+  isImportedArtifactKind,
+  parseArtifactSelectionRequest,
+  parseListImportedArtifactsParams,
+  parsePlanAdoptionRequest,
 } from "@pi-fit-trace/api-contracts";
 import type {
   AuthPrincipal,
   CreateWorkoutResult,
   FitTraceClient,
+  ImportArtifactInput,
 } from "@pi-fit-trace/api-contracts";
 import { extractBearerToken } from "./auth/verifier.ts";
 import type { TokenVerifier } from "./auth/verifier.ts";
@@ -49,6 +58,14 @@ export interface AuthenticatedHandlerOptions {
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+/**
+ * Largest body any route may need: snapshot imports keep the tighter shared
+ * request cap, while workout restore may submit one whole backup record.
+ */
+export const MAX_REQUEST_BODY_BYTES = Math.max(
+  DEFAULT_MAX_BODY_BYTES,
+  WORKOUT_MAX_REQUEST_BYTES,
+);
 export const WWW_AUTHENTICATE = "Bearer";
 
 const ROUTE_BASE = "http://fit-trace.invalid";
@@ -86,6 +103,8 @@ function statusForError(err: ApiError): number {
       return HTTP_STATUS.unauthorized;
     case API_ERROR_CODES.FORBIDDEN:
       return HTTP_STATUS.forbidden;
+    case API_ERROR_CODES.NOT_FOUND:
+      return HTTP_STATUS.notFound;
     case API_ERROR_CODES.CONFLICT:
       return HTTP_STATUS.conflict;
     default:
@@ -124,6 +143,22 @@ function toFilter(params: URLSearchParams): AnalysisFilter {
   if (to !== null) filter.to = to;
   if (exercises !== null) filter.exercises = exercises.split(",");
   return filter;
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new ImportValidationError("id", "is not valid URL encoding");
+  }
+}
+
+function kindFromSegment(segment: string) {
+  const decoded = decodeSegment(segment);
+  if (!isImportedArtifactKind(decoded)) {
+    throw new ImportValidationError("kind", 'must be "analysis" or "plan"');
+  }
+  return decoded;
 }
 
 async function resolvePrincipal(
@@ -181,6 +216,10 @@ export function createAuthenticatedHandler(
   options: AuthenticatedHandlerOptions,
 ): (input: string, init?: AuthenticatedRequestInit) => Promise<AuthenticatedResponse> {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  // An explicit bound still applies to every route (including workouts) so
+  // callers/tests can tighten the whole handler. By default workouts get the
+  // restore bound instead of the general 64 KiB cap.
+  const maxWorkoutBodyBytes = options.maxBodyBytes ?? WORKOUT_MAX_REQUEST_BYTES;
 
   return async (input, init = {}) => {
     const url = new URL(input, ROUTE_BASE);
@@ -221,7 +260,7 @@ export function createAuthenticatedHandler(
       }
 
       if (route === API_ENDPOINTS.workouts && method === "POST") {
-        const parsed = parseJsonBody(init.body, "body", maxBodyBytes);
+        const parsed = parseJsonBody(init.body, "body", maxWorkoutBodyBytes);
         const record =
           parsed !== null && typeof parsed === "object" && "record" in parsed
             ? (parsed as { record: WorkoutRecord }).record
@@ -245,6 +284,60 @@ export function createAuthenticatedHandler(
           | PlanConstraints
           | undefined;
         return ok(await client.createPlanDraft(constraints));
+      }
+
+      if (route === API_ENDPOINTS.imports && method === "GET") {
+        const query = parseListImportedArtifactsParams(url.searchParams);
+        return ok(
+          await client.listImportedArtifacts({
+            ...(query.kind === undefined ? {} : { kind: query.kind }),
+            limit: query.limit,
+            cursor: query.cursor === null ? null : encodeArtifactCursor(query.cursor),
+          }),
+        );
+      }
+
+      if (route === API_ENDPOINTS.imports && method === "POST") {
+        const parsed = parseJsonBody(
+          init.body,
+          "body",
+          Math.min(maxBodyBytes, IMPORT_MAX_REQUEST_BYTES),
+        );
+        // Pass the raw body so the store's single normalization pass owns the
+        // warnings; pre-normalizing here would drop unknown-field warnings
+        // before they could be reported to the caller.
+        const result = await client.saveImportedArtifact(
+          parsed as ImportArtifactInput,
+        );
+        return ok(result, result.duplicate ? HTTP_STATUS.ok : HTTP_STATUS.created);
+      }
+
+      if (route.startsWith(`${API_ENDPOINTS.imports}/`)) {
+        const id = decodeSegment(route.slice(API_ENDPOINTS.imports.length + 1));
+        if (id.includes("/")) throw new ImportValidationError("id", "is not valid");
+        if (method === "GET") return ok(await client.getImportedArtifact(id));
+      }
+
+      if (route.startsWith(`${API_ENDPOINTS.importSelections}/`)) {
+        const kind = kindFromSegment(route.slice(API_ENDPOINTS.importSelections.length + 1));
+        if (method === "GET") return ok(await client.getArtifactSelection(kind));
+        if (method === "PUT") {
+          const selection = parseArtifactSelectionRequest(
+            parseJsonBody(init.body, "body", maxBodyBytes),
+          );
+          return ok(await client.setArtifactSelection(kind, selection.artifact_id));
+        }
+      }
+
+      if (route === API_ENDPOINTS.planAdoption) {
+        if (method === "GET") return ok(await client.getPlanAdoption());
+        if (method === "PUT") {
+          return ok(
+            await client.setPlanAdoption(
+              parsePlanAdoptionRequest(parseJsonBody(init.body, "body", maxBodyBytes)),
+            ),
+          );
+        }
       }
 
       return errorResponse(

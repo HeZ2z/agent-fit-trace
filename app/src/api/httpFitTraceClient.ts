@@ -1,3 +1,4 @@
+import { stableStringify } from "@pi-fit-trace/core";
 import type {
   AnalysisFilter,
   AnalysisResult,
@@ -9,17 +10,40 @@ import {
   API_ENDPOINTS,
   API_ERROR_CODES,
   ApiError,
+  applyImportedArtifactKeyset,
+  artifactContentDigest,
+  decodeArtifactCursor,
   deriveWorkoutId,
+  encodeArtifactCursor,
+  importedArtifactId,
+  isImportedArtifactKind,
   MalformedResponseError,
   NetworkError,
+  normalizeListImportedArtifactsQuery,
   parseAnalysisResult,
+  parseArtifactSelection,
   parseCreateWorkoutResult,
+  parseImportArtifactInput,
+  parseImportedArtifact,
+  parseImportedArtifactPage,
+  parsePlanAdoption,
   parsePlanDraft,
+  parseSaveImportedArtifactResult,
   parseWorkoutList,
 } from "@pi-fit-trace/api-contracts";
 import type {
+  ArtifactSelection,
   CreateWorkoutResult,
   FitTraceClient,
+  ImportArtifactInput,
+  ImportedArtifact,
+  ImportedArtifactKind,
+  ImportedArtifactPage,
+  ListImportedArtifactsQuery,
+  NormalizedListImportedArtifactsQuery,
+  PlanAdoption,
+  PlanAdoptionInput,
+  SaveImportedArtifactResult,
 } from "@pi-fit-trace/api-contracts";
 
 /**
@@ -114,6 +138,47 @@ function hasUsableId(record: WorkoutRecord): boolean {
   return typeof record.id === "string" && record.id.trim() !== "";
 }
 
+/**
+ * Bind a parsed metadata page to the query that produced it.
+ *
+ * A page that is longer than the requested limit, out of newest-first order,
+ * outside the requested kind/cursor window, or continued from anywhere but its
+ * last item would let the UI display or fetch the wrong snapshots. Those are
+ * boundary violations, so they surface as a malformed response instead of
+ * being trusted.
+ */
+function assertPageMatchesQuery(
+  page: ImportedArtifactPage,
+  query: NormalizedListImportedArtifactsQuery,
+): ImportedArtifactPage {
+  if (page.items.length > query.limit) {
+    throw new MalformedResponseError("items", "exceeds the requested limit");
+  }
+  const canonicalPage = applyImportedArtifactKeyset(page.items, {
+    ...(query.kind === undefined ? {} : { kind: query.kind }),
+    limit: page.items.length === 0 ? 1 : page.items.length,
+    cursor: query.cursor,
+  });
+  if (stableStringify(canonicalPage) !== stableStringify(page.items)) {
+    throw new MalformedResponseError(
+      "items",
+      "is not newest-first within the requested kind and cursor window",
+    );
+  }
+  if (page.next_cursor === null) return page;
+  const last = page.items[page.items.length - 1];
+  if (last === undefined) {
+    throw new MalformedResponseError("next_cursor", "cannot continue an empty page");
+  }
+  const cursor = decodeArtifactCursor(page.next_cursor, query.kind, (field, reason) => {
+    throw new MalformedResponseError(field, reason);
+  });
+  if (cursor.kind !== last.kind || cursor.created_at !== last.created_at || cursor.id !== last.id) {
+    throw new MalformedResponseError("next_cursor", "does not continue from the last returned item");
+  }
+  return page;
+}
+
 export class HttpFitTraceClient implements FitTraceClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: HttpFetch;
@@ -129,17 +194,28 @@ export class HttpFitTraceClient implements FitTraceClient {
     this.getAccessToken = getAccessToken;
   }
 
+  private async resolveAccessToken(): Promise<string | null> {
+    return this.getAccessToken === undefined ? null : await this.getAccessToken();
+  }
+
   private async request<T>(
     path: string,
     init: HttpRequestInit | undefined,
-    unwrap: (data: unknown) => T,
+    unwrap: (data: unknown) => T | Promise<T>,
+    /**
+     * Credential captured before an earlier await in a multi-step write.
+     * Passing it pins the request to the account that started the operation;
+     * omitting it resolves the live session per request.
+     */
+    boundAccessToken?: string | null,
   ): Promise<T> {
     let response: HttpResponseLike;
     // Resolve credentials per request so a refreshed session applies to the
     // next call without recreating the client. Exactly one HTTP attempt is
     // made here — 401s (including expired sessions) are surfaced, never
     // silently retried, so an ambiguous write cannot double-apply.
-    const accessToken = this.getAccessToken === undefined ? null : await this.getAccessToken();
+    const accessToken =
+      boundAccessToken === undefined ? await this.resolveAccessToken() : boundAccessToken;
     const headers: Record<string, string> = {
       ...(init?.body === undefined ? {} : { "content-type": "application/json" }),
       ...(accessToken === null || accessToken === "" ? {} : { authorization: `Bearer ${accessToken}` }),
@@ -168,7 +244,7 @@ export class HttpFitTraceClient implements FitTraceClient {
     if (!isOkStatus(response.status)) {
       throw toApiError(parsed, response.status);
     }
-    return unwrap(readData(parsed));
+    return await unwrap(readData(parsed));
   }
 
   async listWorkouts(): Promise<WorkoutRecord[]> {
@@ -200,5 +276,161 @@ export class HttpFitTraceClient implements FitTraceClient {
       { method: "POST", body: input === undefined ? undefined : JSON.stringify(input) },
       parsePlanDraft,
     );
+  }
+
+  async saveImportedArtifact<K extends ImportedArtifactKind>(
+    input: ImportArtifactInput<K>,
+  ): Promise<SaveImportedArtifactResult<K>> {
+    // Validate and normalize the untrusted input before it goes on the wire so
+    // every backend enforces the same bounds. Unknown-field warnings from the
+    // raw input are preserved and merged with the server's warnings.
+    const { input: normalized, warnings } = parseImportArtifactInput(input);
+    const normalizedInput = normalized as ImportArtifactInput<K>;
+    // Pin the save to the account that is signed in when this operation
+    // starts. Digesting is async, and a cross-tab account switch can replace
+    // the live session before the request is sent; resolving the token after
+    // the await could save this account's file under the next account. A
+    // token that expires during the digest fails closed with 401 (writes are
+    // never retried), while a switch can no longer redirect the snapshot.
+    const accessToken = await this.resolveAccessToken();
+    const digest = await artifactContentDigest(normalizedInput.payload);
+    const expectedId = importedArtifactId(normalizedInput.kind, digest);
+
+    const result = await this.request(
+      API_ENDPOINTS.imports,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          kind: normalizedInput.kind,
+          payload_schema_version: normalizedInput.payload_schema_version,
+          payload: normalizedInput.payload,
+          source_filename: normalizedInput.source_filename ?? null,
+        }),
+      },
+      parseSaveImportedArtifactResult,
+      accessToken,
+    );
+    if (result.artifact.kind !== normalizedInput.kind) {
+      throw new MalformedResponseError("kind", "does not match the requested artifact kind");
+    }
+    // The response must be the snapshot that was submitted. A malformed reply
+    // may arrive after the server committed, so it is deliberately surfaced as
+    // MalformedResponseError (an ambiguous outcome), not as a failed write.
+    if (result.artifact.id !== expectedId || result.artifact.content_digest !== digest) {
+      throw new MalformedResponseError("id", "does not match the submitted artifact identity");
+    }
+    if (stableStringify(result.artifact.payload) !== stableStringify(normalizedInput.payload)) {
+      throw new MalformedResponseError("payload", "does not match the submitted canonical payload");
+    }
+    return {
+      ...result,
+      warnings: [...warnings, ...result.warnings],
+    } as SaveImportedArtifactResult<K>;
+  }
+
+  async listImportedArtifacts(
+    query: ListImportedArtifactsQuery = {},
+  ): Promise<ImportedArtifactPage> {
+    const normalized = normalizeListImportedArtifactsQuery(query);
+    const params = new URLSearchParams();
+    if (normalized.kind !== undefined) params.set("kind", normalized.kind);
+    if (normalized.limit !== undefined) params.set("limit", String(normalized.limit));
+    if (normalized.cursor !== null) {
+      params.set("cursor", encodeArtifactCursor(normalized.cursor));
+    }
+    const queryString = params.toString();
+    const page = await this.request(
+      `${API_ENDPOINTS.imports}${queryString === "" ? "" : `?${queryString}`}`,
+      undefined,
+      parseImportedArtifactPage,
+    );
+    return assertPageMatchesQuery(page, normalized);
+  }
+
+  async getImportedArtifact(id: string): Promise<ImportedArtifact> {
+    if (typeof id !== "string" || id === "" || id.length > 256) {
+      throw new ApiError({
+        code: API_ERROR_CODES.VALIDATION_ERROR,
+        message: "Invalid imported artifact id.",
+        status: 400,
+      });
+    }
+    const artifact = await this.request(
+      `${API_ENDPOINTS.imports}/${encodeURIComponent(id)}`,
+      undefined,
+      parseImportedArtifact,
+    );
+    if (artifact.id !== id) {
+      throw new MalformedResponseError("id", "does not match the requested artifact id");
+    }
+    return artifact;
+  }
+
+  async getArtifactSelection(kind: ImportedArtifactKind): Promise<ArtifactSelection> {
+    if (!isImportedArtifactKind(kind)) {
+      throw new ApiError({
+        code: API_ERROR_CODES.VALIDATION_ERROR,
+        message: "Invalid artifact kind.",
+        status: 400,
+      });
+    }
+    return this.request(
+      `${API_ENDPOINTS.importSelections}/${kind}`,
+      undefined,
+      parseArtifactSelection,
+    );
+  }
+
+  async setArtifactSelection(
+    kind: ImportedArtifactKind,
+    artifactId: string | null,
+  ): Promise<ArtifactSelection> {
+    if (!isImportedArtifactKind(kind)) {
+      throw new ApiError({
+        code: API_ERROR_CODES.VALIDATION_ERROR,
+        message: "Invalid artifact kind.",
+        status: 400,
+      });
+    }
+    const selection = await this.request(
+      `${API_ENDPOINTS.importSelections}/${kind}`,
+      { method: "PUT", body: JSON.stringify({ artifact_id: artifactId }) },
+      parseArtifactSelection,
+    );
+    if (selection.artifact_id !== artifactId) {
+      throw new MalformedResponseError(
+        "artifact_id",
+        "does not match the requested artifact selection",
+      );
+    }
+    return selection;
+  }
+
+  async getPlanAdoption(): Promise<PlanAdoption | null> {
+    return this.request(API_ENDPOINTS.planAdoption, undefined, parsePlanAdoption);
+  }
+
+  async setPlanAdoption(input: PlanAdoptionInput | null): Promise<PlanAdoption | null> {
+    const adoption = await this.request(
+      API_ENDPOINTS.planAdoption,
+      { method: "PUT", body: JSON.stringify(input) },
+      parsePlanAdoption,
+    );
+    if (input === null) {
+      if (adoption !== null) {
+        throw new MalformedResponseError("(root)", "must be null after revoking the adoption");
+      }
+      return null;
+    }
+    if (adoption === null) {
+      throw new MalformedResponseError("(root)", "must not be null when an adoption was requested");
+    }
+    if (adoption.artifact_id !== input.artifact_id) {
+      throw new MalformedResponseError("artifact_id", "does not match the requested adoption");
+    }
+    if (adoption.confirmed_digest !== input.confirmed_digest) {
+      throw new MalformedResponseError("confirmed_digest", "does not match the requested adoption");
+    }
+    return adoption;
   }
 }

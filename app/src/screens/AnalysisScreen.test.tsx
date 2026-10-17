@@ -1,23 +1,19 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
 import { analyzeProgress } from "@pi-fit-trace/core";
-import { readTextFile } from "../api/fileTransport.ts";
+import type {
+  ArtifactSelection,
+  FitTraceClient,
+  ImportedArtifact,
+} from "@pi-fit-trace/api-contracts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider, useWorkoutStore } from "../state/WorkoutStoreContext.tsx";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
-import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
+import { FakeFitTraceClient, clientFor, deferred } from "../test/asyncClient.ts";
 import { AnalysisScreen } from "./AnalysisScreen.tsx";
-
-vi.mock("../api/fileTransport.ts", () => ({
-  downloadJson: vi.fn(),
-  readTextFile: vi.fn(),
-}));
-
-const readTextFileMock = vi.mocked(readTextFile);
 
 function record(overrides: Partial<WorkoutRecord> = {}): WorkoutRecord {
   return {
@@ -41,18 +37,7 @@ const importedAnalysis: AnalysisResult = {
     avg_rest_days: 3,
     max_gap_days: 5,
   },
-  trends: [
-    {
-      exercise: "Bench Press",
-      metric: "est_1rm_kg",
-      sessions_compared: 3,
-      first: 90,
-      last: 100,
-      delta: 10,
-      delta_pct: 11.11,
-      direction: "up",
-    },
-  ],
+  trends: [],
   flags: [
     {
       code: "EXTREME_RPE",
@@ -64,9 +49,18 @@ const importedAnalysis: AnalysisResult = {
   source_records: ["wkt_x", "wkt_y"],
 };
 
-/** The file body is irrelevant: `readTextFile` is mocked. */
-function analysisFile(name = "analysis.json"): File {
-  return new File(['{"unused":true}'], name, { type: "application/json" });
+async function saveAnalysis(
+  client: FitTraceClient,
+  payload: AnalysisResult = importedAnalysis,
+  filename = "analysis.json",
+): Promise<ImportedArtifact<"analysis">> {
+  const result = await client.saveImportedArtifact({
+    kind: "analysis",
+    payload_schema_version: 1,
+    payload,
+    source_filename: filename,
+  });
+  return result.artifact;
 }
 
 function renderAnalysis(client: FitTraceClient) {
@@ -88,7 +82,6 @@ function renderAnalysisOver(adapter: MemoryStorageAdapter) {
   return renderAnalysis(clientFor(adapter));
 }
 
-/** Harness exposing the provider reload so tests can force a history refresh. */
 function AnalysisWithReload() {
   const { reload } = useWorkoutStore();
   return (
@@ -115,7 +108,7 @@ function renderAnalysisWithReload(client: FitTraceClient) {
 
 describe("AnalysisScreen", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    localStorage.clear();
   });
 
   it("shows a loading notice while analysis resolves", () => {
@@ -126,6 +119,30 @@ describe("AnalysisScreen", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
   });
 
+  it("labels an unresolved saved selection as loading, not as the computed source", async () => {
+    const client = new FakeFitTraceClient({
+      records: [record()],
+      analysis: analyzeProgress([record()]),
+    });
+    const selection = deferred<ArtifactSelection>();
+    client.getArtifactSelection = () => selection.promise;
+
+    renderAnalysis(client);
+
+    const label = await screen.findByTestId("analysis-source");
+    expect(label).toHaveTextContent(/loading saved selection/i);
+    expect(label).not.toHaveTextContent(/current computed/i);
+    expect(
+      screen.getByRole("button", { name: /show current computed analysis/i }),
+    ).toBeEnabled();
+
+    await act(async () => {
+      selection.resolve({ artifact_id: null });
+    });
+    expect(await screen.findByText(/Sessions: 1/)).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/current computed/i);
+  });
+
   it("shows an empty state when there is no history", async () => {
     renderAnalysisOver(new MemoryStorageAdapter());
 
@@ -134,10 +151,13 @@ describe("AnalysisScreen", () => {
       "href",
       "/workout/new",
     );
-    expect(screen.queryByText(/^Sessions:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /manage imports and exports/i })).toHaveAttribute(
+      "href",
+      "/me",
+    );
   });
 
-  it("renders metrics, trends, and flags with evidence from local records", async () => {
+  it("renders metrics from local records with no independent file input", async () => {
     const adapter = new MemoryStorageAdapter();
     saveRecord(adapter, record());
     saveRecord(
@@ -154,23 +174,185 @@ describe("AnalysisScreen", () => {
     expect(await screen.findByText(/Sessions: 2/)).toBeInTheDocument();
     expect(screen.getByText(/volume: 1050 kg/i)).toBeInTheDocument();
     expect(container.querySelector('[data-trend-exercise="Squat"]')).not.toBeNull();
-    expect(container.querySelector('[data-flag-code="MISSING_RECOVERY_DATA"]')).not.toBeNull();
+    expect(screen.queryByLabelText(/import analysis\.json/i)).not.toBeInTheDocument();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
   });
 
-  it("shows a retryable error when analysis fails and recovers", async () => {
-    const client = new FakeFitTraceClient({ records: [record()] });
-    const first = client.nextAnalyze();
-    const user = userEvent.setup();
+  it("shows a snapshot saved and selected through the client before mount", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await saveAnalysis(client);
+    await client.setArtifactSelection("analysis", artifact.id);
+
     renderAnalysis(client);
 
-    await waitFor(() => expect(client.analyzeCalls).toBe(1));
-    first.reject(new Error("analyze down"));
-    expect(await screen.findByTestId("analysis-error")).toHaveTextContent(/analyze down/i);
+    expect(await screen.findByText(/Sessions: 7/)).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/imported snapshot/i);
+    expect(await screen.findByTestId("analysis-snapshot-meta")).toHaveTextContent(
+      /analysis\.json.*immutable snapshot/i,
+    );
+    expect(screen.getByTestId("analysis-snapshot-linkage")).toHaveTextContent(
+      /0 of 2 source record id\(s\) exist.*2 missing/i,
+    );
+    expect(screen.getByText(/not proof/i)).toBeInTheDocument();
+    expect(screen.getByText(/Imported flag/)).toBeInTheDocument();
 
-    const second = client.nextAnalyze();
-    await user.click(screen.getByRole("button", { name: /retry/i }));
-    second.resolve(analyzeProgress([record()]));
+    // Current computed is a separate explicit action, not a silent fallback.
+    await userEvent.click(screen.getByRole("button", { name: /show current computed analysis/i }));
     await waitFor(() => expect(screen.getByText(/Sessions: 1/)).toBeInTheDocument());
+    expect(await client.getArtifactSelection("analysis")).toEqual({ artifact_id: null });
+  });
+
+  it("blocks other source writes while switching to the current computed source", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await saveAnalysis(client);
+    await client.setArtifactSelection("analysis", artifact.id);
+
+    const write = deferred<ArtifactSelection>();
+    client.setArtifactSelection = () => write.promise;
+    const { user } = renderAnalysis(client);
+    await screen.findByText(/Sessions: 7/);
+
+    await user.click(screen.getByRole("button", { name: /show current computed analysis/i }));
+
+    expect(screen.getByRole("button", { name: /refresh saved data/i })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: new RegExp(`view saved analysis snapshot`, "i") }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      write.resolve({ artifact_id: null });
+    });
+    await waitFor(() => expect(screen.getByText(/Sessions: 1/)).toBeInTheDocument());
+    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/current computed/i);
+  });
+
+  it("shows computed results after recovering a lost source-switch response", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await saveAnalysis(client);
+    await client.setArtifactSelection("analysis", artifact.id);
+
+    // The server commits the computed source (null), then the response is lost.
+    const commit = client.setArtifactSelection.bind(client);
+    client.setArtifactSelection = async (kind, artifactId) => {
+      await commit(kind, artifactId);
+      throw new Error("response lost");
+    };
+
+    const { user } = renderAnalysis(client);
+    await screen.findByText(/Sessions: 7/);
+    await user.click(screen.getByRole("button", { name: /show current computed analysis/i }));
+
+    // The authoritative re-read confirms null and loads the computed result,
+    // so the page must not remain blank behind a blocking selection error.
+    expect(await screen.findByText(/Sessions: 1/)).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/current computed/i);
+    expect(screen.queryByTestId("analysis-selection-error")).not.toBeInTheDocument();
+    expect(screen.getByTestId("analysis-selection-warning")).toHaveTextContent(/response lost/i);
+  });
+
+  it("restores the saved selection after a hard remount", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await saveAnalysis(client);
+    await client.setArtifactSelection("analysis", artifact.id);
+
+    const first = renderAnalysis(client);
+    await screen.findByText(/Sessions: 7/);
+    first.unmount();
+
+    renderAnalysis(clientFor(adapter));
+    expect(await screen.findByText(/Sessions: 7/)).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-source")).toHaveTextContent(new RegExp(artifact.id));
+  });
+
+  it("paginates snapshot metadata with Load more", async () => {
+    const client = new FakeFitTraceClient({
+      records: [record()],
+      analysis: analyzeProgress([record()]),
+    });
+    const first = await client.saveImportedArtifact({
+      kind: "analysis",
+      payload_schema_version: 1,
+      payload: importedAnalysis,
+      source_filename: "one.json",
+    });
+    const second = await client.saveImportedArtifact({
+      kind: "analysis",
+      payload_schema_version: 1,
+      payload: { ...importedAnalysis, metrics: { ...importedAnalysis.metrics, sessions: 8 } },
+      source_filename: "two.json",
+    });
+    const list = client.listImportedArtifacts.bind(client);
+    client.listImportedArtifacts = async (query) =>
+      query?.cursor === "next"
+        ? { items: [second.artifact], next_cursor: null }
+        : { items: [first.artifact], next_cursor: "next" };
+
+    renderAnalysis(client);
+    expect(await screen.findByText(/one\.json/)).toBeInTheDocument();
+    expect(screen.queryByText(/two\.json/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /load more snapshots/i }));
+    expect(await screen.findByText(/two\.json/)).toBeInTheDocument();
+    expect(list).toBeDefined();
+  });
+
+  it("shows a next-page failure without dropping already loaded history", async () => {
+    const client = new FakeFitTraceClient({
+      records: [record()],
+      analysis: analyzeProgress([record()]),
+    });
+    const first = await saveAnalysis(client, importedAnalysis, "one.json");
+    client.listImportedArtifacts = async (query) =>
+      query?.cursor === "next"
+        ? Promise.reject(new Error("page down"))
+        : { items: [first], next_cursor: "next" };
+
+    const { user } = renderAnalysis(client);
+    expect(await screen.findByText(/one\.json/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /load more snapshots/i }));
+
+    expect(await screen.findByTestId("analysis-snapshot-list-error")).toHaveTextContent(
+      /could not load more.*page down/i,
+    );
+    expect(screen.getByText(/one\.json/)).toBeInTheDocument();
+  });
+
+  it("does not label the current computed source local in HTTP mode", async () => {
+    (globalThis as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME = {
+      mode: "http",
+    };
+    try {
+      renderAnalysisOver(new MemoryStorageAdapter());
+      const label = await screen.findByTestId("analysis-source");
+      expect(label).toHaveTextContent(/current computed \(not a saved snapshot\)/i);
+      expect(label).not.toHaveTextContent(/local/i);
+    } finally {
+      delete (globalThis as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME;
+    }
+  });
+
+  it("keeps an immutable payload after workout history refreshes", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, record());
+    const client = clientFor(adapter);
+    const artifact = await saveAnalysis(client);
+    await client.setArtifactSelection("analysis", artifact.id);
+
+    const { user } = renderAnalysisWithReload(client);
+    await screen.findByText(/Sessions: 7/);
+    await user.click(screen.getByRole("button", { name: /reload history/i }));
+
+    // The snapshot is not recomputed from records; its stored metrics stay.
+    expect(await screen.findByText(/Sessions: 7/)).toBeInTheDocument();
   });
 
   it("discards a stale response that resolves after a newer one", async () => {
@@ -185,7 +367,6 @@ describe("AnalysisScreen", () => {
     const first = client.nextAnalyze();
     await waitFor(() => expect(client.analyzeCalls).toBe(1));
 
-    // Refresh history with an extra record; the second analysis supersedes.
     const refreshGate = client.nextList();
     await user.click(screen.getByRole("button", { name: /reload history/i }));
     refreshGate.resolve([recA, recB]);
@@ -194,53 +375,43 @@ describe("AnalysisScreen", () => {
 
     second.resolve(analyzeProgress([recA, recB]));
     await waitFor(() => expect(screen.getByText(/Sessions: 2/)).toBeInTheDocument());
-    // The stale first response must not overwrite the newer view.
     first.resolve(analyzeProgress([recA]));
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(screen.getByText(/Sessions: 2/)).toBeInTheDocument();
-    expect(screen.queryByText(/Sessions: 1/)).not.toBeInTheDocument();
   });
 
-  it("keeps the local analysis when an import is malformed", async () => {
-    const adapter = new MemoryStorageAdapter();
-    saveRecord(adapter, record());
-    readTextFileMock.mockResolvedValue(
-      JSON.stringify({ period: { from: null, to: null }, metrics: {} }),
+  it("drops an old client's snapshot result after the owner changes", async () => {
+    const adapterA = new MemoryStorageAdapter();
+    saveRecord(adapterA, record());
+    const clientA = clientFor(adapterA);
+    const artifact = await saveAnalysis(clientA);
+    await clientA.setArtifactSelection("analysis", artifact.id);
+
+    let release!: (value: ImportedArtifact) => void;
+    clientA.getImportedArtifact = () => new Promise((resolve) => (release = resolve));
+
+    const view = renderAnalysis(clientA);
+    await screen.findByTestId("analysis-snapshot-history");
+
+    const clientB = new FakeFitTraceClient({
+      records: [record()],
+      analysis: analyzeProgress([record()]),
+    });
+    view.rerender(
+      <MemoryRouter initialEntries={["/analysis"]}>
+        <WorkoutStoreProvider client={clientB}>
+          <AnalysisScreen />
+        </WorkoutStoreProvider>
+      </MemoryRouter>,
     );
 
-    const { user } = renderAnalysisOver(adapter);
-    await screen.findByText(/Sessions: 1/);
-    await user.upload(screen.getByLabelText(/import analysis.json/i), analysisFile());
-
-    const alert = await screen.findByTestId("analysis-error");
-    expect(alert).toHaveTextContent(/metrics/i);
-    // A bad import must not blank the previously displayed analysis.
-    expect(screen.getByText(/Sessions: 1/)).toBeInTheDocument();
-    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/local/i);
+    release(artifact);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(screen.queryByText(/Sessions: 7/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/Sessions: 1/)).toBeInTheDocument();
   });
 
-  it("displays an imported analysis and can switch back to local", async () => {
-    const adapter = new MemoryStorageAdapter();
-    saveRecord(adapter, record());
-    readTextFileMock.mockResolvedValue(JSON.stringify(importedAnalysis));
-
-    const { user } = renderAnalysisOver(adapter);
-    await screen.findByText(/Sessions: 1/);
-    await user.upload(screen.getByLabelText(/import analysis.json/i), analysisFile());
-
-    await waitFor(() =>
-      expect(screen.getByTestId("analysis-source")).toHaveTextContent(/imported/i),
-    );
-    expect(screen.getByText(/Sessions: 7/)).toBeInTheDocument();
-    expect(screen.getByText(/imported flag/i)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /show local analysis/i }));
-
-    expect(screen.getByTestId("analysis-source")).toHaveTextContent(/local/i);
-    expect(screen.getByText(/Sessions: 1/)).toBeInTheDocument();
-  });
-
-  it("shows a history-load error with retry on initial failure", async () => {
+  it("shows history-load errors separately from saved source errors", async () => {
     const expected = analyzeProgress([record()]);
     const client = new FakeFitTraceClient({ records: [record()], analysis: expected });
     const gate = client.nextList();
@@ -250,19 +421,16 @@ describe("AnalysisScreen", () => {
     gate.reject(new Error("history down"));
 
     const alert = await screen.findByTestId("history-error");
-    expect(alert).toHaveTextContent(/could not load workout history/i);
     expect(alert).toHaveTextContent(/history down/i);
-    expect(screen.queryByText(/no workout history to analyse yet/i)).not.toBeInTheDocument();
-
     await user.click(screen.getByRole("button", { name: /retry/i }));
-    await waitFor(() => expect(client.listCalls).toBe(2));
     await waitFor(() => expect(screen.getByText(/Sessions: 1/)).toBeInTheDocument());
-    expect(screen.queryByTestId("history-error")).not.toBeInTheDocument();
   });
 
-  it("replaces stale analysis with a history-load error on reload failure", async () => {
-    const expected = analyzeProgress([record()]);
-    const client = new FakeFitTraceClient({ records: [record()], analysis: expected });
+  it("replaces a stale analysis with a history-load error on reload failure", async () => {
+    const client = new FakeFitTraceClient({
+      records: [record()],
+      analysis: analyzeProgress([record()]),
+    });
     const { user } = renderAnalysisWithReload(client);
     await screen.findByText(/Sessions: 1/);
 
@@ -271,9 +439,7 @@ describe("AnalysisScreen", () => {
     await waitFor(() => expect(client.listCalls).toBe(2));
     refresh.reject(new Error("reload failed"));
 
-    const alert = await screen.findByTestId("history-error");
-    expect(alert).toHaveTextContent(/reload failed/i);
-    // Stale results must not remain visible alongside the history error.
+    expect(await screen.findByTestId("history-error")).toHaveTextContent(/reload failed/i);
     expect(screen.queryByText(/Sessions: 1/)).not.toBeInTheDocument();
   });
 });

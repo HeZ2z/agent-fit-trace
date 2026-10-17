@@ -76,8 +76,10 @@ describe("App integration", () => {
     // Plan is a draft and is not adopted without confirmation.
     await user.click(screen.getByRole("link", { name: /^plan$/i }));
     expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
-    expect(screen.getByRole("button", { name: /confirm plan/i })).toBeInTheDocument();
-    expect(screen.queryByText(/adopted/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /confirm plan for this view only/i }),
+    ).toBeInTheDocument();
+    expect(await screen.findByTestId("current-adoption")).toHaveTextContent(/none/i);
   });
 
   it("persists a saved workout across a fresh App over the same adapter", async () => {
@@ -112,7 +114,7 @@ describe("App integration", () => {
     await screen.findByRole("heading", { level: 1, name: /workout summary/i });
     const [saved] = loadRecords(adapter);
 
-    await user.click(screen.getByRole("link", { name: /^history$/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
     await screen.findByRole("button", { name: /export workouts \(json\)/i });
     await user.click(screen.getByRole("button", { name: /export workouts \(json\)/i }));
 

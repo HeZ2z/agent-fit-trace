@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
+import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import { createAuthenticatedHandler } from "../server/authenticatedHandler.ts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
@@ -219,4 +219,113 @@ test("oversized bodies reject as VALIDATION_ERROR", async () => {
   assert.equal(response.status, 400);
   const body = JSON.parse(response.body) as { error: { code: string } };
   assert.equal(body.error.code, API_ERROR_CODES.VALIDATION_ERROR);
+});
+
+test("workout restore requests may carry one large valid backup record", async () => {
+  const handler = makeHandler();
+  // Larger than the 64 KiB general HTTP cap but within the workout restore
+  // bound; restore submits one whole record per request.
+  const record = seedRecord({
+    id: "w-large",
+    date: "2026-09-05",
+    notes: "n".repeat(100_000),
+  });
+  const response = await handler("/workouts", {
+    method: "POST",
+    body: JSON.stringify({ record }),
+    authorization: "Bearer token-a",
+  });
+  assert.equal(response.status, 201);
+  const body = JSON.parse(response.body) as {
+    data: { record: WorkoutRecord; duplicate: boolean };
+  };
+  assert.equal(body.data.duplicate, false);
+  assert.equal(body.data.record.notes?.length, 100_000);
+});
+
+test("import routes are principal-scoped and hide other owners behind NOT_FOUND", async () => {
+  const handler = makeHandler();
+  const authA = { authorization: "Bearer token-a" };
+  const authB = { authorization: "Bearer token-b" };
+  const payload = analyzeProgress([seedRecord({ id: "w-imp", date: "2026-09-01" })]);
+
+  const created = await handler("/imports", {
+    method: "POST",
+    body: JSON.stringify({ kind: "analysis", payload_schema_version: 1, payload }),
+    ...authA,
+  });
+  assert.equal(created.status, 201);
+  const artifact = (JSON.parse(created.body) as { data: { artifact: { id: string; content_digest: string } } })
+    .data.artifact;
+
+  const listA = JSON.parse((await handler("/imports", authA)).body) as { data: { items: { id: string }[] } };
+  assert.deepEqual(listA.data.items.map((item) => item.id), [artifact.id]);
+  const listB = JSON.parse((await handler("/imports", authB)).body) as { data: { items: unknown[] } };
+  assert.deepEqual(listB.data.items, []);
+
+  const otherRead = await handler(`/imports/${encodeURIComponent(artifact.id)}`, authB);
+  assert.equal(otherRead.status, 404);
+  assert.equal(
+    (JSON.parse(otherRead.body) as { error: { code: string } }).error.code,
+    API_ERROR_CODES.NOT_FOUND,
+  );
+
+  const missingAuth = await handler("/imports");
+  assert.equal(missingAuth.status, 401);
+
+  const selection = await handler("/import-selections/analysis", {
+    method: "PUT",
+    body: JSON.stringify({ artifact_id: artifact.id }),
+    ...authA,
+  });
+  assert.equal(selection.status, 200);
+  const selectionB = JSON.parse(
+    (await handler("/import-selections/analysis", authB)).body,
+  ) as { data: { artifact_id: string | null } };
+  assert.deepEqual(selectionB.data, { artifact_id: null });
+
+  const adoption = await handler("/plan-adoption", {
+    method: "PUT",
+    body: JSON.stringify({ artifact_id: artifact.id, confirmed_digest: artifact.content_digest }),
+    ...authA,
+  });
+  // An analysis snapshot cannot be adopted as a plan.
+  assert.equal(adoption.status, 400);
+});
+
+test("imports warn about unknown root and payload fields exactly once", async () => {
+  const handler = makeHandler();
+  const payload = analyzeProgress([seedRecord({ id: "w-warn", date: "2026-09-01" })]);
+  const response = await handler("/imports", {
+    method: "POST",
+    body: JSON.stringify({
+      kind: "analysis",
+      payload_schema_version: 1,
+      payload: { ...payload, extra: true },
+      extra: true,
+    }),
+    authorization: "Bearer token-a",
+  });
+  assert.equal(response.status, 201);
+  const body = JSON.parse(response.body) as {
+    data: { warnings: { code: string; path?: string }[] };
+  };
+  assert.deepEqual(
+    body.data.warnings.filter((warning) => warning.code === "UNKNOWN_FIELD").map((warning) => warning.path),
+    ["(root).extra", "extra"],
+  );
+});
+
+test("import POST bodies are capped below the generic body limit", async () => {
+  const handler = makeHandler();
+  const response = await handler("/imports", {
+    method: "POST",
+    body: "x".repeat(61 * 1024),
+    authorization: "Bearer token-a",
+  });
+  assert.equal(response.status, 400);
+  assert.equal(
+    (JSON.parse(response.body) as { error: { code: string } }).error.code,
+    API_ERROR_CODES.VALIDATION_ERROR,
+  );
 });

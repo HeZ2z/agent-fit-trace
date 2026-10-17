@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
+import { API_ERROR_CODES, ApiError, buildImportedArtifact } from "@pi-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./httpFitTraceClient.ts";
 import type { HttpResponseLike } from "./httpFitTraceClient.ts";
 import { fetchPublicConfig } from "./publicConfig.ts";
@@ -30,6 +30,46 @@ describe("HttpFitTraceClient credentials", () => {
     });
     await client.listWorkouts();
     expect(seen[0]?.authorization).toBe("Bearer session-token");
+  });
+
+  it("binds a snapshot save to the account token captured before digesting", async () => {
+    const input = {
+      kind: "analysis",
+      payload_schema_version: 1,
+      payload: analyzeProgress([seedRecord()]),
+      source_filename: "analysis.json",
+    } as const;
+    const stored = await buildImportedArtifact(input, {
+      created_at: "2026-09-01T00:00:00.000Z",
+    });
+
+    // The live session switches from A to B while the digest await is in
+    // flight (as a cross-tab sign-in would). The save must still carry A's
+    // captured token; it must never resolve B's token for A's file.
+    let token: string | null = "token-a";
+    const seenAuthorization: (string | undefined)[] = [];
+    const client = new HttpFitTraceClient({
+      getAccessToken: () => {
+        const captured = token;
+        token = "token-b";
+        return captured;
+      },
+      fetchImpl: (async (_input: string, init?: { headers?: Record<string, string> }) => {
+        seenAuthorization.push(init?.headers?.authorization);
+        return {
+          status: 201,
+          text: () =>
+            JSON.stringify({
+              data: { artifact: stored, duplicate: false, warnings: [] },
+            }),
+        } satisfies HttpResponseLike;
+      }) as HttpFitTraceClient["fetchImpl"],
+    });
+
+    const result = await client.saveImportedArtifact(input);
+
+    expect(seenAuthorization).toEqual(["Bearer token-a"]);
+    expect(result.artifact.id).toBe(stored.id);
   });
 
   it("sends no credentials when signed out (server answers 401)", async () => {

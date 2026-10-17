@@ -12,6 +12,7 @@ import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
 import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
 import { CoachScreen } from "./screens/CoachScreen.tsx";
+import { MeScreen } from "./screens/MeScreen.tsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.tsx";
 import {
   AuthCallbackScreen,
@@ -261,6 +262,14 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
             element={
               <RequireAuth legacyLoopback={legacyLoopback} client={client}>
                 <PlanScreen />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/me"
+            element={
+              <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+                <MeScreen />
               </RequireAuth>
             }
           />
