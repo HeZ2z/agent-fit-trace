@@ -103,6 +103,28 @@ function isDefinitiveSubmitRejection(error: unknown): boolean {
 }
 
 /**
+ * Definitive EXPIRED-REQUEST proof for an explicit SAME-KEY retry.
+ *
+ * Ordering dependency (`coachingService.submitRun`): the retained, owned
+ * idempotent record is resolved BEFORE a live snapshot is required, and a
+ * session referenced by a retained run survives idle expiry. So exactly two
+ * structured refusals prove no retained run/result remains under the key:
+ * - `SESSION_NOT_FOUND`: no retained run references that session.
+ * - `SNAPSHOT_NOT_FOUND`: raised only after the idempotency lookup missed.
+ *
+ * Everything else — `IDEMPOTENCY_CONFLICT`, auth, network loss, parser failure,
+ * a generic route `NOT_FOUND`, or an unknown 5xx — cannot prove absence and
+ * must keep the pending key. `SNAPSHOT_NOT_FOUND` is used verbatim (the shared
+ * constant set omits it, like `RUN_NOT_FOUND` above).
+ */
+function expiredUnknownSubmitProof(error: unknown): "session" | "snapshot" | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.code === COACHING_ERROR_CODES.SESSION_NOT_FOUND) return "session";
+  if (error.code === "SNAPSHOT_NOT_FOUND") return "snapshot";
+  return null;
+}
+
+/**
  * A stored resume whose session/run is definitively gone is a clean reset,
  * never a hard error — a network/auth failure cannot prove absence and must be
  * retried instead (see the restore effect).
@@ -860,11 +882,32 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       if (caught instanceof ApiError && caught.code === API_ERROR_CODES.UNAUTHENTICATED) {
         client.discardCredentials();
       }
-      // A same-key retry rejection CANNOT prove the ORIGINAL accepted run is
-      // absent: an expired snapshot or a transient auth/capability failure is
-      // refused before the retained run is looked up, so the original key is
-      // never erased here. A cancel stays unconfirmed; otherwise the same-key
-      // Retry remains offered until the original request is resolved.
+      // A structured expiry proves only that no retained run/result remains
+      // under the key — not that the request was refused before acceptance, nor
+      // that no other run is active. Release the pending/cancel flags the same
+      // way for both an ordinary retry and a preserved cancel intent, and show
+      // the honest unavailable state: never a fabricated cancelled/completed.
+      // Clear the session only on SESSION_NOT_FOUND; a live session is reused.
+      const expiredProof = expiredUnknownSubmitProof(caught);
+      if (expiredProof !== null) {
+        pendingRetryRef.current = null;
+        if (expiredProof === "session") sessionIdRef.current = null;
+        cancelUnconfirmedRef.current = false;
+        cancelRequestedRef.current = false;
+        setError(
+          `The earlier coach request and its saved result are no longer available (${
+            expiredProof === "session" ? "SESSION_NOT_FOUND" : "SNAPSHOT_NOT_FOUND"
+          }). Start a new analysis.`,
+        );
+        beginPhase("failed");
+        return;
+      }
+      // A same-key retry rejection otherwise CANNOT prove the ORIGINAL accepted
+      // run is absent: an idempotency conflict, a transient auth/capability
+      // failure, a route/transport error, or an unknown 5xx is not proof, so
+      // the original key is never erased here. A cancel stays unconfirmed;
+      // otherwise the same-key Retry remains offered until the original
+      // request is resolved.
       if (cancelRequestedRef.current) {
         // Same ambiguity as a first submit: the server may have accepted the
         // replayed key, so stay unconfirmed rather than claiming cancelled.

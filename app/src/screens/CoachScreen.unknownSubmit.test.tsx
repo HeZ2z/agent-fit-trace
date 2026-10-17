@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
-import { AuthProvider } from "../auth/AuthContext.tsx";
+import { AuthProvider, useAuth } from "../auth/AuthContext.tsx";
 import type { SupabaseSession } from "../auth/supabaseAuth.ts";
 import { CoachingClient } from "../api/coachingClient.ts";
 import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
@@ -37,6 +37,32 @@ function sessionFor(id: string, email: string): SupabaseSession {
 
 function envelope(seq: number, event: CoachingEventEnvelope["event"]): CoachingEventEnvelope {
   return { protocolVersion: 1, sessionId: SESSION, runId: RUN, seq, event };
+}
+
+function envelopeFor(
+  sessionId: string,
+  runId: string,
+  seq: number,
+  event: CoachingEventEnvelope["event"],
+): CoachingEventEnvelope {
+  return { protocolVersion: 1, sessionId, runId, seq, event };
+}
+
+function freshRun(
+  runId: string,
+  sessionId: string,
+  snapshot: ReturnType<typeof resolvedSnapshot>,
+  idempotencyKey: string,
+) {
+  return {
+    id: runId,
+    sessionId,
+    status: "running",
+    idempotencyKey,
+    prompt: "How is my bench progressing?",
+    snapshot,
+    runtimeId: "pi",
+  };
 }
 
 function sseFrame(entry: CoachingEventEnvelope): string {
@@ -701,5 +727,465 @@ describe("unknown submit recovery (4266413456)", () => {
       .map((entry) => (entry.body as { idempotencyKey?: string })?.idempotencyKey);
     expect(keys).toHaveLength(2);
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("lost ack then same-key SESSION_NOT_FOUND releases the expired request and starts a fresh run", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const firstSnapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    const secondSnapshot = { ...resolvedSnapshot(history.map((entry) => entry.id)), snapshotId: "snap-2" };
+    let runPosts = 0;
+    let sessionPosts = 0;
+    let snapshotPosts = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parseBody(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) {
+        sessionPosts += 1;
+        return jsonData({ id: sessionPosts === 1 ? SESSION : "sess-2" });
+      }
+      if (target.endsWith("/coaching/snapshots")) {
+        snapshotPosts += 1;
+        return jsonData(snapshotPosts === 1 ? firstSnapshot : secondSnapshot);
+      }
+      if (target === "/coaching/runs" && method === "POST") {
+        runPosts += 1;
+        if (runPosts === 1) throw new Error("socket hangup");
+        // The retained-request lookup ran before the live-snapshot requirement
+        // and found nothing under the key: the session cannot survive a
+        // referenced retained run, so the original request is definitively gone.
+        if (runPosts === 2) return apiErrorResponse("SESSION_NOT_FOUND", "Coaching session not found.", 404);
+        const key = (parseBody(init) as { idempotencyKey?: string } | null)?.idempotencyKey ?? "key-2";
+        return jsonData({
+          run: freshRun("run-2", "sess-2", secondSnapshot, key),
+          lastSeq: -1,
+          replayed: false,
+        });
+      }
+      if (target.includes("/coaching/runs/run-2/events")) {
+        return sseResponse(
+          sseFrame(envelopeFor("sess-2", "run-2", 0, { type: "text_delta", delta: "fresh " })) +
+            sseFrame(envelopeFor("sess-2", "run-2", 1, { type: "terminal", status: "completed" })),
+        );
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+    const { user } = renderCoach(history, fetchImpl, seen);
+    await askOnce(user);
+    expect(await screen.findByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    // Definitive expiry: no same-key retry trap, honest release, fresh work
+    // without a reload. Absence of a retained run/result is the only claim —
+    // never a pre-acceptance or cancelled/completed verdict.
+    const error = await screen.findByTestId("coach-error");
+    expect(error).toHaveTextContent(/no longer available \(SESSION_NOT_FOUND\)/i);
+    expect(error).not.toHaveTextContent(/before it was accepted/i);
+    expect(error).not.toHaveTextContent(/nothing is running/i);
+    expect(screen.queryByRole("button", { name: /^retry$/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancel-unconfirmed")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-text")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ask coach/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /new analysis/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /new analysis/i }));
+    const input = screen.getByLabelText(/analysis question/i);
+    await user.clear(input);
+    await user.type(input, "How is my bench progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    // The fresh analysis re-creates the expired session, takes a new snapshot,
+    // and mints a NEW key: the released request is never resurrected.
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent(/fresh/i);
+    expect(sessionPosts).toBe(2);
+    expect(snapshotPosts).toBe(2);
+    const posts = seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST");
+    expect(posts).toHaveLength(3);
+    const bodies = posts.map((entry) => entry.body as Record<string, unknown>);
+    expect(bodies[1]?.idempotencyKey).toBe(bodies[0]?.idempotencyKey);
+    expect(bodies[2]?.idempotencyKey).toBeTruthy();
+    expect(bodies[2]?.idempotencyKey).not.toBe(bodies[0]?.idempotencyKey);
+    expect(bodies[2]?.sessionId).toBe("sess-2");
+    expect(bodies[2]?.snapshot).toMatchObject({
+      snapshotId: "snap-2",
+      source: "supabase",
+      accountId: "user-1",
+    });
+    expect(seen.filter((entry) => entry.url.endsWith("/coaching/runs/run-1/events"))).toHaveLength(0);
+  });
+
+  it("lost ack then same-key SNAPSHOT_NOT_FOUND releases the expired request and reuses the live session", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const firstSnapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    const secondSnapshot = { ...resolvedSnapshot(history.map((entry) => entry.id)), snapshotId: "snap-2" };
+    let runPosts = 0;
+    let sessionPosts = 0;
+    let snapshotPosts = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parseBody(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) {
+        sessionPosts += 1;
+        return jsonData({ id: SESSION });
+      }
+      if (target.endsWith("/coaching/snapshots")) {
+        snapshotPosts += 1;
+        return jsonData(snapshotPosts === 1 ? firstSnapshot : secondSnapshot);
+      }
+      if (target === "/coaching/runs" && method === "POST") {
+        runPosts += 1;
+        if (runPosts === 1) throw new Error("socket hangup");
+        // Raised only AFTER the idempotency lookup missed, so no retained
+        // owned run exists under the key; the live session is still valid.
+        if (runPosts === 2) return apiErrorResponse("SNAPSHOT_NOT_FOUND", "Snapshot not found or expired.", 404);
+        const key = (parseBody(init) as { idempotencyKey?: string } | null)?.idempotencyKey ?? "key-2";
+        return jsonData({
+          run: freshRun("run-2", SESSION, secondSnapshot, key),
+          lastSeq: -1,
+          replayed: false,
+        });
+      }
+      if (target.includes("/coaching/runs/run-2/events")) {
+        return sseResponse(
+          sseFrame(envelopeFor(SESSION, "run-2", 0, { type: "text_delta", delta: "fresh " })) +
+            sseFrame(envelopeFor(SESSION, "run-2", 1, { type: "terminal", status: "completed" })),
+        );
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+    const { user } = renderCoach(history, fetchImpl, seen);
+    await askOnce(user);
+    expect(await screen.findByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    expect(await screen.findByTestId("coach-error")).toHaveTextContent(
+      /no longer available \(SNAPSHOT_NOT_FOUND\)/i,
+    );
+    expect(screen.queryByRole("button", { name: /^retry$/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancel-unconfirmed")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-text")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ask coach/i })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /new analysis/i }));
+    const input = screen.getByLabelText(/analysis question/i);
+    await user.clear(input);
+    await user.type(input, "How is my bench progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent(/fresh/i);
+    // The session was never the expired part: reuse it instead of allocating.
+    expect(sessionPosts).toBe(1);
+    expect(snapshotPosts).toBe(2);
+    const posts = seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST");
+    expect(posts).toHaveLength(3);
+    const bodies = posts.map((entry) => entry.body as Record<string, unknown>);
+    expect(bodies[1]?.idempotencyKey).toBe(bodies[0]?.idempotencyKey);
+    expect(bodies[2]?.idempotencyKey).not.toBe(bodies[0]?.idempotencyKey);
+    expect(bodies[2]?.sessionId).toBe(SESSION);
+    expect(bodies[2]?.snapshot).toMatchObject({ snapshotId: "snap-2" });
+  });
+
+  it("unconfirmed cancellation resolves to an honest unavailable state on definitive expiry, never a fabricated cancel", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let runPosts = 0;
+    let rejectFirstSubmit: (error: unknown) => void = () => {};
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parseBody(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) return jsonData({ id: SESSION });
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        runPosts += 1;
+        if (runPosts === 1) {
+          // Held open: Cancel lands while the POST outcome is unresolved.
+          return await new Promise<Response>((_resolve, reject) => {
+            rejectFirstSubmit = reject;
+          });
+        }
+        // The same-key resolve proves no retained run remains under the key.
+        if (runPosts === 2) return apiErrorResponse("SESSION_NOT_FOUND", "Coaching session not found.", 404);
+        const key = (parseBody(init) as { idempotencyKey?: string } | null)?.idempotencyKey ?? "key-3";
+        return jsonData({ run: freshRun("run-2", SESSION, snapshot, key), lastSeq: -1, replayed: false });
+      }
+      if (target.includes("/coaching/runs/run-2/events")) {
+        return sseResponse(
+          sseFrame(envelopeFor(SESSION, "run-2", 0, { type: "text_delta", delta: "fresh " })) +
+            sseFrame(envelopeFor(SESSION, "run-2", 1, { type: "terminal", status: "completed" })),
+        );
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+    const { user } = renderCoach(history, fetchImpl, seen);
+    await askOnce(user);
+    await waitFor(() => expect(runPosts).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(await screen.findByText(/cancelling coach run/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
+
+    rejectFirstSubmit(new Error("socket hangup"));
+    expect(await screen.findByTestId("coach-cancel-unconfirmed")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /resolve cancellation/i }));
+
+    // Expiry proves only that nothing retained remains: the preserved cancel
+    // intent resolves to the SAME honest unavailable state as an ordinary
+    // retry — never a fabricated cancelled/completed verdict.
+    expect(await screen.findByTestId("coach-error")).toHaveTextContent(
+      /no longer available \(SESSION_NOT_FOUND\)/i,
+    );
+    expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
+    expect(screen.queryByText(/coach run cancelled/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancel-unconfirmed")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-text")).not.toBeInTheDocument();
+    // No server run, stream, cancel reply, or terminal is invented.
+    expect(seen.filter((entry) => entry.url.includes("/events"))).toHaveLength(0);
+    expect(seen.filter((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`))).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /new analysis/i })).toBeInTheDocument();
+
+    // Fresh work stays reachable without a reload, with a new key.
+    await user.click(screen.getByRole("button", { name: /new analysis/i }));
+    const input = screen.getByLabelText(/analysis question/i);
+    await user.clear(input);
+    await user.type(input, "How is my bench progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent(/fresh/i);
+    const posts = seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST");
+    expect(posts).toHaveLength(3);
+    const bodies = posts.map((entry) => entry.body as Record<string, unknown>);
+    expect(bodies[1]?.idempotencyKey).toBe(bodies[0]?.idempotencyKey);
+    expect(bodies[2]?.idempotencyKey).toBeTruthy();
+    expect(bodies[2]?.idempotencyKey).not.toBe(bodies[0]?.idempotencyKey);
+  });
+
+  it("IDEMPOTENCY_CONFLICT never erases the pending key", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapshot = resolvedSnapshot(history.map((entry) => entry.id));
+    let runPosts = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parseBody(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) return jsonData({ id: SESSION });
+      if (target.endsWith("/coaching/snapshots")) return jsonData(snapshot);
+      if (target === "/coaching/runs" && method === "POST") {
+        runPosts += 1;
+        if (runPosts === 1) throw new Error("socket hangup");
+        if (runPosts === 2) {
+          return apiErrorResponse("IDEMPOTENCY_CONFLICT", "Idempotency key was already used.", 409);
+        }
+        return jsonData({ run: storedRun("running", snapshot), lastSeq: -1, replayed: true });
+      }
+      if (target.includes(`/coaching/runs/${RUN}/events`)) {
+        return sseResponse(
+          sseFrame(envelope(0, { type: "text_delta", delta: "recovered " })) +
+            sseFrame(envelope(1, { type: "terminal", status: "completed" })),
+        );
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+    const { user } = renderCoach(history, fetchImpl, seen);
+    await askOnce(user);
+    await user.click(await screen.findByRole("button", { name: /^retry$/i }));
+
+    // A conflict is not proof of absence: the same key must stay resolvable.
+    expect(await screen.findByTestId("coach-error")).toHaveTextContent(/already used/i);
+    expect(screen.getByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ask coach/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /new analysis/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent(/recovered/i);
+    const keys = seen
+      .filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST")
+      .map((entry) => (entry.body as { idempotencyKey?: string })?.idempotencyKey);
+    expect(keys).toHaveLength(3);
+    expect(new Set(keys)).toEqual(new Set([keys[0]]));
+  });
+
+  it("a stale expiry reply after an account switch preserves the new account's pending key and controls", async () => {
+    const history = [record()];
+    const seen: SeenRequest[] = [];
+    const snapA = { ...resolvedSnapshot(history.map((entry) => entry.id)), snapshotId: "snap-a" };
+    const snapB = {
+      ...resolvedSnapshot(history.map((entry) => entry.id)),
+      snapshotId: "snap-b",
+      accountId: "user-2",
+    };
+    let runPosts = 0;
+    let sessionPosts = 0;
+    let snapshotPosts = 0;
+    // Deterministic settle proof: the client only reads A's expiry body once
+    // the stale reply has actually been consumed, so the assertions below can
+    // never run before that reply was processed.
+    let aExpiryConsumed = false;
+    let releaseExpiry!: (response: Response) => void;
+    const expiryGate = new Promise<Response>((resolve) => {
+      releaseExpiry = resolve;
+    });
+    const staleExpiryResponse = (): Response => {
+      const response = apiErrorResponse("SESSION_NOT_FOUND", "Coaching session not found.", 404);
+      const readText = response.text.bind(response);
+      Object.defineProperty(response, "text", {
+        value: async () => {
+          aExpiryConsumed = true;
+          return readText();
+        },
+      });
+      return response;
+    };
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      seen.push({ url: target, method, body: parseBody(init) });
+      if (target.endsWith("/coaching/bootstrap")) return jsonData({ capability: "cap-1", expiresInMs: 600_000 });
+      if (target.endsWith("/coaching/sessions")) {
+        sessionPosts += 1;
+        return jsonData({ id: sessionPosts === 1 ? "sess-a" : "sess-b" });
+      }
+      if (target.endsWith("/coaching/snapshots")) {
+        snapshotPosts += 1;
+        return jsonData(snapshotPosts === 1 ? snapA : snapB);
+      }
+      if (target === "/coaching/runs" && method === "POST") {
+        runPosts += 1;
+        // A's original submit and B's original submit are both ambiguous.
+        if (runPosts === 1 || runPosts === 3) throw new Error("socket hangup");
+        // A's same-key retry is held until B owns its own pending request.
+        if (runPosts === 2) return await expiryGate;
+        const body = parseBody(init) as { idempotencyKey?: string } | null;
+        return jsonData({
+          run: freshRun("run-b", "sess-b", snapB, body?.idempotencyKey ?? "key-b"),
+          lastSeq: -1,
+          replayed: false,
+        });
+      }
+      if (target.includes("/coaching/runs/run-b/events")) {
+        return sseResponse(
+          sseFrame(envelopeFor("sess-b", "run-b", 0, { type: "text_delta", delta: "b-recovered " })) +
+            sseFrame(envelopeFor("sess-b", "run-b", 1, { type: "terminal", status: "completed" })),
+        );
+      }
+      if (target.endsWith("/coaching/logout")) return jsonData({ loggedOut: true });
+      throw new Error(`unexpected coaching request: ${method} ${target}`);
+    }) as unknown as typeof fetch;
+
+    const switchAuthFetch = (async (url: string) => {
+      if (String(url).includes("grant_type=password")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "access-user-2",
+            refresh_token: "refresh-user-2",
+            expires_in: 3600,
+            user: { id: "user-2", email: "b@example.com" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    function SignInProbe() {
+      const { signIn } = useAuth();
+      return (
+        <button type="button" onClick={() => void signIn("b@example.com", "pw")}>
+          switch to b
+        </button>
+      );
+    }
+
+    const user = userEvent.setup();
+    const historyClient = new FakeFitTraceClient({ records: history });
+    const coachClient = new CoachingClient({ fetchImpl, getAccessToken: () => "access-user-1" });
+    render(
+      <MemoryRouter initialEntries={["/coach"]}>
+        <AuthProvider
+          skipBootstrap
+          publicConfig={{ supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub" }}
+          fetchImpl={switchAuthFetch}
+          initialSession={sessionFor("user-1", "a@example.com")}
+        >
+          <WorkoutStoreProvider client={historyClient}>
+            <CoachingProvider client={coachClient}>
+              <Routes>
+                <Route
+                  path="/coach"
+                  element={
+                    <>
+                      <SignInProbe />
+                      <CoachScreen />
+                    </>
+                  }
+                />
+              </Routes>
+            </CoachingProvider>
+          </WorkoutStoreProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    // A: ambiguous submit, then a same-key retry held in flight.
+    await askOnce(user);
+    expect(await screen.findByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+    await waitFor(() => expect(runPosts).toBe(2));
+
+    // Switch to B while A's retry reply is unresolved; B owns a fresh pending
+    // request with its own key and identity.
+    await user.click(screen.getByRole("button", { name: /switch to b/i }));
+    await waitFor(() =>
+      expect(screen.getByLabelText(/analysis question/i)).not.toBeDisabled(),
+    );
+    const input = screen.getByLabelText(/analysis question/i);
+    await user.clear(input);
+    await user.type(input, "How is my bench progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    await waitFor(() => expect(runPosts).toBe(3));
+    expect(await screen.findByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+    expect(screen.getByTestId("coach-error")).toHaveTextContent(/connection failed/i);
+    const bPosts = seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST");
+    const bKey = (bPosts[2]?.body as { idempotencyKey?: string })?.idempotencyKey;
+    expect(bKey).toBeTruthy();
+
+    // A's stale expiry settles after the switch: it must not release B's key,
+    // replace B's error, or unlock fresh work.
+    releaseExpiry(staleExpiryResponse());
+    await waitFor(() => expect(aExpiryConsumed).toBe(true));
+    await waitFor(() => expect(screen.getByTestId("coach-error")).toHaveTextContent(/connection failed/i));
+    expect(screen.getByTestId("coach-error")).not.toHaveTextContent(/no longer available/i);
+    expect(screen.getByRole("button", { name: /^retry$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ask coach/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /new analysis/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancelled")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coach-cancel-unconfirmed")).not.toBeInTheDocument();
+
+    // B's preserved key still resolves its own request (never A's expired key).
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent(/b-recovered/i);
+    const posts = seen.filter((entry) => entry.url === "/coaching/runs" && entry.method === "POST");
+    expect(posts).toHaveLength(4);
+    const bodies = posts.map((entry) => entry.body as Record<string, unknown>);
+    expect(bodies[3]?.idempotencyKey).toBe(bKey);
+    expect(bodies[3]?.sessionId).toBe("sess-b");
+    expect(bodies[3]?.snapshot).toMatchObject({ snapshotId: "snap-b", accountId: "user-2" });
   });
 });

@@ -224,12 +224,25 @@ the FIRST submit (`VALIDATION_ERROR`, `RUN_BUSY`, `FORBIDDEN`,
 `SESSION_NOT_FOUND`) proves no run was created, so the pending key is cleared
 and fresh work stays recoverable. An unknown/proxy `API_ERROR` 5xx, an auth
 refusal, a lost ack, or a malformed success stays unknown and keeps the same
-key. A same-key retry rejection cannot prove the ORIGINAL accepted run is
-absent, so it never erases the original key — the user retries the same
-request. A cancel during a same-key retry is carried through the retry POST
-and then cancels the resolved run (or lands `unconfirmed` if the retry is
-still unknown) — never a local cancelled while the original accept is
-unresolved.
+key. A same-key retry rejection normally cannot prove the ORIGINAL accepted run
+is absent, so it never erases the original key — the user retries the same
+request. Two structured refusals ARE definitive under the current ordering: the
+server resolves the retained owned idempotency record before requiring a live
+snapshot, and a session referenced by a retained run survives idle expiry, so a
+same-key `SESSION_NOT_FOUND` (no retained run references that session) or
+`SNAPSHOT_NOT_FOUND` (the idempotency lookup missed) proves no retained run or
+saved result remains under the key. The original may have completed before the
+record aged out, so that is the only claim the app makes. On either refusal it
+releases the pending key, clears the stale session only for
+`SESSION_NOT_FOUND` (`SNAPSHOT_NOT_FOUND` reuses the live session), allows fresh
+analysis without a reload, and shows the same honest unavailable state (naming
+the code) for an ordinary retry and a preserved cancel intent — never a
+cancelled/completed claim, run, terminal, stream, or cancel.
+`IDEMPOTENCY_CONFLICT`, auth refusals, network/parser failures, a generic route
+`NOT_FOUND`, and unknown 5xx still keep the key. A cancel during a
+same-key retry is carried through the retry POST and then cancels the resolved
+run (or lands `unconfirmed` if the retry is still unknown) — never a local
+cancelled while the original accept is unresolved.
 
 ## Capacity rule: `processExitConfirmed`
 
