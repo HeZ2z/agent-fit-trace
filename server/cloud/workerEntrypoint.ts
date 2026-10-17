@@ -14,7 +14,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { readCloudWorkerEnv } from "./config.ts";
-import { createCloudOutboxWorker, sleep } from "./outboxWorker.ts";
+import { createCloudOutboxWorker, runCloudWorkerLoop } from "./outboxWorker.ts";
 import { createOpenRouterProvider } from "./openRouterProvider.ts";
 import { createSupabaseCoachingWorkerRepository } from "./supabaseCoachingRepository.ts";
 
@@ -53,22 +53,12 @@ export function startCloudWorkerRuntime(options: CloudWorkerRuntimeOptions = {})
     logger: log,
   });
 
-  const done = (async () => {
-    while (!signal.aborted) {
-      try {
-        const result = await worker.tick();
-        if (result.claimed > 0) log("tick", { ...result });
-      } catch (error) {
-        log("tick-error", { error: error instanceof Error ? error.name : "unknown" });
-      }
-      if (signal.aborted) break;
-      try {
-        await sleep(env.pollMs, signal);
-      } catch {
-        break;
-      }
-    }
-  })();
+  const done = runCloudWorkerLoop({
+    tick: () => worker.tick(),
+    pollMs: env.pollMs,
+    signal,
+    log,
+  });
 
   return {
     stop(): void {

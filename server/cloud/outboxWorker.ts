@@ -421,8 +421,17 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
   };
 }
 
-/** Sleep helper for the entrypoint loop; unref'd timers never hold the process. */
-export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+export interface SleepOptions {
+  /**
+   * Unref the timer so it never holds the process open (default true). The
+   * standalone worker loop opts out because, between empty ticks, its polling
+   * timer is the only handle keeping the process alive.
+   */
+  unref?: boolean;
+}
+
+/** Sleep helper. Default timers are unref'd; callers that must keep the loop alive opt in. */
+export function sleep(ms: number, signal?: AbortSignal, options: SleepOptions = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted === true) {
       reject(new Error("aborted"));
@@ -432,13 +441,43 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
-    if (typeof timer.unref === "function") timer.unref();
+    if (options.unref !== false && typeof timer.unref === "function") timer.unref();
     function onAbort(): void {
       clearTimeout(timer);
       reject(new Error("aborted"));
     }
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+export interface CloudWorkerLoopOptions {
+  tick(): Promise<CloudWorkerTickResult>;
+  pollMs: number;
+  signal: AbortSignal;
+  log?: (event: string, details?: Record<string, unknown>) => void;
+}
+
+/**
+ * Standalone-worker poll loop. The timer between ticks stays referenced: after
+ * an empty tick there may be no HTTP/socket handle left, and an unref'd timer
+ * would let the process exit instead of polling again.
+ */
+export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promise<void> {
+  const log = options.log ?? (() => undefined);
+  while (!options.signal.aborted) {
+    try {
+      const result = await options.tick();
+      if (result.claimed > 0) log("tick", { ...result });
+    } catch (error) {
+      log("tick-error", { error: error instanceof Error ? error.name : "unknown" });
+    }
+    if (options.signal.aborted) break;
+    try {
+      await sleep(options.pollMs, options.signal, { unref: false });
+    } catch {
+      break;
+    }
+  }
 }
 
 export function safeWorkerReason(reason: unknown, fallback: string): string {

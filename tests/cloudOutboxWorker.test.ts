@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { test } from "node:test";
 
 import type { WorkoutRecord } from "@pi-fit-trace/core";
@@ -293,4 +294,58 @@ test("worker: kill switch claims nothing", async () => {
   assert.equal(result.disabled, true);
   assert.equal(result.claimed, 0);
   assert.equal(db.outboxFor("run-kill").status, "pending");
+});
+
+/** Run a throwaway ESM script in a child so process liveness is observable. */
+function runNodeModule(script: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      timeout: 15_000,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test("worker loop: the referenced poll timer keeps an idle standalone process alive", async () => {
+  // A real child process makes the assertion about liveness: with an unref'd
+  // polling timer, an empty tick leaves no handle and the process exits before
+  // the second tick. The fake tick returns no jobs and aborts after three, so
+  // only the loop's own timer can keep it alive.
+  const moduleUrl = new URL("../server/cloud/outboxWorker.ts", import.meta.url).href;
+  const script = `
+    import { runCloudWorkerLoop } from ${JSON.stringify(moduleUrl)};
+    const controller = new AbortController();
+    let ticks = 0;
+    const empty = {
+      disabled: false, claimed: 0, completed: 0, failed: 0, cancelled: 0, unconfirmed: 0,
+    };
+    await runCloudWorkerLoop({
+      tick: async () => {
+        ticks += 1;
+        console.log("tick:" + ticks);
+        if (ticks === 3) controller.abort();
+        return empty;
+      },
+      pollMs: 100,
+      signal: controller.signal,
+    });
+    console.log("done");
+  `;
+  const result = await runNodeModule(script);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(
+    (result.stdout.match(/^tick:/gm) ?? []).length,
+    3,
+    `expected three empty ticks, got: ${result.stdout}${result.stderr}`,
+  );
+  assert.match(result.stdout, /^done$/m);
 });
