@@ -100,22 +100,22 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
       generation: number,
       epoch: number,
       artifactId: string | null,
-    ) => {
+    ): Promise<boolean> => {
       const current = () =>
         isCurrent(generation, captured) && selectionEpochRef.current === epoch;
 
       if (artifactId === null) {
-        if (!current()) return;
+        if (!current()) return false;
         setDetail({ status: "empty" });
         setSelectionError(null);
-        return;
+        return true;
       }
 
-      if (!current()) return;
+      if (!current()) return false;
       setDetail({ status: "loading", artifactId });
       try {
         const artifact = (await captured.getImportedArtifact(artifactId)) as ImportedArtifact<K>;
-        if (!current()) return;
+        if (!current()) return false;
         // Runtime validation matters even for in-memory/fake clients: never
         // trust the returned payload to belong to the requested kind/id.
         if (artifact.id !== artifactId || artifact.kind !== kind) {
@@ -123,18 +123,20 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
           setSelectionError(
             `Could not load the selected ${kind} snapshot (${artifactId}): the client returned a different ${artifact.kind} artifact (${artifact.id}). The saved selection was not changed.`,
           );
-          return;
+          return false;
         }
         setDetail({ status: "ready", artifactId, artifact });
         setSelectionError(null);
+        return true;
       } catch (caught) {
-        if (!current()) return;
+        if (!current()) return false;
         // Never show another artifact or the computed result as if it were the
         // persisted selection.
         setDetail({ status: "error", artifactId });
         setSelectionError(
           `Could not load the selected ${kind} snapshot (${artifactId}): ${message(caught)}. The saved selection was not changed.`,
         );
+        return false;
       }
     },
     [isCurrent, kind],
@@ -215,12 +217,40 @@ export function useArtifactSource<K extends ImportedArtifactKind>(
         await loadSelected(captured, generation, epoch, saved.artifact_id);
       } catch (caught) {
         if (!current()) return;
-        // Keep a previously confirmed selection; only an unknown selection
-        // becomes an error that Retry resolves by re-reading the server.
-        setSelectionStatus((previous) => (previous === "ready" ? previous : "error"));
-        setSelectionError(
-          `Could not change the ${kind} source: ${message(caught)}. The previously saved selection may still be unchanged.`,
-        );
+        // A failed write response is ambiguous: the server may already have
+        // saved the new selection. The previously shown value is no longer
+        // authoritative, so re-read the saved selection instead of treating
+        // it as unchanged (a Retry would otherwise load the stale source).
+        // If that read also fails, leave the selection unknown so Retry
+        // re-reads from the server rather than loading an unverified value.
+        try {
+          const saved = await captured.getArtifactSelection(kind);
+          if (!current()) return;
+          setSelectionStatus("ready");
+          setSelection(saved.artifact_id);
+          const loaded = await loadSelected(
+            captured,
+            generation,
+            epoch,
+            saved.artifact_id,
+          );
+          if (!current() || !loaded) return;
+          setSelectionError(
+            `Could not confirm the ${kind} source change: ${message(caught)}. The saved selection was re-read from the server; showing ${
+              saved.artifact_id === null
+                ? "the current computed result"
+                : `snapshot ${saved.artifact_id}`
+            }.`,
+          );
+        } catch (readCaught) {
+          if (!current()) return;
+          setSelectionStatus("error");
+          setSelection(null);
+          setDetail({ status: "empty" });
+          setSelectionError(
+            `Could not change the ${kind} source: ${message(caught)}. The saved selection could not be re-read: ${message(readCaught)}. Retry to read the authoritative selection.`,
+          );
+        }
       } finally {
         if (selectionEpochRef.current === epoch) {
           setSelectionBusy(false);

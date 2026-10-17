@@ -6,7 +6,7 @@ import type {
   FitTraceClient,
   ImportedArtifact,
 } from "@pi-fit-trace/api-contracts";
-import { FakeFitTraceClient, deferred } from "../test/asyncClient.ts";
+import { FakeFitTraceClient, clientFor, deferred } from "../test/asyncClient.ts";
 import { useArtifactSource } from "./useArtifactSource.ts";
 import type { ArtifactSource } from "./useArtifactSource.ts";
 
@@ -148,6 +148,43 @@ describe("useArtifactSource selection races", () => {
 
     await act(async () => {
       initial.resolve({ artifact_id: a.id });
+    });
+    expect(screen.getByTestId("selection")).toHaveTextContent(b.id);
+    expect(screen.getByTestId("selected")).toHaveTextContent(b.id);
+  });
+
+  it("re-reads the saved selection when a successful write loses its response", async () => {
+    const client = clientFor();
+    const a = await saveAnalysis(client, "a.json");
+    const b = await saveAnalysis(client, "b.json", 2);
+    await client.setArtifactSelection("analysis", a.id);
+
+    // The server commits B, then the response is lost. The old A is no longer
+    // authoritative even though the caller saw a rejection.
+    const commit = client.setArtifactSelection.bind(client);
+    client.setArtifactSelection = async (kind, artifactId) => {
+      await commit(kind, artifactId);
+      throw new Error("response lost");
+    };
+
+    const api = { current: null as ArtifactSource<"analysis"> | null };
+    render(<Probe client={client} api={api} />);
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(a.id));
+    expect(screen.getByTestId("selected")).toHaveTextContent(a.id);
+
+    await act(async () => {
+      await api.current?.select(b.id);
+    });
+
+    // The catch re-reads B instead of keeping A, so Retry and the displayed
+    // source both match what a reload would load.
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(b.id));
+    expect(screen.getByTestId("selected")).toHaveTextContent(b.id);
+    expect(screen.getByTestId("status")).toHaveTextContent("ready");
+    expect(screen.getByTestId("error")).toHaveTextContent(/response lost/i);
+
+    await act(async () => {
+      await api.current?.retrySelected();
     });
     expect(screen.getByTestId("selection")).toHaveTextContent(b.id);
     expect(screen.getByTestId("selected")).toHaveTextContent(b.id);
