@@ -253,11 +253,45 @@ describe("supabaseAuth", () => {
 
     const guest = await signInAnonymously(config, fetchImpl);
     expect(calls.map((call) => call.path)).toEqual(["/auth/v1/signup", "/auth/v1/user"]);
-    expect(calls[0]).toMatchObject({ method: "POST", body: "{}", authorization: undefined });
+    expect(calls[0]).toMatchObject({ method: "POST", body: '{"data":{}}', authorization: undefined });
     expect(calls[1]?.authorization).toBe("Bearer guest-access");
     expect(guest.accessToken).toBe("guest-access");
     expect(guest.refreshToken).toBe("guest-refresh");
     expect(guest.user).toEqual({ id: "guest-1", isAnonymous: true });
+  });
+
+  it("supports the official CAPTCHA token body and exposes the unverified candidate", async () => {
+    let signupBody: string | undefined;
+    const candidates: SupabaseSession[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith("/auth/v1/signup")) {
+        signupBody = typeof init?.body === "string" ? init.body : undefined;
+        return new Response(
+          JSON.stringify({
+            access_token: "guest-candidate-access",
+            refresh_token: "guest-candidate-refresh",
+            expires_in: 3600,
+            user: { id: "guest-candidate" },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ message: "overloaded" }), { status: 503 });
+    }) as unknown as typeof fetch;
+
+    const failed = await signInAnonymously(config, fetchImpl, {
+      captchaToken: "captcha-token",
+      onCandidate: (candidate) => candidates.push(candidate),
+    }).catch((caught: unknown) => caught);
+    expect(failed).toBeInstanceOf(AuthError);
+    expect((failed as AuthError).code).toBe("AUTH_UNAVAILABLE");
+    expect(JSON.parse(signupBody ?? "{}")).toEqual({
+      data: {},
+      gotrue_meta_security: { captcha_token: "captcha-token" },
+    });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.accessToken).toBe("guest-candidate-access");
+    expect(candidates[0]?.refreshToken).toBe("guest-candidate-refresh");
   });
 
   it("keeps missing guest classification undefined and fails closed on verification errors", async () => {

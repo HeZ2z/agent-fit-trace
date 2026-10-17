@@ -197,7 +197,11 @@ export function createAuthenticatedHandler(
             HTTP_STATUS.serverError,
           );
         }
-        return ok({ supabaseUrl: config.supabaseUrl, supabasePublishableKey: config.supabasePublishableKey });
+        return ok({
+          supabaseUrl: config.supabaseUrl,
+          supabasePublishableKey: config.supabasePublishableKey,
+          guestSignInEnabled: config.guestSignInEnabled === true,
+        });
       }
 
       const principal = await resolvePrincipal(options.verifier, init.authorization);

@@ -15,9 +15,28 @@ import type { StorageAdapter } from "./adapter.ts";
  */
 export const RECORD_KEY_PREFIX = "pi-fit-trace:workout:v1:";
 
-/** Storage key for a single workout record. */
-export function recordKey(id: string): string {
-  return `${RECORD_KEY_PREFIX}${id}`;
+/**
+ * Identity-scoped keys live under a new v2 namespace so legacy unowned v1
+ * keys are never listed by an owner-scoped client and remain untouched on
+ * disk (hidden, not migrated or deleted).
+ */
+const OWNER_RECORD_KEY_PREFIX = "pi-fit-trace:workout:v2:owner:";
+
+/** Storage key prefix for one verified owner's records. */
+export function ownerRecordKeyPrefix(ownerId: string): string {
+  if (typeof ownerId !== "string" || ownerId.trim() === "") {
+    throw new TypeError("ownerId must be a non-empty string");
+  }
+  return `${OWNER_RECORD_KEY_PREFIX}${encodeURIComponent(ownerId)}:`;
+}
+
+function recordKeyPrefix(ownerId?: string): string {
+  return ownerId === undefined ? RECORD_KEY_PREFIX : ownerRecordKeyPrefix(ownerId);
+}
+
+/** Storage key for a single workout record (legacy when `ownerId` is omitted). */
+export function recordKey(id: string, ownerId?: string): string {
+  return `${recordKeyPrefix(ownerId)}${id}`;
 }
 
 /**
@@ -76,8 +95,8 @@ function parseRecord(raw: string, context: { index?: number; key: string }): Wor
  * Missing storage yields `[]`. Malformed JSON or an invalid record throws
  * {@link StorageCorruptionError} rather than surfacing misleading data.
  */
-export function loadRecords(adapter: StorageAdapter): WorkoutRecord[] {
-  const keys = adapter.keys(RECORD_KEY_PREFIX);
+export function loadRecords(adapter: StorageAdapter, ownerId?: string): WorkoutRecord[] {
+  const keys = adapter.keys(recordKeyPrefix(ownerId));
   const records = keys.map((key, index) => {
     const raw = adapter.read(key);
     if (raw === null || raw.trim() === "") {
@@ -89,26 +108,34 @@ export function loadRecords(adapter: StorageAdapter): WorkoutRecord[] {
 }
 
 /** Load a single record by id, or `null` when it is not stored. */
-export function loadRecord(adapter: StorageAdapter, id: string): WorkoutRecord | null {
-  const key = recordKey(id);
+export function loadRecord(
+  adapter: StorageAdapter,
+  id: string,
+  ownerId?: string,
+): WorkoutRecord | null {
+  const key = recordKey(id, ownerId);
   const raw = adapter.read(key);
   if (raw === null || raw.trim() === "") return null;
   return parseRecord(raw, { key });
 }
 
 /** Persist exactly one record under its own key. */
-export function saveRecord(adapter: StorageAdapter, record: WorkoutRecord): void {
-  adapter.write(recordKey(record.id), `${JSON.stringify(record, null, 2)}\n`);
+export function saveRecord(
+  adapter: StorageAdapter,
+  record: WorkoutRecord,
+  ownerId?: string,
+): void {
+  adapter.write(recordKey(record.id, ownerId), `${JSON.stringify(record, null, 2)}\n`);
 }
 
 /** Remove a single record by id. */
-export function removeRecord(adapter: StorageAdapter, id: string): void {
-  adapter.remove(recordKey(id));
+export function removeRecord(adapter: StorageAdapter, id: string, ownerId?: string): void {
+  adapter.remove(recordKey(id, ownerId));
 }
 
-/** Remove every stored workout record. */
-export function clear(adapter: StorageAdapter): void {
-  for (const key of adapter.keys(RECORD_KEY_PREFIX)) {
+/** Remove every stored workout record in the selected namespace. */
+export function clear(adapter: StorageAdapter, ownerId?: string): void {
+  for (const key of adapter.keys(recordKeyPrefix(ownerId))) {
     adapter.remove(key);
   }
 }

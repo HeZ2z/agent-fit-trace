@@ -355,7 +355,9 @@ describe("Coach route gating", () => {
   it("hides the Coach nav without the runtime flag and shows it when enabled", async () => {
     const user = userEvent.setup();
     window.history.pushState({}, "", "/");
-    const { unmount } = render(<App client={new FakeFitTraceClient({ records: [] })} />);
+    const { unmount } = render(
+      <App client={new FakeFitTraceClient({ records: [] })} legacyLoopback />,
+    );
     expect(screen.getByText("agent-fit-trace")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /^coach$/i })).not.toBeInTheDocument();
     unmount();
@@ -364,7 +366,7 @@ describe("Coach route gating", () => {
       coaching: "same-origin",
     };
     window.history.pushState({}, "", "/");
-    render(<App client={new FakeFitTraceClient({ records: [] })} />);
+    render(<App client={new FakeFitTraceClient({ records: [] })} legacyLoopback />);
     const coachLink = await screen.findByRole("link", { name: /^coach$/i });
     await user.click(coachLink);
     expect(await screen.findByRole("heading", { level: 1, name: /^coach$/i })).toBeInTheDocument();
@@ -617,6 +619,12 @@ describe("Coach account isolation + resume (items 3/4)", () => {
           expires_in: 3600,
           user: { id: "user-2", email: "b@example.com" },
         }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (String(url).includes("/auth/v1/user")) {
+      return new Response(
+        JSON.stringify({ id: "user-2", email: "b@example.com", is_anonymous: false }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }

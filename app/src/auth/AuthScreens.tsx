@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext.tsx";
+import { clearExplicitSignOut, consumeReturnTarget, saveReturnTarget } from "./returnTarget.ts";
 import {
   clearAuthHash,
   clearRecoveryToken,
@@ -20,12 +21,48 @@ import {
  */
 
 export function SignInScreen() {
-  const { signIn, authError, publicConfig, configError } = useAuth();
+  const {
+    signIn,
+    signInAsGuest,
+    guestSignInEnabled,
+    status,
+    user,
+    authError,
+    publicConfig,
+    configError,
+  } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
+  const [guestPending, setGuestPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Remember where the user was when this gate appeared so a successful
+  // sign-in returns there. The sanitizer rejects auth screens, so landing on
+  // `/login` itself never stores a loop.
+  useEffect(() => {
+    saveReturnTarget(`${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
+
+  // Explicit sign-out clears its own target but keeps a short marker so the
+  // protected gate cannot immediately re-capture the page being left. Once the
+  // /login route has committed, release it so a later intentional visit to
+  // that same page is captured normally.
+  useEffect(() => {
+    if (location.pathname !== "/login") return;
+    const timer = window.setTimeout(clearExplicitSignOut, 0);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname]);
+
+  function returnAfterSignIn(): void {
+    // Consume only after a successful sign-in: a failed attempt must keep the
+    // target for the next try. Success also ends any explicit-sign-out
+    // suppression so later deep links are captured normally.
+    clearExplicitSignOut();
+    navigate(consumeReturnTarget() ?? "/", { replace: true });
+  }
 
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -33,13 +70,38 @@ export function SignInScreen() {
     setError(null);
     try {
       await signIn(email.trim(), password);
-      navigate("/", { replace: true });
+      returnAfterSignIn();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Sign-in failed.");
     } finally {
       setPending(false);
     }
   }
+
+  async function onGuest(): Promise<void> {
+    setGuestPending(true);
+    setError(null);
+    try {
+      await signInAsGuest();
+      returnAfterSignIn();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Guest sign-in failed.");
+    } finally {
+      setGuestPending(false);
+    }
+  }
+
+  // Only a verified guest (`isAnonymous === true`) triggers the replacement
+  // warning; unclassified users are neither accounts nor guests.
+  const signedInAsGuest = status === "signed-in" && user?.isAnonymous === true;
+  const signedInAsAccount = status === "signed-in" && user?.isAnonymous === false;
+  const guestDisabled =
+    guestPending ||
+    pending ||
+    signedInAsGuest ||
+    signedInAsAccount ||
+    publicConfig === null ||
+    guestSignInEnabled !== true;
 
   return (
     <section aria-labelledby="signin-heading">
@@ -57,6 +119,14 @@ export function SignInScreen() {
       {(error ?? authError?.message) !== null && (error ?? authError?.message) !== undefined ? (
         <div className="validation-summary" role="alert">
           <p>{error ?? authError?.message}</p>
+        </div>
+      ) : null}
+      {signedInAsGuest ? (
+        <div className="validation-warnings" role="note">
+          <p>
+            Signing in to an account replaces this browser session. Guest workouts are not
+            merged or transferred.
+          </p>
         </div>
       ) : null}
       <form onSubmit={onSubmit}>
@@ -89,6 +159,25 @@ export function SignInScreen() {
       <p>
         <Link to="/forgot-password">Forgot your password?</Link>
       </p>
+      <section className="signin-guest" aria-labelledby="guest-signin-heading">
+        <h2 id="guest-signin-heading">Guest access</h2>
+        <p>
+          Guest data is tied to this browser and cannot be merged into an account later.
+        </p>
+        {guestSignInEnabled !== true ? (
+          <p>
+            {configError !== null
+              ? "Guest sign-in is unavailable because login configuration failed to load."
+              : "Guest sign-in is not enabled on this deployment."}
+          </p>
+        ) : null}
+        {signedInAsAccount ? (
+          <p>Sign out before starting a guest session; an account is never replaced by guest data.</p>
+        ) : null}
+        <button type="button" onClick={onGuest} disabled={guestDisabled}>
+          Continue as guest
+        </button>
+      </section>
     </section>
   );
 }

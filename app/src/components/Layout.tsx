@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
+import { saveReturnTarget } from "../auth/returnTarget.ts";
 import { isCoachingEnabled } from "../api/runtimeMode.ts";
 import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { useCoach } from "../coaching/useCoach.ts";
@@ -23,30 +24,94 @@ function AccountArea() {
   const { status, user, signOutSession } = useAuth();
   const coach = useCoach();
   const navigate = useNavigate();
-  if (status === "signed-in" && user !== null) {
+  const location = useLocation();
+  const [confirmingGuestSignOut, setConfirmingGuestSignOut] = useState(false);
+  if (status !== "signed-in" || user === null) return null;
+
+  // `isAnonymous === true` is the only verified guest signal. `false` is a
+  // verified account and `undefined` is not classified yet, so neither may be
+  // presented as a guest.
+  if (user.isAnonymous === true) {
     return (
-      <div className="account-area" aria-label="Account">
-        <span className="history-summary">{user.email ?? user.id}</span>{" "}
-        <button
-          type="button"
-          onClick={() => {
-            // Tear down the account-level coach with A's still-live credentials
-            // BEFORE the auth session is cleared (the gate then unmounts the
-            // Coach, so its own effects can never observe the transition). The
-            // owner is the same instance for the whole account, mounted or not.
-            coach.teardown();
-            void signOutSession().then(() => navigate("/login", { replace: true }));
-          }}
-        >
-          Sign out
-        </button>
+      <div className="account-area account-guest" aria-label="Account">
+        <p>
+          <span className="account-guest-label">Guest</span>
+          {" · "}
+          Your workouts are not linked to an account.
+        </p>
+        <p>
+          Guest data is tied to this browser and is not linked to an account. Signing out
+          or clearing site data may lose it, and signing in does not transfer it.
+        </p>
+        {confirmingGuestSignOut ? (
+          <>
+            <p>
+              Signing out removes this browser&rsquo;s guest session. These guest workouts
+              may be lost and cannot be guaranteed recoverable.
+            </p>
+            <div className="account-guest-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  // Same ordering as an account sign-out: tear the coach down
+                  // while the credentials are still live, then clear the
+                  // session and leave for the sign-in screen.
+                  coach.teardown();
+                  void signOutSession();
+                  navigate("/login", { replace: true });
+                }}
+              >
+                Sign out and lose guest access
+              </button>
+              <button type="button" onClick={() => setConfirmingGuestSignOut(false)}>
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="account-guest-actions">
+            <button
+              type="button"
+              onClick={() => {
+                // Keep the guest's current page as the post-account-sign-in
+                // target; /login itself is not a legal return target.
+                saveReturnTarget(`${location.pathname}${location.search}`);
+                navigate("/login");
+              }}
+            >
+              Sign in to an account
+            </button>
+            <button type="button" onClick={() => setConfirmingGuestSignOut(true)}>
+              Sign out guest
+            </button>
+          </div>
+        )}
       </div>
     );
   }
-  return null;
+
+  return (
+    <div className="account-area" aria-label="Account">
+      <span className="history-summary">{user.email ?? user.id}</span>{" "}
+      <button
+        type="button"
+        onClick={() => {
+          // Tear down the account-level coach with A's still-live credentials
+          // BEFORE the auth session is cleared (the gate then unmounts the
+          // Coach, so its own effects can never observe the transition). The
+          // owner is the same instance for the whole account, mounted or not.
+          coach.teardown();
+          void signOutSession();
+          navigate("/login", { replace: true });
+        }}
+      >
+        Sign out
+      </button>
+    </div>
+  );
 }
 
-export function Layout() {
+export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean }) {
   return (
     <CoachingProvider>
       <div className="app-shell">
@@ -69,6 +134,15 @@ export function Layout() {
           </nav>
           <AccountArea />
         </header>
+        {legacyLoopback ? (
+          <div className="validation-warnings" role="status">
+            <p>
+              Development bypass: no account login. Data uses the fixed
+              dev-loopback-bypass namespace in this browser and is not isolated by
+              identity.
+            </p>
+          </div>
+        ) : null}
         <AuthOutageNotice />
         <main className="app-main">
           <Outlet />

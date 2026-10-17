@@ -63,7 +63,7 @@ export async function fetchPublicConfig(
   if (typeof data !== "object" || data === null) {
     throw new MalformedResponseError("data", "must be an object");
   }
-  const { supabaseUrl, supabasePublishableKey } = data as Record<string, unknown>;
+  const { supabaseUrl, supabasePublishableKey, guestSignInEnabled } = data as Record<string, unknown>;
   if (typeof supabaseUrl !== "string" || supabaseUrl === "" || !isSafeSupabaseUrl(supabaseUrl)) {
     throw new MalformedResponseError("supabaseUrl", "must be a non-empty http(s) URL");
   }
@@ -73,5 +73,13 @@ export async function fetchPublicConfig(
   if (isRejectedKey(supabasePublishableKey)) {
     throw new MalformedResponseError("supabasePublishableKey", "must be a publishable key");
   }
-  return { supabaseUrl, supabasePublishableKey };
+  if (guestSignInEnabled !== undefined && typeof guestSignInEnabled !== "boolean") {
+    throw new MalformedResponseError("guestSignInEnabled", "must be a boolean");
+  }
+  return {
+    supabaseUrl,
+    supabasePublishableKey,
+    // Fail closed: only an explicit true advertises guest readiness.
+    guestSignInEnabled: guestSignInEnabled === true,
+  };
 }

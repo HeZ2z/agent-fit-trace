@@ -175,16 +175,40 @@ export async function signInWithPassword(
  * as account eligibility. Public AuthContext hook names planned for the next
  * slice: `signInAsGuest`, `beginGuestUpgrade`, `refreshVerifiedUser`.
  */
+/** Optional official anonymous-signup transport fields. */
+export interface GuestSignInOptions {
+  /**
+   * CAPTCHA token obtained by the host page. GoTrue expects it under
+   * `gotrue_meta_security.captcha_token`; this client does not solve or verify
+   * CAPTCHAs and does not claim that a deployment has them enabled.
+   */
+  captchaToken?: string;
+  /**
+   * Receives the unverified token session immediately after the successful
+   * signup POST and before `GET /auth/v1/user`. Callers persist this candidate
+   * so a transient verification outage can be retried without another guest
+   * POST.
+   */
+  onCandidate?: (session: SupabaseSession) => void;
+}
+
 export async function signInAnonymously(
   config: SupabaseAuthConfig,
   fetchImpl: AuthFetch = fetch,
+  options: GuestSignInOptions = {},
 ): Promise<SupabaseSession> {
+  // Match the official auth-js anonymous transport: `data` is always present
+  // and the CAPTCHA token is optional.
+  const requestBody: Record<string, unknown> = { data: {} };
+  if (typeof options.captchaToken === "string" && options.captchaToken !== "") {
+    requestBody.gotrue_meta_security = { captcha_token: options.captchaToken };
+  }
   let response: Response;
   try {
     response = await fetchImpl(`${config.supabaseUrl}/auth/v1/signup`, {
       method: "POST",
       headers: authHeaders(config),
-      body: JSON.stringify({}),
+      body: JSON.stringify(requestBody),
     });
   } catch {
     throw unavailableError();
@@ -203,6 +227,10 @@ export async function signInAnonymously(
   if (session === null) {
     throw new AuthError("GUEST_SIGN_IN_FAILED", "Guest sign-in returned an invalid session.");
   }
+  // The guest now exists server-side. Hand the unverified credentials to the
+  // caller before verification so a transient `/user` outage cannot orphan
+  // them behind a second signup POST.
+  options.onCandidate?.(session);
   const verified = await fetchAuthUser(config, session.accessToken, fetchImpl);
   return { ...session, user: verified };
 }

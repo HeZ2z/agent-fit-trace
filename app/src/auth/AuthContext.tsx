@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import type { PublicApiConfig } from "@pi-fit-trace/api-contracts";
 import { fetchPublicConfig } from "../api/publicConfig.ts";
+import { markExplicitSignOut } from "./returnTarget.ts";
 import {
   AUTH_STORAGE_KEY,
   fetchAuthUser,
@@ -10,6 +11,7 @@ import {
   loadStoredSession,
   refreshSession,
   serializeSession,
+  signInAnonymously,
   signInWithPassword,
   signOut,
 } from "./supabaseAuth.ts";
@@ -28,9 +30,17 @@ export interface AuthContextValue {
   /** Current access token for the HTTP credential provider (null when signed out). */
   getAccessToken: () => string | null;
   signIn: (email: string, password: string) => Promise<void>;
+  /**
+   * Create (or reuse) a verified anonymous guest session. Single-flight:
+   * concurrent calls share one request. A failed attempt leaves any existing
+   * verified session untouched. Guests are never cloud-eligible.
+   */
+  signInAsGuest: () => Promise<void>;
   signOutSession: () => Promise<void>;
   /** Refresh the session once (used after a 401 on reads; writes never auto-retry). */
   refresh: () => Promise<boolean>;
+  /** Deployment readiness for guest entry (`public-config` explicit true only). */
+  guestSignInEnabled: boolean;
 }
 
 /** localStorage access isolated for tests (jsdom provides it; guard for SSR). */
@@ -39,6 +49,31 @@ function readStoredSession(): SupabaseSession | null {
     return loadStoredSession(globalThis.localStorage?.getItem(AUTH_STORAGE_KEY) ?? null);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Unverified guest credentials are kept separately from the authoritative
+ * session until `GET /auth/v1/user` succeeds. They survive a reload so a
+ * transient verification outage can be retried without creating a second
+ * anonymous user.
+ */
+const GUEST_CANDIDATE_STORAGE_KEY = "pi-fit-trace:auth:v1:guest-candidate";
+
+function readStoredGuestCandidate(): SupabaseSession | null {
+  try {
+    return loadStoredSession(globalThis.localStorage?.getItem(GUEST_CANDIDATE_STORAGE_KEY) ?? null);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredGuestCandidate(session: SupabaseSession | null): void {
+  try {
+    if (session === null) globalThis.localStorage?.removeItem(GUEST_CANDIDATE_STORAGE_KEY);
+    else globalThis.localStorage?.setItem(GUEST_CANDIDATE_STORAGE_KEY, serializeSession(session));
+  } catch {
+    // Storage failures only cost reload recovery; in-memory state still wins.
   }
 }
 
@@ -99,7 +134,9 @@ export function AuthProvider({
   );
   const [configError, setConfigError] = useState<Error | null>(null);
   const [session, setSession] = useState<SupabaseSession | null>(
-    initialSession !== undefined ? initialSession : () => readStoredSession(),
+    initialSession !== undefined
+      ? initialSession
+      : () => readStoredSession() ?? readStoredGuestCandidate(),
   );
   const [authError, setAuthError] = useState<AuthError | null>(null);
   const [bootstrapped, setBootstrapped] = useState(skipBootstrap || publicConfigProp !== undefined);
@@ -115,6 +152,16 @@ export function AuthProvider({
   // pending async auth result is ignored unless its generation is still
   // current. This blocks A-refresh-replacing-B and post-logout restores.
   const generationRef = useRef(0);
+  // Attempt epoch: bumped by every password/guest sign-in. An attempt only
+  // applies its result while it is still the newest attempt, so a slow first
+  // click can never replace a later identity (or a logout).
+  const authAttemptRef = useRef(0);
+  // Single-flight slot for guest creation: repeated clicks share one network
+  // request, so a double click cannot create two anonymous users.
+  const guestInflightRef = useRef<Promise<void> | null>(null);
+  // Guest credentials that exist server-side but are not yet verified. Kept in
+  // a ref for same-mount retries and mirrored to storage for reload retries.
+  const guestCandidateRef = useRef<SupabaseSession | null>(readStoredGuestCandidate());
   const refreshInflightRef = useRef<Promise<boolean> | null>(null);
   // Bounded retry state for transient refresh failures. The timer only ever
   // re-runs the credential refresh; logout, sign-in/account-switch, and
@@ -130,6 +177,11 @@ export function AuthProvider({
   const setSessionSync = useCallback((next: SupabaseSession | null): void => {
     sessionRef.current = next;
     setSession(next);
+  }, []);
+
+  const clearGuestCandidate = useCallback((): void => {
+    guestCandidateRef.current = null;
+    writeStoredGuestCandidate(null);
   }, []);
 
   /** Cancel a pending refresh retry and invalidate its fired task, if any. */
@@ -202,21 +254,38 @@ export function AuthProvider({
     writeStoredSession(session);
   }, [session]);
 
-  // Cross-tab sign-out: another tab clearing the stored session signs this
-  // tab out too (bumping the generation so its pending refreshes are dropped).
+  // Cross-tab identity changes: another tab signing in, switching accounts, or
+  // refreshing replaces the stored session here too. A non-null value is
+  // untrusted until this tab revalidates it against `/auth/v1/user`; the
+  // generation bump drops any refresh/validation still running for the old
+  // identity. Same-tab writes never fire this event.
   useEffect(() => {
     function onStorage(event: StorageEvent): void {
       if (event.key !== AUTH_STORAGE_KEY) return;
-      if (event.newValue !== null) return;
+      if (event.newValue === null) {
+        generationRef.current += 1;
+        refreshInflightRef.current = null;
+        resetRefreshRetry();
+        clearGuestCandidate();
+        setSessionSync(null);
+        setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
+        return;
+      }
+      const next = loadStoredSession(event.newValue);
+      if (next === null) return;
+      const current = sessionRef.current;
+      if (current !== null && sessionIdentity(current) === sessionIdentity(next)) return;
       generationRef.current += 1;
       refreshInflightRef.current = null;
       resetRefreshRetry();
-      setSessionSync(null);
+      clearGuestCandidate();
+      setSessionSync(next);
+      setAuthError(null);
       setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [resetRefreshRetry, setSessionSync, skipAsyncValidation]);
+  }, [clearGuestCandidate, resetRefreshRetry, setSessionSync, skipAsyncValidation]);
 
   // Unmount invalidates in-flight refreshes (generation bump) and clears a
   // pending retry timer, so a late 503/network failure can never schedule
@@ -237,7 +306,12 @@ export function AuthProvider({
   }, []);
 
   const applySessionIfCurrent = useCallback(
-    (generation: number, refreshToken: string | null, next: SupabaseSession | null): boolean => {
+    (
+      generation: number,
+      refreshToken: string | null,
+      next: SupabaseSession | null,
+      validated = true,
+    ): boolean => {
       if (generationRef.current !== generation) return false;
       // Account B must never be overwritten by account A's late refresh: the
       // refresh token still in state must be the one that was refreshed.
@@ -246,55 +320,177 @@ export function AuthProvider({
         if (current !== null && current.refreshToken !== refreshToken) return false;
       }
       setSessionSync(next);
-      setValidatedIdentity(next === null ? null : (sessionIdentity(next) ?? "validated"));
+      setValidatedIdentity(
+        next === null ? null : validated ? (sessionIdentity(next) ?? "validated") : null,
+      );
+      if (next !== null && validated) clearGuestCandidate();
       return true;
     },
-    [setSessionSync],
+    [clearGuestCandidate, setSessionSync],
   );
+
+  const resolveConfig = useCallback(async (): Promise<PublicApiConfig> => {
+    const resolved = publicConfigProp ?? publicConfig ?? (await fetchPublicConfig("/api/v1", fetchImpl));
+    if (publicConfig === null && publicConfigProp === undefined) setPublicConfig(resolved);
+    return resolved;
+  }, [fetchImpl, publicConfig, publicConfigProp]);
 
   const signIn = useCallback(
     async (email: string, password: string): Promise<void> => {
-      const generation = generationRef.current + 1;
-      generationRef.current = generation;
-      refreshInflightRef.current = null;
-      resetRefreshRetry();
-      const resolved = publicConfigProp ?? publicConfig ?? (await fetchPublicConfig("/api/v1", fetchImpl));
-      if (generationRef.current !== generation) {
-        throw new AuthError("SIGN_IN_FAILED", "Sign-in was superseded.");
-      }
-      if (publicConfig === null && publicConfigProp === undefined) setPublicConfig(resolved);
+      const attempt = authAttemptRef.current + 1;
+      authAttemptRef.current = attempt;
+      // Deliberately do NOT bump the session generation yet: if this account
+      // login fails, an already-valid guest session (and its scheduled
+      // refresh) must survive untouched. The epoch advances only when the
+      // verified replacement session is applied.
+      const generation = generationRef.current;
       try {
-        const next = await signInWithPassword(
+        const resolved = await resolveConfig();
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        const tokenSession = await signInWithPassword(
           { supabaseUrl: resolved.supabaseUrl, publishableKey: resolved.supabasePublishableKey },
           email,
           password,
           fetchImpl,
         );
-        if (generationRef.current !== generation) return;
-        setSessionSync(next);
-        setValidatedIdentity(sessionIdentity(next) ?? "validated");
+        // Token responses never classify. Only the verified user endpoint is
+        // authoritative for is_anonymous (account vs guest).
+        const verified = await fetchAuthUser(
+          { supabaseUrl: resolved.supabaseUrl, publishableKey: resolved.supabasePublishableKey },
+          tokenSession.accessToken,
+          fetchImpl,
+        );
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        generationRef.current += 1;
+        refreshInflightRef.current = null;
+        resetRefreshRetry();
+        clearGuestCandidate();
+        const reconciled: SupabaseSession = { ...tokenSession, user: verified };
+        setSessionSync(reconciled);
+        setValidatedIdentity(sessionIdentity(reconciled) ?? "validated");
         setAuthError(null);
       } catch (error) {
-        if (generationRef.current !== generation) return;
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
         const err =
           error instanceof AuthError ? error : new AuthError("SIGN_IN_FAILED", "Sign-in failed.");
         setAuthError(err);
         throw err;
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fetchImpl, publicConfig, publicConfigProp, resetRefreshRetry],
+    [clearGuestCandidate, fetchImpl, resolveConfig, resetRefreshRetry, setSessionSync],
   );
+
+  /**
+   * Guest sign-in. Guarded by the public deployment capability (default off),
+   * shared across concurrent clicks, and applied atomically only while its
+   * attempt + generation are current. A failure leaves any existing session
+   * intact and never creates a second anonymous user on retry after success.
+   */
+  const signInAsGuest = useCallback(async (): Promise<void> => {
+    const current = sessionRef.current;
+    if (current !== null && current.user.isAnonymous === true) return;
+    const candidate = guestCandidateRef.current ?? readStoredGuestCandidate();
+    // A guest entry must never overwrite an existing, different identity. The
+    // only exception is retrying verification of our own unverified candidate.
+    if (current !== null && (candidate === null || current.user.id !== candidate.user.id)) {
+      throw new AuthError("GUEST_SIGN_IN_FAILED", "Sign out before starting a guest session.");
+    }
+    const inflight = guestInflightRef.current;
+    if (inflight !== null) return inflight;
+
+    const attempt = authAttemptRef.current + 1;
+    authAttemptRef.current = attempt;
+    const generation = generationRef.current;
+    let task!: Promise<void>;
+    task = (async () => {
+      try {
+        const resolved = await resolveConfig();
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        if (resolved.guestSignInEnabled !== true) {
+          throw new AuthError(
+            "GUEST_SIGN_IN_DISABLED",
+            "Guest sessions are not enabled on this deployment.",
+          );
+        }
+        const config = {
+          supabaseUrl: resolved.supabaseUrl,
+          publishableKey: resolved.supabasePublishableKey,
+        };
+        const existingCandidate = guestCandidateRef.current ?? readStoredGuestCandidate();
+        let next: SupabaseSession;
+        if (existingCandidate !== null) {
+          // A previous POST already created this guest; retry only the
+          // authoritative verification, never another signup.
+          guestCandidateRef.current = existingCandidate;
+          try {
+            const verified = await fetchAuthUser(config, existingCandidate.accessToken, fetchImpl);
+            next = { ...existingCandidate, user: verified };
+          } catch (error) {
+            if (!isTransientAuthError(error)) {
+              // Expired/revoked candidate cannot be verified; forget it so the
+              // next explicit guest entry can start cleanly.
+              clearGuestCandidate();
+              if (
+                sessionRef.current !== null &&
+                sessionRef.current.user.id === existingCandidate.user.id
+              ) {
+                setSessionSync(null);
+                setValidatedIdentity(null);
+              }
+            }
+            throw error;
+          }
+        } else {
+          next = await signInAnonymously(config, fetchImpl, {
+            onCandidate: (created) => {
+              if (attempt !== authAttemptRef.current || generationRef.current !== generation) {
+                return;
+              }
+              guestCandidateRef.current = created;
+              writeStoredGuestCandidate(created);
+            },
+          });
+        }
+        // Re-check guards before replacing identity. Success ends the
+        // candidate state: the verified session is now authoritative.
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        generationRef.current += 1;
+        refreshInflightRef.current = null;
+        resetRefreshRetry();
+        clearGuestCandidate();
+        setSessionSync(next);
+        setValidatedIdentity(sessionIdentity(next) ?? "validated");
+        setAuthError(null);
+      } catch (error) {
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        const err =
+          error instanceof AuthError
+            ? error
+            : new AuthError("GUEST_SIGN_IN_FAILED", "Guest sign-in failed.");
+        setAuthError(err);
+        throw err;
+      } finally {
+        if (guestInflightRef.current === task) guestInflightRef.current = null;
+      }
+    })();
+    guestInflightRef.current = task;
+    return task;
+  }, [clearGuestCandidate, fetchImpl, resetRefreshRetry, resolveConfig, setSessionSync]);
 
   const signOutSession = useCallback(async (): Promise<void> => {
     const current = sessionRef.current;
     const config = publicConfigProp ?? publicConfig;
-    // Bump the epoch first so every pending restore/refresh/sign-in is
-    // ignored, then clear local state so the previous user's data can never
-    // flash, even if the network sign-out fails.
+    // Bump the epoch first so every pending restore/refresh/sign-in/guest
+    // attempt is ignored, then clear local state so the previous user's data
+    // can never flash, even if the network sign-out fails.
     generationRef.current += 1;
+    authAttemptRef.current += 1;
+    guestInflightRef.current = null;
+    guestCandidateRef.current = null;
+    writeStoredGuestCandidate(null);
     refreshInflightRef.current = null;
     resetRefreshRetry();
+    markExplicitSignOut(window.location.pathname);
     setSessionSync(null);
     setAuthError(null);
     setValidatedIdentity(null);
@@ -320,16 +516,55 @@ export function AuthProvider({
     if (inflight !== null) return inflight;
     const generation = generationRef.current;
     const refreshToken = current.refreshToken;
-    const task = refreshSession(
-      { supabaseUrl: config.supabaseUrl, publishableKey: config.supabasePublishableKey },
-      refreshToken,
-      fetchImpl,
-    ).then(
-      (next) => {
-        // Never clear a newer request's entry: only drop the slot when this
-        // task is still the inflight one.
-        if (refreshInflightRef.current === task) refreshInflightRef.current = null;
-        const applied = applySessionIfCurrent(generation, refreshToken, next);
+    let task!: Promise<boolean>;
+    task = (async (): Promise<boolean> => {
+      try {
+        const next = await refreshSession(
+          { supabaseUrl: config.supabaseUrl, publishableKey: config.supabasePublishableKey },
+          refreshToken,
+          fetchImpl,
+        );
+        // A logout/account switch may have happened while the token grant was
+        // in flight: drop it before spending a verified-user request on a
+        // stale identity.
+        if (generationRef.current !== generation) return false;
+        {
+          const latest = sessionRef.current;
+          if (latest === null || latest.refreshToken !== refreshToken) return false;
+        }
+        // Refresh responses carry an unclassified user: only the verified
+        // `/auth/v1/user` call may set account vs guest. Reuse the fresh
+        // token for that check before releasing the signed-in gate.
+        let verified: SupabaseAuthUser;
+        try {
+          verified = await fetchAuthUser(
+            { supabaseUrl: config.supabaseUrl, publishableKey: config.supabasePublishableKey },
+            next.accessToken,
+            fetchImpl,
+          );
+        } catch (error) {
+          if (generationRef.current !== generation) return false;
+          const latest = sessionRef.current;
+          if (latest !== null && latest.refreshToken !== refreshToken) return false;
+          if (isTransientAuthError(error)) {
+            // The refreshed tokens are usable, but classification is still
+            // unknown. Keep the session unvalidated (fail closed) and let the
+            // bounded credential retry re-run verification.
+            const applied = applySessionIfCurrent(generation, refreshToken, next, false);
+            if (applied) {
+              setAuthError(
+                error instanceof AuthError
+                  ? error
+                  : new AuthError("AUTH_UNAVAILABLE", "The sign-in service is unavailable. Try again.", 503),
+              );
+              scheduleRefreshRetry();
+            }
+            return false;
+          }
+          throw error;
+        }
+        const merged: SupabaseSession = { ...next, user: verified };
+        const applied = applySessionIfCurrent(generation, refreshToken, merged, true);
         if (applied) {
           // Recovery: backoff resets and a cleared AUTH_UNAVAILABLE lets the
           // outage notice disappear. Later business requests resolve the new
@@ -340,9 +575,7 @@ export function AuthProvider({
           );
         }
         return applied;
-      },
-      (error: unknown) => {
-        if (refreshInflightRef.current === task) refreshInflightRef.current = null;
+      } catch (error) {
         // A failed refresh signs out only when nothing superseded it — and
         // never on transient Auth outages: the session is preserved with a
         // recoverable error so the UI can retry instead of logging out.
@@ -365,15 +598,29 @@ export function AuthProvider({
             ? error
             : new AuthError("SESSION_EXPIRED", "Your session expired. Please sign in again.");
         resetRefreshRetry();
+        clearGuestCandidate();
         setAuthError(err);
         setSessionSync(null);
         setValidatedIdentity(null);
         return false;
-      },
-    );
+      } finally {
+        // Never clear a newer request's entry: only drop the slot when this
+        // task is still the inflight one.
+        if (refreshInflightRef.current === task) refreshInflightRef.current = null;
+      }
+    })();
     refreshInflightRef.current = task;
     return task;
-  }, [applySessionIfCurrent, fetchImpl, publicConfig, publicConfigProp, resetRefreshRetry, scheduleRefreshRetry, setSessionSync]);
+  }, [
+    applySessionIfCurrent,
+    clearGuestCandidate,
+    fetchImpl,
+    publicConfig,
+    publicConfigProp,
+    resetRefreshRetry,
+    scheduleRefreshRetry,
+    setSessionSync,
+  ]);
 
   // The retry timer always calls the latest refresh (stable single-flight).
   useEffect(() => {
@@ -420,6 +667,7 @@ export function AuthProvider({
         const reconciled: SupabaseSession = { ...latest, user: verified };
         setSessionSync(reconciled);
         setValidatedIdentity(sessionIdentity(reconciled));
+        clearGuestCandidate();
       } catch (error) {
         if (cancelled || generationRef.current !== generation) return;
         // Transient Auth outages must not log the user out: leave the
@@ -489,6 +737,8 @@ export function AuthProvider({
         ? "signed-out"
         : "signed-in";
 
+  const guestSignInEnabled = effectiveConfig?.guestSignInEnabled === true;
+
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
@@ -500,8 +750,10 @@ export function AuthProvider({
       validatingSession,
       getAccessToken,
       signIn,
+      signInAsGuest,
       signOutSession,
       refresh,
+      guestSignInEnabled,
     }),
     [
       status,
@@ -513,8 +765,10 @@ export function AuthProvider({
       validatingSession,
       getAccessToken,
       signIn,
+      signInAsGuest,
       signOutSession,
       refresh,
+      guestSignInEnabled,
     ],
   );
 

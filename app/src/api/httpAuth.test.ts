@@ -123,7 +123,38 @@ describe("fetchPublicConfig", () => {
     expect(await fetchPublicConfig("/api/v1", ok)).toEqual({
       supabaseUrl: "http://x",
       supabasePublishableKey: "pub",
+      guestSignInEnabled: false,
     });
+
+    const enabled = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            guestSignInEnabled: true,
+          },
+        }),
+      )) as unknown as typeof fetch;
+    expect(await fetchPublicConfig("/api/v1", enabled)).toEqual({
+      supabaseUrl: "http://x",
+      supabasePublishableKey: "pub",
+      guestSignInEnabled: true,
+    });
+
+    const malformedCapability = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            guestSignInEnabled: "yes",
+          },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", malformedCapability)).rejects.toThrow(
+      /guestSignInEnabled/,
+    );
 
     const empty = (async () => new Response(JSON.stringify({ data: {} }))) as unknown as typeof fetch;
     await expect(fetchPublicConfig("/api/v1", empty)).rejects.toThrow(/supabaseUrl/);

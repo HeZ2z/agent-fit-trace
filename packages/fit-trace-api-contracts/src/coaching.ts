@@ -852,10 +852,20 @@ export function parseCoachingRuntimeInfo(value: unknown): CoachingRuntimeInfo {
 }
 
 /** Guard the public bootstrap config (`{ supabaseUrl, supabasePublishableKey }`). */
-export function parsePublicApiConfig(value: unknown): { supabaseUrl: string; supabasePublishableKey: string } {
+export function parsePublicApiConfig(value: unknown): {
+  supabaseUrl: string;
+  supabasePublishableKey: string;
+  guestSignInEnabled?: boolean;
+} {
   if (!isObject(value)) fail("(root)", "must be an object");
+  if (value.guestSignInEnabled !== undefined && typeof value.guestSignInEnabled !== "boolean") {
+    fail("guestSignInEnabled", "must be a boolean");
+  }
   return {
     supabaseUrl: assertNonBlankString(value.supabaseUrl, "supabaseUrl"),
     supabasePublishableKey: assertNonBlankString(value.supabasePublishableKey, "supabasePublishableKey"),
+    ...(value.guestSignInEnabled === undefined
+      ? {}
+      : { guestSignInEnabled: value.guestSignInEnabled }),
   };
 }

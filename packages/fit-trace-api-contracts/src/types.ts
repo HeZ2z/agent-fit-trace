@@ -84,6 +84,13 @@ export interface AuthPrincipal {
 export interface PublicApiConfig {
   supabaseUrl: string;
   supabasePublishableKey: string;
+  /**
+   * Deployment-readiness flag for Supabase anonymous guest sign-in. Defaults
+   * to false and is only true when the server explicitly reports
+   * `FIT_TRACE_GUEST_SIGN_IN=1` (after the guest profile is verified live).
+   * The client must keep guest entry disabled unless this is exactly `true`.
+   */
+  guestSignInEnabled?: boolean;
 }
 
 /** Resource paths for the four endpoints (see status semantics below). */
