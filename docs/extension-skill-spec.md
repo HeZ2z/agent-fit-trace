@@ -1,6 +1,6 @@
 # agent-fit-trace pi Integration Spec
 
-This document describes the pi Extension + Skill integration component. The broader product is a workout tracking and coaching application targeting hosted cloud and local Codex/pi/OpenCode Agent execution. Those execution paths are not yet implemented; this specification retains the original pi MVP design.
+This document describes the pi Extension + Skill integration component. The broader product is a workout tracking and coaching application targeting hosted cloud and local Codex/pi/OpenCode Agent execution. Local pi is implemented; gated local Codex/OpenCode adapters and the hosted cloud slice exist but are disabled unless their capability probes and operator configuration pass. This specification retains the original pi MVP design and is not a claim that the other paths are production-ready.
 
 ## 1. Goal
 

@@ -6,9 +6,9 @@
 
 ## 状态
 
-当前已实现 Web App、确定性共享核心、本地与认证 HTTP 数据访问、包含 Extension 工具和 `training-coach` Skill 的 pi 集成，以及本地、由启动器开关控制的教练流程：`agent-fit-trace start` 启动器在同一源上提供 App 与回环教练服务器，App 的 Coach 界面（仅在该运行时标志存在时显示）驱动会话、流式运行、取消/重连，以及带版本、绑定账户的恢复。教练通过用户本地的 pi CLI 运行；`piAvailable: false` 会在界面中明确提示，而不是笼统的失败。
+当前已实现 Web App、确定性共享核心、本地与认证 HTTP 数据访问、包含 Extension 工具和 `training-coach` Skill 的 pi 集成，以及完整的教练流程：`agent-fit-trace start` 启动器在同一源上提供 App 与回环教练服务器，认证 HTTP 部署也会显示 Coach 界面。由账户级 owner 统一驱动会话、流式运行、取消/重连、后端选择，以及带版本、绑定账户的恢复。本地 pi 仍是默认且兼容旧客户端的路径；`piAvailable: false` 会在界面中明确提示，而不是笼统的失败。本地运行会写入应用自有 journal，使保留的 run、事件和幂等记录在启动器重启后仍可恢复；若上一进程退出时仍有 active run，会标记为执行状态未确认，而不是静默重跑。
 
-计划支持的 Agent 能力：无需本地安装 Agent 的托管云端教练，以及通过用户已有的 Codex 或 OpenCode CLI 进行的本地教练。这些执行路径尚未实现。
+实验性的 Agent 路径已经实现，但都由 fail-closed 门控：本地 OpenCode 只有在已安装 CLI 提供正向的工具隔离证据时才可用；Codex 适配器在无法证明内置工具隔离前保持不可用。托管云端教练已有服务端路由、数据库迁移、outbox worker、有限配额预留和有界 provider 调用循环，但仅在正式账户、已配置配额、provider 与显式运维配置齐备时启用；本仓库尚未部署，也未用真实 provider 验证。
 
 ## 工作方式
 

@@ -1,12 +1,13 @@
 # ADR 0001: Agent execution backends, capability discovery, and cloud provider shape
 
-- **Status:** Accepted. Durable hosted cloud coaching is implemented server-side;
-  Codex/OpenCode adapters and real-provider deployment QA are not.
+- **Status:** Accepted. Local pi, gated Codex/OpenCode adapters, the hosted
+  cloud code path, backend-aware App selection, and the durable local journal
+  are implemented. Real CLI/provider/deployment QA is not complete.
 - **Date:** 2026-10-17
 - **Scope:** issue #7. This ADR records the shape that is implemented now and the
   constraints any later adapter must satisfy. It is not a claim that Codex or
-  OpenCode local coaching is shipped, or that the hosted path has passed real
-  Supabase/OpenRouter QA.
+  OpenCode local coaching is safe on every install, or that the hosted path has
+  passed real Supabase/OpenRouter QA.
 - **Related:** [`../coaching-api.md`](../coaching-api.md),
   [`../deployment.md`](../deployment.md), [`../local-launcher.md`](../local-launcher.md).
 
@@ -40,9 +41,9 @@ backend/runtime/location matrix:
 | `backendId` | `runtimeId` | `executionLocation` | State in this slice |
 | --- | --- | --- | --- |
 | `local-pi` | `pi` | `local` | Implemented, legacy default |
-| `local-codex` | `codex` | `local` | Declared, never advertised available |
-| `local-opencode` | `opencode` | `local` | Declared, never advertised available |
-| `cloud-default` | `hosted-sdk` | `cloud` | Server route + worker implemented; App discovery remains off pending real QA |
+| `local-codex` | `codex` | `local` | Adapter + fail-closed capability; unavailable until built-in isolation is proven |
+| `local-opencode` | `opencode` | `local` | Adapter + isolation probe; available only with positive evidence |
+| `cloud-default` | `hosted-sdk` | `cloud` | Server routes + worker + App selector; off by default; real deployment QA pending |
 
 `hosted-sdk` names the hosted execution slot, not a vendor or model. Vendor,
 model, region, and worker configuration are server-side deployment decisions;
@@ -82,17 +83,18 @@ discovery payload. A local backend's data destination is `cli-provider`,
 because the CLI sends prompts and
 snapshot-derived context to its configured model provider even though execution
 is local. `nativeContinuation` and `cancelConfirmation: "process-exit"` are
-advertised only for an adapter that actually implements them. Unimplemented
-engines report `nativeContinuation: false` and `cancelConfirmation:
-"unsupported"` even while their backend id exists.
+advertised only for an adapter that actually implements them. Adapters that
+have not proven their native handle or isolation semantics report
+`nativeContinuation: false` and `cancelConfirmation: "unsupported"` even while
+their backend id exists.
 
 Every known backend appears in the response. An unavailable backend MUST carry a
 server-derived reason; an available backend MUST NOT carry one. The reason codes
 distinguish `cli-not-installed`, `cli-auth-required`,
 `cli-version-unsupported`, `adapter-not-implemented`, `provider-unconfigured`,
 `identity-unverified`, `guest-cloud-forbidden`, `quota-not-configured`,
-`quota-exhausted`, and `policy-not-configured`. A planned adapter is never
-advertised available merely because its backend id exists.
+`quota-exhausted`, and `policy-not-configured`. An adapter is never advertised
+available merely because its backend id exists.
 
 ### 4. Cloud qualification fails closed on the server
 
@@ -187,34 +189,36 @@ constraints, not implementation details.
   not restrict filesystem access. The adapter therefore claims bounded
   transport and flag isolation only.
 
-**Codex (planned, not available)**
+**Codex (adapter implemented; fail-closed)**
 
-- Documented non-interactive surface: `codex exec` with `--json` JSONL events,
-  default read-only sandbox, and `codex exec resume <session-id>`.
-- A coached adapter must pin `--sandbox read-only` and an approval policy that
-  cannot escalate (for example `--ask-for-approval never`) and must not use
-  `--full-auto`, `workspace-write`, or `danger-full-access`. It must verify
-  that the exposed tool surface is actually restricted before advertising
-  availability. `--json` event shapes and cancel semantics must be verified
-  against the installed version in a spike; a similar flag name is not proof of
-  compatible behavior.
+- The adapter targets the documented `codex exec` app-server surface with
+  `--json` JSONL events, a read-only sandbox, and a non-escalating approval
+  policy; `codex exec resume` is used only for a same-backend/session handle.
+- `dynamicTools` only adds client tools; it does not prove that built-in
+  shell/file/network/MCP/hook/plugin tools are excluded. The adapter therefore
+  stays unavailable with `builtin-isolation-unproven` until an exact, verifiable
+  builtin-exclusion mechanism is found. A similar flag name is not proof.
+- Real CLI version/event/cancel QA and positive isolation evidence are still
+  outstanding; no install is advertised as safe merely because the binary exists.
 
-**OpenCode (planned, not available)**
+**OpenCode (adapter implemented; isolation-probed)**
 
-- Documented non-interactive surface: `opencode run --format json`, or a
-  loopback `opencode serve` HTTP server with `OPENCODE_SERVER_PASSWORD` basic
-  auth. Permission configuration is deny-by-default in the agent definition
-  (`--permissions`/`--tools`: anything omitted is denied).
-- `--auto` auto-approves permissions that are not explicitly denied and must
-  not be used for coached runs. Headless JSON permission prompts are a known
-  risk area and must be verified; if a permission request cannot be surfaced
-  and denied safely, the adapter stays unavailable.
-- Tool names and permission events are not assumed to match pi or Codex. The
-  adapter needs its own spike and contract tests before `local-opencode` can
-  be advertised.
+- The adapter targets the documented non-interactive `opencode run` surface and
+  generates a temporary isolated config/data root with a wildcard-deny,
+  exact-domain-tool-allow permission surface. User plugins, MCP servers, hooks,
+  and context files are not loaded.
+- `--auto` is used only alongside that explicit wildcard-deny definition: it
+  suppresses interactive prompts for the two allowlisted custom tools, not as a
+  blanket approval. The isolation probe rejects any `ask` rule, and a real CLI
+  run still has to verify the deny is enforced before availability.
+- Availability requires positive `isolationVerified` evidence from the bounded
+  probe (or an explicitly supplied fixture/operator proof). Without that
+  evidence the backend reports `plugin-isolation-unproven` and stays unavailable.
+- Real CLI version/permission/cancel/native-continuation QA is still outstanding.
 
-No adapter is added by this slice. Until a real CLI spike and QA pass, the
-backend stays `adapter-not-implemented`.
+Both adapters are registered by the launcher, but registration is not
+availability: the capability probe must pass every time, and no supported
+runtime is advertised merely because its backend id exists.
 
 ### 7. Hosted cloud shape: OpenRouter over native `fetch`
 
@@ -316,12 +320,15 @@ generation-fenced. Expired leases with a fetch marker become
 status; the shared terminal event uses `failed` with an explicit reason because
 the shared event contract has no `unconfirmed` terminal status.
 
-### 8. What this slice does not implement
+### 8. What is still unverified or not implemented
 
-- No Codex or OpenCode process adapter, probe, or CLI QA.
-- No App cloud selector or cloud resume UI; the existing launcher-gated Coach UI
-  is unchanged. Cloud routes are server-side and are not advertised as
-  available by the local launcher's discovery.
+- Real Codex/OpenCode CLI QA is outstanding. Codex needs a verifiable
+  builtin-tool exclusion mechanism before it can be available; OpenCode needs
+  positive wildcard-deny/plugin-only isolation evidence from the installed
+  version. Neither is advertised merely because the binary exists.
+- The App selector, cloud replay, and restart-safe local journal are
+  implemented, but real-browser acceptance (including the cloud tail across
+  proxies) is still outstanding. Cloud remains off by default.
 - No hosted deployment and no real Supabase migration application or
   OpenRouter call in this checkpoint. The durable schema, fake-repository and
   real-RPC-adapter worker tests, and opt-in integration tests exist, but
@@ -332,6 +339,10 @@ the shared event contract has no `unconfirmed` terminal status.
 - No provider cancellation proof. OpenRouter may continue billing after the
   HTTP read aborts; the implementation therefore reports unconfirmed states
   rather than claiming a clean stop.
+- A local run that was active when the launcher process died is marked
+  execution-unconfirmed and keeps its capacity slot. There is no HTTP
+  recovery/acknowledgement action yet; clearing it is an operator action on the
+  journal after confirming no child process is running.
 
 ## Evidence
 
@@ -357,7 +368,7 @@ statements below are documentation-only and are not runtime QA.
 **Positive**
 
 - A request cannot drift from local pi to paid cloud by omitting a field.
-- Discovery can describe planned engines truthfully without pretending they
+- Discovery can describe gated engines truthfully without pretending they
   work, and the registry refuses mismatched or duplicate wiring at startup.
 - Cloud eligibility is fail-closed at the per-request principal, the
   authoritative `auth.users.is_anonymous` row, and the database quota RPC, with
@@ -368,11 +379,12 @@ statements below are documentation-only and are not runtime QA.
 
 **Negative / open work**
 
-- Discovery is currently more informative than the product: only `local-pi`
-  is exposed through the App, and the App does not yet render backend selection
-  or reasons.
-- Codex/OpenCode behavior, permissions, cancel proof, and native continuation
-  still need real CLI spikes and QA before those backends are available.
+- The App selector and cloud resume UI are implemented, but real-browser
+  acceptance remains outstanding; cloud availability is still server-derived and
+  off by default.
+- Codex/OpenCode behavior, permissions, cancel proof, native continuation, and
+  positive isolation evidence still need real CLI QA before those backends are
+  advertised as safe on an arbitrary install.
 - Cloud cancellation and exactly-once acceptance remain unproven with
   OpenRouter. The adapter exposes unconfirmed states and does not release budget
   on an unproven stop. Real-provider QA must verify these states against live
@@ -380,7 +392,7 @@ statements below are documentation-only and are not runtime QA.
 - The migration has not been applied to the long-running local Supabase stack;
   that must be coordinated rather than resetting the stack. Opt-in integration
   tests require a migrated isolated local stack.
-- The launcher's pi-missing path keeps its legacy fail-clear behavior so
-  existing callers still receive `PI_UNAVAILABLE`; discovery separately reports
-  `local-pi` unavailable. A later UX slice should align submission with
-  discovery without changing the terminal error contract.
+- The launcher still returns the legacy `PI_UNAVAILABLE` error for callers that
+  omit a backend when pi is absent; discovery and the App separately offer other
+  available backends. A later cleanup can retire that legacy error without
+  changing the terminal contract.

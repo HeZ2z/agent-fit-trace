@@ -4,7 +4,7 @@
 
 Complete the minimal loop of "workout log import → workout analysis → next-session recommendation". The App handles collection and display; the shared deterministic core validates records, computes trends, and generates plan drafts. Agents use domain tools to interpret results and explain recommendations.
 
-The product targets hosted cloud coaching without local Agent installation and local coaching through Codex, pi, or OpenCode CLI. These execution paths are planned. The existing pi Extension + Skill is one integration component; the implementation order below records the original pi MVP sequence.
+The product targets hosted cloud coaching without local Agent installation and local coaching through Codex, pi, or OpenCode CLI. Local pi is implemented. Experimental local Codex/OpenCode adapters and the hosted cloud path are implemented behind fail-closed capability probes: Codex stays unavailable until built-in tool isolation can be proven, OpenCode only advertises availability with positive isolation evidence, and cloud requires a formal account, configured quota/provider, deployed migrations, and a separate worker. Real CLI/provider/deployment QA is still outstanding. The existing pi Extension + Skill is one integration component; the implementation order below records the original pi MVP sequence.
 
 ## Phase 1 scope
 
