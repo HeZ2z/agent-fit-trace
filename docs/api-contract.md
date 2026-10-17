@@ -38,17 +38,33 @@ export * from "./contractSuite.ts";
 
 ## 2. Client surface
 
-`FitTraceClient` (`src/types.ts`) is the four domain operations expressed as
-async calls. Implementations may hit a real HTTP server or an in-memory
-handler; either way they resolve with unwrapped domain values (the envelope is
-stripped by the transport, not by callers):
+`FitTraceClient` (`src/types.ts`) is the workout/analysis/plan surface plus
+the imported-artifact surface (`FitTraceImportClient`). Implementations may
+hit a real HTTP server or an in-memory handler; either way they resolve with
+unwrapped domain values (the envelope is stripped by the transport, not by
+callers):
 
 ```ts
-export interface FitTraceClient {
+export interface FitTraceClient extends FitTraceImportClient {
   listWorkouts(): Promise<WorkoutRecord[]>;
   createWorkout(record: WorkoutRecord): Promise<CreateWorkoutResult>;
   analyze(filter?: AnalysisFilter): Promise<AnalysisResult>;
   createPlanDraft(input?: PlanConstraints): Promise<PlanDraft>;
+}
+
+export interface FitTraceImportClient {
+  saveImportedArtifact<K extends ImportedArtifactKind>(
+    input: ImportArtifactInput<K>,
+  ): Promise<SaveImportedArtifactResult<K>>;
+  listImportedArtifacts(query?: ListImportedArtifactsQuery): Promise<ImportedArtifactPage>;
+  getImportedArtifact(id: string): Promise<ImportedArtifact>;
+  getArtifactSelection(kind: ImportedArtifactKind): Promise<ArtifactSelection>;
+  setArtifactSelection(
+    kind: ImportedArtifactKind,
+    artifactId: string | null,
+  ): Promise<ArtifactSelection>;
+  getPlanAdoption(): Promise<PlanAdoption | null>;
+  setPlanAdoption(input: PlanAdoptionInput | null): Promise<PlanAdoption | null>;
 }
 ```
 
@@ -103,6 +119,9 @@ export const API_ENDPOINTS = {
   workouts: "/workouts",
   analysis: "/analysis",
   planDrafts: "/plans/drafts",
+  imports: "/imports",
+  importSelections: "/import-selections",
+  planAdoption: "/plan-adoption",
   publicConfig: "/public-config",
 } as const;
 ```
@@ -115,6 +134,11 @@ Combined with the `/api/v1` base, the endpoints are:
 | `POST` | `/api/v1/workouts` | body `{ record }` | `201` new record, `200` identical retry (`duplicate`) |
 | `GET` | `/api/v1/analysis` | query `from` / `to` / `exercises` (comma-separated) | `200` |
 | `POST` | `/api/v1/plans/drafts` | optional `PlanConstraints` body | `200` |
+| `POST` | `/api/v1/imports` | body `{ kind, payload_schema_version, payload, source_filename? }` | `201` new snapshot, `200` identical duplicate |
+| `GET` | `/api/v1/imports` | query `kind` / `limit` / `cursor` | `200` metadata page (`items`, `next_cursor`) |
+| `GET` | `/api/v1/imports/:id` | — | `200` full snapshot |
+| `GET` / `PUT` | `/api/v1/import-selections/:kind` | PUT body `{ artifact_id: string \| null }` | `200` `{ artifact_id }` |
+| `GET` / `PUT` | `/api/v1/plan-adoption` | PUT body `PlanAdoptionInput \| null` | `200` adoption or `null` |
 | `GET` | `/api/v1/public-config` | — (public, no token) | `200` Supabase URL + publishable key |
 
 Status semantics (`HTTP_STATUS`, `src/types.ts`):
@@ -137,12 +161,27 @@ export const HTTP_STATUS = {
 - `GET /workouts` → `200` list.
 - `GET /analysis` (optional `from`/`to`/`exercises` query) → `200`.
 - `POST /plans/drafts` (optional `PlanConstraints` body) → `200`.
-- Authenticated deployments verify `Authorization: Bearer <token>` on all
-  four workout/analysis/plan endpoints and reject missing/invalid tokens with
-  `401 UNAUTHENTICATED` plus a `WWW-Authenticate: Bearer` header;
-  out-of-scope callers get `403 FORBIDDEN`. `GET /public-config` stays public
-  so the app can bootstrap login. Missing server configuration fails closed
-  (`500 API_ERROR`) — production never falls back to memory.
+- `POST /imports` → `201` for a new immutable snapshot, `200` for an
+  identical canonical payload (`duplicate: true`), `400` for invalid input,
+  `409` for the same derived id with different content. The server derives
+  kind/version/id/digest; callers never send an owner or choose an id.
+- `GET /imports` → `200` metadata-only keyset page, newest first. Payloads
+  are never included; `limit` defaults to 20 and is capped at 100.
+- `GET /imports/:id` → `200` full snapshot; a missing id and another owner's
+  id are both `404 NOT_FOUND`.
+- `GET|PUT /import-selections/:kind` → `200 { artifact_id: string | null }`.
+  A null value clears the per-owner, per-kind selection. Selecting a plan
+  never adopts it.
+- `GET|PUT /plan-adoption` → `200` `null` or
+  `{ artifact_id, confirmed_digest, confirmed_at }`. `PUT null` revokes only
+  the adoption metadata; it never deletes the plan snapshot.
+- Authenticated deployments verify `Authorization: Bearer <token>` on every
+  data endpoint (workouts, analysis, plans, imports, selections, adoption)
+  and reject missing/invalid tokens with `401 UNAUTHENTICATED` plus a
+  `WWW-Authenticate: Bearer` header; out-of-scope callers get `403 FORBIDDEN`.
+  `GET /public-config` stays public so the app can bootstrap login. Missing
+  server configuration fails closed (`500 API_ERROR`) — production never
+  falls back to memory.
 - Any unexpected failure → `500` with an `ErrorEnvelope`.
 
 Optional plan constraints are validated server-side — `goal` is a string,
@@ -170,6 +209,7 @@ export const API_ERROR_CODES = {
   STORAGE_UNAVAILABLE: "STORAGE_UNAVAILABLE",
   UNAUTHENTICATED: "UNAUTHENTICATED",
   FORBIDDEN: "FORBIDDEN",
+  NOT_FOUND: "NOT_FOUND",
   NETWORK_ERROR: "NETWORK_ERROR",
   MALFORMED_RESPONSE: "MALFORMED_RESPONSE",
   API_ERROR: "API_ERROR",
@@ -178,7 +218,9 @@ export const API_ERROR_CODES = {
 
 - `VALIDATION_ERROR` — invalid record or filter (including an inverted date
   range, a missing `{ record }` field, or unparseable JSON). Maps to `400`.
-  Oversized request bodies (over 64 KiB) are also `400`.
+  Oversized general request bodies (over the 64 KiB HTTP cap) are also `400`;
+  import requests have the stricter shared 60 KiB normalized bound described
+  in section 9.
 - `CONFLICT` — the id already exists with different content. Maps to `409`.
 - `CORRUPT_STORE` / `STORAGE_UNAVAILABLE` — store-layer failures; surfaced with
   their codes and mapped to `500` by the memory handler's default branch.
@@ -188,6 +230,9 @@ export const API_ERROR_CODES = {
 - `UNAUTHENTICATED` — missing/invalid/expired bearer token on an authenticated
   deployment. Maps to `401` with a `WWW-Authenticate: Bearer` header.
 - `FORBIDDEN` — authenticated but out-of-scope caller. Maps to `403`.
+- `NOT_FOUND` — a missing import snapshot or adoption target. Maps to `404`;
+  another owner's id is reported identically, so ids do not reveal other
+  accounts' snapshots.
 - `NETWORK_ERROR` — reserved for the fetch transport itself failing (offline,
   DNS, connection reset); see `NetworkError` below.
 - `MALFORMED_RESPONSE` — a response that cannot be trusted; carried by
@@ -359,18 +404,86 @@ runFitTraceClientContractSuite("http", test, () => makeClient());
 
 `createMemoryHandler` takes any `FitTraceClient` and returns a
 `(input: string, init?: HandlerInit) => Promise<HandlerResponse>` route
-function over the four endpoints. It types the request/response structurally
+function over the workout/analysis/plan endpoints it implements. It types the request/response structurally
 (`HandlerInit`/`HandlerResponse`) rather than relying on `Request`/`Response`
 globals, so it runs identically under root `tsc` and jsdom. `MemoryHandlerOptions.fetchImpl`
 is reserved for a future fetch-backed transport and unused by the memory
 routes.
 
-## 9. Non-goals
+## 9. Imported artifacts and restoration receipts
+
+The import surface stores immutable AnalysisResult/PlanDraft **snapshots**
+that were saved from files. They are external evidence: the app and API
+validate their shape and identity but never re-run `analyzeProgress` or
+`generateNextPlan` over them, and they never modify the current computed
+analysis or plan. The deterministic core remains the only place current
+calculations are produced.
+
+### 9.1 Bounds and identity
+
+The shared contract (`src/imports.ts`) enforces these limits before any write:
+
+| Limit | Value |
+| --- | --- |
+| Backup file bytes | 1 MiB (`IMPORT_MAX_FILE_BYTES`) |
+| Records per backup file | 1000 |
+| Normalized single-record/import request | 60 KiB (`IMPORT_MAX_REQUEST_BYTES`) |
+| JSON depth | 16 |
+| JSON object key length | 256 characters |
+| String length | 4096 characters |
+| Workout/source id length | 256 characters |
+| Exercises per workout | 100 |
+| Sets per exercise | 100 |
+| Collection length | 1000 entries |
+| Source filename | 255 characters after path normalization |
+| Import list limit | default 20, maximum 100 |
+
+The file is a container: workout restore submits one normalized record at a
+time, so each request uses the 60 KiB request bound while the whole backup
+uses the 1 MiB file bound. An imported analysis/plan body is likewise bounded
+as one normalized request.
+
+Identity is content-addressed:
+`id = "<kind>:v1:<sha256(stableStringify(payload))>"`. Saving is idempotent:
+an identical canonical payload is a duplicate no-op that returns the original
+`created_at` and `source_filename`; the same id with different content is
+`409 CONFLICT`. Snapshots are append-only and are **never updated or deleted**
+through the API. A list read returns metadata only and a full read recomputes
+the canonical digest in TypeScript and rejects a mismatch (or forged source
+refs) as `MALFORMED_RESPONSE` / `CORRUPT_STORE` rather than trusting the
+stored digest.
+
+### 9.2 Selections and adoption are separate
+
+- A per-owner, per-kind **selection** records only what the UI is currently
+  viewing. Saving a snapshot never selects it; selecting a plan never adopts
+  it.
+- **Plan adoption** is a separate explicit confirmation carrying the
+  `confirmed_digest` the user saw. It is plan-only, may be revoked by
+  `PUT null`, and revocation removes only adoption metadata — never the
+  immutable plan snapshot.
+- Each owner has independent selections and adoption state. No endpoint
+  exposes another owner's rows; missing and other-owner ids both return
+  `404 NOT_FOUND`.
+
+### 9.3 Workout backup restoration is not atomic
+
+`POST /workouts` is the only workout write path; there is no batch endpoint
+and no rollback. The app restores a backup sequentially (concurrency 1),
+reports a receipt item for every original file index, and keeps append-only
+history. A failure can therefore leave earlier records committed. Items are
+`created`, `duplicate`, `conflict`, `failed`, `unknown`, or `not_attempted`;
+an ambiguous write is read back and reported truthfully, never fabricated as
+`created`. Re-importing the same file is safe because identical ids are
+duplicates and a conflicting id stops the batch without overwriting the
+original. Stopping/cancelling only prevents records not yet submitted.
+
+## 10. Non-goals
 
 This contract covers shapes only. Runtime mode selection and development
 modes are covered in later work, not here.
 
-### 9.1 Authenticated deployments
+### 10.1 Authenticated deployments
 
 `AuthPrincipal` (`src/types.ts`) is the stable caller identity the HTTP
 boundary injects after verifying the bearer token (`id` = provider `sub`,
@@ -381,7 +494,7 @@ workout stores receive only resolved principals and validated records.
 `PublicApiConfig` is the public bootstrap shape served by
 `GET /public-config` (Supabase URL + publishable key only — never secrets).
 
-### 9.2 Loopback development API
+### 10.2 Loopback development API
 
 `server/devApiServer.ts` is a loopback-bound `node:http` development API for
 exercising the contract over real HTTP. It reuses `createMemoryHandler` over

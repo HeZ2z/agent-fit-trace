@@ -1,10 +1,7 @@
 import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
-import {
-  GuestAccountControls,
-  GuestUpgradePasswordNotice,
-} from "../auth/GuestAccountControls.tsx";
+import { GuestAccountControls } from "../auth/GuestAccountControls.tsx";
 import { isCoachVisible } from "../api/runtimeMode.ts";
 import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { useCoach } from "../coaching/useCoach.ts";
@@ -33,15 +30,19 @@ function AccountArea() {
 
   // `isAnonymous === true` is the only verified guest signal. `false` is a
   // verified account and `undefined` is not classified yet, so neither may be
-  // presented as a guest. The reusable component owns the upgrade/switch
-  // form; the header only keeps a compact badge and the safe sign-out.
+  // presented as a guest. Account operations live on /me; the header keeps
+  // only a badge/link and the safe sign-out.
   if (user.isAnonymous === true) {
     return <GuestAccountControls compact />;
   }
 
   return (
     <div className="account-area" aria-label="Account">
+      <span className="account-badge">Account</span>
       <span className="history-summary">{user.email ?? user.id}</span>{" "}
+      <Link className="account-link" to="/me">
+        Account details
+      </Link>
       <button
         type="button"
         onClick={() => {
@@ -93,7 +94,6 @@ export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean })
           </div>
         ) : null}
         <AuthOutageNotice />
-        <GuestUpgradePasswordNotice />
         <main className="app-main">
           <Outlet />
         </main>

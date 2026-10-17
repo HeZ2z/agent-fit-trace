@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IMPORT_MAX_FILENAME_LENGTH } from "@pi-fit-trace/api-contracts";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { FitTraceClient, PublicApiConfig } from "@pi-fit-trace/api-contracts";
 import { analyzeProgress, generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import { readTextFile } from "../api/fileTransport.ts";
@@ -20,6 +20,18 @@ vi.mock("../api/fileTransport.ts", () => ({
   downloadJson: vi.fn(),
   readTextFile: vi.fn(),
 }));
+
+// The shared guest control calls the account-level coach teardown before auth
+// sign-out. The Me test doubles only that one hook; the rest of the module
+// stays real for type and provider parity.
+const { coachTeardown } = vi.hoisted(() => ({ coachTeardown: vi.fn() }));
+vi.mock("../coaching/useCoach.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../coaching/useCoach.ts")>();
+  return {
+    ...actual,
+    useCoach: () => ({ teardown: coachTeardown }) as never,
+  };
+});
 
 const readTextFileMock = vi.mocked(readTextFile);
 
@@ -41,9 +53,22 @@ const sessionA: SupabaseSession = {
   user: { id: "user-a", email: "a@example.com" },
 };
 
+const guestSession: SupabaseSession = {
+  accessToken: "token-guest",
+  refreshToken: "refresh-guest",
+  expiresAt: 0,
+  user: { id: "guest-me", isAnonymous: true },
+};
+
+const guestConfig: PublicApiConfig = {
+  supabaseUrl: "http://auth.invalid",
+  supabasePublishableKey: "pub",
+  guestUpgradeEnabled: true,
+};
+
 /** Test-only controls for account transitions and explicit history refreshes. */
 function TestControls() {
-  const { signOutSession } = useAuth();
+  const { signOutSession, beginGuestUpgrade, completeGuestUpgrade } = useAuth();
   const { reload } = useWorkouts();
   return (
     <div>
@@ -53,24 +78,50 @@ function TestControls() {
       <button type="button" onClick={reload}>
         test reload history
       </button>
+      <button type="button" onClick={() => void beginGuestUpgrade("invite@example.com")}>
+        test begin upgrade
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void completeGuestUpgrade({
+            accessToken: "callback-access",
+            refreshToken: "callback-refresh",
+            type: "email_change",
+            expiresAt: 0,
+          })
+        }
+      >
+        test complete upgrade
+      </button>
     </div>
   );
 }
 
 function renderMe(
   source: MemoryStorageAdapter | FitTraceClient = new MemoryStorageAdapter(),
-  options: { initialSession?: SupabaseSession | null } = {},
+  options: {
+    initialSession?: SupabaseSession | null;
+    publicConfig?: PublicApiConfig;
+    fetchImpl?: typeof fetch;
+  } = {},
 ) {
   const client = source instanceof MemoryStorageAdapter ? clientFor(source) : source;
   return render(
     <MemoryRouter initialEntries={["/me"]}>
-      <AuthProvider skipBootstrap initialSession={options.initialSession ?? null}>
+      <AuthProvider
+        skipBootstrap
+        initialSession={options.initialSession ?? null}
+        fetchImpl={options.fetchImpl}
+        {...(options.publicConfig === undefined ? {} : { publicConfig: options.publicConfig })}
+      >
         <WorkoutStoreProvider client={client}>
           <TestControls />
           <Routes>
             <Route path="/me" element={<MeScreen />} />
             <Route path="/analysis" element={<div data-testid="analysis-target" />} />
             <Route path="/plan" element={<div data-testid="plan-target" />} />
+            <Route path="/login" element={<div data-testid="login-target" />} />
           </Routes>
         </WorkoutStoreProvider>
       </AuthProvider>
@@ -438,6 +489,88 @@ describe("MeScreen", () => {
     });
     expect(await client.getArtifactSelection("plan")).toEqual({ artifact_id: null });
     expect(await client.getPlanAdoption()).toBeNull();
+  });
+
+  it("offers the full guest upgrade entry and account switch on Me", async () => {
+    renderMe(new MemoryStorageAdapter(), {
+      initialSession: guestSession,
+      publicConfig: guestConfig,
+    });
+    await screen.findByText(/signed in as guest-me \(guest identity\)/i);
+
+    // The reusable full component is the single owner of these operations.
+    await userEvent.click(screen.getByText(/upgrade to an account/i));
+    expect(screen.getByText(/upgrade to an account/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/invited email/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /sign in to an existing account/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign out guest/i })).toBeInTheDocument();
+  });
+
+  it("keeps password setup visible for a verified same-UID account on Me", async () => {
+    let updateCalls = 0;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") {
+        updateCalls += 1;
+        return new Response("{}", { status: 200 });
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({
+            id: "guest-me",
+            email: "invite@example.com",
+            is_anonymous: false,
+            email_confirmed_at: "2026-10-17T00:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    renderMe(new MemoryStorageAdapter(), {
+      initialSession: guestSession,
+      publicConfig: guestConfig,
+      fetchImpl,
+    });
+    await screen.findByText(/signed in as guest-me \(guest identity\)/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /test begin upgrade/i }));
+    await waitFor(() => expect(updateCalls).toBe(1));
+    // Pending verification is not success: no password setup yet.
+    expect(screen.queryByRole("link", { name: /set a password/i })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /test complete upgrade/i }));
+
+    const link = await screen.findByRole("link", { name: /set a password/i });
+    expect(link).toHaveAttribute("href", "/reset-password");
+    // The verified callback promoted the same UID in place: this is a formal
+    // account now, and the notice survives outside the guest-only controls.
+    expect(screen.getByTestId("me-account-identity")).toHaveTextContent(
+      /signed in as invite@example\.com/i,
+    );
+    expect(screen.getByTestId("me-account-identity")).not.toHaveTextContent(/guest identity/i);
+    expect(
+      screen.queryByRole("button", { name: /sign out guest/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("signs the same guest identity out through the shared control after teardown", async () => {
+    renderMe(new MemoryStorageAdapter(), { initialSession: guestSession });
+    await screen.findByText(/signed in as guest-me \(guest identity\)/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /sign out guest/i }));
+    expect(
+      screen.getByText(/may be lost and cannot be guaranteed recoverable/i),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /sign out and lose guest access/i }),
+    );
+
+    expect(coachTeardown).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("login-target")).toBeInTheDocument();
   });
 
   it("combines preview and server warnings without dropping either", async () => {

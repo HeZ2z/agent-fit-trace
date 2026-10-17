@@ -26,6 +26,10 @@ import type {
   WorkoutImportReceipt,
 } from "../api/workoutImport.ts";
 import { useAuth } from "../auth/AuthContext.tsx";
+import {
+  GuestAccountControls,
+  GuestUpgradePasswordNotice,
+} from "../auth/GuestAccountControls.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 
 /** Deduplicate only exact repeats; preview and server warnings both survive. */
@@ -610,10 +614,8 @@ export function MeScreen() {
             different account never merges it.
           </p>
         )}
-        <p className="me-help">
-          Account details and the sign-out control stay in the header account area so the
-          coach is always torn down by that one path.
-        </p>
+        <GuestUpgradePasswordNotice />
+        {user?.isAnonymous === true && <GuestAccountControls />}
         <p className="me-help">{scope}</p>
       </section>
 

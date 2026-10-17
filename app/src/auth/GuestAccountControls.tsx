@@ -121,21 +121,50 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
     navigate("/login", { replace: true });
   }
 
+  if (compact) {
+    // Header form: a badge plus one link to the account page. The full
+    // upgrade/switch forms exist only once, on /me, so they cannot diverge.
+    // Sign-out keeps the same two-step loss warning and coach teardown.
+    return (
+      <div className="account-area account-guest-compact" aria-label="Guest account">
+        <span className="account-badge account-guest-label">Guest</span>
+        <Link className="account-link" to="/me">
+          Account details
+        </Link>
+        {confirmingSignOut ? (
+          <div className="account-guest-warning" role="group" aria-label="Confirm guest sign out">
+            <p>
+              Signing out removes this browser&rsquo;s guest session. These guest workouts may be
+              lost and cannot be guaranteed recoverable from another tab.
+            </p>
+            <div className="account-guest-actions">
+              <button type="button" onClick={onSignOut}>
+                Sign out and lose guest access
+              </button>
+              <button type="button" onClick={() => setConfirmingSignOut(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setConfirmingSignOut(true)}>
+            Sign out guest
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div
-      className={`account-area account-guest${compact ? " account-guest-compact" : ""}`}
-      aria-label="Guest account"
-    >
+    <div className="account-area account-guest" aria-label="Guest account">
       <p>
-        <span className="account-guest-label">Guest</span>
-        {compact ? null : " · Your workouts are not linked to an account."}
+        <span className="account-guest-label">Guest</span> · Your workouts are not linked to an
+        account.
       </p>
-      {compact ? null : (
-        <p>
-          Guest data is tied to this browser. Signing out or clearing site data may lose it;
-          signing in to a different account does not transfer it.
-        </p>
-      )}
+      <p>
+        Guest data is tied to this browser. Signing out or clearing site data may lose it;
+        signing in to a different account does not transfer it.
+      </p>
 
       {pendingEmail ? (
         <>

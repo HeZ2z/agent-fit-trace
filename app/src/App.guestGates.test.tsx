@@ -33,7 +33,9 @@ function installFetch(state: State): void {
             data: {
               supabaseUrl: AUTH_BASE,
               supabasePublishableKey: "pub",
-              ...(state.guestEnabled ? { guestSignInEnabled: true } : {}),
+              ...(state.guestEnabled
+                ? { guestSignInEnabled: true, guestUpgradeEnabled: true }
+                : {}),
             },
           }),
           { status: 200 },
@@ -148,7 +150,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     expect(window.sessionStorage.getItem("pi-fit-trace:auth:return-target:v1")).toBeNull();
   });
 
-  it("warns before replacing a guest and returns the account to the guest's page", async () => {
+  it("warns before replacing a guest and returns the account to Me", async () => {
     const state = makeState(true);
     installFetch(state);
     window.history.pushState({}, "", "/plan");
@@ -160,6 +162,13 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.click(guestButton);
     expect(await screen.findByRole("heading", { level: 1, name: /^training plan$/i })).toBeInTheDocument();
 
+    // The compact header only points at /me. The switch lives once, in the
+    // shared full control on the Me page.
+    expect(screen.queryByRole("button", { name: /sign in to an existing account/i })).toBeNull();
+    await user.click(screen.getByRole("link", { name: /account details/i }));
+    expect(await screen.findByRole("heading", { name: /^me$/i })).toBeInTheDocument();
+    await user.click(screen.getByText(/upgrade to an account/i));
+    expect(screen.getByText(/upgrade to an account/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /sign in to an existing account/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent(/not merged or transferred/i);
@@ -167,7 +176,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.type(screen.getByLabelText("Email"), "b@example.com");
     await user.type(screen.getByLabelText("Password"), "pw-b-1234");
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
-    expect(await screen.findByRole("heading", { level: 1, name: /^training plan$/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /^me$/i })).toBeInTheDocument();
     expect(state.guestSignupCalls).toBe(1);
   });
 

@@ -3,8 +3,8 @@
 The app talks to workouts through a `FitTraceClient`, and the transport is
 selected at startup from `VITE_FIT_TRACE_MODE` (`app/src/api/createFitTraceClient.ts`).
 All modes run the same deterministic core and satisfy the same client
-contract; they differ only in where records live. There are three
-separate modes — pick exactly one:
+contract; they differ only in where records live. There are three separate
+development/testing modes — pick exactly one:
 
 1. **Local browser storage** (development default): `localStorage` is the
    storage backend only. The app still requires `GET /api/v1/public-config`
@@ -69,7 +69,8 @@ Selection: app in `VITE_FIT_TRACE_MODE=http` **plus**
   per-user isolation**: every bypass user of the same browser profile sees the
   same records. Use a throwaway profile and synthetic data only.
 - The dev API owns the data in an in-memory append-only store —
-  **restarting it clears all records**.
+  **restarting it clears all records**, including imported snapshots,
+  selections, and plan adoption.
 - `VITE_FIT_TRACE_LEGACY_LOOPBACK` is development-only: `App.tsx`
   `isLegacyLoopbackAllowed()` returns `false` in production builds
   (`import.meta.env.DEV` is false), even when the prop or env is set.
@@ -125,6 +126,12 @@ server in `FIT_TRACE_DEV_API_MODE=supabase`.
   repo-root `.env.local` (see `.env.example` and `docs/supabase-setup.md`). Missing
   server configuration fails closed (`500 API_ERROR`) — the server never
   falls back to memory.
+- This is the account/cloud persistence path: workouts, immutable imported
+  snapshots, per-owner selections, and explicit plan adoption are stored in
+  Postgres and survive reloads/dev-server restarts. There is no service-role
+  data path; the server forwards the caller's token and the publishable key.
+  Snapshots are append-only — the API has no update or delete operation for
+  them.
 - `FIT_TRACE_DEV_API_MODE` also accepts `memory` (default, unauthenticated
   loopback) and `authenticated` (local test verifier); the two supported
   local dev flows are the memory legacy flow above and this Supabase flow.
@@ -161,16 +168,32 @@ suite refuses non-loopback URLs.
 
 The three modes do not share data and there is NO automatic migration:
 
-- Local browser: records live in owner-scoped `localStorage` v2 keys
-  (`pi-fit-trace:workout:v2:owner:<encoded-user-id>:<record-id>`) and persist
-  across reloads for that verified user.
-- Memory HTTP: records live in the dev API process and are lost on restart.
-- Authenticated Supabase: records persist in Postgres (RLS-isolated per user).
+| Mode | Workouts | Imported snapshots/selections/adoption | Lifetime |
+| --- | --- | --- | --- |
+| Local browser | owner-namespaced `localStorage` | owner-namespaced `localStorage` | this browser/device only |
+| Memory HTTP | dev API process memory | dev API process memory | lost on API restart |
+| Authenticated Supabase | Postgres, RLS per owner | Postgres, RLS per owner | account/cloud persistence |
 
 Legacy unowned `pi-fit-trace:workout:v1:<id>` keys are preserved but invisible
 to owner-scoped clients. They are not attributed to the current account, not
 migrated, and not deleted. Switching modes never uploads or copies records;
 existing v2 records remain available when you return to local mode.
+
+Imported analysis/plan snapshots are external, unverified evidence: they are
+stored and displayed as imported, not recomputed by the deterministic core,
+and saving one never changes current analysis or plan calculations.
+
+An anonymous guest is also a real per-owner storage identity, but its data is
+still local to that guest/browser until the **same UID** is upgraded to a
+permanent account. Signing in to a different account is an explicit identity
+switch with no merge. There is no cloud trial, hosted coach entitlement, or
+automatic guest-to-account upload in these modes.
+
+Known limitation: local browser mode has no cross-tab or cross-client write
+serialization or locking. Two tabs/clients writing the same browser storage
+can race; the append-only/idempotent id rules prevent silent overwrites when a
+conflict reaches a client, but concurrent local writers are not solved by a
+transaction or storage lock.
 
 ### Explicit developer JSON export/import
 
@@ -219,7 +242,8 @@ committed proxy config against the real dev API), while the root
 ## Next milestone
 
 Account/Postgres foundation is implemented (Supabase Auth + RLS workouts +
-Vercel functions; see `docs/supabase-setup.md`). The coaching module now
+immutable imported snapshots/selections/adoption + Vercel functions; see
+`docs/supabase-setup.md`). The coaching module now
 includes the local loopback server, gated local Codex/OpenCode adapters, and the
 hosted cloud routes/worker; cloud stays fail-closed and off by default until a
 formal account, quota, provider resources, and a deployed worker are present.
