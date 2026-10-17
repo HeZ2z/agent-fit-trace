@@ -12,8 +12,18 @@ Start the already-configured local stack:
 
 ```sh
 supabase start         # Docker; API http://127.0.0.1:54321, DB port 54322
-supabase db reset      # apply supabase/migrations/* to a clean local DB
+
+# RESET ONLY a fresh, disposable, synthetic local project:
+# supabase db reset
 ```
+
+`supabase db reset` deletes the local database. Do **not** use it on an
+existing local project with user data. For an existing DB, apply the additive
+migration first (`supabase migration up`, or your normal forward-migration
+process), verify it succeeded, and only then restart the stack so the committed
+Auth profile takes effect (`supabase stop && supabase start`). Back up the DB
+before either step. The partial rollback notes in section 6 retain users and
+workouts; reset does not.
 
 Keep the stack running while you develop. When you are done for the day,
 shut it down separately with `supabase stop`.
@@ -74,8 +84,10 @@ shut it down separately with `supabase stop`.
   projects can grant more), and the atomic `create_workout` RPC
   (`SECURITY INVOKER`, owner from `auth.uid()`, identical-payload duplicate
   vs content-conflict via `WORKOUT_CONFLICT`).
-- Apply with `supabase db reset` (local) or `supabase db push` (linked
-  project). Never reset the shared cloud project; use forward migrations.
+- Apply with `supabase db reset` **only on a fresh disposable synthetic local
+  project**, `supabase migration up` for an existing local DB that must keep
+  its users/workouts, or `supabase db push` for a linked project. Never reset
+  the shared cloud project or a local DB with data; use forward migrations.
 - Re-running the migration is idempotent (`IF NOT EXISTS` / `DROP POLICY IF
   EXISTS` / `CREATE OR REPLACE FUNCTION`).
 - `supabase/migrations/20261011000000_workouts_pagination.sql` adds the
@@ -124,20 +136,26 @@ Local config does not change the cloud project. Before releasing auth:
   workout/analysis state on logout or account change. Writes are never
   retried after a 401. Credential refresh retries transient failures; failed
   business requests are not automatically replayed.
-- Local mode (`VITE_FIT_TRACE_MODE` unset) and the unauthenticated memory
-  loopback dev API (`pnpm dev:api`, i.e. default
-  `FIT_TRACE_DEV_API_MODE=memory` with the app's development-only
-  `VITE_FIT_TRACE_LEGACY_LOOPBACK=1` opt-in) are unchanged for local
-  development/tests. The legacy flag never applies to production: production
-  builds reject it and stay gated on a validated session. No
-  automatic upload of local records.
+- Local browser storage (`VITE_FIT_TRACE_MODE` unset) changes only where
+  workouts live. In DEV it still requires `GET /api/v1/public-config` and a
+  verified Supabase session; owner-scoped v2 keys isolate users on the same
+  browser, while legacy unowned v1 keys stay hidden and unattributed. The
+  unauthenticated memory loopback (`pnpm dev:api`, default
+  `FIT_TRACE_DEV_API_MODE=memory`, with the app's development-only
+  `VITE_FIT_TRACE_LEGACY_LOOPBACK=1` opt-in) bypasses auth with the fixed
+  `dev-loopback-bypass` namespace, which is not per-user isolated. The legacy
+  flag never applies to production: production builds reject it, require an
+  effective HTTP runtime, and stay gated on a validated session. No automatic
+  upload or migration of local records.
 - Default invite/recovery links land on `/` (the Supabase Site URL is the app
   origin): the app detects an invite/recovery URL hash at the root route and
   serves the auth-callback screen ahead of the sign-in gate — even with an
   existing session — so invited users set their first password without
   editing the address. The hash is consumed into the tab-scoped token
-  handoff and stripped from the URL before routing to `/reset-password`;
-  ordinary fragment hashes and local mode never enter this path.
+  handoff and stripped from the URL before routing to `/reset-password`.
+  This callback path is independent of workout storage mode, so it also works
+  in DEV local browser storage; ordinary non-auth fragment hashes never enter
+  it.
 
 ## 5. Integration tests
 
@@ -253,9 +271,44 @@ rollback is `DROP TRIGGER` (and then the function) only, retaining
 An invited account is provisioned by inserting the allowlist row with the
 service role and then using the Admin invite flow. Admin `/admin/users` creation
 bypasses the hook and is a trusted service-role action, not a public path.
-Deployment capability flags (`FIT_TRACE_GUEST_SIGN_IN=1`,
-`FIT_TRACE_GUEST_UPGRADE=1`) remain independent and default off until the live
-suite passes.
+Deployment capability flags remain independent and default off until the
+target deployment's live suite passes. For local synthetic-stack validation,
+put these in repo-root `.env.local` **after** the migration is applied and the
+committed Auth profile is active (never commit the file):
+
+```sh
+FIT_TRACE_GUEST_SIGN_IN=1
+FIT_TRACE_GUEST_UPGRADE=1
+FIT_TRACE_GUEST_CAPTCHA_REQUIRED=0  # local stack without CAPTCHA only
+```
+
+Start the dev API with `SUPABASE_*` set so `GET /api/v1/public-config` exposes
+the enabled capabilities. `0`/missing values stay fail-closed. Setting
+`FIT_TRACE_GUEST_CAPTCHA_REQUIRED=1` does **not** implement CAPTCHA: this client
+has no widget and disables guest entry instead.
+
+**Agent execution boundary:** anonymous guests may use only **local Agents**
+(for example the user's local CLI). They must **never** be granted hosted or
+cloud Agent execution. A formal, email-verified non-anonymous account is
+required before a hosted/cloud path is considered, and verification alone does
+not grant capacity: the server must still enforce an explicit quota or
+entitlement. This slice neither implements hosted/cloud Agent execution nor
+those server quotas.
+
+Provision an invited address through the trusted server-side allowlist only
+(service-role SQL/psql or back office; there is no app RPC and no client read
+or write access):
+
+```sql
+insert into public.signup_invites (email) values ('qa@example.com');
+-- After the synthetic test, remove the row before reusing the address:
+delete from public.signup_invites where lower(email) = 'qa@example.com';
+```
+
+Then use the Admin invite flow for a normal account, or let an invited guest
+start the same-UID upgrade in the app. Never populate `signup_invites` from the
+browser, public-config, or a user token. Local email lands in Mailpit; this
+guide does not claim production SMTP delivery or CAPTCHA-provider validation.
 
 ### 6.3 Same-UID upgrades
 
