@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AuthError,
   RECOVERY_TOKEN_KEY,
+  beginGuestUpgrade,
   clearRecoveryToken,
   isPasswordSetupType,
   isSessionExpired,
@@ -427,5 +428,74 @@ describe("supabaseAuth", () => {
       throw new Error("storage denied");
     });
     expect(loadRecoveryToken()).toBeNull();
+  });
+});
+
+describe("guest upgrade transport", () => {
+  it("sends an authenticated email change with the official redirect_to query", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await beginGuestUpgrade(config, "guest-access", " Invite@Example.com ", fetchImpl, {
+      emailRedirectTo: "http://127.0.0.1:5173/auth/callback",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(
+      "http://127.0.0.1:54321/auth/v1/user?redirect_to=http%3A%2F%2F127.0.0.1%3A5173%2Fauth%2Fcallback",
+    );
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(calls[0]?.init?.headers).toMatchObject({
+      apikey: "pub-key",
+      Authorization: "Bearer guest-access",
+    });
+    // Transport does not silently trim/normalize; the caller owns the target
+    // identity and the database normalizes lower(btrim(...)).
+    expect(JSON.parse(String(calls[0]?.init?.body)) as unknown).toEqual({
+      email: " Invite@Example.com ",
+    });
+  });
+
+  it("maps upgrade failures without leaking the session token", async () => {
+    const error = await beginGuestUpgrade(
+      config,
+      "secret-guest-token",
+      "invite@example.com",
+      jsonFetch(422, { msg: "Email address is already registered" }),
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AuthError);
+    expect((error as AuthError).code).toBe("GUEST_UPGRADE_FAILED");
+    expect((error as Error).message).not.toContain("secret-guest-token");
+  });
+
+  it("parses callback expiry and only accepts verified email fields from /user", async () => {
+    const callback = parseAuthCallbackHash(
+      "#access_token=a&refresh_token=r&type=email_change&expires_at=1893456000",
+    );
+    expect(callback).toMatchObject({
+      accessToken: "a",
+      refreshToken: "r",
+      type: "email_change",
+      expiresAt: 1893456000 * 1000,
+    });
+    const verified = await fetchAuthUser(
+      config,
+      "a",
+      jsonFetch(200, {
+        id: "guest-1",
+        email: "invite@example.com",
+        is_anonymous: false,
+        email_confirmed_at: "2026-10-17T00:00:00Z",
+      }),
+    );
+    expect(verified).toMatchObject({
+      id: "guest-1",
+      email: "invite@example.com",
+      isAnonymous: false,
+      emailConfirmedAt: "2026-10-17T00:00:00Z",
+    });
   });
 });

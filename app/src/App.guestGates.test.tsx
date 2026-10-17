@@ -160,7 +160,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.click(guestButton);
     expect(await screen.findByRole("heading", { name: /plan/i })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /sign in to an account/i }));
+    await user.click(screen.getByRole("button", { name: /sign in to an existing account/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent(/not merged or transferred/i);
 

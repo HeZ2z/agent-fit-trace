@@ -4,8 +4,17 @@ import type { PublicApiConfig } from "@pi-fit-trace/api-contracts";
 import { fetchPublicConfig } from "../api/publicConfig.ts";
 import { markExplicitSignOut } from "./returnTarget.ts";
 import {
+  clearPendingGuestUpgrade,
+  loadPendingGuestUpgrade,
+  normalizeGuestUpgradeEmail,
+  savePendingGuestUpgrade,
+} from "./guestUpgrade.ts";
+import type { PendingGuestUpgrade } from "./guestUpgrade.ts";
+import {
   AUTH_STORAGE_KEY,
+  beginGuestUpgrade as beginGuestUpgradeRequest,
   fetchAuthUser,
+  isEmailVerificationType,
   isSessionExpired,
   isTransientAuthError,
   loadStoredSession,
@@ -15,7 +24,7 @@ import {
   signInWithPassword,
   signOut,
 } from "./supabaseAuth.ts";
-import type { SupabaseAuthUser, SupabaseSession } from "./supabaseAuth.ts";
+import type { CallbackSession, SupabaseAuthUser, SupabaseSession } from "./supabaseAuth.ts";
 import { AuthError } from "./supabaseAuth.ts";
 
 export interface AuthContextValue {
@@ -39,8 +48,38 @@ export interface AuthContextValue {
   signOutSession: () => Promise<void>;
   /** Refresh the session once (used after a 401 on reads; writes never auto-retry). */
   refresh: () => Promise<boolean>;
+  /** Re-read `/auth/v1/user` for the current session (classification + email). */
+  refreshVerifiedUser: () => Promise<SupabaseAuthUser | null>;
   /** Deployment readiness for guest entry (`public-config` explicit true only). */
   guestSignInEnabled: boolean;
+  /**
+   * True when the deployment requires CAPTCHA for guest entry. This client has
+   * no CAPTCHA widget, so guest entry fails closed instead of sending a
+   * request that cannot pass.
+   */
+  guestSignInCaptchaRequired: boolean;
+  /** Deployment readiness for invited guest upgrades (default false). */
+  guestUpgradeEnabled: boolean;
+  /** Tab-scoped pending upgrade; pending until callback verification. */
+  pendingGuestUpgrade: PendingGuestUpgrade | null;
+  /**
+   * Request an invited email change on the current verified guest session.
+   * An identical pending target is a no-op unless `{ resend: true }` is passed
+   * by an explicit user action.
+   */
+  beginGuestUpgrade: (email: string, options?: { resend?: boolean }) => Promise<void>;
+  /**
+   * Apply the callback only when its token verifies the same UID, a
+   * non-anonymous user, and the pending confirmed email. Never replaces a
+   * different current identity, and never reports success for a pending email.
+   */
+  completeGuestUpgrade: (callback: CallbackSession) => Promise<PendingGuestUpgrade>;
+  /**
+   * After password setup, re-fetch `/auth/v1/user`, require the same expected
+   * UID plus the pending confirmed email, and only then clear the marker.
+   * Returns false (and keeps the pending marker) if the identity changed.
+   */
+  finishGuestUpgrade: (expectedUserId: string) => Promise<boolean>;
 }
 
 /** localStorage access isolated for tests (jsdom provides it; guard for SSR). */
@@ -139,6 +178,9 @@ export function AuthProvider({
       : () => readStoredSession() ?? readStoredGuestCandidate(),
   );
   const [authError, setAuthError] = useState<AuthError | null>(null);
+  const [pendingGuestUpgrade, setPendingGuestUpgrade] = useState<PendingGuestUpgrade | null>(
+    () => loadPendingGuestUpgrade(),
+  );
   const [bootstrapped, setBootstrapped] = useState(skipBootstrap || publicConfigProp !== undefined);
   // A restored session is untrusted until the Auth server confirms it. While
   // unvalidated the provider reports `loading` so protected screens never
@@ -156,6 +198,17 @@ export function AuthProvider({
   // applies its result while it is still the newest attempt, so a slow first
   // click can never replace a later identity (or a logout).
   const authAttemptRef = useRef(0);
+  // Upgrade initiation epoch: clearing the marker or completing an upgrade
+  // invalidates a late response so it cannot write state for a newer identity.
+  const upgradeAttemptRef = useRef(0);
+  // Serialize the Auth mutation. Identical concurrent requests share this
+  // promise; a different target while one is in flight is rejected instead of
+  // sending a second PUT that could race the server's email_change target.
+  const upgradeInflightRef = useRef<{
+    email: string;
+    attempt: number;
+    promise: Promise<void>;
+  } | null>(null);
   // Single-flight slot for guest creation: repeated clicks share one network
   // request, so a double click cannot create two anonymous users.
   const guestInflightRef = useRef<Promise<void> | null>(null);
@@ -182,6 +235,15 @@ export function AuthProvider({
   const clearGuestCandidate = useCallback((): void => {
     guestCandidateRef.current = null;
     writeStoredGuestCandidate(null);
+  }, []);
+
+  const clearGuestUpgrade = useCallback((): void => {
+    // Invalidate any in-flight initiation as part of clearing. This keeps a
+    // late G response from restoring a pending marker after logout/switch.
+    upgradeAttemptRef.current += 1;
+    upgradeInflightRef.current = null;
+    clearPendingGuestUpgrade();
+    setPendingGuestUpgrade(null);
   }, []);
 
   /** Cancel a pending refresh retry and invalidate its fired task, if any. */
@@ -267,6 +329,7 @@ export function AuthProvider({
         refreshInflightRef.current = null;
         resetRefreshRetry();
         clearGuestCandidate();
+        clearGuestUpgrade();
         setSessionSync(null);
         setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
         return;
@@ -279,13 +342,30 @@ export function AuthProvider({
       refreshInflightRef.current = null;
       resetRefreshRetry();
       clearGuestCandidate();
+      clearGuestUpgrade();
       setSessionSync(next);
       setAuthError(null);
       setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [clearGuestCandidate, resetRefreshRetry, setSessionSync, skipAsyncValidation]);
+  }, [
+    clearGuestCandidate,
+    clearGuestUpgrade,
+    resetRefreshRetry,
+    setSessionSync,
+    skipAsyncValidation,
+  ]);
+
+  // A pending upgrade belongs to exactly one guest identity. Any logout,
+  // account switch, or cross-tab identity replacement drops it instead of
+  // letting a later callback attach to a different user.
+  useEffect(() => {
+    if (pendingGuestUpgrade === null) return;
+    if (session === null || session.user.id !== pendingGuestUpgrade.userId) {
+      clearGuestUpgrade();
+    }
+  }, [clearGuestUpgrade, pendingGuestUpgrade, session]);
 
   // Unmount invalidates in-flight refreshes (generation bump) and clears a
   // pending retry timer, so a late 503/network failure can never schedule
@@ -365,6 +445,7 @@ export function AuthProvider({
         refreshInflightRef.current = null;
         resetRefreshRetry();
         clearGuestCandidate();
+        clearGuestUpgrade();
         const reconciled: SupabaseSession = { ...tokenSession, user: verified };
         setSessionSync(reconciled);
         setValidatedIdentity(sessionIdentity(reconciled) ?? "validated");
@@ -377,7 +458,7 @@ export function AuthProvider({
         throw err;
       }
     },
-    [clearGuestCandidate, fetchImpl, resolveConfig, resetRefreshRetry, setSessionSync],
+    [clearGuestCandidate, clearGuestUpgrade, fetchImpl, resolveConfig, resetRefreshRetry, setSessionSync],
   );
 
   /**
@@ -406,10 +487,12 @@ export function AuthProvider({
       try {
         const resolved = await resolveConfig();
         if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
-        if (resolved.guestSignInEnabled !== true) {
+        if (resolved.guestSignInEnabled !== true || resolved.guestSignInCaptchaRequired === true) {
           throw new AuthError(
             "GUEST_SIGN_IN_DISABLED",
-            "Guest sessions are not enabled on this deployment.",
+            resolved.guestSignInCaptchaRequired === true
+              ? "Guest sessions require CAPTCHA, which this app does not support yet."
+              : "Guest sessions are not enabled on this deployment.",
           );
         }
         const config = {
@@ -477,6 +560,355 @@ export function AuthProvider({
     return task;
   }, [clearGuestCandidate, fetchImpl, resetRefreshRetry, resolveConfig, setSessionSync]);
 
+  /**
+   * Step 1 of the invited upgrade: request an email change on the current
+   * verified guest. The account is NOT upgraded here; the pending target is
+   * tab-scoped and only the verified callback can complete it. Repeating the
+   * same pending email is idempotent and does not send another email.
+   */
+  const beginGuestUpgrade = useCallback(
+    async (email: string, options: { resend?: boolean } = {}): Promise<void> => {
+      const target = normalizeGuestUpgradeEmail(email);
+      const resend = options.resend === true;
+      if (target === "") {
+        const invalid = new AuthError(
+          "GUEST_UPGRADE_INVALID_EMAIL",
+          "Enter a valid email address.",
+        );
+        setAuthError(invalid);
+        throw invalid;
+      }
+
+      if (
+        upgradeInflightRef.current !== null &&
+        upgradeInflightRef.current.attempt !== upgradeAttemptRef.current
+      ) {
+        // A switch/logout invalidated the owner; the old request may still be
+        // unwinding, but it can no longer block a new identity.
+        upgradeInflightRef.current = null;
+      }
+      const inflight = upgradeInflightRef.current;
+      if (inflight !== null) {
+        if (inflight.email === target) return inflight.promise;
+        throw new AuthError(
+          "GUEST_UPGRADE_IN_FLIGHT",
+          "Wait for the current verification link request to finish before trying another email.",
+        );
+      }
+
+      const attempt = upgradeAttemptRef.current + 1;
+      upgradeAttemptRef.current = attempt;
+      // Snapshot before the first await: a switch/logout during config lookup
+      // invalidates this request even if the Auth call later succeeds.
+      const generation = generationRef.current;
+      const stale = (): boolean =>
+        attempt !== upgradeAttemptRef.current || generationRef.current !== generation;
+
+      const task = (async (): Promise<void> => {
+        try {
+          const current = sessionRef.current;
+          if (current === null || current.user.isAnonymous !== true) {
+            throw new AuthError(
+              "GUEST_UPGRADE_REQUIRES_GUEST",
+              "Only a verified guest session can be upgraded.",
+            );
+          }
+          const resolved = await resolveConfig();
+          if (stale()) {
+            throw new AuthError("GUEST_UPGRADE_SUPERSEDED", "A newer request replaced this one.");
+          }
+          if (resolved.guestUpgradeEnabled !== true) {
+            throw new AuthError(
+              "GUEST_UPGRADE_DISABLED",
+              "Guest account upgrades are not enabled on this deployment.",
+            );
+          }
+          const latest = sessionRef.current;
+          if (
+            latest === null ||
+            latest.user.id !== current.user.id ||
+            latest.user.isAnonymous !== true
+          ) {
+            throw new AuthError(
+              "GUEST_UPGRADE_REQUIRES_GUEST",
+              "The guest session changed. Try again.",
+            );
+          }
+
+          // Same pending target: the link may already have been sent by this
+          // tab. Do not duplicate the email unless the user explicitly chose
+          // Resend; normal retries stay idempotent.
+          const existing = loadPendingGuestUpgrade();
+          if (
+            !resend &&
+            existing !== null &&
+            existing.userId === latest.user.id &&
+            existing.email === target &&
+            !existing.verified
+          ) {
+            if (!stale()) setPendingGuestUpgrade(existing);
+            return;
+          }
+
+          const origin = typeof window === "undefined" ? "" : window.location.origin;
+          await beginGuestUpgradeRequest(
+            {
+              supabaseUrl: resolved.supabaseUrl,
+              publishableKey: resolved.supabasePublishableKey,
+            },
+            latest.accessToken,
+            target,
+            fetchImpl,
+            origin === "" ? {} : { emailRedirectTo: `${origin}/auth/callback` },
+          );
+          if (stale()) {
+            throw new AuthError("GUEST_UPGRADE_SUPERSEDED", "A newer request replaced this one.");
+          }
+          const after = sessionRef.current;
+          if (after === null || after.user.id !== latest.user.id) {
+            throw new AuthError("GUEST_UPGRADE_FAILED", "The guest session changed. Try again.");
+          }
+
+          const pending: PendingGuestUpgrade = {
+            userId: after.user.id,
+            email: target,
+            verified: false,
+            startedAt: Date.now(),
+          };
+          savePendingGuestUpgrade(pending);
+          setPendingGuestUpgrade(pending);
+          setAuthError(null);
+        } catch (error) {
+          const err =
+            error instanceof AuthError
+              ? error
+              : new AuthError("GUEST_UPGRADE_FAILED", "Could not start the account upgrade.");
+          // A superseded request must never paint an error on the replacement
+          // identity or account. The caller may still observe its rejection.
+          if (!stale()) setAuthError(err);
+          throw err;
+        }
+      })();
+
+      upgradeInflightRef.current = { email: target, attempt, promise: task };
+      try {
+        await task;
+      } finally {
+        if (upgradeInflightRef.current?.promise === task) upgradeInflightRef.current = null;
+      }
+    },
+    [fetchImpl, resolveConfig],
+  );
+
+  /**
+   * Step 2: verify the callback against the Auth server. The callback token
+   * must resolve to the exact pending user id and a non-anonymous,
+   * email-confirmed user whose email matches the pending target. A wrong-UID
+   * callback leaves the current guest session untouched; a still-pending email
+   * is never reported as a completed upgrade.
+   */
+  const completeGuestUpgrade = useCallback(
+    async (callback: CallbackSession): Promise<PendingGuestUpgrade> => {
+      const pending = loadPendingGuestUpgrade();
+      if (pending === null) {
+        throw new AuthError(
+          "GUEST_UPGRADE_NOT_PENDING",
+          "Open the verification link in the tab where you started the account upgrade.",
+        );
+      }
+      if (!isEmailVerificationType(callback.type)) {
+        throw new AuthError("GUEST_UPGRADE_INVALID_CALLBACK", "This link is not an email-change link.");
+      }
+      if (callback.refreshToken === "") {
+        throw new AuthError("GUEST_UPGRADE_INVALID_CALLBACK", "This link is missing its session.");
+      }
+      const current = sessionRef.current;
+      if (current === null || current.user.id !== pending.userId) {
+        throw new AuthError(
+          "GUEST_UPGRADE_IDENTITY_MISMATCH",
+          "This verification link belongs to a different session. Your current session was not changed.",
+        );
+      }
+
+      const resolved = await resolveConfig();
+      if (resolved.guestUpgradeEnabled !== true) {
+        throw new AuthError(
+          "GUEST_UPGRADE_DISABLED",
+          "Guest account upgrades are not enabled on this deployment.",
+        );
+      }
+      const generation = generationRef.current;
+      const latest = sessionRef.current;
+      if (
+        generationRef.current !== generation ||
+        latest === null ||
+        latest.user.id !== pending.userId
+      ) {
+        throw new AuthError(
+          "GUEST_UPGRADE_IDENTITY_MISMATCH",
+          "The current session changed before verification completed.",
+        );
+      }
+
+      // The only authoritative source for the result is GET /auth/v1/user
+      // with the callback access token; hash claims are never trusted.
+      const verified = await fetchAuthUser(
+        {
+          supabaseUrl: resolved.supabaseUrl,
+          publishableKey: resolved.supabasePublishableKey,
+        },
+        callback.accessToken,
+        fetchImpl,
+      );
+      if (verified.id !== pending.userId) {
+        throw new AuthError(
+          "GUEST_UPGRADE_IDENTITY_MISMATCH",
+          "This verification link belongs to a different user. Your current session was not changed.",
+        );
+      }
+      if (verified.isAnonymous !== false) {
+        throw new AuthError(
+          "GUEST_UPGRADE_NOT_READY",
+          "The email is still pending verification. Your guest session is unchanged.",
+        );
+      }
+      const verifiedEmail = normalizeGuestUpgradeEmail(verified.email ?? "");
+      if (verifiedEmail === "" || verifiedEmail !== pending.email) {
+        throw new AuthError(
+          "GUEST_UPGRADE_EMAIL_MISMATCH",
+          "The verified email does not match the pending upgrade.",
+        );
+      }
+      if (verified.emailConfirmedAt === undefined) {
+        throw new AuthError(
+          "GUEST_UPGRADE_EMAIL_UNVERIFIED",
+          "The email address is not confirmed yet.",
+        );
+      }
+      if (generationRef.current !== generation) {
+        throw new AuthError(
+          "GUEST_UPGRADE_IDENTITY_MISMATCH",
+          "The current session changed before verification completed.",
+        );
+      }
+
+      const next: SupabaseSession = {
+        accessToken: callback.accessToken,
+        refreshToken: callback.refreshToken,
+        expiresAt:
+          callback.expiresAt > 0 ? callback.expiresAt : Date.now() + 60 * 60 * 1000,
+        // Only the verified fields above are accepted into the applied session.
+        user: verified,
+      };
+      // Same user id throughout: this is an in-place account upgrade, never a
+      // login switch and never an owner/data migration.
+      generationRef.current += 1;
+      authAttemptRef.current += 1;
+      upgradeAttemptRef.current += 1;
+      refreshInflightRef.current = null;
+      resetRefreshRetry();
+      clearGuestCandidate();
+      setSessionSync(next);
+      setValidatedIdentity(sessionIdentity(next) ?? "validated");
+      setAuthError(null);
+
+      const verifiedPending: PendingGuestUpgrade = { ...pending, verified: true };
+      savePendingGuestUpgrade(verifiedPending);
+      setPendingGuestUpgrade(verifiedPending);
+      return verifiedPending;
+    },
+    [clearGuestCandidate, fetchImpl, resetRefreshRetry, resolveConfig, setSessionSync],
+  );
+
+  /**
+   * Re-read `/auth/v1/user` without changing identity or tokens.
+   *
+   * This is also the original-tab resume path after an email link was opened
+   * elsewhere: when the authoritative record is the same UID, non-anonymous,
+   * confirmed, and matches the pending target, the pending marker is promoted
+   * so the UI can offer password setup. A different UID is never applied.
+   */
+  const refreshVerifiedUser = useCallback(async (): Promise<SupabaseAuthUser | null> => {
+    const generation = generationRef.current;
+    const current = sessionRef.current;
+    if (current === null) return null;
+    const resolved = await resolveConfig();
+    if (generationRef.current !== generation) return null;
+    const verified = await fetchAuthUser(
+      {
+        supabaseUrl: resolved.supabaseUrl,
+        publishableKey: resolved.supabasePublishableKey,
+      },
+      current.accessToken,
+      fetchImpl,
+    );
+    if (generationRef.current !== generation) return null;
+    // The provider response is authoritative, but it may only refresh the
+    // same local identity. A compromised/misrouted response for another UUID
+    // must never replace the current session.
+    if (verified.id !== current.user.id) return null;
+    const latest = sessionRef.current;
+    if (
+      latest === null ||
+      latest.user.id !== current.user.id ||
+      latest.accessToken !== current.accessToken
+    ) {
+      return null;
+    }
+    const next: SupabaseSession = { ...latest, user: verified };
+    setSessionSync(next);
+    setValidatedIdentity(sessionIdentity(next) ?? "validated");
+    if (verified.isAnonymous !== current.user.isAnonymous) {
+      // Classification changed under an in-flight initiation. Invalidate it so
+      // a late PUT response cannot overwrite the promoted pending marker.
+      upgradeAttemptRef.current += 1;
+    }
+
+    const pending = loadPendingGuestUpgrade();
+    if (
+      pending !== null &&
+      pending.userId === verified.id &&
+      !pending.verified &&
+      verified.isAnonymous === false &&
+      verified.emailConfirmedAt !== undefined &&
+      normalizeGuestUpgradeEmail(verified.email ?? "") === pending.email
+    ) {
+      const promoted: PendingGuestUpgrade = { ...pending, verified: true };
+      savePendingGuestUpgrade(promoted);
+      setPendingGuestUpgrade(promoted);
+    }
+    return verified;
+  }, [fetchImpl, resolveConfig, setSessionSync]);
+
+  /**
+   * Final password step guard. The password update itself uses the verified
+   * session, but its async response may arrive after a switch/logout. Re-fetch
+   * and require the same expected UUID and pending confirmed email before
+   * clearing anything, so B's state is never completed/navigated by A.
+   */
+  const finishGuestUpgrade = useCallback(
+    async (expectedUserId: string): Promise<boolean> => {
+      const verified = await refreshVerifiedUser();
+      if (verified === null || verified.id !== expectedUserId) return false;
+      if (verified.isAnonymous !== false || verified.emailConfirmedAt === undefined) return false;
+      const latest = sessionRef.current;
+      const pending = loadPendingGuestUpgrade();
+      if (
+        latest === null ||
+        latest.user.id !== expectedUserId ||
+        pending === null ||
+        pending.userId !== expectedUserId ||
+        !pending.verified
+      ) {
+        return false;
+      }
+      if (normalizeGuestUpgradeEmail(verified.email ?? "") !== pending.email) return false;
+      clearGuestUpgrade();
+      return true;
+    },
+    [clearGuestUpgrade, refreshVerifiedUser],
+  );
+
   const signOutSession = useCallback(async (): Promise<void> => {
     const current = sessionRef.current;
     const config = publicConfigProp ?? publicConfig;
@@ -488,6 +920,7 @@ export function AuthProvider({
     guestInflightRef.current = null;
     guestCandidateRef.current = null;
     writeStoredGuestCandidate(null);
+    clearGuestUpgrade();
     refreshInflightRef.current = null;
     resetRefreshRetry();
     markExplicitSignOut(window.location.pathname);
@@ -506,7 +939,14 @@ export function AuthProvider({
         // the refresh token may survive server-side until expiry.
       }
     }
-  }, [fetchImpl, publicConfig, publicConfigProp, resetRefreshRetry, setSessionSync]);
+  }, [
+    clearGuestUpgrade,
+    fetchImpl,
+    publicConfig,
+    publicConfigProp,
+    resetRefreshRetry,
+    setSessionSync,
+  ]);
 
   const refresh = useCallback(async (): Promise<boolean> => {
     const current = sessionRef.current;
@@ -737,7 +1177,13 @@ export function AuthProvider({
         ? "signed-out"
         : "signed-in";
 
-  const guestSignInEnabled = effectiveConfig?.guestSignInEnabled === true;
+  const guestSignInCaptchaRequired =
+    effectiveConfig?.guestSignInCaptchaRequired === true;
+  // CAPTCHA-enabled deployments fail closed here because this UI has no
+  // widget; the transport alone cannot complete that deployment's challenge.
+  const guestSignInEnabled =
+    effectiveConfig?.guestSignInEnabled === true && !guestSignInCaptchaRequired;
+  const guestUpgradeEnabled = effectiveConfig?.guestUpgradeEnabled === true;
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -753,7 +1199,14 @@ export function AuthProvider({
       signInAsGuest,
       signOutSession,
       refresh,
+      refreshVerifiedUser,
       guestSignInEnabled,
+      guestSignInCaptchaRequired,
+      guestUpgradeEnabled,
+      pendingGuestUpgrade,
+      beginGuestUpgrade,
+      completeGuestUpgrade,
+      finishGuestUpgrade,
     }),
     [
       status,
@@ -768,7 +1221,14 @@ export function AuthProvider({
       signInAsGuest,
       signOutSession,
       refresh,
+      refreshVerifiedUser,
       guestSignInEnabled,
+      guestSignInCaptchaRequired,
+      guestUpgradeEnabled,
+      pendingGuestUpgrade,
+      beginGuestUpgrade,
+      completeGuestUpgrade,
+      finishGuestUpgrade,
     ],
   );
 

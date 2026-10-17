@@ -1,17 +1,20 @@
 # Fit-trace local Supabase (CLI + Docker).
 #
 # Invite-only is enforced HERE for local dev, not just in the UI:
-# - `auth.enable_signup = false` (global) removes the public sign-up path
-#   entirely — local signup stays denied.
+# - global signup stays enabled only because GoTrue requires it for anonymous
+#   guest sign-in; an uninvited formal signup is rejected by the
+#   `before_user_created` database hook below.
+# - the narrow `auth.users` trigger in 20261017000100_signup_gate.sql denies an
+#   uninvited guest email-change/upgrade, including a direct manual-linking
+#   bypass.
 # - `[auth.email] enable_signup` must stay `true`: Supabase CLI v2.120.0 maps
 #   `auth.email.enable_signup = false` to GOTRUE_EXTERNAL_EMAIL_ENABLED=false,
 #   which disables email login entirely despite `[auth.email] enabled = true`.
-#   Email/password sign-in for invited users requires it enabled here; the
-#   global `auth.enable_signup = false` above is what blocks registration.
+#   Email/password sign-in for invited users requires it enabled here; the hook
+#   plus trigger are what block registration and unauthorized upgrades.
 # - `auth.email.enable_confirmations = true` requires email verification.
-# Production must mirror this in the Supabase dashboard
-# (Authentication → Sign In / Sign Up → "Allow new users to sign up" OFF);
-# see docs/supabase-setup.md. Never rely on hiding a button.
+# Production must apply the hook and trigger, not merely hide a button; see
+# docs/supabase-setup.md.
 
 project_id = "pi-fit-trace"
 
@@ -31,12 +34,31 @@ enabled = true
 site_url = "http://127.0.0.1:5173"
 additional_redirect_urls = ["http://127.0.0.1:5173/auth/callback", "http://127.0.0.1:5173/reset-password", "http://127.0.0.1:5173/login"]
 jwt_expiry = 3600
-enable_signup = false
+# Invited guest target profile (see docs/supabase-setup.md §6).
+#
+# GoTrue rejects anonymous sign-in while global signup is disabled, so this
+# profile keeps global signup enabled and relies on BOTH database gates in
+# 20261017000100_signup_gate.sql:
+# - before_user_created rejects uninvited formal signups;
+# - the narrow auth.users BEFORE UPDATE trigger rejects an uninvited guest
+#   email-change/upgrade, including a direct manual-linking bypass.
+#
+# The hook is inert until the migration is applied. Apply the migration
+# BEFORE starting Auth with this file. Production remains invite-only and the
+# public `guestUpgradeEnabled` capability stays false until the live suite
+# proves this exact profile, email delivery, RLS ownership, and password setup.
+enable_signup = true
+enable_anonymous_sign_ins = true
+enable_manual_linking = true
 minimum_password_length = 8
+
+[auth.hook.before_user_created]
+enabled = true
+uri = "pg-functions://postgres/public/hook_allow_anonymous_or_invited"
 
 [auth.email]
 enabled = true
-# Keep email authentication enabled; global auth.enable_signup denies signup.
+# Keep email authentication enabled; the invitation hook denies uninvited signup.
 enable_signup = true
 double_confirm_changes = true
 enable_confirmations = true

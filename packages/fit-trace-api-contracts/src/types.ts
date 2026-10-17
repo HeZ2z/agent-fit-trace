@@ -91,6 +91,20 @@ export interface PublicApiConfig {
    * The client must keep guest entry disabled unless this is exactly `true`.
    */
   guestSignInEnabled?: boolean;
+  /**
+   * Deployment-readiness flag for invited guest -> account upgrades. Defaults
+   * to false and is only true when the server explicitly reports
+   * `FIT_TRACE_GUEST_UPGRADE=1` after the migration/trigger and live Auth flow
+   * have been verified.
+   */
+  guestUpgradeEnabled?: boolean;
+  /**
+   * Set when the deployment has CAPTCHA enabled for anonymous sign-in.
+   * This browser client does not bundle a CAPTCHA widget yet, so it fails
+   * closed (hides guest entry) instead of sending a request that cannot pass.
+   * The transport still accepts an explicit CAPTCHA token for a future UI.
+   */
+  guestSignInCaptchaRequired?: boolean;
 }
 
 /** Resource paths for the four endpoints (see status semantics below). */

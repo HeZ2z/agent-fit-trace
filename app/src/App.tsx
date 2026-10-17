@@ -20,6 +20,7 @@ import {
   SignInScreen,
 } from "./auth/AuthScreens.tsx";
 import {
+  isEmailVerificationType,
   isPasswordSetupType,
   parseAuthCallbackHash,
 } from "./auth/supabaseAuth.ts";
@@ -171,15 +172,17 @@ function RequireAuth({
 }
 
 /**
- * True when a root-URL hash looks like an invite/recovery redirect: either a
- * usable session of a password-setup type, or a mangled/expired variant that
- * still deserves the expired-link notice instead of the sign-in form. Never
- * matches ordinary fragment hashes (`#section`) — tokens are only ever read
- * from the hash, never the query string.
+ * True when a root-URL hash looks like an Auth redirect: an invite/recovery
+ * password-setup session or a guest email-change verification session. The
+ * callback screen applies email changes only through the same-UID pending
+ * upgrade check. Never matches ordinary fragment hashes (`#section`) — tokens
+ * are only ever read from the hash, never the query string.
  */
 function isRootAuthHash(hash: string): boolean {
   const session = parseAuthCallbackHash(hash);
-  if (session !== null) return isPasswordSetupType(session.type);
+  if (session !== null) {
+    return isPasswordSetupType(session.type) || isEmailVerificationType(session.type);
+  }
   const fragment = hash.startsWith("#") ? hash.slice(1) : hash;
   if (fragment === "") return false;
   let params: URLSearchParams;
@@ -191,7 +194,8 @@ function isRootAuthHash(hash: string): boolean {
   // A bare `?code=…` PKCE link is not consumed here (implicit-hash flow
   // only); the callback screen reports it as invalid/expired.
   if (params.get("code") !== null) return true;
-  return isPasswordSetupType(params.get("type")) || params.get("error") !== null;
+  const type = params.get("type");
+  return isPasswordSetupType(type) || isEmailVerificationType(type) || params.get("error") !== null;
 }
 
 function RootRoute({ legacyLoopback, client }: { legacyLoopback?: boolean; client?: FitTraceClient }) {

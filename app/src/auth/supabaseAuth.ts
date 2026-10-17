@@ -25,6 +25,12 @@ export interface SupabaseAuthUser {
    * classify"; callers must fail closed for account-only capabilities.
    */
   isAnonymous?: boolean;
+  /**
+   * Verified email-confirmation timestamp, also accepted only from
+   * `GET /auth/v1/user`. A guest-upgrade callback must require it before
+   * offering password setup; `email` alone can still be a pending change.
+   */
+  emailConfirmedAt?: string;
 }
 
 export interface SupabaseSession {
@@ -72,8 +78,17 @@ function toUser(raw: unknown): SupabaseAuthUser | null {
 function toVerifiedUser(raw: unknown): SupabaseAuthUser | null {
   const user = toUser(raw);
   if (user === null) return null;
-  const isAnonymous = (raw as { is_anonymous?: unknown }).is_anonymous;
-  return typeof isAnonymous === "boolean" ? { ...user, isAnonymous } : user;
+  const record = raw as { is_anonymous?: unknown; email_confirmed_at?: unknown };
+  const emailConfirmedAt = record.email_confirmed_at;
+  return {
+    ...user,
+    ...(typeof record.is_anonymous === "boolean"
+      ? { isAnonymous: record.is_anonymous }
+      : {}),
+    ...(typeof emailConfirmedAt === "string" && emailConfirmedAt !== ""
+      ? { emailConfirmedAt }
+      : {}),
+  };
 }
 
 function sessionFromTokenResponse(body: unknown): SupabaseSession | null {
@@ -235,6 +250,62 @@ export async function signInAnonymously(
   return { ...session, user: verified };
 }
 
+/**
+ * Start the invited same-UID guest upgrade by requesting an email change on
+ * the CURRENT guest session (`PUT /auth/v1/user`).
+ *
+ * This is only the initiation step: GoTrue sends a confirmation link while the
+ * user remains anonymous, and the pending invite is preserved until the
+ * verify transaction converts the user (see
+ * `supabase/migrations/20261017000100_signup_gate.sql`). Callers must not
+ * report an upgraded account until a later callback verifies the same UID,
+ * `is_anonymous === false`, and a confirmed target email.
+ *
+ * `emailRedirectTo` is sent in the official `redirect_to` query parameter for
+ * the email template. The request deliberately does not invent a CAPTCHA
+ * field: GoTrue v2.197.0's `UserUpdateParams` has no CAPTCHA field for this
+ * authenticated endpoint, so claiming CAPTCHA enforcement here would be
+ * false. The deployment must enforce its own abuse controls.
+ */
+export interface GuestUpgradeRequestOptions {
+  emailRedirectTo?: string;
+}
+
+export async function beginGuestUpgrade(
+  config: SupabaseAuthConfig,
+  accessToken: string,
+  email: string,
+  fetchImpl: AuthFetch = fetch,
+  options: GuestUpgradeRequestOptions = {},
+): Promise<void> {
+  const redirect =
+    typeof options.emailRedirectTo === "string" && options.emailRedirectTo !== ""
+      ? `?redirect_to=${encodeURIComponent(options.emailRedirectTo)}`
+      : "";
+  let response: Response;
+  try {
+    response = await fetchImpl(`${config.supabaseUrl}/auth/v1/user${redirect}`, {
+      method: "PUT",
+      headers: authHeaders(config, accessToken),
+      body: JSON.stringify({ email }),
+    });
+  } catch {
+    throw unavailableError();
+  }
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    if (response.status === 429 || response.status >= 500) throw unavailableError();
+    throw new AuthError(
+      "GUEST_UPGRADE_FAILED",
+      authErrorMessage(
+        body,
+        "That email cannot be used for an account upgrade. Ask an administrator for an invitation.",
+      ),
+      response.status,
+    );
+  }
+}
+
 /** Global sign-out; failures still clear local state (see AuthProvider). */
 export async function signOut(
   config: SupabaseAuthConfig,
@@ -368,6 +439,8 @@ export interface CallbackSession {
   accessToken: string;
   refreshToken: string;
   type: string | null;
+  /** Epoch milliseconds when the callback access token expires (0 unknown). */
+  expiresAt: number;
 }
 
 /**
@@ -382,10 +455,20 @@ export function parseAuthCallbackHash(hash: string): CallbackSession | null {
   const params = new URLSearchParams(fragment);
   const accessToken = params.get("access_token");
   if (accessToken === null || accessToken === "") return null;
+  const expiresAtRaw = params.get("expires_at");
+  const expiresInRaw = params.get("expires_in");
+  const parsedExpiresAt = expiresAtRaw === null ? NaN : Number(expiresAtRaw);
+  const parsedExpiresIn = expiresInRaw === null ? NaN : Number(expiresInRaw);
+  const expiresAt = Number.isFinite(parsedExpiresAt) && parsedExpiresAt > 0
+    ? parsedExpiresAt * 1000
+    : Number.isFinite(parsedExpiresIn) && parsedExpiresIn > 0
+      ? Date.now() + parsedExpiresIn * 1000
+      : 0;
   return {
     accessToken,
     refreshToken: params.get("refresh_token") ?? "",
     type: params.get("type"),
+    expiresAt,
   };
 }
 
@@ -536,4 +619,14 @@ export function clearAuthHash(): void {
 /** Invite links create the account password through the same reset form. */
 export function isPasswordSetupType(type: string | null): boolean {
   return type === "recovery" || type === "invite";
+}
+
+/**
+ * Auth redirect types that can carry the result of an email confirmation or
+ * change. GoTrue/auth-js use `email_change`; `email` is accepted as the
+ * generic email-confirmation type. A callback is only applied when the
+ * tab-scoped pending upgrade matches the verified same UID.
+ */
+export function isEmailVerificationType(type: string | null): boolean {
+  return type === "email_change" || type === "email";
 }

@@ -201,6 +201,8 @@ export function createAuthenticatedHandler(
           supabaseUrl: config.supabaseUrl,
           supabasePublishableKey: config.supabasePublishableKey,
           guestSignInEnabled: config.guestSignInEnabled === true,
+          guestUpgradeEnabled: config.guestUpgradeEnabled === true,
+          guestSignInCaptchaRequired: config.guestSignInCaptchaRequired === true,
         });
       }
 

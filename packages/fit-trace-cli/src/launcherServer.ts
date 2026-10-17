@@ -292,6 +292,8 @@ function validatePublicConfig(candidate: unknown): ServerPublicConfig | null {
     supabaseUrl?: unknown;
     supabasePublishableKey?: unknown;
     guestSignInEnabled?: unknown;
+    guestUpgradeEnabled?: unknown;
+    guestSignInCaptchaRequired?: unknown;
   } | null;
   if (typeof data?.supabaseUrl !== "string" || typeof data?.supabasePublishableKey !== "string") {
     return null;
@@ -301,10 +303,21 @@ function validatePublicConfig(candidate: unknown): ServerPublicConfig | null {
   if (data.guestSignInEnabled !== undefined && typeof data.guestSignInEnabled !== "boolean") {
     return null;
   }
+  if (data.guestUpgradeEnabled !== undefined && typeof data.guestUpgradeEnabled !== "boolean") {
+    return null;
+  }
+  if (
+    data.guestSignInCaptchaRequired !== undefined &&
+    typeof data.guestSignInCaptchaRequired !== "boolean"
+  ) {
+    return null;
+  }
   return {
     supabaseUrl: data.supabaseUrl,
     supabasePublishableKey: data.supabasePublishableKey,
     ...(data.guestSignInEnabled === true ? { guestSignInEnabled: true } : {}),
+    ...(data.guestUpgradeEnabled === true ? { guestUpgradeEnabled: true } : {}),
+    ...(data.guestSignInCaptchaRequired === true ? { guestSignInCaptchaRequired: true } : {}),
   };
 }
 
