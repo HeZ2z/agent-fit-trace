@@ -65,20 +65,46 @@ function safeReason(reason: unknown, fallback: string): string {
 }
 
 function hasUsage(usage: CloudUsage): boolean {
-  return usage.known !== false && (usage.promptTokens > 0 || usage.completionTokens > 0 || usage.totalTokens > 0);
+  return (
+    (usage.knownTokens ?? (usage.known === false ? 0 : usage.totalTokens)) > 0 ||
+    (usage.known !== false &&
+      (usage.promptTokens > 0 || usage.completionTokens > 0 || usage.totalTokens > 0))
+  );
+}
+
+/** Authoritative tokens that may be charged now; estimates are excluded. */
+function settleableUsage(usage: CloudUsage): CloudUsage | null {
+  const knownTokens = usage.knownTokens ?? (usage.known === false ? 0 : usage.totalTokens);
+  if (knownTokens <= 0) return null;
+  const complete = usage.known !== false && usage.complete !== false;
+  return {
+    promptTokens: usage.knownPromptTokens ?? (usage.known === false ? knownTokens : usage.promptTokens),
+    completionTokens:
+      usage.knownCompletionTokens ?? (usage.known === false ? 0 : usage.completionTokens),
+    totalTokens: knownTokens,
+    known: true,
+    knownTokens,
+    complete,
+    ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
+    ...(usage.generationId === undefined ? {} : { generationId: usage.generationId }),
+  };
 }
 
 export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): CloudOutboxWorker {
   const logger = options.logger ?? (() => undefined);
 
   async function settle(runId: string, generation: number, usage: CloudUsage): Promise<void> {
-    if (usage.known === false) {
+    const charge = settleableUsage(usage);
+    if (charge === null) {
       // Never write estimated tokens as an actual charge. The run can still
-      // terminate; reconciliation remains explicitly pending.
+      // terminate; the full reservation remains explicitly accounting-pending.
       logger("usage-accounting-pending", { runId });
       return;
     }
-    const result = await options.repository.settleUsage(runId, generation, usage);
+    if (charge.complete === false) {
+      logger("usage-accounting-partial", { runId });
+    }
+    const result = await options.repository.settleUsage(runId, generation, charge);
     if (!result.settled) logger("usage-already-settled", { runId });
   }
 
@@ -112,9 +138,17 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
     error: ProviderStepRefusedError,
   ): Promise<void> {
     const code =
-      error.reason === "quota-exhausted" || error.reason === "quota-not-configured"
-        ? CLOUD_ERROR_CODES.QUOTA_EXHAUSTED
-        : CLOUD_ERROR_CODES.ACCOUNT_NOT_FORMAL;
+      error.reason === "global-disabled"
+        ? CLOUD_ERROR_CODES.KILL_SWITCH
+        : error.reason === "quota-exhausted" ||
+            error.reason === "quota-not-configured" ||
+            error.reason === "budget-not-configured" ||
+            error.reason === "step-budget-exceeded" ||
+            error.reason === "token-budget-exhausted" ||
+            error.reason === "request-budget-exhausted" ||
+            error.reason === "invalid-step-budget"
+          ? CLOUD_ERROR_CODES.QUOTA_EXHAUSTED
+          : CLOUD_ERROR_CODES.ACCOUNT_NOT_FORMAL;
     await options.repository.terminateRun(job.run.id, job.leaseGeneration, {
       status: "failed",
       reason: `provider step refused: ${error.reason}`,
@@ -163,8 +197,12 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
         runId: run.id,
         prompt: run.prompt,
         records: run.snapshotRecords,
-        async beforeProviderRequest() {
-          const authorization = await options.repository.authorizeProviderStep(run.id, generation);
+        async beforeProviderRequest(budget) {
+          const authorization = await options.repository.authorizeProviderStep(
+            run.id,
+            generation,
+            budget ?? { tokens: 1, requests: 1 },
+          );
           return {
             allowed: authorization.allowed,
             cancelled: authorization.cancelled,
@@ -245,7 +283,38 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
         return "unconfirmed";
       }
       if (error instanceof ProviderNotAcceptedError) {
-        // A definitive 4xx rejection is proof that no generation was billed.
+        if (error.accepted) {
+          // A 4xx on a later step cannot refund the earlier accepted request.
+          // Settle its known usage and retain the reservation.
+          if (error.usage !== undefined) {
+            await settle(run.id, generation, {
+              ...error.usage,
+              ...(error.generationId === undefined ? {} : { generationId: error.generationId }),
+            });
+          }
+          const cancelled = run.cancelRequestedAt !== undefined;
+          const terminal = await options.repository.terminateRun(run.id, generation, {
+            status: cancelled ? "cancelled" : "failed",
+            reason: cancelled
+              ? "cancel requested"
+              : "provider rejected a later step after accepting the run",
+            failure: cancelled
+              ? undefined
+              : {
+                  code: CLOUD_ERROR_CODES.PROVIDER_NOT_ACCEPTED,
+                  message: "The provider rejected a later step after accepting the run.",
+                },
+            terminationConfirmed: true,
+            releaseReservation: false,
+            provenNotAccepted: false,
+          });
+          return terminal.run.status === "unconfirmed"
+            ? "unconfirmed"
+            : terminal.run.status === "cancelled"
+              ? "cancelled"
+              : "failed";
+        }
+        // A definitive first-request 4xx proves no generation was billed.
         const cancelled = run.cancelRequestedAt !== undefined;
         const terminal = await options.repository.terminateRun(run.id, generation, {
           status: cancelled ? "cancelled" : "failed",
@@ -263,6 +332,15 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
         return terminal.run.status === "cancelled" ? "cancelled" : "failed";
       }
       if (error instanceof ProviderAcceptanceUnknownError) {
+        // Acceptance is unknown, but any authoritative usage already returned
+        // by earlier steps must still be charged. Unknown remainder stays
+        // reserved because the unconfirmed terminal never releases budget.
+        if (error.usage !== undefined) {
+          await settle(run.id, generation, {
+            ...error.usage,
+            ...(error.generationId === undefined ? {} : { generationId: error.generationId }),
+          });
+        }
         await terminalForCrashWindow(job);
         return "unconfirmed";
       }

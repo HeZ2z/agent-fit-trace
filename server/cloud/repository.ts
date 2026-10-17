@@ -37,9 +37,17 @@ export interface CloudAccountState {
   accountId: string;
   isAnonymous: boolean;
   quotaConfigured: boolean;
+  /** False unless the quota has a finite token/request budget configured. */
+  budgetConfigured: boolean;
+  /** Database-owned global provider kill switch. Missing/false is off. */
+  providerEnabled: boolean;
   concurrentLimit: number;
   reservedCount: number;
-  tokensRemaining: number | null;
+  tokensRemaining: number;
+  tokensReserved: number;
+  perRunTokenBudget: number;
+  perStepTokenBudget: number;
+  perRunRequestLimit: number;
 }
 
 export interface CloudSessionRecord {
@@ -84,6 +92,13 @@ export interface CloudRunRecord {
   providerGenerationId?: string;
   terminationConfirmed: boolean;
   reservationReleased: boolean;
+  /** Finite token allocation reserved at submit; 0 means unconfigured. */
+  tokenBudget: number;
+  /** Finite provider-request allocation reserved at submit. */
+  requestBudget: number;
+  providerTokensCommitted: number;
+  providerRequestsCommitted: number;
+  budgetReleased: boolean;
   failure?: { code: string; message: string };
 }
 
@@ -92,11 +107,21 @@ export interface CloudUsage {
   completionTokens: number;
   totalTokens: number;
   /**
-   * False when the provider did not return a usable usage block. Totals are
-   * then local estimates for stopping only and MUST NOT be settled as actual
-   * billed usage. The default is true for older/in-memory callers.
+   * False when at least one provider step did not return a usable usage block.
+   * Totals then include local estimates for stopping only and MUST NOT be
+   * settled as actual billed usage. The default is true for older/in-memory
+   * callers.
    */
   known?: boolean;
+  /** Authoritative tokens from provider-returned usage only. */
+  knownTokens?: number;
+  knownPromptTokens?: number;
+  knownCompletionTokens?: number;
+  /**
+   * False when some usage is unknown. Settlement charges `knownTokens` and
+   * leaves the rest of the reservation in place. Defaults to true.
+   */
+  complete?: boolean;
   costUsd?: number;
   generationId?: string;
 }
@@ -160,6 +185,12 @@ export interface CloudStepAuthorization {
   reason?: string;
 }
 
+/** Worst-case finite budget for one provider HTTP request. */
+export interface CloudStepBudget {
+  tokens: number;
+  requests: number;
+}
+
 export interface CloudAcceptedInfo {
   generationId?: string;
   usage?: CloudUsage;
@@ -186,8 +217,12 @@ export interface CloudWorkerRepository {
   claimOutbox(workerId: string, leaseMs: number, limit: number): Promise<CloudOutboxJob[]>;
   markProviderCallStarted(runId: string, generation: number): Promise<CloudStartCallResult>;
   markProviderAccepted(runId: string, generation: number, accepted: CloudAcceptedInfo): Promise<void>;
-  /** Durable pre-fetch gate: renews/validates ownership and records dispatch. */
-  authorizeProviderStep(runId: string, generation: number): Promise<CloudStepAuthorization>;
+  /** Durable pre-fetch gate: validates ownership and atomically charges budget. */
+  authorizeProviderStep(
+    runId: string,
+    generation: number,
+    budget: CloudStepBudget,
+  ): Promise<CloudStepAuthorization>;
   appendEvent(runId: string, generation: number, payload: CoachingEventPayload): Promise<number>;
   terminateRun(runId: string, generation: number, terminal: CloudTerminal): Promise<{ run: CloudRunRecord; lastSeq: number }>;
   settleUsage(runId: string, generation: number, usage: CloudUsage): Promise<{ settled: boolean }>;

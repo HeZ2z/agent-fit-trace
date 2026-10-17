@@ -260,6 +260,12 @@ export interface CoachingTrustedIdentity {
 export interface CoachingCloudQuota {
   configured: boolean;
   remaining: number;
+  /**
+   * False when the quota has only a concurrency count and no finite
+   * token/request budget. Omitted for legacy callers, but a present false
+   * fails cloud qualification closed.
+   */
+  budgetConfigured?: boolean;
 }
 
 export interface CoachingCloudQualificationInput {
@@ -302,6 +308,12 @@ export function qualifyCloudBackend(input: CoachingCloudQualificationInput): Coa
   const quota = input.quota;
   if (quota === undefined || quota === null || quota.configured !== true) {
     return unavailable("quota-not-configured", "Cloud coaching quota is not configured.");
+  }
+  if (quota.budgetConfigured === false) {
+    return unavailable(
+      "quota-not-configured",
+      "Cloud coaching quota has no finite execution budget configured.",
+    );
   }
   if (typeof quota.remaining !== "number" || !Number.isFinite(quota.remaining) || quota.remaining < 1) {
     return unavailable("quota-exhausted", "No cloud coaching quota remains for this account.");

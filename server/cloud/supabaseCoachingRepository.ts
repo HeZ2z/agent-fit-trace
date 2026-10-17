@@ -43,6 +43,7 @@ import type {
 import { CloudError, assertCloudCursor, toPublicRun } from "./repository.ts";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
 
 export interface SupabaseCoachingRequestOptions {
@@ -98,8 +99,28 @@ function mapRpcError(status: number, body: unknown): CloudError {
   if (marker.includes("CLOUD_QUOTA_NOT_CONFIGURED")) {
     return new CloudError("QUOTA_NOT_CONFIGURED", "Cloud coaching quota is not configured.", 403);
   }
+  if (marker.includes("CLOUD_DISABLED")) {
+    return new CloudError("CLOUD_DISABLED", "Cloud coaching is not enabled on this server.", 503);
+  }
   if (marker.includes("CLOUD_QUOTA_EXHAUSTED")) {
     return new CloudError("QUOTA_EXHAUSTED", "No cloud coaching capacity is available.", 429);
+  }
+  if (marker.includes("CLOUD_INVALID") || marker.includes("CLOUD_EVENT_CAP")) {
+    return new CloudError(
+      "VALIDATION_ERROR",
+      "Cloud coaching request is invalid or exceeds a configured bound.",
+      400,
+    );
+  }
+  if (marker.includes("CLOUD_REFUND_UNPROVEN")) {
+    return new CloudError(
+      "REFUND_UNPROVEN",
+      "The provider may have accepted the run; its reservation cannot be refunded.",
+      409,
+    );
+  }
+  if (marker.includes("CLOUD_TERMINAL")) {
+    return new CloudError("RUN_TERMINAL", "The cloud coaching run is already terminal.", 409);
   }
   if (marker.includes("CLOUD_EXPIRED_CURSOR") || marker.includes("CLOUD_CURSOR")) {
     return new CloudError("EXPIRED_CURSOR", "Event cursor is beyond the retained log; refetch from seq 0.", 410);
@@ -191,6 +212,18 @@ function parseRunRow(value: unknown): CloudRunRecord {
     expiresAt: asNumber(row.expiresAt, "run.expiresAt"),
     terminationConfirmed: row.terminationConfirmed === true,
     reservationReleased: row.reservationReleased === true,
+    tokenBudget: row.tokenBudget === undefined ? 0 : asNumber(row.tokenBudget, "run.tokenBudget"),
+    requestBudget:
+      row.requestBudget === undefined ? 0 : asNumber(row.requestBudget, "run.requestBudget"),
+    providerTokensCommitted:
+      row.providerTokensCommitted === undefined
+        ? 0
+        : asNumber(row.providerTokensCommitted, "run.providerTokensCommitted"),
+    providerRequestsCommitted:
+      row.providerRequestsCommitted === undefined
+        ? 0
+        : asNumber(row.providerRequestsCommitted, "run.providerRequestsCommitted"),
+    budgetReleased: row.budgetReleased === true,
   };
   if (typeof row.cancelRequestedAt === "string") run.cancelRequestedAt = row.cancelRequestedAt;
   if (typeof row.cancelReason === "string") run.cancelReason = row.cancelReason;
@@ -281,18 +314,38 @@ export function createSupabaseCoachingRequestRepository(
         accountId: asString(value.accountId, "accountId"),
         isAnonymous: value.isAnonymous === true,
         quotaConfigured: value.quotaConfigured === true,
+        budgetConfigured: value.budgetConfigured === true,
+        providerEnabled: value.providerEnabled === true,
         concurrentLimit: asNumber(value.concurrentLimit, "concurrentLimit"),
         reservedCount: asNumber(value.reservedCount, "reservedCount"),
+        // Missing/legacy responses are treated as zero, never as unlimited.
         tokensRemaining:
           value.tokensRemaining === null || value.tokensRemaining === undefined
-            ? null
+            ? 0
             : asNumber(value.tokensRemaining, "tokensRemaining"),
+        tokensReserved:
+          value.tokensReserved === undefined ? 0 : asNumber(value.tokensReserved, "tokensReserved"),
+        perRunTokenBudget:
+          value.perRunTokenBudget === undefined
+            ? 0
+            : asNumber(value.perRunTokenBudget, "perRunTokenBudget"),
+        perStepTokenBudget:
+          value.perStepTokenBudget === undefined
+            ? 0
+            : asNumber(value.perStepTokenBudget, "perStepTokenBudget"),
+        perRunRequestLimit:
+          value.perRunRequestLimit === undefined
+            ? 0
+            : asNumber(value.perRunRequestLimit, "perRunRequestLimit"),
       };
     },
 
     async createSession(id): Promise<CloudSessionRecord> {
       const value = asRecord(
-        await rpc("coaching_create_session", { p_id: optionalStringParam(id) }),
+        await rpc("coaching_create_session", {
+          p_id: optionalStringParam(id),
+          p_ttl_ms: DEFAULT_SESSION_TTL_MS,
+        }),
         "session",
       );
       return {
@@ -448,11 +501,13 @@ export function createSupabaseCoachingWorkerRepository(
       });
     },
 
-    async authorizeProviderStep(runId, generation): Promise<CloudStepAuthorization> {
+    async authorizeProviderStep(runId, generation, budget): Promise<CloudStepAuthorization> {
       const value = asRecord(
         await rpc("coaching_authorize_provider_step", {
           p_run_id: runId,
           p_generation: generation,
+          p_step_tokens: budget.tokens,
+          p_step_requests: budget.requests,
         }),
         "provider step authorization",
       );
@@ -508,6 +563,7 @@ export function createSupabaseCoachingWorkerRepository(
           p_total_tokens: usage.totalTokens,
           p_cost_usd: usage.costUsd ?? null,
           p_generation_id: optionalStringParam(usage.generationId),
+          p_usage_complete: usage.complete !== false,
         }),
         "usage settlement",
       );

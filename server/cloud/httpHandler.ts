@@ -237,11 +237,21 @@ export function createCloudCoachingHandler(
       if (pathname === "/coaching/cloud/capabilities" && method === "GET") {
         return ok({
           enabled: true,
-          providerConfigured: options.providerConfigured,
+          // Provider availability is never inferred from concurrency counts.
+          // The database must have the global switch on and a finite budget.
+          providerConfigured:
+            options.providerConfigured && state.providerEnabled && state.budgetConfigured,
+          providerEnabled: state.providerEnabled,
           accountFormal: state.isAnonymous === false,
           quotaConfigured: state.quotaConfigured,
+          budgetConfigured: state.budgetConfigured,
           concurrentLimit: state.concurrentLimit,
           reservedCount: state.reservedCount,
+          tokensRemaining: state.tokensRemaining,
+          tokensReserved: state.tokensReserved,
+          perRunTokenBudget: state.perRunTokenBudget,
+          perStepTokenBudget: state.perStepTokenBudget,
+          perRunRequestLimit: state.perRunRequestLimit,
           tools: [...COACHED_TOOL_NAMES],
           ...options.providerLimits,
         });
@@ -294,6 +304,20 @@ export function createCloudCoachingHandler(
       }
 
       if (pathname === "/coaching/cloud/runs" && method === "POST") {
+        if (!state.providerEnabled) {
+          return errorResponse(
+            CLOUD_ERROR_CODES.CLOUD_DISABLED,
+            "Cloud coaching is not enabled on this server.",
+            503,
+          );
+        }
+        if (!state.budgetConfigured) {
+          return errorResponse(
+            CLOUD_ERROR_CODES.QUOTA_NOT_CONFIGURED,
+            "Cloud coaching quota has no finite execution budget configured.",
+            403,
+          );
+        }
         if (!options.providerConfigured) {
           return errorResponse(
             CLOUD_ERROR_CODES.PROVIDER_UNCONFIGURED,

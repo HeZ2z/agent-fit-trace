@@ -121,10 +121,19 @@ export interface CloudCancelRunResult {
 export interface CloudCapabilities {
   enabled: boolean;
   providerConfigured: boolean;
+  /** Database-owned global provider switch. False means no paid step runs. */
+  providerEnabled: boolean;
   accountFormal: boolean;
   quotaConfigured: boolean;
+  /** True only when finite token, step, and request budgets are configured. */
+  budgetConfigured: boolean;
   concurrentLimit: number;
   reservedCount: number;
+  tokensRemaining: number;
+  tokensReserved: number;
+  perRunTokenBudget: number;
+  perStepTokenBudget: number;
+  perRunRequestLimit: number;
   tools: string[];
   maxSteps: number;
   maxTokens: number;
@@ -150,6 +159,16 @@ function assertNonBlank(value: unknown, field: string, maxLength = MAX_ID_LENGTH
 
 function assertOptionalString(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
+  return assertNonBlank(value, field);
+}
+
+/**
+ * Response-side optional fields: Postgres JSON encodes an absent value as
+ * `null`, not as a missing key. Normalize only `null`; any non-null value is
+ * still validated exactly as before.
+ */
+function assertNullableOptionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
   return assertNonBlank(value, field);
 }
 
@@ -221,8 +240,10 @@ function parseRunSnapshot(value: unknown): CoachingDataSnapshot {
     recordIds,
     recordCount,
   };
-  if (value.from !== undefined) snapshot.from = assertNonBlank(value.from, "snapshot.from");
-  if (value.to !== undefined) snapshot.to = assertNonBlank(value.to, "snapshot.to");
+  const from = assertNullableOptionalString(value.from, "snapshot.from");
+  const to = assertNullableOptionalString(value.to, "snapshot.to");
+  if (from !== undefined) snapshot.from = from;
+  if (to !== undefined) snapshot.to = to;
   return snapshot;
 }
 
@@ -251,10 +272,9 @@ export function parseCloudCoachingRun(value: unknown): CloudCoachingRun {
   if (value.terminationConfirmed !== undefined && typeof value.terminationConfirmed !== "boolean") {
     fail("terminationConfirmed", "must be a boolean");
   }
-  if (value.cancelRequestedAt !== undefined) {
-    run.cancelRequestedAt = assertNonBlank(value.cancelRequestedAt, "cancelRequestedAt");
-  }
-  if (value.failure !== undefined) {
+  const cancelRequestedAt = assertNullableOptionalString(value.cancelRequestedAt, "cancelRequestedAt");
+  if (cancelRequestedAt !== undefined) run.cancelRequestedAt = cancelRequestedAt;
+  if (value.failure !== undefined && value.failure !== null) {
     if (!isObject(value.failure)) fail("failure", "must be an object");
     run.failure = {
       code: assertNonBlank(value.failure.code, "failure.code"),

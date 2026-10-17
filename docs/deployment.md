@@ -85,22 +85,27 @@ migrated Supabase project or the real OpenRouter service. The code in
 exists, but do not advertise hosted coaching as production-ready until the
 verification steps below have actually been run.
 
-### 1. Apply the migration
+### 1. Apply the migrations
 
-Apply `supabase/migrations/20261017000200_coaching_cloud.sql` through the
-normal Supabase migration tooling for the target project. It is additive and
+Apply `supabase/migrations/20261017000200_coaching_cloud.sql`, then the
+additive correction `supabase/migrations/20261017000300_cloud_execution_guards.sql`,
+through the normal Supabase migration tooling for the target project. They are
 ordered after the workout/profile migrations (`20261010000000`,
 `20261011000000`, `20261017000000`, `20261017000100`). Do not reset a
-long-running local stack just to apply it; coordinate with its owner.
+long-running local stack just to apply them; coordinate with its owner. The
+base file is already applied in some environments and must never be rewritten;
+all corrections belong to the later additive migration.
 
-The migration creates ownership/RLS tables (`coaching_sessions`,
+The migrations create ownership/RLS tables (`coaching_sessions`,
 `coaching_snapshots`, `coaching_runs`, `coaching_run_events`,
 `coaching_quota`, `coaching_usage_ledger`, `coaching_outbox`) and the
 request/worker RPCs. Snapshot contents are derived inside SQL from the caller's
 own `public.workouts` rows under `auth.uid()`; direct callers cannot supply
 records. TTLs and per-account session/snapshot counts are clamped and
-serialized. Submission reserves against a server-configured formal-account
-quota (20 concurrent by default).
+serialized. Submission reserves a finite per-run token/request allocation
+against a server-configured formal-account quota (20 concurrent by default), and
+the corrected worker authorization RPC reads `coaching_quota.configured`
+instead of the base file's nonexistent `quota_configured` column.
 
 ### 2. Request-path environment (Vercel)
 
@@ -165,21 +170,59 @@ leases expire. Keep the lease comfortably above the configured provider loop
 (`maxSteps × timeoutMs` plus overhead); the default loop is 4 × 60 seconds
 inside a 5-minute lease.
 
-### 4. Accounting and cancellation caveats
+### 4. Enabling paid execution (database-owned)
+
+Migration `20261017000300_cloud_execution_guards.sql` must be applied after the
+base `20261017000200_coaching_cloud.sql`. It adds finite budgets and a global
+provider switch that defaults to **OFF**. Neither the request path nor the
+worker can enable it; an operator must do both of the following explicitly:
+
+```sql
+-- Operator/service-role only. The row already exists and defaults to false.
+update public.coaching_runtime_control
+set provider_enabled = true, updated_at = now()
+where id = 'global';
+
+-- Every finite field is required. A missing/zero value fails closed; there is
+-- no nullable "unlimited" budget.
+insert into public.coaching_quota (
+  owner_id, configured, concurrent_limit, tokens_limit,
+  per_run_token_budget, per_step_token_budget, per_run_request_limit
+) values (
+  '<auth user uuid>', true, 4, 200000, 20000, 4096, 8
+)
+on conflict (owner_id) do update set
+  configured = excluded.configured,
+  concurrent_limit = excluded.concurrent_limit,
+  tokens_limit = excluded.tokens_limit,
+  per_run_token_budget = excluded.per_run_token_budget,
+  per_step_token_budget = excluded.per_step_token_budget,
+  per_run_request_limit = excluded.per_run_request_limit,
+  updated_at = now();
+```
+
+### 5. Accounting and cancellation caveats
 
 - Provider usage is settled once, only if the provider returned usable usage
   and only under the current unexpired lease generation. Missing usage remains
   explicitly accounting-pending; it is never written as a zero-dollar or
-  zero-token charge.
-- Budget reservations are coarse concurrency/token controls, not a strict USD
-  guarantee. OpenRouter pricing/model limits remain a deployment concern.
+  zero-token charge. Partial usage charges the known tokens and retains the
+  unknown remainder of the reservation.
+- Submit atomically reserves a finite per-run token allocation and request
+  count, and the database re-checks a per-step ceiling plus the per-run/request
+  budgets immediately before every provider fetch. A second provider request
+  rejected with a 4xx after an earlier accepted step is an accepted failure: its
+  known usage is settled and the reservation is **not** refunded as free.
+- Budget reservations are finite concurrency/token controls, not a strict USD
+  guarantee. Local token estimates are stopping bounds, not billing truth.
+  OpenRouter pricing/model limits remain a deployment concern.
 - There is no documented provider cancellation endpoint. Aborting the HTTP read
   does not prove the provider stopped billing. The server therefore reports
   `cancelling`/`unconfirmed`, retains the reservation, and never automatically
   redispatches. A real OpenRouter QA run must confirm this behavior before the
   feature is described as complete.
 
-### 5. Verification
+### 6. Verification
 
 Before enabling the path in a public environment, run:
 
@@ -190,9 +233,14 @@ pnpm build
 ```
 
 The default suite covers the provider request/tool mapping, unknown-tool
-refusal, response/input bounds, missing usage, worker generation/cancellation/
-unconfirmed states, HTTP guest/unknown/forged-body denial, replay after snapshot
-expiry, and the 20-concurrency reservation cap against in-memory fakes.
+refusal, response/input bounds, missing and partial usage, worker
+generation/cancellation/unconfirmed states, HTTP guest/unknown/forged-body
+denial, replay after snapshot expiry, the 20-concurrency reservation cap, and
+real-RPC-adapter worker flows (claim → authorize → accepted → append → settle →
+terminal, second-step 4xx billing, cancel-after-accept, lease expiry/reaper)
+against a fake database. Static migration tests assert the additive guards,
+including that the effective authorization RPC reads the real `configured`
+column.
 
 Real database integration tests are opt-in and require a migrated isolated
 local stack (never reset a shared one):
@@ -206,11 +254,14 @@ FIT_TRACE_SUPABASE_INTEGRATION=1 node --test tests/supabaseIntegration.test.ts
 
 Those tests cover direct-RPC snapshot forgery rejection/authoritative records,
 malicious TTL clamping, serialized session caps, concurrent idempotent submits,
-and the 20-reservation concurrency limit. They do not prove a real OpenRouter
-call. Before claiming cloud coaching is complete, run a separately authorized
-real-provider smoke test (with explicit spend approval) and confirm usage,
-generation-id reconciliation, cancellation/unconfirmed behavior, and worker
-restart recovery.
+the 20-reservation concurrency limit, unknown-key/byte/date bounds, finite
+budget reservation and replay after snapshot expiry, and the real worker RPC
+sequence (claim → mark → authorize → accepted → append → settle → terminal,
+cancel-after-accept, expired-lease reaper). They still do not prove a real
+OpenRouter call. Before claiming cloud coaching is complete, run a separately
+authorized real-provider smoke test (with explicit spend approval) and confirm
+usage, generation-id reconciliation, cancellation/unconfirmed behavior, and
+worker restart recovery.
 
 User-owned Codex/OpenCode/pi agents run on the user's computer and require
 a locally started, paired connector. Local agent credentials remain local;

@@ -27,19 +27,53 @@ import type { OpenRouterConfig } from "./config.ts";
 import { OPENROUTER_CHAT_COMPLETIONS_URL } from "./config.ts";
 import type { CloudUsage } from "./repository.ts";
 
-/** Definitively no provider acceptance: only a 4xx response or local validation. */
+/**
+ * The provider rejected a request without accepting it.
+ *
+ * `accepted` is false only when no earlier step in this run was accepted. A
+ * 4xx on a LATER step (after a successful tool call) is not proof that the
+ * earlier generation was free; callers must settle the carried usage and keep
+ * the reservation. `usage` holds the known/accepted usage at the failure.
+ */
 export class ProviderNotAcceptedError extends Error {
-  constructor(message: string) {
+  readonly accepted: boolean;
+  readonly usage?: CloudUsage;
+  readonly generationId?: string;
+
+  constructor(
+    message: string,
+    options: { accepted?: boolean; usage?: CloudUsage; generationId?: string } = {},
+  ) {
     super(message);
     this.name = "ProviderNotAcceptedError";
+    this.accepted = options.accepted === true;
+    if (options.usage !== undefined) this.usage = options.usage;
+    if (options.generationId !== undefined) this.generationId = options.generationId;
   }
 }
 
 /** The request may have been accepted/billed; never auto-retry. */
 export class ProviderAcceptanceUnknownError extends Error {
-  constructor(message = "Provider acceptance could not be confirmed.") {
+  readonly usage?: CloudUsage;
+  readonly generationId?: string;
+  readonly accepted: boolean;
+  readonly dispatched: boolean;
+
+  constructor(
+    message = "Provider acceptance could not be confirmed.",
+    options: {
+      usage?: CloudUsage;
+      generationId?: string;
+      accepted?: boolean;
+      dispatched?: boolean;
+    } = {},
+  ) {
     super(message);
     this.name = "ProviderAcceptanceUnknownError";
+    if (options.usage !== undefined) this.usage = options.usage;
+    if (options.generationId !== undefined) this.generationId = options.generationId;
+    this.accepted = options.accepted === true;
+    this.dispatched = options.dispatched === true;
   }
 }
 
@@ -119,6 +153,12 @@ export interface ProviderStepDecision {
   reason?: string;
 }
 
+/** Worst-case finite budget for one provider HTTP request. */
+export interface ProviderStepBudget {
+  tokens: number;
+  requests: number;
+}
+
 export interface ProviderRunInput {
   runId: string;
   prompt: string;
@@ -129,9 +169,10 @@ export interface ProviderRunInput {
    * Durable authorisation immediately before EVERY provider HTTP request.
    * The callback performs the lease/generation/cancellation/account/quota
    * checks and records the first actual fetch. It must never perform a
-   * provider call itself and must not implicitly retry.
+   * provider call itself and must not implicitly retry. The finite budget is
+   * the worst-case token/request charge this step may incur.
    */
-  beforeProviderRequest(): Promise<ProviderStepDecision>;
+  beforeProviderRequest(budget?: ProviderStepBudget): Promise<ProviderStepDecision>;
 }
 
 export interface ProviderSuccess {
@@ -226,17 +267,31 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function readUsage(value: unknown): CloudUsage {
   if (!isObject(value)) {
-    return { promptTokens: 0, completionTokens: 0, totalTokens: 0, known: false };
+    return {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      known: false,
+      knownTokens: 0,
+      knownPromptTokens: 0,
+      knownCompletionTokens: 0,
+      complete: false,
+    };
   }
   const prompt = typeof value.prompt_tokens === "number" ? value.prompt_tokens : 0;
   const completion = typeof value.completion_tokens === "number" ? value.completion_tokens : 0;
   const total = typeof value.total_tokens === "number" ? value.total_tokens : prompt + completion;
   const cost = typeof value.cost === "number" ? value.cost : undefined;
+  const known = total > 0 || prompt > 0 || completion > 0;
   return {
     promptTokens: prompt,
     completionTokens: completion,
     totalTokens: total,
-    known: total > 0 || prompt > 0 || completion > 0,
+    known,
+    knownTokens: known ? total : 0,
+    knownPromptTokens: known ? prompt : 0,
+    knownCompletionTokens: known ? completion : 0,
+    complete: known,
     ...(cost === undefined ? {} : { costUsd: cost }),
   };
 }
@@ -281,7 +336,17 @@ function addUsage(a: CloudUsage, b: CloudUsage): CloudUsage {
     promptTokens: a.promptTokens + b.promptTokens,
     completionTokens: a.completionTokens + b.completionTokens,
     totalTokens: a.totalTokens + b.totalTokens,
+    // `knownTokens` only accumulates authoritative provider figures so a
+    // partial settlement never charges local estimates.
+    knownTokens: (a.knownTokens ?? (a.known === false ? 0 : a.totalTokens))
+      + (b.knownTokens ?? (b.known === false ? 0 : b.totalTokens)),
+    knownPromptTokens: (a.knownPromptTokens ?? (a.known === false ? 0 : a.promptTokens))
+      + (b.knownPromptTokens ?? (b.known === false ? 0 : b.promptTokens)),
+    knownCompletionTokens:
+      (a.knownCompletionTokens ?? (a.known === false ? 0 : a.completionTokens))
+      + (b.knownCompletionTokens ?? (b.known === false ? 0 : b.completionTokens)),
     known: a.known !== false && b.known !== false,
+    complete: a.complete !== false && b.complete !== false && a.known !== false && b.known !== false,
     ...(a.costUsd === undefined && b.costUsd === undefined
       ? {}
       : { costUsd: (a.costUsd ?? 0) + (b.costUsd ?? 0) }),
@@ -366,7 +431,16 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
         },
       ];
       const deadline = now() + config.timeoutMs;
-      let usage: CloudUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, known: true };
+      let usage: CloudUsage = {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        known: true,
+        knownTokens: 0,
+        knownPromptTokens: 0,
+        knownCompletionTokens: 0,
+        complete: true,
+      };
       let generationId: string | undefined;
       let accepted = false;
       let dispatched = false;
@@ -376,7 +450,12 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
       for (let step = 0; step < config.maxSteps; step += 1) {
         if (now() >= deadline) {
           throw accepted
-            ? new ProviderAcceptanceUnknownError("Provider call exceeded the configured timeout.")
+            ? new ProviderAcceptanceUnknownError("Provider call exceeded the configured timeout.", {
+                usage,
+                ...(generationId === undefined ? {} : { generationId }),
+                accepted,
+                dispatched,
+              })
             : new ProviderNotAcceptedError("Provider call timed out before dispatch.");
         }
 
@@ -387,6 +466,13 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
         const estimatedInput = estimateTokens(messages);
         const remainingTokens = config.maxTokens - usage.totalTokens - estimatedInput;
         if (remainingTokens <= 0) {
+          // Before any provider acceptance this is a local refusal, so the
+          // reservation can be refunded. After acceptance it is a billed run.
+          if (!accepted) {
+            throw new ProviderNotAcceptedError(
+              "Configured token budget cannot cover another provider step.",
+            );
+          }
           throw new ProviderRunFailedError(
             "TOKEN_BUDGET",
             "Configured token budget cannot cover another provider step.",
@@ -405,6 +491,11 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
           stream: false,
         });
         if (new TextEncoder().encode(requestBody).byteLength > config.maxInputBytes) {
+          if (!accepted) {
+            throw new ProviderNotAcceptedError(
+              "The repeated provider context exceeds the configured input byte limit.",
+            );
+          }
           throw new ProviderRunFailedError(
             "INPUT_BUDGET",
             "The repeated provider context exceeds the configured input byte limit.",
@@ -414,8 +505,12 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
         }
 
         // Recheck the durable lease, cancellation, account, and quota after
-        // every await and immediately before every actual fetch.
-        const decision = await input.beforeProviderRequest();
+        // every await and immediately before every actual fetch. The finite
+        // worst-case token charge is committed atomically by the database.
+        const decision = await input.beforeProviderRequest({
+          tokens: estimatedInput + maxCompletion,
+          requests: 1,
+        });
         if (!decision.allowed) {
           if (decision.cancelled === true) {
             throw new ProviderCancelledError(usage, generationId, dispatched);
@@ -448,20 +543,50 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
             dispatched
               ? "Provider transport failed after dispatch."
               : "Provider transport outcome is unknown.",
+            {
+              usage,
+              ...(generationId === undefined ? {} : { generationId }),
+              accepted,
+              dispatched,
+            },
           );
         }
 
         if (!response.ok) {
-          // 4xx responses are a definitive provider rejection (no generation).
           // 429/5xx may have reached the model: acceptance is unknown.
           if (response.status === 429 || response.status >= 500) {
-            throw new ProviderAcceptanceUnknownError("Provider returned a transient server error.");
+            throw new ProviderAcceptanceUnknownError("Provider returned a transient server error.", {
+              usage,
+              ...(generationId === undefined ? {} : { generationId }),
+              accepted,
+              dispatched: true,
+            });
           }
-          throw new ProviderNotAcceptedError(`Provider rejected the request with HTTP ${response.status}.`);
+          // A 4xx on the FIRST request proves nothing was accepted. A 4xx on
+          // a later request does not free the earlier accepted generation:
+          // carry the usage and let the worker settle/retain the reservation.
+          throw new ProviderNotAcceptedError(`Provider rejected the request with HTTP ${response.status}.`, {
+            accepted,
+            usage,
+            ...(generationId === undefined ? {} : { generationId }),
+          });
         }
 
-        const body = await readBoundedJson(response);
-        const completion = parseCompletion(body);
+        let completion: ParsedCompletion;
+        try {
+          const body = await readBoundedJson(response);
+          completion = parseCompletion(body);
+        } catch (error) {
+          if (error instanceof ProviderAcceptanceUnknownError) {
+            throw new ProviderAcceptanceUnknownError(error.message, {
+              usage,
+              ...(generationId === undefined ? {} : { generationId }),
+              accepted,
+              dispatched: true,
+            });
+          }
+          throw error;
+        }
         const reportedUsage =
           completion.usage.known !== false
             ? completion.usage
@@ -472,6 +597,10 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
                 completionTokens: estimateTokens(completion.content),
                 totalTokens: estimatedInput + estimateTokens(completion.content),
                 known: false,
+                knownTokens: 0,
+                knownPromptTokens: 0,
+                knownCompletionTokens: 0,
+                complete: false,
               };
         usage = addUsage(usage, reportedUsage);
         if (completion.id !== undefined) generationId = completion.id;
@@ -485,7 +614,15 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
               usage,
             });
           } catch {
-            throw new ProviderAcceptanceUnknownError("Provider was accepted but the acceptance marker could not be stored.");
+            throw new ProviderAcceptanceUnknownError(
+              "Provider was accepted but the acceptance marker could not be stored.",
+              {
+                usage,
+                ...(generationId === undefined ? {} : { generationId }),
+                accepted: true,
+                dispatched: true,
+              },
+            );
           }
         }
         if (usage.totalTokens > config.maxTokens) {
@@ -592,6 +729,9 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
         }
       }
 
+      if (!accepted) {
+        throw new ProviderNotAcceptedError("The configured maximum number of provider steps was reached.");
+      }
       throw new ProviderRunFailedError(
         "MAX_STEPS",
         "The configured maximum number of provider steps was reached.",

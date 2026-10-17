@@ -254,9 +254,11 @@ Constraints:
   `analysis_result` can come only from the deterministic tool result and is
   re-validated before it is stored.
 - Step, total/per-step token, request-byte, response-byte, and wall-clock
-  budgets are enforced by the worker. Multibyte input is bounded by UTF-8
-  bytes, not by a chars/4 estimate. Local token estimates are stopping bounds,
-  not billing truth.
+  budgets are enforced by the worker and rechecked by the database before every
+  fetch. Multibyte input is bounded by UTF-8 bytes, not by a chars/4 estimate.
+  Local token estimates are stopping bounds, not billing truth. Token/request
+  reservations are finite accounting controls, not a strict USD guarantee;
+  provider/model pricing remains an operator concern.
 - Provider responses are read through a metered stream with a hard byte cap;
   `Content-Length` alone is not trusted. There is no automatic provider retry.
 - Non-streaming responses may carry `usage`; OpenRouter also exposes
@@ -264,7 +266,9 @@ Constraints:
   generation id is the reconciliation handle.
 - Missing provider usage leaves accounting explicitly unknown. It is never
   settled as a fabricated zero charge. Only provider-returned usage is settled,
-  at most once, under the current unexpired lease generation.
+  at most once, under the current unexpired lease generation. A partial usage
+  block charges the known tokens and retains the unknown remainder of the
+  reservation instead of refunding it.
 - **No cancellation endpoint is documented.** Aborting the HTTP read stops
   local consumption, not necessarily provider billing. Until termination is
   proven, a cancelled cloud run stays `cancelling` or becomes `unconfirmed`,
@@ -286,12 +290,26 @@ an existing idempotency record before requiring a live snapshot, returns
 against a 20-concurrent global/per-account cap. A run retains its own snapshot
 copy so a dispatched worker never depends on snapshot TTL.
 
+`supabase/migrations/20261017000300_cloud_execution_guards.sql` is an additive
+correction to that applied base migration (never rewrite the base). It fixes the
+worker authorization RPC to read the real `coaching_quota.configured` column,
+adds finite per-run token and request reservations plus a per-step ceiling,
+adds a database-owned global provider kill switch that defaults to OFF, bounds
+direct-RPC text/payloads by bytes, validates dates by a real calendar cast,
+derives canonical identity inside SQL from normalized arguments while rejecting
+unknown keys, and settles known usage exactly once while retaining unknown
+remainder. There is deliberately no nullable "unlimited" budget: a quota row
+without finite token, per-run, per-step, and request limits fails closed.
+Operators must explicitly enable the global switch and configure a quota before
+any paid call is authorized.
+
 **Worker lifecycle.** `server/cloud/outboxWorker.ts` claims one outbox job per
 tick (sequential batch claims would let later leases expire), writes a
 pre-fetch marker, and calls a database authorization RPC immediately before
-every provider request. That RPC rechecks the lease generation, expiry,
-cancellation, formal-account status, and quota. Every event, settlement, and
-terminal write is generation-fenced. Expired leases with a fetch marker become
+every provider request. That RPC rechecks the global switch, lease generation,
+expiry, cancellation, formal-account status, per-step ceiling, per-run token and
+request budgets, and quota. Every event, settlement, and terminal write is
+generation-fenced. Expired leases with a fetch marker become
 `unconfirmed` and are never redispatched; expired pre-fetch leases return to
 `queued`/`cancelling`. A terminal event is written once. `unconfirmed` is a run
 status; the shared terminal event uses `failed` with an explicit reason because
@@ -304,9 +322,12 @@ the shared event contract has no `unconfirmed` terminal status.
   is unchanged. Cloud routes are server-side and are not advertised as
   available by the local launcher's discovery.
 - No hosted deployment and no real Supabase migration application or
-  OpenRouter call in this checkpoint. The durable schema, fake-repository
-  tests, and opt-in integration tests exist, but production behavior after a
-  real migration/worker/provider run is unverified.
+  OpenRouter call in this checkpoint. The durable schema, fake-repository and
+  real-RPC-adapter worker tests, and opt-in integration tests exist, but
+  production behavior after a real migration/worker/provider run is unverified.
+  The worker RPC tests use a fake `fetch` that speaks the real RPC names and
+  argument shapes; they catch schema/type drift only when run against a live
+  migrated database.
 - No provider cancellation proof. OpenRouter may continue billing after the
   HTTP read aborts; the implementation therefore reports unconfirmed states
   rather than claiming a clean stop.

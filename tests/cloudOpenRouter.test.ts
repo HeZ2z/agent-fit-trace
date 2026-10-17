@@ -11,6 +11,7 @@ import { loadFixture } from "./helpers.ts";
 import {
   ProviderAcceptanceUnknownError,
   ProviderCancelledError,
+  ProviderNotAcceptedError,
   ProviderRunFailedError,
   ProviderToolRefusedError,
   createOpenRouterProvider,
@@ -168,7 +169,7 @@ test("openrouter: multibyte input above the byte cap is refused before any fetch
   const { input } = providerInput({ prompt: "你".repeat(500) });
   await assert.rejects(
     provider.run(input),
-    (error: unknown) => error instanceof ProviderRunFailedError && error.code === "INPUT_BUDGET",
+    (error: unknown) => error instanceof ProviderNotAcceptedError && error.accepted === false,
   );
   assert.equal(calls, 0);
 });

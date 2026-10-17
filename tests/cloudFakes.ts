@@ -55,17 +55,25 @@ export interface FakeCloudOptions {
   accountId?: string;
   isAnonymous?: boolean;
   concurrentLimit?: number;
-  tokensLimit?: number | null;
+  tokensLimit?: number;
+  perRunTokenBudget?: number;
+  perStepTokenBudget?: number;
+  perRunRequestLimit?: number;
 }
 
 export class FakeCloudDatabase {
   readonly accountId: string;
   isAnonymous: boolean;
   quotaConfigured = true;
+  providerEnabled = true;
   concurrentLimit: number;
   reservedCount = 0;
-  tokensLimit: number | null;
+  tokensLimit: number;
   tokensUsed = 0;
+  tokensReserved = 0;
+  perRunTokenBudget: number;
+  perStepTokenBudget: number;
+  perRunRequestLimit: number;
   nowMs: number;
   readonly sessions = new Map<string, CloudSessionRecord & { ownerId: string }>();
   readonly snapshots = new Map<string, CloudSnapshotRecord>();
@@ -79,7 +87,10 @@ export class FakeCloudDatabase {
     this.accountId = options.accountId ?? DEFAULT_ACCOUNT;
     this.isAnonymous = options.isAnonymous ?? false;
     this.concurrentLimit = options.concurrentLimit ?? 20;
-    this.tokensLimit = options.tokensLimit ?? null;
+    this.tokensLimit = options.tokensLimit ?? 1_000_000;
+    this.perRunTokenBudget = options.perRunTokenBudget ?? 10_000;
+    this.perStepTokenBudget = options.perStepTokenBudget ?? 4_096;
+    this.perRunRequestLimit = options.perRunRequestLimit ?? 8;
     this.nowMs = options.now?.() ?? Date.parse("2026-10-17T12:00:00.000Z");
   }
 
@@ -95,10 +106,26 @@ export class FakeCloudDatabase {
     return new Date(ms).toISOString();
   }
 
-  setAccount(input: { isAnonymous?: boolean; quotaConfigured?: boolean; concurrentLimit?: number }): void {
+  setAccount(input: {
+    isAnonymous?: boolean;
+    quotaConfigured?: boolean;
+    concurrentLimit?: number;
+    providerEnabled?: boolean;
+  }): void {
     if (input.isAnonymous !== undefined) this.isAnonymous = input.isAnonymous;
     if (input.quotaConfigured !== undefined) this.quotaConfigured = input.quotaConfigured;
     if (input.concurrentLimit !== undefined) this.concurrentLimit = input.concurrentLimit;
+    if (input.providerEnabled !== undefined) this.providerEnabled = input.providerEnabled;
+  }
+
+  budgetConfigured(): boolean {
+    return (
+      this.quotaConfigured &&
+      Number.isFinite(this.tokensLimit) &&
+      this.perRunTokenBudget > 0 &&
+      this.perStepTokenBudget > 0 &&
+      this.perRunRequestLimit > 0
+    );
   }
 
   getRun(runId: string): CloudRunRecord {
@@ -135,10 +162,15 @@ export class FakeCloudDatabase {
       accountId: this.accountId,
       isAnonymous: this.isAnonymous,
       quotaConfigured: this.quotaConfigured,
+      budgetConfigured: this.budgetConfigured(),
+      providerEnabled: this.providerEnabled,
       concurrentLimit: this.concurrentLimit,
       reservedCount: this.reservedCount,
-      tokensRemaining:
-        this.tokensLimit === null ? null : Math.max(this.tokensLimit - this.tokensUsed, 0),
+      tokensRemaining: Math.max(this.tokensLimit - this.tokensUsed - this.tokensReserved, 0),
+      tokensReserved: this.tokensReserved,
+      perRunTokenBudget: this.perRunTokenBudget,
+      perStepTokenBudget: this.perStepTokenBudget,
+      perRunRequestLimit: this.perRunRequestLimit,
     };
   }
 }
@@ -181,10 +213,15 @@ function makeRequestRepository(
         accountId: db.accountId,
         isAnonymous: db.isAnonymous,
         quotaConfigured: db.quotaConfigured,
+        budgetConfigured: db.budgetConfigured(),
+        providerEnabled: db.providerEnabled,
         concurrentLimit: db.concurrentLimit,
         reservedCount: db.reservedCount,
-        tokensRemaining:
-          db.tokensLimit === null ? null : Math.max(db.tokensLimit - db.tokensUsed, 0),
+        tokensRemaining: Math.max(db.tokensLimit - db.tokensUsed - db.tokensReserved, 0),
+        tokensReserved: db.tokensReserved,
+        perRunTokenBudget: db.perRunTokenBudget,
+        perStepTokenBudget: db.perStepTokenBudget,
+        perRunRequestLimit: db.perRunRequestLimit,
       };
     },
 
@@ -269,14 +306,20 @@ function makeRequestRepository(
       ) {
         throw new CloudError("SNAPSHOT_NOT_FOUND", "Snapshot not found or expired.", 404);
       }
-      if (!db.quotaConfigured) {
+      if (!db.quotaConfigured || !db.budgetConfigured()) {
         throw new CloudError("QUOTA_NOT_CONFIGURED", "Cloud coaching quota is not configured.", 403);
+      }
+      if (!db.providerEnabled) {
+        throw new CloudError("CLOUD_DISABLED", "Cloud coaching is not enabled on this server.", 503);
       }
       if (
         db.reservedCount >= Math.min(db.concurrentLimit, 20) ||
         db.reservedCount >= 20
       ) {
         throw new CloudError("QUOTA_EXHAUSTED", "No cloud coaching capacity is available.", 429);
+      }
+      if (db.tokensUsed + db.tokensReserved + db.perRunTokenBudget > db.tokensLimit) {
+        throw new CloudError("QUOTA_EXHAUSTED", "No cloud coaching token budget is available.", 429);
       }
 
       const run: CloudRunRecord = {
@@ -304,6 +347,11 @@ function makeRequestRepository(
         expiresAt: db.nowMs + 30 * 60 * 1000,
         terminationConfirmed: false,
         reservationReleased: false,
+        tokenBudget: db.perRunTokenBudget,
+        requestBudget: db.perRunRequestLimit,
+        providerTokensCommitted: 0,
+        providerRequestsCommitted: 0,
+        budgetReleased: false,
       };
       db.runs.set(run.id, run);
       db.events.set(run.id, []);
@@ -315,6 +363,7 @@ function makeRequestRepository(
       });
       db.requestKeys.set(replayKey, run.id);
       db.reservedCount += 1;
+      db.tokensReserved += db.perRunTokenBudget;
       return { run: publicRun(run), lastSeq: -1, replayed: false };
     },
 
@@ -363,6 +412,10 @@ function makeRequestRepository(
         if (!run.reservationReleased) {
           run.reservationReleased = true;
           db.reservedCount = Math.max(db.reservedCount - 1, 0);
+        }
+        if (!run.budgetReleased) {
+          run.budgetReleased = true;
+          db.tokensReserved = Math.max(db.tokensReserved - run.tokenBudget, 0);
         }
         const outbox = db.outboxFor(run.id);
         outbox.status = "done";
@@ -420,6 +473,8 @@ function makeWorkerRepository(db: FakeCloudDatabase): CloudWorkerRepository {
           outbox.status = "dead";
         } else {
           run.providerCallStartedAt = undefined;
+          run.providerTokensCommitted = 0;
+          run.providerRequestsCommitted = 0;
           run.status = run.cancelRequestedAt === undefined ? "queued" : "cancelling";
           outbox.status = "pending";
           outbox.leaseOwner = undefined;
@@ -501,8 +556,15 @@ function makeWorkerRepository(db: FakeCloudDatabase): CloudWorkerRepository {
       run.updatedAt = db.iso();
     },
 
-    async authorizeProviderStep(runId, generation): Promise<CloudStepAuthorization> {
+    async authorizeProviderStep(runId, generation, budget): Promise<CloudStepAuthorization> {
       const { run } = requireLease(runId, generation);
+      const refuse = (reason: string, cancelled = false, terminal = false): CloudStepAuthorization => ({
+        allowed: false,
+        cancelled,
+        terminal,
+        leaseValid: true,
+        reason,
+      });
       if (["completed", "failed", "cancelled", "unconfirmed"].includes(run.status)) {
         return {
           allowed: false,
@@ -512,43 +574,29 @@ function makeWorkerRepository(db: FakeCloudDatabase): CloudWorkerRepository {
           reason: "terminal",
         };
       }
-      if (run.cancelRequestedAt !== undefined) {
-        return {
-          allowed: false,
-          cancelled: true,
-          terminal: false,
-          leaseValid: true,
-          reason: "cancel-requested",
-        };
-      }
-      if (run.providerCallStartedAt === undefined) {
-        return {
-          allowed: false,
-          cancelled: false,
-          terminal: false,
-          leaseValid: true,
-          reason: "call-not-started",
-        };
-      }
+      if (run.cancelRequestedAt !== undefined) return refuse("cancel-requested", true);
+      if (run.providerCallStartedAt === undefined) return refuse("call-not-started");
+      if (!db.providerEnabled) return refuse("global-disabled");
       if (db.isAnonymous || !db.quotaConfigured) {
-        return {
-          allowed: false,
-          cancelled: false,
-          terminal: false,
-          leaseValid: true,
-          reason: db.isAnonymous ? "account-not-formal" : "quota-not-configured",
-        };
+        return refuse(db.isAnonymous ? "account-not-formal" : "quota-not-configured");
       }
-      if (db.tokensLimit !== null && db.tokensUsed >= db.tokensLimit) {
-        return {
-          allowed: false,
-          cancelled: false,
-          terminal: false,
-          leaseValid: true,
-          reason: "quota-exhausted",
-        };
+      if (!db.budgetConfigured() || run.tokenBudget <= 0 || run.requestBudget <= 0) {
+        return refuse("budget-not-configured");
+      }
+      if (budget.tokens <= 0 || budget.requests < 1) return refuse("invalid-step-budget");
+      if (budget.tokens > db.perStepTokenBudget) return refuse("step-budget-exceeded");
+      if (run.providerTokensCommitted + budget.tokens > run.tokenBudget) {
+        return refuse("token-budget-exhausted");
+      }
+      if (run.providerRequestsCommitted + budget.requests > run.requestBudget) {
+        return refuse("request-budget-exhausted");
+      }
+      if (db.tokensUsed + db.tokensReserved > db.tokensLimit) {
+        return refuse("quota-exhausted");
       }
       run.providerFetchStartedAt ??= db.iso();
+      run.providerTokensCommitted += budget.tokens;
+      run.providerRequestsCommitted += budget.requests;
       run.status = "dispatching";
       run.updatedAt = db.iso();
       return { allowed: true, cancelled: false, terminal: false, leaseValid: true };
@@ -590,6 +638,7 @@ function makeWorkerRepository(db: FakeCloudDatabase): CloudWorkerRepository {
       let confirmed = terminal.terminationConfirmed;
       let release = terminal.releaseReservation;
       const wasReleased = run.reservationReleased;
+      const wasBudgetReleased = run.budgetReleased;
 
       if (
         run.cancelRequestedAt !== undefined &&
@@ -637,6 +686,15 @@ function makeWorkerRepository(db: FakeCloudDatabase): CloudWorkerRepository {
         run.reservationReleased = true;
         db.reservedCount = Math.max(db.reservedCount - 1, 0);
       }
+      // Budget is refunded only when no provider fetch could have billed, or
+      // explicitly proven-not-accepted. Known settlement releases the rest.
+      const releaseBudget =
+        (status === "cancelled" && run.providerFetchStartedAt === undefined) ||
+        terminal.provenNotAccepted === true;
+      if (releaseBudget && !wasBudgetReleased) {
+        run.budgetReleased = true;
+        db.tokensReserved = Math.max(db.tokensReserved - run.tokenBudget, 0);
+      }
       outbox.status = status === "unconfirmed" ? "dead" : "done";
       return { run: cloneRun(run), lastSeq: seq };
     },
@@ -647,22 +705,34 @@ function makeWorkerRepository(db: FakeCloudDatabase): CloudWorkerRepository {
       if (["completed", "failed", "cancelled", "unconfirmed"].includes(run.status)) {
         return { settled: false };
       }
+      const charge = Math.max(usage.totalTokens, 0);
+      const complete = usage.complete !== false;
       db.ledger.set(runId, structuredClone(usage));
-      db.tokensUsed += Math.max(usage.totalTokens, 0);
+      db.tokensUsed += charge;
+      db.tokensReserved = complete
+        ? Math.max(db.tokensReserved - run.tokenBudget, 0)
+        : Math.max(db.tokensReserved - Math.min(run.tokenBudget, charge), 0);
+      if (complete) run.budgetReleased = true;
       return { settled: true };
     },
 
     async releaseReservation(runId, generation, provenNotAccepted): Promise<void> {
       const { run } = requireLease(runId, generation);
-      if (run.reservationReleased) return;
+      if (run.reservationReleased && run.budgetReleased) return;
       if (run.providerAcceptedAt !== undefined) {
         throw new CloudError("REFUND_UNPROVEN", "Cannot refund an accepted run.", 409);
       }
       if (run.providerFetchStartedAt !== undefined && !provenNotAccepted) {
         throw new CloudError("REFUND_UNPROVEN", "Cannot refund unproven provider work.", 409);
       }
-      run.reservationReleased = true;
-      db.reservedCount = Math.max(db.reservedCount - 1, 0);
+      if (!run.reservationReleased) {
+        run.reservationReleased = true;
+        db.reservedCount = Math.max(db.reservedCount - 1, 0);
+      }
+      if (!run.budgetReleased) {
+        run.budgetReleased = true;
+        db.tokensReserved = Math.max(db.tokensReserved - run.tokenBudget, 0);
+      }
     },
   };
 }
