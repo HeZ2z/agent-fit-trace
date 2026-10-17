@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import type { ServerResponse } from "node:http";
@@ -82,6 +83,34 @@ function serviceRoleJwt(): string {
     Buffer.from(JSON.stringify(value)).toString("base64url");
   return `${encode({ alg: "HS256" })}.${encode({ role: "service_role" })}.sig`;
 }
+
+/**
+ * Vercel only routes a request into `handleVercelApi` when a matching
+ * `api/v1` Function file exists (the SPA rewrite excludes `/api/`). Every
+ * authenticated path the HTTP client can call must therefore have a wrapper,
+ * including dynamic `[id]`/`[kind]` segments and the nested cloud catch-all.
+ */
+const DEPLOYED_FUNCTION_WRAPPERS = {
+  "workouts.mjs": "../../build/server/vercel.mjs",
+  "analysis.mjs": "../../build/server/vercel.mjs",
+  "public-config.mjs": "../../build/server/vercel.mjs",
+  "plans/drafts.mjs": "../../../build/server/vercel.mjs",
+  "imports.mjs": "../../build/server/vercel.mjs",
+  "imports/[id].mjs": "../../../build/server/vercel.mjs",
+  "import-selections/[kind].mjs": "../../../build/server/vercel.mjs",
+  "plan-adoption.mjs": "../../build/server/vercel.mjs",
+  "coaching/cloud/[...path].mjs": "../../../../build/server/vercel.mjs",
+} as const;
+
+test("vercel adapter: every client route has a deployed Function wrapper", async () => {
+  for (const [wrapper, target] of Object.entries(DEPLOYED_FUNCTION_WRAPPERS)) {
+    const source = await readFile(new URL(`../api/v1/${wrapper}`, import.meta.url), "utf8");
+    assert.ok(
+      source.includes(`export { handleVercelApi as default } from "${target}";`),
+      `missing shared adapter export in api/v1/${wrapper}`,
+    );
+  }
+});
 
 test("vercel adapter: pre-parsed null body on POST does not hang (fail-closed without env)", async () => {
   const saved = saveEnv();
