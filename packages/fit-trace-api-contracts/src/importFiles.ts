@@ -4,6 +4,7 @@ import {
   IMPORT_MAX_COLLECTION_LENGTH,
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILE_RECORDS,
+  IMPORT_MAX_ID_LENGTH,
   IMPORTED_PAYLOAD_SCHEMA_VERSION,
   ImportValidationError,
   WORKOUT_MAX_REQUEST_BYTES,
@@ -82,6 +83,10 @@ const WORKOUT_FILE_KEYS = new Set(["schema_version", "records"]);
  * raised to the file cap: the file itself is already at most that size, and a
  * locally saved record that core accepts must stay restorable. Depth and
  * object-key limits still guard the JSON shape.
+ *
+ * The id is the exception: it indexes the Supabase workouts primary key, so it
+ * keeps the storage-safe {@link IMPORT_MAX_ID_LENGTH} bound even though every
+ * other string may grow to the file cap.
  */
 const WORKOUT_JSON_BOUNDS: ImportJsonBoundsOptions = {
   maxStringLength: IMPORT_MAX_FILE_BYTES,
@@ -99,6 +104,8 @@ const WORKOUT_JSON_BOUNDS: ImportJsonBoundsOptions = {
  * Restore submits one record per `POST /workouts`, so each normalized record
  * must also fit {@link WORKOUT_MAX_REQUEST_BYTES}. That bound equals the file
  * bound; the artifact/snapshot request cap is deliberately not applied here.
+ * Ids are the exception to the relaxed field caps: they keep the storage-safe
+ * {@link IMPORT_MAX_ID_LENGTH} bound required by the workouts primary key.
  */
 export function parseWorkoutImportFile(text: string): ParsedWorkoutImportFile {
   assertFileSize(text);
@@ -148,6 +155,17 @@ export function parseWorkoutImportFile(text: string): ParsedWorkoutImportFile {
       throw new ImportValidationError(field, validationReason(error));
     }
     const record = validated.record;
+    // `id` is the only field that indexes storage: the workouts primary key
+    // `(owner_id, id)` is a btree whose entries cannot hold a very large
+    // string. Reject an oversized id here, while the whole file is still at
+    // preview, so the sequential restore cannot save earlier records and then
+    // fail on this one. Notes/exercises/sets keep the relaxed file bound.
+    if (record.id.length > IMPORT_MAX_ID_LENGTH) {
+      throw new ImportValidationError(
+        `${field}.id`,
+        `must be at most ${IMPORT_MAX_ID_LENGTH} characters`,
+      );
+    }
     // The coordinator submits this record as one `POST /workouts` body, so the
     // normalized record must fit the workout request bound. The bound equals
     // the backup file bound, so a record represented by an accepted file always

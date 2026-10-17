@@ -59,6 +59,17 @@ export const WORKOUT_MAX_REQUEST_BYTES = IMPORT_MAX_FILE_BYTES;
 export const IMPORT_MAX_JSON_DEPTH = 16;
 export const IMPORT_MAX_JSON_KEY_LENGTH = 256;
 export const IMPORT_MAX_STRING_LENGTH = 4096;
+/**
+ * Storage-safe id length shared by snapshot/source ids and workout restores.
+ *
+ * A workout id indexes the Supabase `workouts` primary key `(owner_id, id)`,
+ * and a btree index entry cannot hold an arbitrarily large string. Rejecting
+ * an oversized id only when the database sees it would stop a sequential
+ * restore halfway through, after earlier records were already saved. At 256
+ * UTF-16 code units the UTF-8 encoding is at most about 1 KiB even for the
+ * widest code points, comfortably below PostgreSQL's btree entry limit.
+ * Snapshot source ids reference workout ids, so they share the bound.
+ */
 export const IMPORT_MAX_ID_LENGTH = 256;
 export const IMPORT_MAX_COLLECTION_LENGTH = 1000;
 export const IMPORT_MAX_FILENAME_LENGTH = 255;

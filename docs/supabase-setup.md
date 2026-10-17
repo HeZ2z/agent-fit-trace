@@ -138,7 +138,9 @@ shut it down separately with `supabase stop`.
     so a request at the 40-KiB limit is at most 60 KiB as jsonb text and never
     passes preview only to fail the database check. (Workout restore requests
     are bounded separately by the backup file limit; they are not saved through
-    this RPC.)
+    this RPC. Their `id` still keeps the shared 256-character
+    `IMPORT_MAX_ID_LENGTH` bound because it indexes the `workouts` primary key,
+    so an id the btree cannot hold fails preview instead of a partial restore.)
   - digest verification stays in TypeScript on both save and read:
     `sha256(stableStringify(payload))` cannot be reproduced reliably by
     Postgres because `jsonb::text` orders keys differently. SQL enforces the

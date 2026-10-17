@@ -233,6 +233,26 @@ describe("MeScreen", () => {
     expect(screen.getByRole("button", { name: /confirm append/i })).toBeDisabled();
   });
 
+  it("rejects an oversized workout id at preview, before any restore", async () => {
+    renderMe(new MemoryStorageAdapter());
+    await screen.findByText(/signed in as|local session/i);
+
+    await upload(
+      "Choose workout backup file",
+      JSON.stringify({
+        schema_version: 1,
+        records: [record(), record({ id: "w".repeat(8 * 1024) })],
+      }),
+      "workout.json",
+    );
+
+    expect(await screen.findByTestId("me-workout-file-error")).toHaveTextContent(
+      /records\[1\]\.id.*must be at most 256 characters/,
+    );
+    expect(screen.queryByTestId("me-workout-preview")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("me-workout-receipt")).not.toBeInTheDocument();
+  });
+
   it("saves an analysis snapshot without selecting or adopting it", async () => {
     const adapter = new MemoryStorageAdapter();
     const client = clientFor(adapter);

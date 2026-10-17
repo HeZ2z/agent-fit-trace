@@ -13,6 +13,7 @@ import type { AnalysisResult, PlanDraft, WorkoutRecord } from "@pi-fit-trace/cor
 import {
   API_ERROR_CODES,
   IMPORT_MAX_FILENAME_LENGTH,
+  IMPORT_MAX_ID_LENGTH,
   IMPORT_MAX_JSON_KEY_LENGTH,
   IMPORT_MAX_REQUEST_BYTES,
   WORKOUT_MAX_REQUEST_BYTES,
@@ -426,6 +427,43 @@ test("workout files accept large valid records that local saves allow", () => {
   assert.equal(
     parseWorkoutImportFile(workoutFile([manyExercises])).entries[0]?.record.exercises.length,
     101,
+  );
+});
+
+test("workout files reject ids that cannot fit the workouts primary key", () => {
+  // The shared 256-character bound keeps the id inside PostgreSQL's btree
+  // entry limit. Without it, an 8 KiB id would pass the 1 MiB file bound and
+  // preview, then fail the Supabase `workouts` primary key during a sequential
+  // restore after earlier records had already been saved.
+  assert.equal(IMPORT_MAX_ID_LENGTH, 256);
+  const oversized = seedRecord({ id: "w".repeat(8 * 1024), date: "2026-09-01" });
+  // The first record is valid; the whole file must still fail preview, so the
+  // sequential restore can never save it and then stop at the oversized id.
+  assert.throws(
+    () => parseWorkoutImportFile(workoutFile([workout, oversized])),
+    new RegExp(
+      `\`records\\[1\\]\\.id\` must be at most ${IMPORT_MAX_ID_LENGTH} characters`,
+    ),
+  );
+
+  // The bound is inclusive and only applies to the indexed id: a normal id
+  // with notes beyond every snapshot field cap stays restorable.
+  const atBound = seedRecord({
+    id: "w".repeat(IMPORT_MAX_ID_LENGTH),
+    date: "2026-09-02",
+  });
+  assert.equal(
+    parseWorkoutImportFile(workoutFile([atBound])).entries[0]?.record.id.length,
+    IMPORT_MAX_ID_LENGTH,
+  );
+  const largeNotes = seedRecord({
+    id: "w-large-notes",
+    date: "2026-09-03",
+    notes: "n".repeat(50_000),
+  });
+  assert.equal(
+    parseWorkoutImportFile(workoutFile([largeNotes])).entries[0]?.record.notes?.length,
+    50_000,
   );
 });
 

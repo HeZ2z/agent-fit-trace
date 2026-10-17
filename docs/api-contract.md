@@ -433,7 +433,7 @@ The shared contract (`src/imports.ts`) enforces these limits before any write:
 | JSON depth (all imported JSON) | 16 |
 | JSON object key length (all imported JSON) | 256 characters |
 | Snapshot string length | 4096 characters |
-| Snapshot/source id length | 256 characters |
+| Snapshot/source/workout id length | 256 characters (`IMPORT_MAX_ID_LENGTH`) |
 | Snapshot collection length | 1000 entries |
 | Source filename | 255 characters after path normalization |
 | Import list limit | default 20, maximum 100 |
@@ -444,7 +444,12 @@ time, so each `POST /workouts` request is bounded by the same 1 MiB
 can save locally is therefore not rejected merely because it is larger than a
 snapshot request. Workout records are validated by the core workout validator
 and are bounded by the file byte/record caps; the stricter snapshot field caps
-(string/collection length) do not apply to them. Snapshot imports remain
+(string/collection length) do not apply to their notes, exercise names, or
+collections. Workout ids are the exception: they keep the shared 256-character
+`IMPORT_MAX_ID_LENGTH` bound because they index the `workouts` primary key
+`(owner_id, id)`. A PostgreSQL btree entry cannot hold an arbitrarily large
+string, so an oversized id must fail preview rather than stop a sequential
+restore after earlier records were saved. Snapshot imports remain
 bounded by the 40 KiB compact request limit, which is deliberately lower than
 the database's 64 KiB `jsonb::text` guard: PostgreSQL adds one space after
 every comma and colon, so the worst-case expansion (arrays of one-byte values)
