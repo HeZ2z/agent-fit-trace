@@ -29,6 +29,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { timingSafeEqual } from "node:crypto";
 
 import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
@@ -522,6 +523,7 @@ export class CoachedOpenCodeRun {
   private cancelReason = "cancel requested";
   private hasAnalysis = false;
   private sessionHandle: string | null = null;
+  private readonly stdoutDecoder = new StringDecoder("utf8");
   private stdoutBuffer = "";
   private stdoutBytes = 0;
   private eventCount = 0;
@@ -856,16 +858,25 @@ export class CoachedOpenCodeRun {
       this.fail("opencode output exceeds the coached run limit");
       return;
     }
-    this.stdoutBuffer += buffer.toString("utf8");
+    // A streaming decoder holds back an incomplete UTF-8 sequence instead of
+    // replacing it, so a character split across chunks survives the join.
+    this.stdoutBuffer += this.stdoutDecoder.write(buffer);
     let newline = this.stdoutBuffer.indexOf("\n");
     while (newline >= 0) {
       const line = this.stdoutBuffer.slice(0, newline);
       this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      // Bound EVERY complete line by its UTF-8 byte length, not by how stdout
+      // happened to be split into chunks (character counts undercount
+      // non-ASCII bytes).
+      if (Buffer.byteLength(line, "utf8") > MAX_OPENCODE_LINE_BYTES) {
+        this.fail("opencode emitted an oversized line");
+        return;
+      }
       this.onStdoutLine(line);
       if (this.settled) return;
       newline = this.stdoutBuffer.indexOf("\n");
     }
-    if (this.stdoutBuffer.length > MAX_OPENCODE_LINE_BYTES) {
+    if (Buffer.byteLength(this.stdoutBuffer, "utf8") > MAX_OPENCODE_LINE_BYTES) {
       this.fail("opencode emitted an oversized line");
     }
   }

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -32,6 +33,8 @@ import type {
 } from "../server/coaching/coachingService.ts";
 import { createCoachingRuntimeRegistry } from "../server/coaching/runtimeRegistry.ts";
 import { CoachingJournalCorruptError } from "../server/coaching/coachingJournal.ts";
+import { writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
+import type { SnapshotDir } from "../server/coaching/snapshotFile.ts";
 import {
   acquireCoachingJournalLock,
   writeCoachingJournal,
@@ -118,12 +121,14 @@ function serviceFor(
     retentionMs?: number;
     snapshotTtlMs?: number;
     runtimeRegistry?: ReturnType<typeof createCoachingRuntimeRegistry>;
+    writeSnapshot?: (records: WorkoutRecord[]) => Promise<SnapshotDir>;
   } = {},
 ): CoachingService {
   return createCoachingService({
     source: storeFactorySource(stores),
     runtimeFactory,
     ...(overrides.runtimeRegistry === undefined ? {} : { runtimeRegistry: overrides.runtimeRegistry }),
+    ...(overrides.writeSnapshot === undefined ? {} : { writeSnapshot: overrides.writeSnapshot }),
     journalPath,
     cancelGraceMs: 30,
     retentionMs: overrides.retentionMs ?? 60_000,
@@ -574,6 +579,246 @@ test("one launcher owns the journal lock at a time, and release re-opens it", ()
     const second = acquireCoachingJournalLock(path);
     second.release();
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a dead-owner stale lock fails closed and never deletes a replacement lock", () => {
+  const { dir, path } = makeJournal();
+  const lockPath = `${path}.lock`;
+  const deadPid = 2_147_483_647;
+  const deadLock = `${JSON.stringify({ pid: deadPid, token: "dead-owner" })}\n`;
+  try {
+    // A crashed launcher leaves its lock behind. It is never reclaimed by
+    // deleting/racing another process's file; the operator removes it.
+    writeFileSync(lockPath, deadLock, { encoding: "utf8", mode: 0o600 });
+    assert.throws(
+      () => acquireCoachingJournalLock(path),
+      (error: unknown) =>
+        error instanceof CoachingJournalCorruptError && /stale journal lock/i.test(error.message),
+    );
+    assert.equal(readFileSync(lockPath, "utf8"), deadLock, "a stale lock is never auto-removed");
+
+    // The takeover race this closes: a live launcher installs its replacement
+    // lock after the dead owner is observed. A failed acquire must not unlink
+    // it (and a stale owner's release must not either).
+    const replacement = `${JSON.stringify({ pid: process.pid, token: "replacement-owner" })}\n`;
+    writeFileSync(lockPath, replacement, { encoding: "utf8", mode: 0o600 });
+    assert.throws(
+      () => acquireCoachingJournalLock(path),
+      (error: unknown) =>
+        error instanceof CoachingJournalCorruptError && /another launcher/.test(error.message),
+    );
+    assert.equal(readFileSync(lockPath, "utf8"), replacement, "a live replacement lock is not deleted");
+
+    // Recovery is manual removal; a normal acquire/release still works then.
+    rmSync(lockPath);
+    const owner = acquireCoachingJournalLock(path);
+    writeFileSync(lockPath, replacement, { encoding: "utf8", mode: 0o600 });
+    owner.release();
+    assert.equal(
+      readFileSync(lockPath, "utf8"),
+      replacement,
+      "release removes only a lock that still carries its own token",
+    );
+    rmSync(lockPath);
+    const recovered = acquireCoachingJournalLock(path);
+    recovered.release();
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a journal write failure in a runtime callback stops the child without escaping and recovers unconfirmed", async () => {
+  const { dir, path } = makeJournal();
+  const stores = await seedStores();
+  const capturesA: RuntimeLaunchOptions[] = [];
+  const capturesB: RuntimeLaunchOptions[] = [];
+  const childStates: Array<{ cancelled: boolean; closed: boolean; reason?: string }> = [];
+  let serviceA: CoachingService | null = null;
+  let serviceB: CoachingService | null = null;
+  try {
+    const factory: RuntimeFactory = (launch) => {
+      capturesA.push(launch);
+      const state: { cancelled: boolean; closed: boolean; reason?: string } = {
+        cancelled: false,
+        closed: false,
+      };
+      childStates.push(state);
+      return {
+        start(): void {},
+        cancel(reason?: string): void {
+          state.cancelled = true;
+          if (reason !== undefined) state.reason = reason;
+        },
+        async close(): Promise<void> {
+          state.closed = true;
+        },
+      };
+    };
+    serviceA = serviceFor(stores, path, factory);
+    const session = serviceA.createSession(PRINCIPAL_A, "journal-callback-sess");
+    const snapshot = await serviceA.createSnapshot(PRINCIPAL_A);
+    const submitted = await serviceA.submitRun(
+      PRINCIPAL_A,
+      submitInput(session.id, snapshot, "journal-callback-key"),
+    );
+    assert.equal(submitted.run.status, "queued");
+    assert.equal(capturesA.length, 1);
+
+    // A concurrent writer advances the journal generation, so the service's
+    // next flush fails exactly like a full/unwritable journal at the callback
+    // boundary. The adapter-facing call must not throw.
+    const persisted = JSON.parse(readFileSync(path, "utf8")) as CoachingJournalState & {
+      generation: number;
+    };
+    writeCoachingJournal(path, persisted.generation, {
+      sessions: persisted.sessions,
+      snapshots: persisted.snapshots,
+      runs: persisted.runs,
+      idempotency: persisted.idempotency,
+    });
+
+    assert.doesNotThrow(
+      () => capturesA[0]?.onEvent({ type: "text_delta", delta: "after the journal became unwritable" }),
+      "a journal write failure must never escape the runtime callback",
+    );
+    await wait(20);
+    assert.equal(childStates[0]?.cancelled, true, "the child is stopped, never left running");
+    assert.equal(childStates[0]?.closed, true, "the bounded close confirms the child's exit");
+    assert.match(childStates[0]?.reason ?? "", /coaching journal write failed/i);
+
+    const stopped = serviceA.readRun(PRINCIPAL_A, submitted.run.id);
+    assert.equal(stopped.run.status, "failed");
+    assert.match(stopped.run.failure?.message ?? "", /coaching journal write failed/i);
+    assert.match(stopped.run.failure?.message ?? "", /unconfirmed/i);
+    assert.ok(
+      serviceA.readEvents(PRINCIPAL_A, submitted.run.id).events.some(
+        (entry) => entry.event.type === "terminal",
+      ),
+      "the in-memory terminal stays honest",
+    );
+
+    // The failed flush means the durable state is still the active run. A
+    // restart recovers it as execution-unconfirmed with capacity held — never
+    // as a silently freed slot or a false success.
+    serviceB = serviceFor(stores, path, completingFactory(capturesB));
+    assert.equal(serviceB.runCount(), 1, "the run is recovered, not lost");
+    assert.equal(serviceB.activeRunCount(), 1, "recovery keeps the capacity slot reserved");
+    const recovered = serviceB.readRun(PRINCIPAL_A, submitted.run.id);
+    assert.equal(recovered.run.status, "failed");
+    assert.match(recovered.run.failure?.message ?? "", /unconfirmed|unknown/i);
+    assert.equal(capturesB.length, 0, "recovery never spawns a second child");
+  } finally {
+    await serviceA?.shutdown().catch(() => undefined);
+    await serviceB?.shutdown().catch(() => undefined);
+    cleanupCaptures([...capturesA, ...capturesB]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("logout keeps session metadata while an unconfirmed run still references it", async () => {
+  const { dir, path } = makeJournal();
+  const stores = await seedStores();
+  const capturesA: RuntimeLaunchOptions[] = [];
+  const capturesB: RuntimeLaunchOptions[] = [];
+  let serviceA: CoachingService | null = null;
+  let serviceB: CoachingService | null = null;
+  try {
+    const unconfirmedFactory: RuntimeFactory = (launch) => {
+      capturesA.push(launch);
+      return {
+        start(): void {
+          launch.onEvent({ type: "analysis_result", result: analyzeProgress([]) });
+          launch.onDone("completed", "provider exited before cleanup was confirmed", {
+            processExitConfirmed: false,
+          });
+        },
+        cancel(): void {},
+        async close(): Promise<void> {},
+      };
+    };
+    serviceA = serviceFor(stores, path, unconfirmedFactory);
+    const session = serviceA.createSession(PRINCIPAL_A, "journal-logout-unconfirmed-sess");
+    const snapshot = await serviceA.createSnapshot(PRINCIPAL_A);
+    const submitted = await serviceA.submitRun(
+      PRINCIPAL_A,
+      submitInput(session.id, snapshot, "journal-logout-unconfirmed-key"),
+    );
+    assert.equal(submitted.run.status, "failed");
+    assert.equal(serviceA.activeRunCount(), 1, "unconfirmed cleanup keeps capacity");
+
+    await serviceA.logoutAccount(PRINCIPAL_A);
+    assert.equal(serviceA.runCount(), 1, "an unconfirmed run is retained");
+    await serviceA.shutdown();
+    serviceA = null;
+
+    const journal = JSON.parse(readFileSync(path, "utf8")) as CoachingJournalState;
+    assert.equal(journal.runs.length, 1, "the unconfirmed run stays in the journal");
+    assert.equal(journal.sessions.length, 1, "a retained run keeps its session metadata");
+    assert.equal(journal.sessions[0]?.id, session.id);
+
+    serviceB = serviceFor(stores, path, completingFactory(capturesB));
+    assert.equal(serviceB.runCount(), 1, "the next startup can load the logged-out journal");
+    assert.equal(serviceB.activeRunCount(), 1);
+    assert.equal(serviceB.readRun(PRINCIPAL_A, submitted.run.id).run.status, "failed");
+    assert.equal(capturesB.length, 0);
+  } finally {
+    await serviceA?.shutdown().catch(() => undefined);
+    await serviceB?.shutdown().catch(() => undefined);
+    cleanupCaptures([...capturesA, ...capturesB]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed second pre-launch journal write rolls back the queued run and fresh workspace", async () => {
+  const { dir, path } = makeJournal();
+  const stores = await seedStores();
+  const captures: RuntimeLaunchOptions[] = [];
+  let service: CoachingService | null = null;
+  let failNextFlush = true;
+  let journalBeforeFailure = "";
+  let freshDir = "";
+  try {
+    service = serviceFor(stores, path, completingFactory(captures), {
+      writeSnapshot: async (records) => {
+        const written = await writeSnapshotDir(records);
+        if (!failNextFlush) return written;
+        failNextFlush = false;
+        freshDir = written.dir;
+        // The awaited workspace write succeeded; make the SECOND pre-launch
+        // journal flush fail (the journal becomes unreadable/unwritable).
+        journalBeforeFailure = readFileSync(path, "utf8");
+        rmSync(path, { force: true });
+        mkdirSync(path);
+        return written;
+      },
+    });
+    const session = service.createSession(PRINCIPAL_A, "journal-rollback-sess");
+    const snapshot = await service.createSnapshot(PRINCIPAL_A);
+    const input = submitInput(session.id, snapshot, "journal-rollback-key");
+    await assert.rejects(
+      service.submitRun(PRINCIPAL_A, input),
+      (error: unknown) => error instanceof CoachingJournalCorruptError,
+    );
+    assert.equal(captures.length, 0, "no runtime may launch without a durable journal");
+    assert.equal(service.runCount(), 0, "the queued ghost run is rolled back");
+    assert.equal(service.activeRunCount(), 0, "the capacity slot is released");
+    assert.equal(existsSync(freshDir), false, "the fresh workspace is removed");
+
+    // Restore the journal from just before the failed flush: the same-key
+    // retry must create and start a real run, never replay the ghost.
+    rmSync(path, { recursive: true, force: true });
+    writeFileSync(path, journalBeforeFailure, { encoding: "utf8", mode: 0o600 });
+    const retried = await service.submitRun(PRINCIPAL_A, input);
+    assert.equal(retried.created, true);
+    assert.equal(retried.replayed, false, "the rolled-back key does not replay a ghost run");
+    assert.equal(captures.length, 1, "the retry launches a runtime");
+    assert.equal(retried.run.status, "completed");
+  } finally {
+    await service?.shutdown().catch(() => undefined);
+    cleanupCaptures(captures);
     rmSync(dir, { recursive: true, force: true });
   }
 });

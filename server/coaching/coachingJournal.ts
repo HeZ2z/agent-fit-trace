@@ -747,57 +747,67 @@ function readLockFile(path: string): JournalLockFile | null {
 }
 
 /**
- * Claim the journal for this launcher process. The lock is removed on clean
- * close; a dead owner's lock is reclaimed once, while an unreadable lock fails
- * closed rather than guessing. This is advisory process ownership, not a
- * security boundary against a hostile local user.
+ * Claim the journal for this launcher process.
+ *
+ * Creation is atomic (`O_CREAT|O_EXCL`) and release removes the file ONLY when
+ * it still carries this process's token, so a replacement owner is never
+ * deleted. Stale-owner takeover by deletion is deliberately NOT attempted:
+ * two launchers that both observe the same dead owner can each remove the lock,
+ * and the second would then delete the first launcher's fresh replacement lock
+ * (the journal generation cannot close that race — both can read the same
+ * generation before either replaces the file). An existing lock therefore
+ * fails closed in every case, including a confirmed-dead owner: the operator
+ * removes a confirmed-stale lock manually. This is advisory process ownership,
+ * not a security boundary against a hostile local user.
  */
 export function acquireCoachingJournalLock(path: string): CoachingJournalLock {
   const resolved = resolve(path);
   const lockPath = `${resolved}.lock`;
   ensureJournalDirectory(resolved);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const token = randomUUID();
+  const token = randomUUID();
+  try {
+    const fd = openSync(lockPath, "wx", 0o600);
     try {
-      const fd = openSync(lockPath, "wx", 0o600);
-      try {
-        writeFileSync(
-          fd,
-          `${JSON.stringify({ pid: process.pid, token })}\n`,
-          { encoding: "utf8" },
-        );
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      let released = false;
-      return {
-        path: lockPath,
-        release(): void {
-          if (released) return;
-          released = true;
-          const current = readLockFile(lockPath);
-          if (current !== null && current.token === token) {
-            rmSync(lockPath, { force: true });
-          }
-        },
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-      const current = readLockFile(lockPath);
-      if (current === null) {
-        fail(
-          lockPath,
-          "lock file exists but is unreadable; remove it manually after confirming no launcher is running",
-        );
-      }
-      if (processIsAlive(current.pid)) {
-        fail(lockPath, `another launcher (pid ${String(current.pid)}) already owns this journal`);
-      }
-      rmSync(lockPath, { force: true });
+      writeFileSync(
+        fd,
+        `${JSON.stringify({ pid: process.pid, token })}\n`,
+        { encoding: "utf8" },
+      );
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
     }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+    const current = readLockFile(lockPath);
+    if (current === null) {
+      fail(
+        lockPath,
+        "lock file exists but is unreadable; remove it manually after confirming no launcher is running",
+      );
+    }
+    if (processIsAlive(current.pid)) {
+      fail(lockPath, `another launcher (pid ${String(current.pid)}) already owns this journal`);
+    }
+    // Never unlink here: the dead-owner file may already have been replaced by
+    // a live launcher's lock since we read it.
+    fail(
+      lockPath,
+      `stale journal lock left by dead launcher (pid ${String(current.pid)}); remove it manually after confirming no launcher is running`,
+    );
   }
-  fail(lockPath, "could not acquire the journal lock");
+  let released = false;
+  return {
+    path: lockPath,
+    release(): void {
+      if (released) return;
+      released = true;
+      const current = readLockFile(lockPath);
+      if (current !== null && current.token === token) {
+        rmSync(lockPath, { force: true });
+      }
+    },
+  };
 }
 
 /**

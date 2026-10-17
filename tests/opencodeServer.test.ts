@@ -10,6 +10,7 @@ import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
 import {
   CoachedOpenCodeRun,
+  MAX_OPENCODE_LINE_BYTES,
   OPENCODE_COACH_AGENT,
   buildCoachedOpenCodeArgv,
   buildOpenCodeConfig,
@@ -68,6 +69,7 @@ interface FakeChild extends OpenCodeChildProcess {
   killCalls: string[];
   send(record: Record<string, unknown>): void;
   stdoutText(text: string): void;
+  stdoutBytes(chunk: Buffer): void;
 }
 
 function fakeChild(): FakeChild {
@@ -83,6 +85,9 @@ function fakeChild(): FakeChild {
     },
     stdoutText(text: string): void {
       stdout.emit("data", Buffer.from(text));
+    },
+    stdoutBytes(chunk: Buffer): void {
+      stdout.emit("data", chunk);
     },
     kill(signal?: string | number): boolean {
       killCalls.push(String(signal ?? "SIGTERM"));
@@ -486,3 +491,67 @@ function requireRead(file: string): string {
   if (!existsSync(file)) return "";
   return readFileSync(file, "utf8");
 }
+
+test("opencode adapter: a UTF-8 character split across stdout chunks is decoded intact", async () => {
+  const { dir, file } = await snapshotFileForFixture();
+  const c = collect();
+  const child = fakeChild();
+  const delta = "héllo ✓ 日本語";
+  const proc = new CoachedOpenCodeRun({
+    ...baseOptions(dir, file, c),
+    spawn: () => {
+      setTimeout(() => {
+        const encoded = Buffer.from(
+          `${JSON.stringify({ type: "session.text.delta", sessionID: SESSION_ID, delta })}\n`,
+          "utf8",
+        );
+        const check = Buffer.from("✓", "utf8");
+        const at = encoded.indexOf(check);
+        assert.ok(at > 0);
+        // Split INSIDE the three-byte "✓" sequence: each chunk alone is not
+        // valid UTF-8, so per-chunk toString() would replace the character.
+        child.stdoutBytes(encoded.subarray(0, at + 1));
+        child.stdoutBytes(encoded.subarray(at + 1));
+        child.emit("close", 0);
+      }, 10);
+      return child;
+    },
+  });
+  proc.start();
+  await waitForDone(c);
+  const text = c.events
+    .filter((event): event is Extract<CoachingEventPayload, { type: "text_delta" }> => event.type === "text_delta")
+    .map((event) => event.delta)
+    .join("");
+  assert.equal(text, delta, "a split multibyte character must survive chunk decoding");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("opencode adapter: a complete oversized line is rejected by byte length, not chunking", async () => {
+  const { dir, file } = await snapshotFileForFixture();
+  const c = collect();
+  const child = fakeChild();
+  const proc = new CoachedOpenCodeRun({
+    ...baseOptions(dir, file, c),
+    spawn: () => {
+      setTimeout(() => {
+        // Character count stays under the cap while UTF-8 bytes exceed it;
+        // the line arrives COMPLETE (newline included) in one chunk.
+        const line = `${"é".repeat(MAX_OPENCODE_LINE_BYTES / 2 + 1)}\n`;
+        assert.ok(line.length < MAX_OPENCODE_LINE_BYTES);
+        assert.ok(Buffer.byteLength(line, "utf8") > MAX_OPENCODE_LINE_BYTES);
+        child.stdoutBytes(Buffer.from(line, "utf8"));
+        // Keep the pre-fix behavior observable and fast: without the byte
+        // check the giant line is silently ignored and the run ends here.
+        child.emit("close", 0);
+      }, 10);
+      return child;
+    },
+  });
+  proc.start();
+  await waitForDone(c);
+  assert.equal(c.done?.status, "failed");
+  assert.match(c.done?.reason ?? "", /oversized line/);
+  assert.ok(child.killCalls.length > 0, "the child is stopped on an oversized line");
+  await rm(dir, { recursive: true, force: true });
+});
