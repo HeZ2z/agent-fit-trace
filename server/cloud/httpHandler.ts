@@ -304,6 +304,18 @@ export function createCloudCoachingHandler(
       }
 
       if (pathname === "/coaching/cloud/runs" && method === "POST") {
+        const input = parseCloudSubmitRunInput(parseJson(request.body, maxBodyBytes));
+        if (input.snapshot.accountId !== principal.id) {
+          return errorResponse(API_ERROR_CODES.FORBIDDEN, "Snapshot is not bound to this account.", 403);
+        }
+        // Resolve an already-accepted request BEFORE the new-execution gates.
+        // A run whose response was lost must stay recoverable after the
+        // operator disables the provider, the budget, or the local adapter;
+        // otherwise the browser can never learn the accepted run id.
+        const existing = await repository.findRunByKey(input);
+        if (existing !== null) {
+          return ok(existing, HTTP_STATUS.ok);
+        }
         if (!state.providerEnabled) {
           return errorResponse(
             CLOUD_ERROR_CODES.CLOUD_DISABLED,
@@ -325,17 +337,10 @@ export function createCloudCoachingHandler(
             503,
           );
         }
-        const input = parseCloudSubmitRunInput(parseJson(request.body, maxBodyBytes));
-        if (input.snapshot.accountId !== principal.id) {
-          return errorResponse(API_ERROR_CODES.FORBIDDEN, "Snapshot is not bound to this account.", 403);
-        }
         const runId = `run-${globalThis.crypto.randomUUID()}`;
         const result = await repository.submitRun({
           runId,
-          sessionId: input.sessionId,
-          prompt: input.prompt,
-          idempotencyKey: input.idempotencyKey,
-          snapshot: input.snapshot,
+          ...input,
         });
         return ok(result, result.replayed ? HTTP_STATUS.ok : HTTP_STATUS.created);
       }

@@ -74,6 +74,8 @@ interface RouterOptions {
   truncateFirstEvents?: boolean;
   /** First event replay returns an ambiguous auth failure; refs survive. */
   unauthorizedFirstEventRead?: boolean;
+  /** Fail the first N cloud capability reads to simulate a transient outage. */
+  capabilityFailures?: number;
   /** Launcher mode: serve local discovery with pi missing and OpenCode ready. */
   launcherDiscovery?: boolean;
 }
@@ -236,6 +238,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
   const tails: ReadableStreamDefaultController<Uint8Array>[] = [];
   let cloudSubmits = 0;
   let cloudEventReads = 0;
+  let cloudCapabilityReads = 0;
   const tailHarness: CloudTailHarness = {
     push: (entry) => {
       const bytes = new TextEncoder().encode(`data: ${JSON.stringify(entry)}\n\n`);
@@ -373,6 +376,11 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
         if (url === "/api/v1/coaching/cloud/capabilities" && method === "GET") {
           if (principal.isAnonymous) {
             return jsonError("ACCOUNT_NOT_FORMAL", "Guests cannot use cloud coaching.", 403);
+          }
+          cloudCapabilityReads += 1;
+          if (cloudCapabilityReads <= (options.capabilityFailures ?? 0)) {
+            // Transient transport failure: the server never answered.
+            throw new Error("socket hangup");
           }
           return jsonData(capabilities(options));
         }
@@ -559,6 +567,42 @@ describe("browser coach backend selection", () => {
     expect(resume.origin).toBe("cloud");
     expect(resume.lastSeq).toBe(1);
     expect(window.sessionStorage.getItem(RESUME_V1_KEY)).toBeNull();
+  });
+
+  it("recovers cloud availability after a transient discovery failure with a bounded retry", async () => {
+    const seen: SeenRequest[] = [];
+    installRouter(seen, { capabilityFailures: 1 });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+
+    // A brief outage replaces cloud with an unavailable option. It must not be
+    // a dead end until reload: an explicit, bounded retry is offered.
+    expect(await screen.findByTestId("coach-backend-notice")).toHaveTextContent(
+      /could not be verified/i,
+    );
+    expect(screen.getByTestId("coach-backend-select")).toHaveValue("");
+    const retry = screen.getByTestId("coach-retry-backend-discovery");
+
+    await user.click(retry);
+
+    // The retried capability response is authoritative: cloud becomes
+    // selectable and both the failure notice and the retry affordance clear.
+    await waitFor(() =>
+      expect(screen.queryByTestId("coach-retry-backend-discovery")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("coach-backend-notice")).toHaveTextContent(/off by default/i);
+    expect(screen.getByRole("option", { name: /^Cloud coach$/ })).not.toBeDisabled();
+
+    await user.selectOptions(screen.getByTestId("coach-backend-select"), "cloud-default");
+    expect(screen.getByTestId("coach-cloud-disclosure")).toHaveTextContent(/hosted cloud/i);
+
+    const capabilityReads = seen.filter(
+      (entry) => entry.url === "/api/v1/coaching/cloud/capabilities",
+    );
+    expect(capabilityReads).toHaveLength(2);
   });
 
   it("replays a stored cloud run from its resume record with no selector and no POST", async () => {

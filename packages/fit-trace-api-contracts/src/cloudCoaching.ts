@@ -129,7 +129,9 @@ export interface CloudCapabilities {
   budgetConfigured: boolean;
   concurrentLimit: number;
   reservedCount: number;
+  /** Server-computed remaining tokens, ALREADY net of `tokensReserved`. */
   tokensRemaining: number;
+  /** Tokens allocated to active runs. Informational: do not subtract again. */
   tokensReserved: number;
   perRunTokenBudget: number;
   perStepTokenBudget: number;

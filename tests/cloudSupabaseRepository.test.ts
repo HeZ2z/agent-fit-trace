@@ -31,6 +31,75 @@ test("cloud request repository: createSession supplies the required RPC TTL argu
   assert.equal(typeof seen?.body.p_ttl_ms, "number");
 });
 
+test("cloud request repository: findRunByKey calls the replay RPC and tolerates a JSON null", async () => {
+  const seen: { url: string; body: Record<string, unknown> }[] = [];
+  let reply: unknown = null;
+  const repository = createSupabaseCoachingRequestRepository({
+    supabaseUrl: "http://127.0.0.1:54321",
+    publishableKey: "publishable-key",
+    accessToken: "access-token",
+    fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+      });
+      return new Response(JSON.stringify(reply), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch,
+  });
+  const request = {
+    sessionId: "session-1",
+    prompt: "Review my training.",
+    idempotencyKey: "idem-1",
+    snapshot: {
+      snapshotId: "snap-1",
+      source: "authenticated-store",
+      accountId: "user-1",
+    },
+  };
+
+  // No retained run yet: the RPC returns JSON null, not an error.
+  assert.equal(await repository.findRunByKey(request), null);
+  assert.match(seen[0]?.url ?? "", /\/rest\/v1\/rpc\/coaching_find_run$/);
+  assert.deepEqual(seen[0]?.body, {
+    p_session_id: "session-1",
+    p_idempotency_key: "idem-1",
+    p_prompt: "Review my training.",
+    p_snapshot_id: "snap-1",
+    p_snapshot_source: "authenticated-store",
+  });
+
+  reply = {
+    run: {
+      id: "run-1",
+      sessionId: "session-1",
+      status: "queued",
+      idempotencyKey: "idem-1",
+      prompt: "Review my training.",
+      snapshot: {
+        snapshotId: "snap-1",
+        source: "authenticated-store",
+        accountId: "user-1",
+        recordIds: [],
+        recordCount: 0,
+      },
+      backendId: "cloud-default",
+      runtimeId: "hosted-sdk",
+      createdAt: "2026-10-17T00:00:00.000Z",
+      updatedAt: "2026-10-17T00:00:00.000Z",
+      terminationConfirmed: false,
+    },
+    lastSeq: 2,
+    replayed: true,
+  };
+  const found = await repository.findRunByKey(request);
+  assert.equal(found?.replayed, true);
+  assert.equal(found?.run.id, "run-1");
+  assert.equal(found?.lastSeq, 2);
+});
+
 test("cloud request repository: readRun accepts real Postgres JSON nulls for optional fields", async () => {
   const runEnvelope = (from: unknown, cancelRequestedAt: unknown, failure: unknown): unknown => ({
     run: {

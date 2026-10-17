@@ -92,6 +92,66 @@ test("cloud guards: every referenced coaching_quota column exists in the base sc
   assert.ok(!referenced.has("quota_configured"));
 });
 
+test("cloud guards: session creation reclaims expired sessions before enforcing the cap", async () => {
+  const guards = await read(GUARDS);
+  const session = functionBody(guards, "coaching_create_session");
+  const lock = session.indexOf(
+    "pg_advisory_xact_lock(hashtext('fit-trace-cloud-sessions-v1:' || v_uid::text))",
+  );
+  const reclaim = session.indexOf("delete from public.coaching_sessions s");
+  const count = session.indexOf("select count(*) into v_count");
+  const live = session.indexOf("s.expires_at > now()", count);
+  const cap = session.indexOf("v_count >= 50");
+  assert.ok(lock >= 0, "session creation serializes per account");
+  assert.ok(reclaim > lock, "expired sessions are reclaimed under the per-account lock");
+  assert.match(session, /where s\.owner_id = v_uid and s\.expires_at <= now\(\)/);
+  assert.ok(count > reclaim, "the capped count runs after reclamation");
+  assert.ok(live > count && cap > live, "the cap counts only sessions with a live TTL");
+});
+
+test("cloud guards: a concurrent identical submit replays after the quota lock instead of failing quota", async () => {
+  const guards = await read(GUARDS);
+  const submit = functionBody(guards, "coaching_submit_run");
+  const lock = submit.indexOf("pg_advisory_xact_lock(hashtext('fit-trace-cloud-quota-v1'))");
+  assert.ok(lock >= 0, "submits serialize on the quota lock");
+  const recheck = submit.indexOf("r.idempotency_key = p_idempotency_key", lock);
+  const exhausted = submit.indexOf("raise exception 'CLOUD_QUOTA_EXHAUSTED'", lock);
+  const conflict = submit.indexOf("raise exception 'CLOUD_CONFLICT'", lock);
+  assert.ok(recheck > lock, "the idempotency key is re-checked after acquiring the quota lock");
+  assert.ok(exhausted > recheck, "the replay is resolved before quota can reject the loser");
+  assert.ok(
+    conflict > recheck && conflict < exhausted,
+    "a changed same-key request stays a conflict, not a quota error",
+  );
+  const recheckBlock = submit.slice(recheck, exhausted);
+  assert.match(recheckBlock, /'replayed', true/, "the winner's retained run is returned");
+  assert.match(recheckBlock, /public\.coaching_run_json\(v_run\)/);
+  // The insert's duplicate handler remains a third line of defense.
+  assert.match(submit, /exception when unique_violation then/);
+});
+
+test("cloud guards: an existing same-key run is resolvable before new-execution gates", async () => {
+  const guards = await read(GUARDS);
+  const find = functionBody(guards, "coaching_find_run");
+  assert.match(find, /v_hash := md5\(public\.coaching_canonical_request\(/);
+  assert.match(find, /r\.idempotency_key = p_idempotency_key/);
+  assert.match(find, /v_run\.request_hash is distinct from v_hash/);
+  assert.match(find, /raise exception 'CLOUD_CONFLICT'/);
+  assert.match(find, /'replayed', true/);
+  assert.match(find, /if not found then\s*return null;/);
+  // Recovery must not itself require a live provider, budget, session, or
+  // snapshot: those are gates for starting NEW work only.
+  assert.doesNotMatch(find, /coaching_runtime_control|coaching_quota|coaching_sessions|coaching_snapshots/);
+  assert.match(
+    guards,
+    /grant execute on function public\.coaching_find_run\(text, text, text, text, text\) to authenticated/,
+  );
+  assert.match(
+    guards,
+    /revoke all on function public\.coaching_find_run\(text, text, text, text, text\) from public, anon, authenticated/,
+  );
+});
+
 test("cloud guards: submit derives canonical identity in SQL and rejects unknown keys", async () => {
   const guards = await read(GUARDS);
   const submit = functionBody(guards, "coaching_submit_run");

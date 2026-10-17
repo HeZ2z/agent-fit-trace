@@ -44,12 +44,22 @@ describe("cloud backend availability", () => {
     expect(option.unavailableReason?.message).toMatch(/per run/i);
   });
 
-  it("subtracts reserved credits before deciding availability", () => {
+  it("uses the server's remaining balance directly (already net of reservations)", () => {
+    // Server contract: 6,000 limit - 2,000 reserved = 4,000 remaining. A
+    // 3,000 per-run budget is affordable; subtracting the reserve again
+    // would wrongly expose 2,000 and disable cloud.
+    const option = cloudOptionFromCapabilities(
+      capabilities({ tokensRemaining: 4_000, tokensReserved: 2_000, perRunTokenBudget: 3_000 }),
+    );
+    expect(option.available).toBe(true);
+    expect(option.unavailableReason).toBeUndefined();
+  });
+
+  it("does not subtract the reserve a second time", () => {
     const option = cloudOptionFromCapabilities(
       capabilities({ tokensRemaining: 2_500, tokensReserved: 1_000, perRunTokenBudget: 2_000 }),
     );
-    expect(option.available).toBe(false);
-    expect(option.unavailableReason?.code).toBe("quota-exhausted");
+    expect(option.available).toBe(true);
   });
 
   it("accepts an exact per-run budget as available", () => {

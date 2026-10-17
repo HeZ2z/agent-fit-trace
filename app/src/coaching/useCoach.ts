@@ -406,6 +406,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     initialBackendOptions({ mode: coachMode, piAvailable: runtimePiAvailable() }),
   );
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
+  // A transient availability failure must be recoverable without an app
+  // reload. The attempt nonce re-runs discovery on demand; the failure flag
+  // exposes the retry action only when discovery actually failed.
+  const [discoveryAttempt, setDiscoveryAttempt] = useState(0);
+  const [discoveryFailed, setDiscoveryFailed] = useState(false);
   // A persisted run whose origin cannot be addressed in THIS session mode.
   // The v2 record (including its backend/origin) stays untouched: the user is
   // told to start the original connector instead of silently clearing it or
@@ -1511,6 +1516,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     setBackends(initialBackendOptions({ mode: coachMode, piAvailable: runtimePiAvailable() }));
     discoveryKeyRef.current = null;
     setDiscoveryNotice(null);
+    setDiscoveryFailed(false);
     setBlockedResume(null);
     clearFold();
     beginPhase("idle");
@@ -1796,6 +1802,17 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   }, [accountId, canOperate, coachMode, startRestore]);
 
   /**
+   * Retry backend availability after a transient discovery failure. Bounded by
+   * construction: one re-run per explicit click, never an unbounded background
+   * retry loop. The identity key is cleared so the discovery effect re-runs.
+   */
+  const retryBackendDiscovery = useCallback((): void => {
+    discoveryKeyRef.current = null;
+    setDiscoveryNotice(null);
+    setDiscoveryAttempt((current) => current + 1);
+  }, []);
+
+  /**
    * Discover the backends this session may choose from. Launcher mode asks the
    * local capability route (falling back to the legacy local-pi option); plain
    * browser mode asks the shared cloud capability route for FORMAL accounts
@@ -1815,6 +1832,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       // No cloud request: a guest can only be told how to run a local coach.
       setBackends([]);
       setDiscoveryNotice(null);
+      setDiscoveryFailed(false);
       return;
     }
     let cancelled = false;
@@ -1840,6 +1858,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
         }
         if (cancelled) return;
         setDiscoveryNotice(null);
+        setDiscoveryFailed(false);
       } catch (caught) {
         if (cancelled) return;
         if (coachMode === "browser") {
@@ -1849,6 +1868,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
           setDiscoveryNotice(
             `Cloud availability could not be verified (${friendlyCoachError(caught)}). Cloud coaching stays off.`,
           );
+          // A transient failure must not disable cloud until reload: surface a
+          // bounded, explicit retry instead of a dead end.
+          setDiscoveryFailed(true);
         } else {
           // Keep the already-truthful local default instead of inventing a
           // backend: the launcher already published whether pi is present.
@@ -1857,6 +1879,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
               caught,
             )}). Showing the local pi default.`,
           );
+          setDiscoveryFailed(false);
         }
       }
     })();
@@ -1872,6 +1895,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     client,
     cloudClient,
     coachMode,
+    discoveryAttempt,
     discoveryKey,
     identityUnverified,
     isGuest,
@@ -1943,6 +1967,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     }
     return null;
   }, [coachMode, discoveryNotice, identityUnverified, isGuest, selectedOption]);
+  // Only a failed browser discovery offers the bounded retry; guests and
+  // unverified identities make no cloud request at all.
+  const canRetryBackendDiscovery = coachMode === "browser" && discoveryFailed;
   return {
     phase,
     mode: coachMode,
@@ -1956,6 +1983,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     isBackendPinned,
     canAsk,
     backendNotice,
+    canRetryBackendDiscovery,
+    retryBackendDiscovery,
     blockedResume,
     selectBackend,
     // Every button capability is DERIVED from the single phase plus the live

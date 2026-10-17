@@ -29,7 +29,10 @@ function workout(): WorkoutRecord {
   }).record;
 }
 
-function setup(db = new FakeCloudDatabase()) {
+function setup(
+  db = new FakeCloudDatabase(),
+  options: { providerConfigured?: boolean } = {},
+) {
   let repositoryCalls = 0;
   const handler = createCloudCoachingHandler({
     verifier: createTestVerifier(TOKENS),
@@ -42,7 +45,7 @@ function setup(db = new FakeCloudDatabase()) {
         return [workout()];
       },
     },
-    providerConfigured: true,
+    providerConfigured: options.providerConfigured ?? true,
     providerLimits: { maxSteps: 4, maxTokens: 2048, timeoutMs: 60_000 },
     sse: { pollMs: 1, maxDurationMs: 100, pageLimit: 200 },
     now: () => db.nowMs,
@@ -208,6 +211,112 @@ test("cloud HTTP: identical replay survives snapshot expiry; changed request is 
   assert.equal(replayData.run.id, firstRun.id);
 
   const changed = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: { ...body, prompt: "A different request." },
+  });
+  assert.equal(changed.status, 409);
+  assert.equal((changed.json?.error as { code: string }).code, "IDEMPOTENCY_CONFLICT");
+});
+
+test("cloud HTTP: a lost submit response replays after provider and budget gates close", async () => {
+  const { db, handler } = setup();
+  const { sessionId, snapshot } = await createSessionAndSnapshot(handler);
+  const body = submitBody(sessionId, snapshot, "idem-lost");
+
+  const first = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body,
+  });
+  assert.equal(first.status, 201);
+  const runId = (first.json?.data as { run: { id: string } }).run.id;
+
+  // The operator flips the global kill switch AFTER the run was accepted but
+  // BEFORE the browser learned its id. The same-key retry must resolve the
+  // retained run rather than fail at the disabled-provider gate.
+  db.setAccount({ providerEnabled: false });
+  const replay = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body,
+  });
+  assert.equal(replay.status, 200);
+  const replayData = replay.json?.data as { run: { id: string }; replayed: boolean };
+  assert.equal(replayData.replayed, true);
+  assert.equal(replayData.run.id, runId);
+
+  // A genuinely new request still fails closed at the provider gate.
+  const fresh = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-fresh"),
+  });
+  assert.equal(fresh.status, 503);
+  assert.equal((fresh.json?.error as { code: string }).code, "CLOUD_DISABLED");
+
+  // Same for the finite-budget gate: recovery wins over the new-run check.
+  db.setAccount({ providerEnabled: true });
+  db.perRunTokenBudget = 0;
+  const replayNoBudget = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body,
+  });
+  assert.equal(replayNoBudget.status, 200);
+  assert.equal((replayNoBudget.json?.data as { run: { id: string } }).run.id, runId);
+
+  const freshNoBudget = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-fresh-budget"),
+  });
+  assert.equal(freshNoBudget.status, 403);
+  assert.equal((freshNoBudget.json?.error as { code: string }).code, "QUOTA_NOT_CONFIGURED");
+});
+
+test("cloud HTTP: replay resolves even when the server provider adapter is unconfigured", async () => {
+  const db = new FakeCloudDatabase();
+  const enabled = setup(db);
+  const { sessionId, snapshot } = await createSessionAndSnapshot(enabled.handler);
+  const body = submitBody(sessionId, snapshot, "idem-adapter");
+  const first = await call(enabled.handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body,
+  });
+  assert.equal(first.status, 201);
+  const runId = (first.json?.data as { run: { id: string } }).run.id;
+
+  // This server instance no longer has a provider adapter. A same-key retry
+  // must still return the accepted run so the browser can replay or cancel it.
+  const disabled = setup(db, { providerConfigured: false });
+  const replay = await call(disabled.handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body,
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((replay.json?.data as { run: { id: string } }).run.id, runId);
+
+  const fresh = await call(disabled.handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-adapter-fresh"),
+  });
+  assert.equal(fresh.status, 503);
+  assert.equal((fresh.json?.error as { code: string }).code, "PROVIDER_UNCONFIGURED");
+
+  const changed = await call(disabled.handler, {
     method: "POST",
     pathname: "/coaching/cloud/runs",
     token: "token-formal",

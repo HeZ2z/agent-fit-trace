@@ -210,7 +210,15 @@ declare
 begin
   perform public.coaching_assert_bounded_text(v_id, 128);
   perform pg_advisory_xact_lock(hashtext('fit-trace-cloud-sessions-v1:' || v_uid::text));
-  select count(*) into v_count from public.coaching_sessions s where s.owner_id = v_uid;
+  -- Expired sessions do not need retention. Reclaim them under the same
+  -- per-account lock, then count only sessions whose TTL has not elapsed.
+  -- Nothing references a session row by FK; a run keeps its session id as
+  -- text, so dropping an expired row never orphans an accepted run.
+  delete from public.coaching_sessions s
+  where s.owner_id = v_uid and s.expires_at <= now();
+  select count(*) into v_count
+  from public.coaching_sessions s
+  where s.owner_id = v_uid and s.expires_at > now();
   if not exists (select 1 from public.coaching_sessions s where s.owner_id = v_uid and s.id = v_id)
      and v_count >= 50 then
     raise exception 'CLOUD_INVALID' using errcode = '22023';
@@ -412,6 +420,24 @@ begin
   end if;
 
   perform pg_advisory_xact_lock(hashtext('fit-trace-cloud-quota-v1'));
+  -- A concurrent identical submit may have inserted its run while this
+  -- transaction waited for the quota lock. Replay it now, before evaluating
+  -- quota: otherwise the loser of the race reports CLOUD_QUOTA_EXHAUSTED
+  -- (having missed the last slot/allocation) instead of the accepted run.
+  select * into v_run from public.coaching_runs r
+  where r.owner_id = v_uid and r.session_id = p_session_id and r.idempotency_key = p_idempotency_key
+  for update;
+  if found then
+    if v_run.request_hash = v_hash then
+      select coalesce(max(e.seq), -1) into v_seq from public.coaching_run_events e where e.run_id = v_run.id;
+      return jsonb_build_object(
+        'run', public.coaching_run_json(v_run),
+        'lastSeq', v_seq,
+        'replayed', true
+      );
+    end if;
+    raise exception 'CLOUD_CONFLICT' using errcode = '23505';
+  end if;
   select * into v_quota from public.coaching_quota q where q.owner_id = v_uid for update;
   if not found or v_quota.configured is not true then
     raise exception 'CLOUD_QUOTA_NOT_CONFIGURED' using errcode = '42501';
@@ -484,6 +510,58 @@ begin
     'run', public.coaching_run_json(v_run),
     'lastSeq', -1,
     'replayed', false
+  );
+end;
+$$;
+
+-- Replay lookup for a same-key submit. The HTTP layer calls this BEFORE
+-- applying new-execution gates (provider kill switch, provider configuration,
+-- budget), so a response lost after the server accepted a run can still be
+-- recovered after the operator disables the provider. Returns NULL when no run
+-- exists yet; a same-key different request is CLOUD_CONFLICT, exactly as
+-- `coaching_submit_run` would report it.
+create or replace function public.coaching_find_run(
+  p_session_id text,
+  p_idempotency_key text,
+  p_prompt text,
+  p_snapshot_id text,
+  p_snapshot_source text
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_uid uuid := public.coaching_assert_formal_account();
+  v_hash text;
+  v_run public.coaching_runs%rowtype;
+  v_seq integer;
+begin
+  perform public.coaching_assert_bounded_text(p_session_id, 128);
+  perform public.coaching_assert_bounded_text(p_idempotency_key, 200);
+  perform public.coaching_assert_bounded_text(p_prompt, 65536);
+  perform public.coaching_assert_bounded_text(p_snapshot_id, 128);
+  perform public.coaching_assert_bounded_text(p_snapshot_source, 64);
+
+  v_hash := md5(public.coaching_canonical_request(
+    p_prompt, 'cloud-default', 'hosted-sdk', p_snapshot_id, p_snapshot_source, v_uid
+  )::text);
+
+  select * into v_run from public.coaching_runs r
+  where r.owner_id = v_uid and r.session_id = p_session_id and r.idempotency_key = p_idempotency_key;
+  if not found then
+    return null;
+  end if;
+  if v_run.request_hash is distinct from v_hash then
+    raise exception 'CLOUD_CONFLICT' using errcode = '23505';
+  end if;
+  select coalesce(max(e.seq), -1) into v_seq from public.coaching_run_events e where e.run_id = v_run.id;
+  return jsonb_build_object(
+    'run', public.coaching_run_json(v_run),
+    'lastSeq', v_seq,
+    'replayed', true
   );
 end;
 $$;
@@ -1083,6 +1161,7 @@ $$;
 revoke all on function public.coaching_create_session(text, integer) from public, anon, authenticated;
 revoke all on function public.coaching_create_snapshot(text, text, text, text, integer) from public, anon, authenticated;
 revoke all on function public.coaching_submit_run(text, text, text, text, text, text, text, text, jsonb) from public, anon, authenticated;
+revoke all on function public.coaching_find_run(text, text, text, text, text) from public, anon, authenticated;
 revoke all on function public.coaching_cancel_run(text, text) from public, anon, authenticated;
 revoke all on function public.coaching_authorize_provider_step(text, integer, bigint, integer) from public, anon, authenticated;
 revoke all on function public.coaching_append_event(text, integer, jsonb) from public, anon, authenticated;
@@ -1093,6 +1172,7 @@ revoke all on function public.coaching_release_reservation(text, integer, boolea
 grant execute on function public.coaching_create_session(text, integer) to authenticated;
 grant execute on function public.coaching_create_snapshot(text, text, text, text, integer) to authenticated;
 grant execute on function public.coaching_submit_run(text, text, text, text, text, text, text, text, jsonb) to authenticated;
+grant execute on function public.coaching_find_run(text, text, text, text, text) to authenticated;
 grant execute on function public.coaching_cancel_run(text, text) to authenticated;
 grant execute on function public.coaching_authorize_provider_step(text, integer, bigint, integer) to service_role;
 grant execute on function public.coaching_append_event(text, integer, jsonb) to service_role;

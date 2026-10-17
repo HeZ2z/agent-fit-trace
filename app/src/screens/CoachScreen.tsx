@@ -120,9 +120,20 @@ export function CoachScreen() {
       )}
 
       {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (
-        <p role="note" data-testid="coach-backend-notice" className="coach-meta">
-          {coach.backendNotice}
-        </p>
+        <>
+          <p role="note" data-testid="coach-backend-notice" className="coach-meta">
+            {coach.backendNotice}
+          </p>
+          {coach.canRetryBackendDiscovery && (
+            <button
+              type="button"
+              data-testid="coach-retry-backend-discovery"
+              onClick={coach.retryBackendDiscovery}
+            >
+              Retry availability
+            </button>
+          )}
+        </>
       )}
 
       {disclosedBackend !== null && disclosedLocation !== null && (

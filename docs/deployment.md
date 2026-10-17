@@ -130,6 +130,10 @@ All cloud routes are under `/api/v1/coaching/cloud`; the Vercel catch-all is
 `api/v1/coaching/cloud/[...path].mjs`. SSE is replay-only and bounded: the
 function polls stored events for at most about 15 seconds and returns the
 frames collected, so it does not hold a serverless process open indefinitely.
+`POST /coaching/cloud/runs` resolves an existing same-key request before the
+provider, adapter, and budget gates, so a run whose response was lost stays
+recoverable (HTTP `200`, `replayed: true`) even if the operator later disables
+paid execution; a genuinely new request still fails closed at those gates.
 
 ### 3. Worker process (separate host)
 

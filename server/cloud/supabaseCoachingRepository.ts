@@ -393,6 +393,19 @@ export function createSupabaseCoachingRequestRepository(
       };
     },
 
+    async findRunByKey(input): Promise<CloudSubmitOutcome | null> {
+      const value = await rpc("coaching_find_run", {
+        p_session_id: input.sessionId,
+        p_idempotency_key: input.idempotencyKey,
+        p_prompt: input.prompt,
+        p_snapshot_id: input.snapshot.snapshotId,
+        p_snapshot_source: input.snapshot.source,
+      });
+      // `returns jsonb` from a no-row lookup is JSON null.
+      if (value === null || value === undefined) return null;
+      return parseCloudSubmitRunResult(value);
+    },
+
     async submitRun(input): Promise<CloudSubmitOutcome> {
       const value = await rpc("coaching_submit_run", {
         p_run_id: input.runId,

@@ -204,6 +204,35 @@ function makeRequestRepository(
     return run;
   }
 
+  function replayExisting(input: {
+    sessionId: string;
+    prompt: string;
+    idempotencyKey: string;
+    snapshot: { snapshotId: string; source: string; accountId: string };
+  }): CloudSubmitOutcome | null {
+    const canonical = canonicalCloudRequestText({
+      prompt: input.prompt,
+      snapshot: input.snapshot,
+    });
+    const replayKey = `${accountId}|${input.sessionId}|${input.idempotencyKey}`;
+    const existingId = db.requestKeys.get(replayKey);
+    if (existingId === undefined) return null;
+    const existing = db.runs.get(existingId);
+    assert.ok(existing);
+    if (existing.requestHash !== canonical) {
+      throw new CloudError(
+        "IDEMPOTENCY_CONFLICT",
+        "Idempotency key was already used with different content.",
+        409,
+      );
+    }
+    return {
+      run: publicRun(existing),
+      lastSeq: (db.events.get(existing.id)?.at(-1)?.seq ?? -1),
+      replayed: true,
+    };
+  }
+
   return {
     async accountState(): Promise<CloudAccountState> {
       if (accountId !== db.accountId) {
@@ -269,30 +298,20 @@ function makeRequestRepository(
       return structuredClone(snapshot);
     },
 
+    async findRunByKey(input): Promise<CloudSubmitOutcome | null> {
+      requireAccount(db, accountId);
+      return replayExisting(input);
+    },
+
     async submitRun(input): Promise<CloudSubmitOutcome> {
       requireAccount(db, accountId);
+      const replay = replayExisting(input);
+      if (replay !== null) return replay;
       const canonical = canonicalCloudRequestText({
         prompt: input.prompt,
         snapshot: input.snapshot,
       });
       const replayKey = `${accountId}|${input.sessionId}|${input.idempotencyKey}`;
-      const existingId = db.requestKeys.get(replayKey);
-      if (existingId !== undefined) {
-        const existing = db.runs.get(existingId);
-        assert.ok(existing);
-        if (existing.requestHash !== canonical) {
-          throw new CloudError(
-            "IDEMPOTENCY_CONFLICT",
-            "Idempotency key was already used with different content.",
-            409,
-          );
-        }
-        return {
-          run: publicRun(existing),
-          lastSeq: (db.events.get(existing.id)?.at(-1)?.seq ?? -1),
-          replayed: true,
-        };
-      }
       const session = db.sessions.get(input.sessionId);
       if (session === undefined || session.ownerId !== accountId || session.expiresAt <= db.nowMs) {
         throw new CloudError("SESSION_NOT_FOUND", "Cloud coaching session not found.", 404);

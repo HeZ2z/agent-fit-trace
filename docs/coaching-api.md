@@ -84,11 +84,12 @@ cannot assert availability, entitlement, or quota.
   has a server-verified formal account (`isAnonymous: false`), the server has
   cloud quota configured, a provider is configured, and a cloud adapter is
   registered. The remaining budget must be able to reserve one configured run:
-  `tokensRemaining - tokensReserved >= perRunTokenBudget` with a positive
-  `perRunTokenBudget`. A positive balance below that budget is reported
-  unavailable (`quota-exhausted`) rather than advertised as a usable run.
-  Missing identity, a guest account, or missing configuration fails closed.
-  Guests may use their own local agent only.
+  `tokensRemaining >= perRunTokenBudget` with a positive `perRunTokenBudget`.
+  `tokensRemaining` is server-computed NET of `tokensReserved`; clients must
+  not subtract the reserve a second time. A positive balance below the run
+  budget is reported unavailable (`quota-exhausted`) rather than advertised as
+  a usable run. Missing identity, a guest account, or missing configuration
+  fails closed. Guests may use their own local agent only.
 - Capabilities stay conservative: pi advertises `nativeContinuation: true` and
   `cancelConfirmation: "process-exit"`; engines that have not proven their
   native handle or isolation semantics advertise `false`/`"unsupported"`.

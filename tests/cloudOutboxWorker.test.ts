@@ -184,6 +184,45 @@ test("worker: acceptance-unknown never redispatches or refunds, even on later ti
   assert.equal(db.outboxFor(runId).status, "dead");
 });
 
+test("worker: unknown later-step usage retains the possibly-billed remainder", async () => {
+  const db = new FakeCloudDatabase({ perRunTokenBudget: 10_000 });
+  const { runId } = await seedRun(db, "unknown-later");
+  const firstStepUsage: CloudUsage = {
+    promptTokens: 80,
+    completionTokens: 20,
+    totalTokens: 100,
+    known: true,
+    complete: true,
+  };
+  const provider: CloudCoachingProvider = {
+    async run(input) {
+      await input.beforeProviderRequest();
+      await input.onAccepted({ generationId: "gen-later", usage: firstStepUsage });
+      // A second request was dispatched and timed out. Its billing outcome is
+      // unknown, so the first step's complete usage must not unlock a refund
+      // of the whole allocation.
+      throw new ProviderAcceptanceUnknownError("second provider step timed out", {
+        usage: firstStepUsage,
+        generationId: "gen-later",
+        accepted: true,
+        dispatched: true,
+      });
+    },
+  };
+  const worker = makeWorker(db, provider);
+  const result = await worker.tick();
+  assert.equal(result.unconfirmed, 1);
+  const run = db.getRun(runId);
+  assert.equal(run.status, "unconfirmed");
+  assert.equal(run.reservationReleased, false);
+  assert.equal(run.budgetReleased, false);
+  // The known first step is charged, but the rest of the allocation stays
+  // reserved for the possibly-billed later step.
+  assert.equal(db.ledger.get(runId)?.totalTokens, 100);
+  assert.equal(db.ledger.get(runId)?.complete, false);
+  assert.equal(db.tokensReserved, 9_900);
+});
+
 test("worker: definitive provider rejection refunds and terminates failed", async () => {
   const db = new FakeCloudDatabase();
   const { runId } = await seedRun(db, "reject");

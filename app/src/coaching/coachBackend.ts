@@ -160,10 +160,12 @@ function cloudUnavailableReason(
       message: "Cloud coaching quota has no finite execution budget configured.",
     };
   }
-  // Financial availability is server-derived and per-run: a positive balance
-  // that cannot reserve one configured run budget must stay unavailable. Never
-  // advertise cloud merely because tokensRemaining >= 1.
-  const availableCredits = capabilities.tokensRemaining - capabilities.tokensReserved;
+  // Financial availability is server-derived and per-run. The server already
+  // returns `tokensRemaining` NET of `tokensReserved`; subtracting the reserve
+  // again would halve the visible balance and disable affordable runs.
+  // A positive balance that cannot reserve one configured run budget must
+  // stay unavailable. Never advertise cloud merely because tokensRemaining >= 1.
+  const availableCredits = capabilities.tokensRemaining;
   if (
     capabilities.perRunTokenBudget > 0 &&
     availableCredits < capabilities.perRunTokenBudget

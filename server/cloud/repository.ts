@@ -143,6 +143,14 @@ export interface CloudSubmitOutcome {
   replayed: boolean;
 }
 
+/** Everything that identifies a submit request except the server-issued run id. */
+export interface CloudRunRequest {
+  sessionId: string;
+  prompt: string;
+  idempotencyKey: string;
+  snapshot: { snapshotId: string; source: string; accountId: string };
+}
+
 export interface CloudEventPage {
   events: CoachingEventEnvelope[];
   run: CloudCoachingRun;
@@ -201,13 +209,13 @@ export interface CloudRequestRepository {
   createSession(id: string | undefined): Promise<CloudSessionRecord>;
   readSession(id: string): Promise<CloudSessionRecord>;
   createSnapshot(records: WorkoutRecord[], filter: { from?: string; to?: string }): Promise<CloudSnapshotRecord>;
-  submitRun(input: {
-    runId: string;
-    sessionId: string;
-    prompt: string;
-    idempotencyKey: string;
-    snapshot: { snapshotId: string; source: string; accountId: string };
-  }): Promise<CloudSubmitOutcome>;
+  /**
+   * Resolve a retained same-key request before applying new-execution gates.
+   * Returns NULL when the key has not been used. A same-key request with
+   * different content is a conflict, exactly as `submitRun` reports it.
+   */
+  findRunByKey(input: CloudRunRequest): Promise<CloudSubmitOutcome | null>;
+  submitRun(input: CloudRunRequest & { runId: string }): Promise<CloudSubmitOutcome>;
   readRun(runId: string): Promise<{ run: CloudCoachingRun; lastSeq: number; firstSeq: number; expiresAt: number }>;
   readEvents(runId: string, fromSeq: number, limit: number): Promise<CloudEventPage>;
   cancelRun(runId: string, reason?: string): Promise<{ run: CloudCoachingRun; lastSeq: number }>;

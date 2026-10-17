@@ -333,11 +333,14 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
       }
       if (error instanceof ProviderAcceptanceUnknownError) {
         // Acceptance is unknown, but any authoritative usage already returned
-        // by earlier steps must still be charged. Unknown remainder stays
-        // reserved because the unconfirmed terminal never releases budget.
+        // by earlier steps must still be charged. A dispatched step without a
+        // usable response may also have been billed, so mark the carried usage
+        // incomplete: settlement charges only the known part and retains the
+        // rest of the allocation instead of refunding it.
         if (error.usage !== undefined) {
           await settle(run.id, generation, {
             ...error.usage,
+            complete: false,
             ...(error.generationId === undefined ? {} : { generationId: error.generationId }),
           });
         }
