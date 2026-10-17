@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
@@ -9,7 +9,11 @@ import { spawn } from "node:child_process";
 
 import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { parseAnalysisResult, parseWorkoutList } from "@pi-fit-trace/api-contracts";
+import {
+  parseAnalysisResult,
+  parseCoachingCapabilityDiscovery,
+  parseWorkoutList,
+} from "@pi-fit-trace/api-contracts";
 import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
 import {
   checkNodeRuntime,
@@ -17,11 +21,23 @@ import {
   normalizeUpstreamBaseUrl,
   resolveLauncherConfig,
 } from "../packages/fit-trace-cli/src/config.ts";
-import { RUNTIME_SCRIPT_BODY, startLauncherServer } from "../packages/fit-trace-cli/src/launcherServer.ts";
-import type { LauncherServer } from "../packages/fit-trace-cli/src/launcherServer.ts";
+import {
+  RUNTIME_SCRIPT_BODY,
+  startLauncherServer as startLauncherServerBase,
+} from "../packages/fit-trace-cli/src/launcherServer.ts";
+import type { LauncherServer, LauncherServerOptions } from "../packages/fit-trace-cli/src/launcherServer.ts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import { CAPABILITY_HEADER } from "../server/coaching/coachingServer.ts";
 import type { RuntimeFactory, RuntimeLaunchOptions } from "../server/coaching/coachingService.ts";
+
+/**
+ * These tests exercise launcher wiring, not durability. Keep them in-process
+ * so a shared run never writes `.pi/fit-trace/coaching-journal.json` into the
+ * repository or inherits history from a previous boot.
+ */
+function startLauncherServer(options: LauncherServerOptions): Promise<LauncherServer> {
+  return startLauncherServerBase({ journalPath: null, ...options });
+}
 
 interface RecordedRequest {
   method: string;
@@ -437,6 +453,8 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     }
     return null;
   });
+  const journalDir = await mkdtemp(join(tmpdir(), "fit-trace-launcher-journal-"));
+  const journalPath = join(journalDir, "coaching-journal.json");
   const sameOrigin = await startLauncherServer({
     distDir,
     upstreamBaseUrl: upstream.baseUrl,
@@ -445,6 +463,7 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     verifier: createTestVerifier({ "token-coach": { id: "user-coach" } }),
     publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
     runtimeFactory,
+    journalPath,
   });
   try {
     // Tracking shell + runtime bootstrap advertise same-origin coaching.
@@ -479,6 +498,12 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     });
     assert.equal(session.status, 201);
     const sessionId = ((await session.json()) as { data: { id: string } }).data.id;
+    // The launcher-owned journal is flushed before the session is acknowledged.
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
+      sessions: Array<{ id: string }>;
+    };
+    assert.deepEqual(journal.sessions.map((entry) => entry.id), [sessionId]);
+    assert.equal((await stat(journalPath)).mode & 0o777, 0o600);
 
     const snapshot = await fetch(`${sameOrigin.url}/coaching/snapshots`, {
       method: "POST",
@@ -533,6 +558,7 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     assert.equal(evil.status, 403);
   } finally {
     await sameOrigin.close();
+    await rm(journalDir, { recursive: true, force: true });
   }
   await assert.rejects(fetch(`${sameOrigin.url}/`), /fetch failed|ECONNREFUSED/);
 });
@@ -710,6 +736,15 @@ test("an empty FIT_TRACE_APP_DIST is treated as unset (repo default)", () => {
   assert.equal(flagged.distDir, "/repo/app/dist");
 });
 
+test("launcher runtime config defaults to pi, accepts local CLIs, and rejects cloud/unknown", () => {
+  const base = { FIT_TRACE_API_BASE_URL: "https://example.com/api/v1" };
+  assert.equal(resolveLauncherConfig(base, {}, "/repo").runtimeId, "pi");
+  assert.equal(resolveLauncherConfig({ ...base, FIT_TRACE_RUNTIME: "codex" }, {}, "/repo").runtimeId, "codex");
+  assert.equal(resolveLauncherConfig(base, { runtime: "opencode" }, "/repo").runtimeId, "opencode");
+  assert.throws(() => resolveLauncherConfig(base, { runtime: "shell" }, "/repo"), /invalid coaching runtime/);
+  assert.throws(() => resolveLauncherConfig(base, { runtime: "hosted-sdk" }, "/repo"), /cannot configure/);
+});
+
 test("browser open is loopback-only", () => {
   assert.equal(isSafeOpenUrl("http://127.0.0.1:5198/"), true);
   assert.equal(isSafeOpenUrl("http://localhost:5198/"), true);
@@ -808,6 +843,19 @@ test("pi-unavailable launches fail coaching runs clearly, not as spawn errors", 
     assert.equal(bootstrap.status, 200);
     const capability = ((await bootstrap.json()) as { data: { capability: string } }).data.capability;
     const creds = { authorization: "Bearer token-nopi", [CAPABILITY_HEADER]: capability };
+    // The discovery route is authenticated and parses through the shared
+    // versioned contract.
+    const capabilitiesResponse = await fetch(`${server.url}/coaching/capabilities`, { headers: creds });
+    assert.equal(capabilitiesResponse.status, 200);
+    const discovery = parseCoachingCapabilityDiscovery(
+      ((await capabilitiesResponse.json()) as { data: unknown }).data,
+    );
+    assert.equal(discovery.discoveryVersion, 1);
+    assert.equal(discovery.backends.find((entry) => entry.backendId === "local-pi")?.available, false);
+    assert.equal(
+      discovery.backends.find((entry) => entry.backendId === "cloud-default")?.available,
+      false,
+    );
     const session = await fetch(`${server.url}/coaching/sessions`, {
       method: "POST",
       headers: { ...creds, "content-type": "application/json" },
@@ -849,23 +897,116 @@ test("pi-unavailable launches fail coaching runs clearly, not as spawn errors", 
         },
       }),
     });
-    assert.equal(run.status, 201);
-    const runId = ((await run.json()) as { data: { run: { id: string } } }).data.run.id;
-    const start = Date.now();
-    let status = "";
-    for (;;) {
-      const read = await fetch(`${server.url}/coaching/runs/${runId}`, { headers: creds });
-      assert.equal(read.status, 200);
-      status = ((await read.json()) as { data: { run: { status: string } } }).data.run.status;
-      if (status === "failed" || status === "completed") break;
-      assert.ok(Date.now() - start < 8000, `timed out waiting for terminal, still ${status}`);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    assert.equal(status, "failed");
-    const events = await fetch(`${server.url}/coaching/runs/${runId}/events`, { headers: creds });
-    assert.match(await events.text(), /pi CLI is not available/);
+    // Discovery and submit agree: an explicitly unavailable local-pi registry
+    // entry is refused up front, never silently routed through a legacy
+    // factory that would launch and fail later.
+    assert.equal(run.status, 400);
+    assert.match(await run.text(), /pi CLI is not available/);
     const runtime = await (await fetch(`${server.url}/fit-trace-runtime.js`)).text();
     assert.match(runtime, /piAvailable: false/);
+    // Discovery tells the truth: pi is unavailable with a reason, and the
+    // planned CLIs/cloud are never advertised as available.
+    const directDiscovery = server.service.discoverBackends({ id: "user-nopi" });
+    const byId = new Map(directDiscovery.backends.map((entry) => [entry.backendId, entry]));
+    assert.equal(byId.get("local-pi")?.available, false);
+    assert.equal(byId.get("local-pi")?.unavailableReason?.code, "cli-not-installed");
+    assert.equal(byId.get("local-codex")?.available, false);
+    assert.equal(byId.get("local-codex")?.unavailableReason?.code, "adapter-not-implemented");
+    assert.equal(byId.get("cloud-default")?.available, false);
+    assert.equal(byId.get("cloud-default")?.unavailableReason?.code, "identity-unverified");
+  } finally {
+    await server.close();
+    upstream.setResponder(() => null);
+  }
+});
+
+test("codex with dynamicTools but unproven builtin isolation stays unavailable", async () => {
+  assert.ok(upstream !== null);
+  const server = await startLauncherServer({
+    distDir,
+    upstreamBaseUrl: upstream.baseUrl,
+    host: "127.0.0.1",
+    port: 0,
+    verifier: createTestVerifier({ "token-codex-gated": { id: "user-codex-gated" } }),
+    publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
+    runtimeId: "codex",
+    piAvailable: false,
+    // The schema has dynamicTools (supported: true), but the launcher must
+    // still deny it: dynamic tools do not exclude built-ins.
+    codexSupport: {
+      supported: true,
+      builtinIsolationVerified: false,
+      gap: "builtin-isolation-unproven: dynamicTools is additive",
+    },
+  });
+  try {
+    const discovery = server.service.discoverBackends({ id: "user-codex-gated" });
+    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
+    assert.equal(codex?.available, false);
+    assert.equal(codex?.unavailableReason?.code, "cli-version-unsupported");
+    assert.match(codex?.unavailableReason?.message ?? "", /builtin-isolation-unproven/);
+  } finally {
+    await server.close();
+    upstream.setResponder(() => null);
+  }
+});
+
+test("opencode without positive plugin-isolation evidence stays unavailable", async () => {
+  assert.ok(upstream !== null);
+  const server = await startLauncherServer({
+    distDir,
+    upstreamBaseUrl: upstream.baseUrl,
+    host: "127.0.0.1",
+    port: 0,
+    verifier: createTestVerifier({ "token-opencode-gated": { id: "user-opencode-gated" } }),
+    publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
+    runtimeId: "opencode",
+    piAvailable: false,
+    openCodeSupport: {
+      supported: false,
+      isolationVerified: false,
+      version: "2.0.30",
+      model: "fixture/model",
+      gap: "plugin-isolation-unproven: built-in inventory was not excluded",
+    },
+  });
+  try {
+    const discovery = server.service.discoverBackends({ id: "user-opencode-gated" });
+    const opencode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+    assert.equal(opencode?.available, false);
+    assert.equal(opencode?.unavailableReason?.code, "cli-version-unsupported");
+    assert.match(opencode?.unavailableReason?.message ?? "", /plugin-isolation-unproven/);
+  } finally {
+    await server.close();
+    upstream.setResponder(() => null);
+  }
+});
+
+test("opencode registers only with verified isolation and a configured model", async () => {
+  assert.ok(upstream !== null);
+  const server = await startLauncherServer({
+    distDir,
+    upstreamBaseUrl: upstream.baseUrl,
+    host: "127.0.0.1",
+    port: 0,
+    verifier: createTestVerifier({ "token-opencode-ready": { id: "user-opencode-ready" } }),
+    publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
+    runtimeId: "opencode",
+    piAvailable: false,
+    openCodeSupport: {
+      supported: true,
+      isolationVerified: true,
+      version: "2.0.30",
+      model: "fixture/model",
+    },
+  });
+  try {
+    const discovery = server.service.discoverBackends({ id: "user-opencode-ready" });
+    const opencode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+    assert.equal(opencode?.available, true);
+    assert.equal(opencode?.version, "2.0.30");
+    assert.equal(opencode?.capabilities.nativeContinuation, true);
+    assert.equal(opencode?.capabilities.cancelConfirmation, "process-exit");
   } finally {
     await server.close();
     upstream.setResponder(() => null);

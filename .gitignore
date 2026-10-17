@@ -24,6 +24,9 @@ pnpm-debug.log*
 # Local orchestration state
 .omx/
 
+# Local app data (workout store, durable coaching journal)
+.pi/fit-trace/
+
 # Editor / OS
 .DS_Store
 .idea/

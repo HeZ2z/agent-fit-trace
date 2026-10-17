@@ -56,14 +56,19 @@ import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
 import type {
+  CoachingBackendId,
+  CoachingCapabilityDiscovery,
+  CoachingCloudQuota,
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingEventPayload,
   CoachingRun,
   CoachingRunStatus,
+  CoachingRuntimeId,
   CoachingSession,
   CoachingSnapshotReference,
   CoachingTerminalStatus,
+  CoachingTrustedIdentity,
   SubmitCoachingRunInput,
 } from "@pi-fit-trace/api-contracts";
 import {
@@ -80,6 +85,8 @@ import {
   nextRunStatus,
   parseAnalysisResult,
   parseCoachingEventPayload,
+  qualifyCloudBackend,
+  resolveCoachingBackendSelection,
 } from "@pi-fit-trace/api-contracts";
 import { MalformedResponseError } from "@pi-fit-trace/api-contracts";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
@@ -90,8 +97,41 @@ import {
   ValidationError,
 } from "@pi-fit-trace/core";
 import type { PrincipalStoreFactory } from "../auth/verifier.ts";
+import {
+  asCoachingRuntimeRegistry,
+  buildCoachingDiscovery,
+  NATIVE_SESSION_VERSION_BY_BACKEND,
+} from "./runtimeRegistry.ts";
+import type {
+  CoachingRuntimeRegistration,
+  CoachingRuntimeRegistry,
+  RuntimeDoneInfo,
+  RuntimeFactory,
+  RuntimeHandle,
+  RuntimeLaunchOptions,
+} from "./runtimeRegistry.ts";
 import { cleanupSnapshotDir, writeSnapshotDir } from "./snapshotFile.ts";
 import type { SnapshotDir } from "./snapshotFile.ts";
+import { canonicalizeCoachingSubmit } from "./coachingCanonical.ts";
+import {
+  CoachingJournalCorruptError,
+  loadCoachingJournal,
+  writeCoachingJournal,
+} from "./coachingJournal.ts";
+import type {
+  CoachingJournalIdempotency,
+  CoachingJournalRun,
+  CoachingJournalSession,
+  CoachingJournalSnapshot,
+  CoachingJournalState,
+} from "./coachingJournal.ts";
+
+export type {
+  RuntimeDoneInfo,
+  RuntimeFactory,
+  RuntimeHandle,
+  RuntimeLaunchOptions,
+} from "./runtimeRegistry.ts";
 
 /** Per-request read context. The bearer token is ephemeral: it is used only
  * as an `Authorization` header value against the fixed server-configured
@@ -123,37 +163,26 @@ export function storeFactorySource(stores: PrincipalStoreFactory): WorkoutSource
   };
 }
 
-/** Terminal report from the runtime, with exit confirmation from batch 2. */
-export interface RuntimeDoneInfo {
-  sessionFile?: string;
-  processExitConfirmed?: boolean;
-}
-
-export interface RuntimeHandle {
-  start(): void;
-  cancel(reason?: string): void;
-  close(): Promise<void>;
-}
-
-export interface RuntimeLaunchOptions {
-  sessionId: string;
-  runId: string;
-  prompt: string;
-  snapshotFile: string;
-  snapshotDir: string;
-  /** Fixed per-product-session native session dir (never the snapshot default). */
-  sessionDir: string;
-  /** Native session file to resume (same product session/account only). */
-  resumeSessionFile?: string;
-  onEvent(payload: CoachingEventPayload): void;
-  onDone(status: CoachingTerminalStatus, reason?: string, info?: RuntimeDoneInfo): void;
-}
-
-export type RuntimeFactory = (options: RuntimeLaunchOptions) => RuntimeHandle;
-
 export interface CoachingServiceOptions {
   source: WorkoutSource;
-  runtimeFactory: RuntimeFactory;
+  /**
+   * Legacy local-pi factory. Retained for v1 compatibility and existing
+   * launcher wiring; it is never used as a silent fallback for another
+   * backend. Prefer `runtimeRegistry` for all new backends.
+   */
+  runtimeFactory?: RuntimeFactory;
+  /** Registered backends (metadata + optional factories). */
+  runtimeRegistry?: CoachingRuntimeRegistry | readonly CoachingRuntimeRegistration[];
+  /**
+   * #5 seam: authoritative account classification from the validated
+   * identity layer. Returning null/undefined keeps cloud qualification
+   * closed. Request bodies or guest flags must never supply this.
+   */
+  trustedIdentity?: (principal: AuthPrincipal) => CoachingTrustedIdentity | null | undefined;
+  /** Server-configured cloud quota; absent/unconfigured fails closed. */
+  cloudQuota?: CoachingCloudQuota | null;
+  /** True only when a real cloud provider adapter is configured. */
+  cloudProviderConfigured?: boolean;
   /** Max stored events per run (tripping the cap fails the run explicitly). */
   maxEventsPerRun?: number;
   /** Max stored event bytes per run (UTF-8 frame bytes; tripping the cap fails the run explicitly). */
@@ -180,6 +209,12 @@ export interface CoachingServiceOptions {
    * workspace write window. Production never overrides it.
    */
   writeSnapshot?: (records: WorkoutRecord[]) => Promise<SnapshotDir>;
+  /**
+   * Durable local journal path. The launcher defaults to
+   * `.pi/fit-trace/coaching-journal.json` in the process cwd; omitted/null
+   * keeps the service in-process only (direct unit tests).
+   */
+  journalPath?: string | null;
 }
 
 export const DEFAULT_MAX_EVENTS_PER_RUN = 1000;
@@ -210,6 +245,14 @@ export const DEFAULT_MAX_SNAPSHOTS_PER_ACCOUNT = 50;
 export const DEFAULT_MAX_RECORDS_PER_SNAPSHOT = 5000;
 export const DEFAULT_RETENTION_MS = 30 * 60 * 1000;
 export const DEFAULT_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Native engine handles are opaque ids, never paths, and are bounded. The
+ * service stores them per backend and only replays one to the same backend.
+ */
+export function isSafeNativeSessionHandle(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value);
+}
 export const DEFAULT_CANCEL_GRACE_MS = 5000;
 
 export const COACHED_SERVICE_ALLOWLIST = COACHED_TOOL_NAMES;
@@ -241,77 +284,14 @@ export class CoachingServiceError extends Error {
   }
 }
 
-interface StoredSession extends CoachingSession {
-  accountId: string;
-  /** Fixed native pi session dir owned by this product session (resume scope). */
-  nativeSessionDir: string;
-  /** Last native session handle captured from onDone (same session only). */
-  nativeSessionFile?: string;
-  /** Idle-session expiry (refreshed on create/submit/read activity). */
-  expiresAt: number;
-}
+type StoredSession = CoachingJournalSession;
 
-interface StoredSnapshot {
-  snapshot: CoachingDataSnapshot;
-  accountId: string;
-  records: WorkoutRecord[];
-  expiresAt: number;
-}
+type StoredSnapshot = CoachingJournalSnapshot;
 
-interface StoredRun {
-  run: CoachingRun;
-  accountId: string;
-  canonical: string;
-  events: CoachingEventEnvelope[];
-  eventBytes: number;
+interface StoredRun extends CoachingJournalRun {
   runtime: RuntimeHandle | null;
   /** This run's OWN fresh snapshot dir (never shared, never reused). */
   snapshotDir: string | null;
-  cancelRequested: boolean;
-  cancelReason?: string;
-  /** Event/byte cap tripped: terminal is forced to this instead. */
-  sealed: { status: CoachingTerminalStatus; reason: string } | null;
-  /** Buffered runtime terminal intent from onEvent: NOT yet an event. The
-   * single terminal event is emitted only by applyTerminal on confirmed
-   * onDone (cancel/seal/tool-refusal win). Late nonterminals after an
-   * intent are dropped. */
-  terminalIntent: { status: CoachingTerminalStatus; reason?: string } | null;
-  terminated: boolean;
-  /** Capacity is held until confirmed cleanup — independent of the handle. */
-  capacityHeld: boolean;
-  /** True once the runtime exit was confirmed and teardown completed. */
-  cleanupConfirmed: boolean;
-  /** True only when onDone carried processExitConfirmed === true. */
-  processExitConfirmed: boolean;
-  /** A non-allowlisted tool was attempted: completion is withheld. */
-  toolRefused: boolean;
-  /** True once a runtime analysis_result passed validation. Completion
-   * requires this (except the empty-history path, which never runs). */
-  hasAnalysis: boolean;
-  /** First fatal tool/result failure (tool_end ok:false, INVALID_ANALYSIS,
-   * or runtime run_error): completion is withheld. */
-  fatalError: { code: string; message: string } | null;
-  expiresAt: number;
-}
-
-function canonicalizeSubmit(input: {
-  prompt: string;
-  runtimeId: string;
-  snapshot: CoachingDataSnapshot;
-}): string {
-  return JSON.stringify({
-    prompt: input.prompt,
-    runtimeId: input.runtimeId,
-    snapshot: {
-      snapshotId: input.snapshot.snapshotId,
-      source: input.snapshot.source,
-      accountId: input.snapshot.accountId,
-      recordIds: input.snapshot.recordIds,
-      recordCount: input.snapshot.recordCount,
-      ...(input.snapshot.from === undefined ? {} : { from: input.snapshot.from }),
-      ...(input.snapshot.to === undefined ? {} : { to: input.snapshot.to }),
-    },
-  });
 }
 
 export interface CoachingService {
@@ -336,6 +316,8 @@ export interface CoachingService {
     fromSeq?: number,
   ): { events: CoachingEventEnvelope[]; run: CoachingRun; lastSeq: number; firstSeq: number; expiresAt: number };
   cancelRun(principal: AuthPrincipal, runId: string, reason?: string): { run: CoachingRun; lastSeq: number };
+  /** Versioned backend capability discovery for the verified caller. */
+  discoverBackends(principal: AuthPrincipal): CoachingCapabilityDiscovery;
   /** Logout support: cancel the caller's active runs and drop their sessions/snapshots. */
   logoutAccount(principal: AuthPrincipal): Promise<void>;
   activeRunCount(): number;
@@ -359,6 +341,48 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   const cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   const snapshotSource = options.snapshotSource ?? "authenticated-store";
   const writeSnapshot = options.writeSnapshot ?? writeSnapshotDir;
+  const runtimeRegistry = asCoachingRuntimeRegistry(options.runtimeRegistry);
+  const legacyRuntimeFactory = options.runtimeFactory;
+
+  /**
+   * Resolve ONE registration for a backend. An EXPLICIT registry entry always
+   * wins, including an unavailable local-pi entry, so discovery and submit
+   * cannot disagree. The legacy factory is only a fallback when the registry
+   * has no local-pi entry at all; it never backs codex/opencode/cloud.
+   */
+  function resolveRuntimeRegistration(backendId: CoachingBackendId): {
+    factory: RuntimeFactory;
+    available: boolean;
+    unavailableMessage?: string;
+  } {
+    const registration = runtimeRegistry.get(backendId);
+    if (registration !== undefined) {
+      if (!registration.available) {
+        throw new CoachingServiceError(
+          "VALIDATION_ERROR",
+          registration.unavailableReason?.message ?? `Coaching backend ${backendId} is unavailable.`,
+        );
+      }
+      if (registration.factory === undefined) {
+        throw new CoachingServiceError("VALIDATION_ERROR", `Coaching backend ${backendId} has no runtime adapter.`);
+      }
+      return { factory: registration.factory, available: true };
+    }
+    if (backendId === "local-pi" && legacyRuntimeFactory !== undefined) {
+      return { factory: legacyRuntimeFactory, available: true };
+    }
+    throw new CoachingServiceError("VALIDATION_ERROR", `Coaching backend ${backendId} is not configured.`);
+  }
+
+  /** Fail-closed cloud gate used by BOTH discovery and run submission. */
+  function cloudQualification(principal: AuthPrincipal) {
+    const identity = options.trustedIdentity?.(principal) ?? null;
+    return qualifyCloudBackend({
+      identity,
+      quota: options.cloudQuota ?? null,
+      providerConfigured: options.cloudProviderConfigured === true,
+    });
+  }
 
   const sessions = new Map<string, StoredSession>();
   const snapshots = new Map<string, StoredSnapshot>();
@@ -371,13 +395,93 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   let globalActive = 0;
   let shutDown = false;
 
+  const journalPath = options.journalPath ?? null;
+  let journalGeneration = 0;
+
+  function journalState(): CoachingJournalState {
+    const idempotencyEntries: CoachingJournalIdempotency[] = [];
+    for (const runId of idempotency.values()) {
+      const stored = runs.get(runId);
+      if (stored === undefined) continue;
+      idempotencyEntries.push({
+        accountId: stored.accountId,
+        sessionId: stored.run.sessionId,
+        key: stored.run.idempotencyKey,
+        runId,
+      });
+    }
+    return {
+      sessions: [...sessions.values()].map((session) => structuredClone(session)),
+      snapshots: [...snapshots.values()].map((snapshot) => ({
+        snapshot: structuredClone(snapshot.snapshot),
+        accountId: snapshot.accountId,
+        records: snapshot.records.map((record) => structuredClone(record)),
+        expiresAt: snapshot.expiresAt,
+      })),
+      // The live runtime handle is process state, never journal state.
+      runs: [...runs.values()].map(({ runtime: _runtime, ...stored }) => structuredClone(stored)),
+      idempotency: idempotencyEntries,
+    };
+  }
+
+  /** Flush the current product state before acknowledging a mutation. */
+  function persistJournal(): void {
+    if (journalPath === null) return;
+    try {
+      journalGeneration = writeCoachingJournal(journalPath, journalGeneration, journalState());
+    } catch (error) {
+      if (error instanceof CoachingJournalCorruptError) throw error;
+      throw new CoachingServiceError("STORAGE_UNAVAILABLE", "The coaching journal is temporarily unavailable.");
+    }
+  }
+
+  function hydrateJournal(): void {
+    if (journalPath === null) return;
+    const loaded = loadCoachingJournal(journalPath);
+    journalGeneration = loaded.generation;
+    for (const session of loaded.state.sessions) sessions.set(session.id, session);
+    for (const snapshot of loaded.state.snapshots) {
+      snapshots.set(snapshot.snapshot.snapshotId, snapshot);
+    }
+    for (const stored of loaded.state.runs) {
+      runs.set(stored.run.id, { ...stored, runtime: null });
+    }
+    for (const entry of loaded.state.idempotency) {
+      idempotency.set(idemKey(entry.accountId, entry.sessionId, entry.key), entry.runId);
+    }
+    globalActive = [...runs.values()].filter((stored) => stored.capacityHeld).length;
+    // A process restart loses every runtime handle. A run that was still
+    // active cannot be adopted: mark it execution-unconfirmed, keep its
+    // capacity (so no second process is spawned) and retain its history.
+    for (const stored of [...runs.values()]) {
+      if (stored.terminated) continue;
+      applyTerminal(
+        stored,
+        "failed",
+        "process execution unconfirmed after server restart; outcome unknown",
+        false,
+      );
+    }
+    expireSweep();
+  }
+
+  hydrateJournal();
+
   // Automatic expiry: idle retention applies even with no subsequent calls.
   // The interval scales with the configured lifetimes so small-TTL tests
   // observe sweeps promptly; the timer never keeps the process alive and
   // is cleared on shutdown.
   const sweepIntervalMs = Math.max(25, Math.min(60_000, retentionMs, snapshotTtlMs));
   const sweepTimer = setInterval(() => {
-    if (!shutDown) expireSweep();
+    if (shutDown) return;
+    try {
+      expireSweep();
+    } catch {
+      // A journal write failure must never escape a timer callback and kill
+      // the process mid-stream. The next mutation retries persistence and
+      // surfaces STORAGE_UNAVAILABLE if the filesystem is still unhealthy.
+      clearInterval(sweepTimer);
+    }
   }, sweepIntervalMs);
   if (typeof sweepTimer.unref === "function") sweepTimer.unref();
 
@@ -490,6 +594,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       stored.snapshotDir = null;
       void cleanupSnapshotDir(dir).catch(() => undefined);
     }
+    persistJournal();
   }
 
   function expireSweep(): void {
@@ -530,6 +635,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         snapRemoved += 1;
       }
     }
+    if (sessRemoved > 0 || snapRemoved > 0) persistJournal();
   }
 
   /** The next envelope for a run: `seq` is the current log length and the
@@ -621,6 +727,178 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       }
     }
     evictOverflow();
+    persistJournal();
+  }
+
+  /** A journal persistence failure (as opposed to a programming error). */
+  function isJournalWriteFailure(error: unknown): boolean {
+    return (
+      error instanceof CoachingJournalCorruptError ||
+      (error instanceof CoachingServiceError && error.code === "STORAGE_UNAVAILABLE")
+    );
+  }
+
+  function journalFailureText(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
+   * Record a journal persistence failure on the run so it is never silently
+   * swallowed: the visible run failure (when one exists) and the internal
+   * fatal state both name the storage problem. The last durable journal write
+   * remains authoritative after a crash, so a restart re-reports the run as
+   * execution-unconfirmed instead of losing it or claiming success.
+   */
+  function recordJournalFailure(stored: StoredRun, error: unknown): void {
+    const detail = `coaching journal write failed (${journalFailureText(error)})`;
+    if (stored.fatalError === null) {
+      stored.fatalError = {
+        code: "STORAGE_UNAVAILABLE",
+        message: `${detail}; the last durable state is recovered as execution-unconfirmed after restart`,
+      };
+    }
+    const failure = stored.run.failure;
+    if (failure !== undefined && !failure.message.includes(detail)) {
+      stored.run = {
+        ...stored.run,
+        failure: { code: failure.code, message: `${failure.message} (${detail})` },
+      };
+    }
+  }
+
+  /**
+   * Apply a terminal transition from a runtime callback or another deferred
+   * path. `applyTerminal` flushes the journal and may throw when the disk is
+   * failing; letting that escape a stdout/socket callback (or reject an
+   * unawaited close continuation) would kill the launcher while the child may
+   * keep running. The in-memory terminal still applies, the storage failure is
+   * recorded on the run, and the next successful mutation flushes it. The last
+   * durable state stays recoverable and is never silently reset.
+   */
+  function applyTerminalSafely(
+    stored: StoredRun,
+    status: CoachingTerminalStatus,
+    reason: string | undefined,
+    confirmed: boolean,
+  ): void {
+    try {
+      applyTerminal(stored, status, reason, confirmed);
+    } catch (error) {
+      if (!isJournalWriteFailure(error)) throw error;
+      recordJournalFailure(stored, error);
+    }
+  }
+
+  /**
+   * Stop a run whose runtime callback could not flush the journal. The failure
+   * is sealed as a `failed` intent (so later runtime payloads never retry the
+   * failing write), the child is cancelled and bounded-closed, and the terminal
+   * is applied only after that close settles (unconfirmed when it cannot), so
+   * capacity is never silently freed while the process may still be alive. The
+   * in-memory terminal stays honest; the last durable journal state (the active
+   * run) is recovered as execution-unconfirmed after a restart.
+   */
+  function stopRunAfterJournalFailure(stored: StoredRun, error: unknown): void {
+    recordJournalFailure(stored, error);
+    if (stored.terminated) return;
+    const reason = `coaching journal write failed during the run (${journalFailureText(error)})`;
+    if (stored.sealed === null) {
+      stored.sealed = { status: "failed", reason };
+    }
+    const handle = stored.runtime;
+    if (handle === null) {
+      if (stored.sealed.reason === reason) {
+        applyTerminalSafely(stored, "failed", `${reason}; run outcome unconfirmed`, false);
+      }
+      return;
+    }
+    try {
+      handle.cancel(reason);
+    } catch {
+      // Fall through to the bounded close below.
+    }
+    void (async () => {
+      const confirmed = await closeConfirmed(handle);
+      const current = runs.get(stored.run.id);
+      if (current === undefined || current.terminated) return;
+      const terminalReason = current.sealed?.reason ?? reason;
+      applyTerminalSafely(
+        current,
+        current.sealed?.status ?? "failed",
+        confirmed
+          ? `${terminalReason}; the child was stopped but the journal update is unconfirmed`
+          : `${terminalReason}; cleanup unconfirmed; snapshot retained`,
+        confirmed,
+      );
+    })();
+  }
+
+  /** Settle a runtime's onDone: native ownership capture + the single terminal.
+   * Called from the runtime callback boundary (see the launch wiring), which
+   * catches journal persistence failures so they never escape the adapter. */
+  function settleRuntimeDone(
+    stored: StoredRun,
+    status: CoachingTerminalStatus,
+    reason?: string,
+    info?: RuntimeDoneInfo,
+  ): void {
+    // Strict confirmation: only === true counts. Missing/false keeps
+    // capacity + snapshot and withholds success.
+    const confirmed = info?.processExitConfirmed === true;
+    stored.processExitConfirmed = confirmed;
+    const runBackendId = stored.run.backendId ?? "local-pi";
+    const runRuntimeId = stored.run.runtimeId as CoachingRuntimeId;
+    const runNativeVersion = NATIVE_SESSION_VERSION_BY_BACKEND[runBackendId];
+    const owner = sessions.get(stored.run.sessionId);
+    if (owner !== undefined && owner.accountId === stored.accountId && runNativeVersion !== undefined) {
+      if (info?.sessionFile !== undefined && isWithinDir(owner.nativeSessionDir, info.sessionFile)) {
+        owner.nativeSessionFile = info.sessionFile;
+        delete owner.nativeSessionHandle;
+        owner.nativeSessionBackendId = runBackendId;
+        owner.nativeSessionRuntimeId = runRuntimeId;
+        owner.nativeSessionVersion = runNativeVersion;
+      }
+      if (info?.nativeSessionHandle !== undefined && isSafeNativeSessionHandle(info.nativeSessionHandle)) {
+        owner.nativeSessionHandle = info.nativeSessionHandle;
+        delete owner.nativeSessionFile;
+        owner.nativeSessionBackendId = runBackendId;
+        owner.nativeSessionRuntimeId = runRuntimeId;
+        owner.nativeSessionVersion = runNativeVersion;
+      }
+    }
+    // Cancel wins over any late completion arriving during the grace.
+    if (stored.cancelRequested) {
+      applyTerminal(stored, "cancelled", stored.cancelReason ?? "cancel requested", confirmed);
+      return;
+    }
+    if (stored.sealed !== null) {
+      applyTerminal(stored, stored.sealed.status, stored.sealed.reason, confirmed);
+      return;
+    }
+    // The buffered onEvent terminal intent resolves here: the single terminal
+    // event comes only from applyTerminal below. onDone status/reason is the
+    // fallback when no intent arrived (runtimes that only call onDone).
+    const intent = stored.terminalIntent;
+    const terminalStatus = intent?.status ?? status;
+    const terminalReason = intent?.reason ?? reason;
+    if (terminalStatus === "completed" && stored.toolRefused) {
+      applyTerminal(stored, "failed", "a non-allowlisted tool was refused during this run", confirmed);
+      return;
+    }
+    if (terminalStatus === "completed" && stored.fatalError !== null) {
+      applyTerminal(stored, "failed", stored.fatalError.message, confirmed);
+      return;
+    }
+    if (terminalStatus === "completed" && !stored.hasAnalysis) {
+      applyTerminal(
+        stored,
+        "failed",
+        "run completed without a validated analysis result",
+        confirmed,
+      );
+      return;
+    }
+    applyTerminal(stored, terminalStatus, terminalReason, confirmed);
   }
 
   /** Stop the child after an event/byte cap trip; the terminal applies only
@@ -641,6 +919,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       code: "EVENT_CAP",
       message,
     }));
+    persistJournal();
     const handle = stored.runtime;
     if (handle !== null) {
       try {
@@ -652,7 +931,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         const confirmed = await closeConfirmed(handle);
         const current = runs.get(stored.run.id);
         if (current === undefined || current.terminated) return;
-        applyTerminal(
+        applyTerminalSafely(
           current,
           "failed",
           confirmed ? reason : `${reason} (cleanup unconfirmed; snapshot retained)`,
@@ -660,7 +939,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         );
       })();
     } else {
-      applyTerminal(stored, "failed", reason, true);
+      applyTerminalSafely(stored, "failed", reason, true);
     }
   }
 
@@ -684,6 +963,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     if (payload.type !== "terminal" && stored.run.status === "queued") {
       stored.run = { ...stored.run, status: "running" };
     }
+    persistJournal();
   }
 
   /** Validate runtime analysis output before forwarding; malformed analysis
@@ -793,19 +1073,20 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     if (stored === undefined || stored.terminated) return;
     const handle = stored.runtime;
     if (handle === null) {
-      applyTerminal(stored, "cancelled", stored.cancelReason ?? "cancel requested", true);
+      applyTerminalSafely(stored, "cancelled", stored.cancelReason ?? "cancel requested", true);
       return;
     }
     // Cancel grace invokes close() and awaits its confirmation (bounded: a
     // kill-refusing runtime times out instead of hanging teardown): cancel
     // wins over any late completion, and capacity releases only when
-    // confirmed.
+    // confirmed. This runs from a timer, so a journal failure is recorded on
+    // the run instead of escaping as an uncaught exception.
     void (async () => {
       const confirmed = await closeConfirmed(handle);
       const current = runs.get(runId);
       if (current === undefined || current.terminated) return;
       const reason = current.cancelReason ?? "cancel requested";
-      applyTerminal(
+      applyTerminalSafely(
         current,
         "cancelled",
         confirmed ? reason : `${reason} (cleanup unconfirmed; snapshot retained)`,
@@ -872,6 +1153,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           throw new CoachingServiceError("SESSION_NOT_FOUND", "Coaching session not found.");
         }
         existing.expiresAt = Date.now() + retentionMs;
+        persistJournal();
         return cloneSession(existing);
       }
       let owned = 0;
@@ -888,12 +1170,14 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         expiresAt: Date.now() + retentionMs,
       };
       sessions.set(sessionId, session);
+      persistJournal();
       return cloneSession(session);
     },
 
     readSession(principal: AuthPrincipal, id: string): CoachingSession {
       const session = getSessionOwned(principal, id);
       session.expiresAt = Date.now() + retentionMs;
+      persistJournal();
       return cloneSession(session);
     },
 
@@ -974,6 +1258,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       const byId = new Map(capped.map((record) => [record.id, record]));
       const ordered = recordIds.map((id) => byId.get(id)).filter((r) => r !== undefined) as WorkoutRecord[];
       snapshots.set(snapshotId, { snapshot, accountId: principal.id, records: ordered, expiresAt: Date.now() + snapshotTtlMs });
+      persistJournal();
       return structuredClone(snapshot);
     },
 
@@ -994,13 +1279,19 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       // (stale-map deletion) and resolves to null — it is NOT fatal yet,
       // because an owned retained run replays from its own stored snapshot.
       const stored = resolveLiveSnapshot(principal, ref);
-      // RuntimeId supports only pi today; anything else was already
-      // rejected by the contract guard — refuse again in depth. A runtime
-      // change under an existing key is never a replay.
-      const runtimeId = input.runtimeId ?? "pi";
-      if (runtimeId !== "pi") {
-        throw new CoachingServiceError("VALIDATION_ERROR", "Only the pi runtime is supported.");
+      // Validate the backend/runtime/location triple in depth (the contract
+      // guard already did). A runtime change under an existing key is never a
+      // replay: backendId is part of the canonical request.
+      let selection: ReturnType<typeof resolveCoachingBackendSelection>;
+      try {
+        selection = resolveCoachingBackendSelection({
+          backendId: input.backendId,
+          runtimeId: input.runtimeId,
+        });
+      } catch {
+        throw new CoachingServiceError("VALIDATION_ERROR", "Invalid backend/runtime selection.");
       }
+      const { backendId, runtimeId, executionLocation } = selection;
 
       const key = idemKey(principal.id, session.id, input.idempotencyKey);
       const existingId = idempotency.get(key);
@@ -1019,8 +1310,9 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           ) {
             throw new CoachingServiceError("FORBIDDEN", "Snapshot source mismatch.");
           }
-          const requested = canonicalizeSubmit({
+          const requested = canonicalizeCoachingSubmit({
             prompt: input.prompt,
+            backendId,
             runtimeId,
             snapshot: {
               ...existing.run.snapshot,
@@ -1047,8 +1339,22 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       if (stored === null) {
         throw new CoachingServiceError("SNAPSHOT_NOT_FOUND", "Snapshot not found or expired.");
       }
+      // Only a NEW execution is gated: an identical retained replay above is
+      // served even if quota/config changed after the original run.
+      if (executionLocation === "cloud") {
+        // Guests and unverified identities NEVER reach cloud dispatch, no
+        // matter what the request selected. Qualification is server-derived.
+        const qualification = cloudQualification(principal);
+        if (!qualification.eligible) {
+          throw new CoachingServiceError(
+            "VALIDATION_ERROR",
+            qualification.reason?.message ?? "Cloud coaching is not available for this account.",
+          );
+        }
+      }
+      const runtimeRegistration = resolveRuntimeRegistration(backendId);
       const resolved: CoachingDataSnapshot = stored.snapshot;
-      const canonical = canonicalizeSubmit({ prompt: input.prompt, runtimeId, snapshot: resolved });
+      const canonical = canonicalizeCoachingSubmit({ prompt: input.prompt, backendId, runtimeId, snapshot: resolved });
 
       // 1 active run per session + 1 global pi process; never queue implicitly.
       for (const entry of runs.values()) {
@@ -1073,6 +1379,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         prompt: input.prompt,
         snapshot: resolved,
         runtimeId,
+        backendId,
       };
       const entry: StoredRun = {
         run,
@@ -1101,6 +1408,16 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       globalActive += 1;
       entry.capacityHeld = true;
       evictOverflow();
+      try {
+        persistJournal();
+      } catch (error) {
+        // The caller never received a run id, so it cannot cancel this ghost
+        // reservation. Roll it back before surfacing the storage failure.
+        if (runs.get(runId) === entry) runs.delete(runId);
+        if (idempotency.get(key) === runId) idempotency.delete(key);
+        releaseCapacity(entry);
+        throw error;
+      }
 
       // Empty history is a normal new-user state: explicit completed result,
       // runtime never invoked, no capacity consumed beyond this tick.
@@ -1124,6 +1441,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         if (runs.get(runId) === entry) runs.delete(runId);
         if (idempotency.get(key) === runId) idempotency.delete(key);
         releaseCapacity(entry);
+        persistJournal();
         throw new CoachingServiceError("STORAGE_UNAVAILABLE", "Snapshot workspace is temporarily unavailable.");
       }
 
@@ -1171,7 +1489,35 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         session.nativeSessionDir = allocSessionDir();
       }
       const sessionDir = session.nativeSessionDir;
-      const resumeCandidate = session.nativeSessionFile;
+      try {
+        // The workspace + native session ownership are durable before launch.
+        persistJournal();
+      } catch (error) {
+        // The caller never received a run id, so it cannot cancel this queued
+        // ghost. Roll the reservation back like the first pre-launch flush and
+        // remove the fresh workspace this continuation just wrote; a same-key
+        // retry must start a real run, never replay a reservation that never
+        // launched.
+        if (runs.get(runId) === entry) runs.delete(runId);
+        if (idempotency.get(key) === runId) idempotency.delete(key);
+        entry.snapshotDir = null;
+        releaseCapacity(entry);
+        await cleanupSnapshotDir(dir).catch(() => undefined);
+        throw error;
+      }
+      const expectedNativeVersion = NATIVE_SESSION_VERSION_BY_BACKEND[backendId];
+      // A native handle belongs to one backend + runtime + protocol version.
+      // Switching any of them starts fresh: a pi session file is NEVER handed
+      // to Codex/OpenCode, and an engine id is never treated as a pi path.
+      const ownsStoredNativeSession =
+        expectedNativeVersion !== undefined &&
+        session.nativeSessionBackendId === backendId &&
+        session.nativeSessionRuntimeId === runtimeId &&
+        session.nativeSessionVersion === expectedNativeVersion;
+      const resumeCandidate = ownsStoredNativeSession ? session.nativeSessionFile : undefined;
+      const resumeNativeCandidate = ownsStoredNativeSession
+        ? session.nativeSessionHandle
+        : undefined;
       const launch: RuntimeLaunchOptions = {
         sessionId: session.id,
         runId,
@@ -1185,67 +1531,38 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         ...(resumeCandidate !== undefined && isWithinDir(sessionDir, resumeCandidate)
           ? { resumeSessionFile: resumeCandidate }
           : {}),
+        ...(resumeNativeCandidate !== undefined && isSafeNativeSessionHandle(resumeNativeCandidate)
+          ? { resumeNativeSessionHandle: resumeNativeCandidate }
+          : {}),
+        // Runtime callbacks ARE the persistence boundary: adapters invoke them
+        // from stdout/socket/timer callbacks where a thrown journal error would
+        // kill the launcher while the child kept running. A storage failure is
+        // recorded on the run, the child is stopped, and the last durable
+        // journal state stays recoverable — never silently swallowed.
         onEvent: (payload) => {
           const current = runs.get(runId);
           if (current === undefined) return;
-          appendRuntimeEvent(current, payload as unknown);
+          try {
+            appendRuntimeEvent(current, payload as unknown);
+          } catch (error) {
+            if (!isJournalWriteFailure(error)) throw error;
+            stopRunAfterJournalFailure(current, error);
+          }
         },
         onDone: (status, reason, info) => {
           const current = runs.get(runId);
           if (current === undefined || current.terminated) return;
-          // Strict confirmation: only === true counts. Missing/false keeps
-          // capacity + snapshot and withholds success.
-          const confirmed = info?.processExitConfirmed === true;
-          current.processExitConfirmed = confirmed;
-          if (info?.sessionFile !== undefined) {
-            const owner = sessions.get(current.run.sessionId);
-            if (
-              owner !== undefined &&
-              owner.accountId === current.accountId &&
-              isWithinDir(owner.nativeSessionDir, info.sessionFile)
-            ) {
-              owner.nativeSessionFile = info.sessionFile;
-            }
+          try {
+            settleRuntimeDone(current, status, reason, info);
+          } catch (error) {
+            if (!isJournalWriteFailure(error)) throw error;
+            stopRunAfterJournalFailure(current, error);
           }
-          // Cancel wins over any late completion arriving during the grace.
-          if (current.cancelRequested) {
-            applyTerminal(current, "cancelled", current.cancelReason ?? "cancel requested", confirmed);
-            return;
-          }
-          if (current.sealed !== null) {
-            applyTerminal(current, current.sealed.status, current.sealed.reason, confirmed);
-            return;
-          }
-          // The buffered onEvent terminal intent resolves here: the single
-          // terminal event comes only from applyTerminal below. onDone
-          // status/reason is the fallback when no intent arrived (runtimes
-          // that only call onDone).
-          const intent = current.terminalIntent;
-          const terminalStatus = intent?.status ?? status;
-          const terminalReason = intent?.reason ?? reason;
-          if (terminalStatus === "completed" && current.toolRefused) {
-            applyTerminal(current, "failed", "a non-allowlisted tool was refused during this run", confirmed);
-            return;
-          }
-          if (terminalStatus === "completed" && current.fatalError !== null) {
-            applyTerminal(current, "failed", current.fatalError.message, confirmed);
-            return;
-          }
-          if (terminalStatus === "completed" && !current.hasAnalysis) {
-            applyTerminal(
-              current,
-              "failed",
-              "run completed without a validated analysis result",
-              confirmed,
-            );
-            return;
-          }
-          applyTerminal(current, terminalStatus, terminalReason, confirmed);
         },
       };
       let handle: RuntimeHandle;
       try {
-        handle = options.runtimeFactory(launch);
+        handle = runtimeRegistration.factory(launch);
       } catch {
         // Construction threw before any child existed: no exit to confirm,
         // but the reservation must still be released (capacity + workspace).
@@ -1281,7 +1598,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           const current = runs.get(runId);
           if (current === undefined || current.terminated) return;
           if (partial !== undefined) partial.processExitConfirmed = confirmed;
-          applyTerminal(
+          applyTerminalSafely(
             current,
             "failed",
             confirmed ? "runtime failed to start" : "runtime failed to start (cleanup unconfirmed; snapshot retained)",
@@ -1364,7 +1681,18 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       // grace path invokes close() and awaits confirmation. Cancel wins
       // over any late completion via onDone's cancelRequested branch.
       armCancelGrace(stored);
+      persistJournal();
       return { run: cloneRun(stored.run), lastSeq: lastSeqOf(stored) };
+    },
+
+    discoverBackends(principal: AuthPrincipal): CoachingCapabilityDiscovery {
+      return buildCoachingDiscovery({
+        registry: runtimeRegistry,
+        ...(legacyRuntimeFactory === undefined ? {} : { legacyLocalPiFactory: legacyRuntimeFactory }),
+        identity: options.trustedIdentity?.(principal) ?? null,
+        cloudQuota: options.cloudQuota ?? null,
+        cloudProviderConfigured: options.cloudProviderConfigured === true,
+      });
     },
 
     async logoutAccount(principal: AuthPrincipal): Promise<void> {
@@ -1404,19 +1732,17 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       }
       for (const [id, session] of [...sessions.entries()]) {
         if (session.accountId !== principal.id) continue;
-        // Destroy the fixed session dir only when no run of this session
-        // still holds unconfirmed cleanup; never delete live dirs.
-        const live = [...runs.values()].some(
-          (entry) => entry.run.sessionId === id && (!entry.terminated || !entry.cleanupConfirmed),
-        );
-        if (!live) {
-          const dir = (session as { nativeSessionDir?: string }).nativeSessionDir;
-          sessions.delete(id);
-          if (dir !== undefined) {
-            await cleanupSnapshotDir(dir).catch(() => undefined);
-          }
-        } else {
-          sessions.delete(id);
+        // A retained (active or unconfirmed-terminal) run still references
+        // this session, and the journal loader requires every run to have its
+        // session metadata: deleting it would write a journal the next startup
+        // refuses to load (CORRUPT_STORE). Keep the metadata (and its native
+        // dir — a live child may still hold it) while any run remains.
+        const retained = [...runs.values()].some((entry) => entry.run.sessionId === id);
+        if (retained) continue;
+        const dir = (session as { nativeSessionDir?: string }).nativeSessionDir;
+        sessions.delete(id);
+        if (dir !== undefined) {
+          await cleanupSnapshotDir(dir).catch(() => undefined);
         }
       }
       for (const [id, snapshot] of [...snapshots.entries()]) {
@@ -1433,6 +1759,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           cancelTimers.delete(runId);
         }
       }
+      persistJournal();
     },
 
     activeRunCount(): number {
@@ -1480,8 +1807,13 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         }
         if (!confirmed) unconfirmed.push(entry.run.id);
       }
+      // Persist BEFORE workspace cleanup: shutdown retains product history
+      // (runs/events/sessions) while scratch dirs may be removed.
+      persistJournal();
       // Workspace cleanup: only confirmed-terminal run dirs go. Session dirs
-      // go only when every run of that session is confirmed-terminal.
+      // go only when every run of that session is confirmed-terminal. With a
+      // durable journal the native session dirs are retained so a restart can
+      // still honor the persisted native ownership boundary.
       for (const entry of [...runs.values()]) {
         if (entry.snapshotDir !== null && entry.terminated && entry.cleanupConfirmed) {
           const dir = entry.snapshotDir;
@@ -1496,7 +1828,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         if (!pending) {
           const dir = (session as { nativeSessionDir?: string }).nativeSessionDir;
           sessions.delete(id);
-          if (dir !== undefined) {
+          if (journalPath === null && dir !== undefined) {
             await cleanupSnapshotDir(dir).catch(() => undefined);
           }
         }

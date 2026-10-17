@@ -6,9 +6,9 @@ An Agent-powered workout tracking and coaching application that turns training l
 
 ## Status
 
-The current implementation includes a web App, deterministic shared core, local and authenticated HTTP data access, a pi integration with Extension tools and a `training-coach` Skill, and a local, launcher-gated coaching flow: the `agent-fit-trace start` launcher serves the App and a loopback coaching server on one origin, and the App's Coach screen (shown only when that runtime flag is present) drives sessions, streamed runs, cancel/reconnect, and a versioned account-bound resume. The coach runs locally through the user's pi CLI; `piAvailable: false` is surfaced in the UI instead of a generic failure.
+The current implementation includes a web App, deterministic shared core, local and authenticated HTTP data access, a pi integration with Extension tools and a `training-coach` Skill, and a coaching flow. The `agent-fit-trace start` launcher serves the App and a loopback coaching server on one origin; authenticated HTTP deployments also show the Coach screen. One account-level owner drives sessions, streamed runs, cancel/reconnect, backend selection, and a versioned account-bound resume. Local pi is the default and legacy-compatible path; `piAvailable: false` is surfaced in the UI instead of a generic failure. Local runs persist to an app-owned journal, so retained runs, events, and idempotency survive a launcher restart. A run that was active when the previous process exited is reported as execution-unconfirmed rather than silently re-run.
 
-Planned Agent support: a hosted cloud coach requiring no local Agent installation, plus local coaching through the user's Codex or OpenCode CLI. These execution paths are not yet implemented.
+Experimental Agent paths are implemented behind fail-closed gates. Local OpenCode runs only when the installed CLI provides positive tool-isolation evidence; the Codex adapter stays unavailable until built-in tool isolation can be proven. Hosted cloud coaching has server routes, database migrations, an outbox worker, finite quota reservation, and a bounded provider loop, but it is disabled unless a formal account, configured quota, provider, and explicit operator configuration are present. It has not been deployed or verified against a real provider in this repository.
 
 ## How it works
 

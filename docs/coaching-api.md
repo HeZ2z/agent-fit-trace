@@ -1,13 +1,16 @@
-# Coaching API (implemented: local loopback server)
+# Coaching API (implemented: local loopback and hosted cloud routes)
 
 Implemented by `server/coaching/coachingServer.ts` + `server/coaching/coachingService.ts`,
 shaped by `@pi-fit-trace/api-contracts` (`src/coaching.ts`).
-Loopback-only. The source-run launcher (`agent-fit-trace start`, see
-[`local-launcher.md`](local-launcher.md)) serves this server on the same
-origin as the App shell and data proxy, and the App's launcher-gated Coach
-screen consumes it. Hosted cloud execution and Codex/OpenCode agent execution
-are not shipped; this document covers only what the local server implements
-today.
+The local service is loopback-only. The source-run launcher (`agent-fit-trace start`,
+see [`local-launcher.md`](local-launcher.md)) serves it on the same origin as the
+App shell and data proxy, and the App's Coach screen consumes it. Gated local
+Codex/OpenCode adapters are registered by the launcher but report availability
+only with positive tool-isolation evidence; Codex stays unavailable until
+built-in tool isolation can be proven. Durable hosted cloud coaching has
+separate `/api/v1/coaching/cloud/*` routes and a separate outbox worker (see the
+ADR and deployment docs); this document covers the local server plus the shared
+event/run semantics the cloud routes also use.
 
 Related contract: [`api-contract.md`](api-contract.md) (workout/analysis/plan shapes and envelopes).
 
@@ -43,12 +46,61 @@ requests without `Origin` still require both credentials.
 | `POST` | `/coaching/sessions` | `{ id? }` | `201 session` |
 | `GET` | `/coaching/sessions/:id` | — | `200 session` |
 | `POST` | `/coaching/snapshots` | `{ from?, to? }` | `201 snapshot` |
-| `POST` | `/coaching/runs` | `{ sessionId, prompt, idempotencyKey, snapshot, runtimeId? }` | `201` created / `200` replayed `{ run, lastSeq, replayed }` |
+| `POST` | `/coaching/runs` | `{ sessionId, prompt, idempotencyKey, snapshot, backendId?, runtimeId? }` | `201` created / `200` replayed `{ run, lastSeq, replayed }` |
 | `GET` | `/coaching/runs/:id` | — | `200 { run, lastSeq, firstSeq, expiresAt }` |
 | `GET` | `/coaching/runs/:id/events?fromSeq=` | — | `200 SSE` (see below) |
 | `POST` | `/coaching/runs/:id/cancel` | `{ reason? }` (`runId` stays in the path) | `200 { run, lastSeq }` |
 | `POST` | `/coaching/logout` | — | `200 { loggedOut: true }` |
+| `GET` | `/coaching/capabilities` | — | `200` versioned backend/capability discovery |
 | `GET` | `/public-config` | public, no token | `200 { supabaseUrl, supabasePublishableKey }` (secret keys never served) |
+
+### Backend capability discovery
+
+`GET /coaching/capabilities` returns the versioned discovery payload defined in
+`packages/fit-trace-api-contracts/src/coaching.ts`. It is authenticated like
+every other coaching route, and every field is server-derived: the browser
+cannot assert availability, entitlement, or quota.
+
+- `discoveryVersion` versions this payload; `protocolVersion` still describes
+  the event-line format; each backend carries its own `capabilityVersion`.
+- All known backends are listed (`local-pi`, `local-codex`, `local-opencode`,
+  `cloud-default`). An unavailable backend includes an
+  `unavailableReason { code, message }`; an available one omits it.
+- `local-pi` is available when the launcher registers it. `local-codex`
+  reports `builtin-isolation-unproven`; `local-opencode` reports
+  `plugin-isolation-unproven` unless an operator/fixture isolation verifier
+  proves the wildcard-deny/plugin-only surface. No production verifier is wired
+  in this build. A Codex
+  app-server that exposes `dynamicTools` is still not enough: dynamic tools are
+  additive and leave built-in shell/file/network/MCP/hook/plugin tools
+  available. Until the installed version provides a verifiable way to exclude
+  that entire inventory, `local-codex` stays unavailable with
+  `builtin-isolation-unproven`.
+- `productReplay` remains `false` in local discovery. The launcher keeps a
+  durable local journal for restart and idempotency safety, but restart replay
+  is not yet advertised as a capability guarantee; the contract promises only
+  in-process replay.
+- `cloud-default` is available only when all of the following hold: the caller
+  has a server-verified formal account (`isAnonymous: false`), the server has
+  cloud quota configured, a provider is configured, and a cloud adapter is
+  registered. The remaining budget must be able to reserve one configured run:
+  `tokensRemaining >= perRunTokenBudget` with a positive `perRunTokenBudget`.
+  `tokensRemaining` is server-computed NET of `tokensReserved`; clients must
+  not subtract the reserve a second time. A positive balance below the run
+  budget is reported unavailable (`quota-exhausted`) rather than advertised as
+  a usable run. Missing identity, a guest account, or missing configuration
+  fails closed. Guests may use their own local agent only.
+- Capabilities stay conservative: pi advertises `nativeContinuation: true` and
+  `cancelConfirmation: "process-exit"`; engines that have not proven their
+  native handle or isolation semantics advertise `false`/`"unsupported"`.
+
+Run selection follows the same matrix: `local-pi`/`pi`, `local-codex`/`codex`,
+`local-opencode`/`opencode`, `cloud-default`/`hosted-sdk`. A v1 request that
+omits both `backendId` and `runtimeId` resolves to `local-pi`; it never maps to
+cloud. Naming both fields requires an exact match. The backend is pinned on the
+run and is part of the idempotency comparison. The full rationale and provider
+constraints are in
+[`adr/0001-agent-execution-backends.md`](adr/0001-agent-execution-backends.md).
 
 Snapshots are read-only handles: the client sends only
 `{ snapshotId, source, accountId }` (`recordIds`/`recordCount` in a submit
@@ -75,9 +127,11 @@ substituted for a changed request.
 
 Refusals keep their existing semantics:
 
-- a changed prompt or `snapshotId` under the same key is
-  `409 IDEMPOTENCY_CONFLICT`, and an unsupported `runtimeId` stays
-  `400 VALIDATION_ERROR` (only `pi` is wired);
+- a changed prompt, `snapshotId`, backend, or runtime under the same key is
+  `409 IDEMPOTENCY_CONFLICT`; an unknown or mismatched selection is
+  `400 VALIDATION_ERROR`, and a known but unconfigured/unavailable backend stays
+  `400 VALIDATION_ERROR` with its server-derived reason (only `local-pi` is
+  wired in the launcher);
 - a changed `source` for the same `snapshotId`, or a snapshot reference bound to
   another account, is `403 FORBIDDEN`;
 - a replay is only ever served to the owning account on the same session; a
@@ -88,6 +142,17 @@ Refusals keep their existing semantics:
 
 A session referenced by a retained run survives its own idle expiry, so the
 replay path stays reachable without extending the snapshot lifetime.
+
+The launcher persists this bounded state to an app-owned local journal
+(`.pi/fit-trace/coaching-journal.json`, file mode `0600`, parent mode `0700`)
+before acknowledging each mutation. After a restart, retained runs, events,
+and idempotency records replay normally, and native session ownership survives
+only for the same backend/runtime/version. A run that was active when the
+previous process exited is never adopted: it becomes failed with an unconfirmed
+execution outcome, keeps its capacity slot, and no second process is spawned.
+A malformed journal fails closed with `CORRUPT_STORE` instead of resetting. The
+journal path is a server startup concern only; no HTTP request can select or
+relocate it.
 
 ## Envelopes, status, and cursor semantics
 
@@ -142,6 +207,14 @@ the reserved headroom. Both sides size frames with the same
 `encodeCoachingEventFrame`/`coachingEventFrameBytes` helper, so the framing +
 size rule lives in one place.
 
+Cloud event GETs are bounded long-poll pages, each bounded by the same stream
+budgets. A page that ends without the terminal is a NORMAL page boundary, not a
+disconnect: the cloud client incrementally folds the page and automatically
+GETs the same run from the consumed cursor + 1 using abortable bounded
+backoff, within a bounded tail time budget. It never repeats the run POST. Only
+a transport/HTTP failure or tail-budget expiry is surfaced as a disconnect
+(keeping the run id, backend, and resume refs for an explicit reconnect).
+
 ## App client lifecycle (single account-level owner)
 
 The Coach UI is backed by ONE account-level owner
@@ -154,16 +227,19 @@ per-account session cap). Bootstrap/session/snapshot/run/subscribe sequencing,
 per-submission idempotency keys, last-consumed resume positions, and
 account-switch/logout cleanup all live in the owner; `CoachScreen` only renders.
 
-The owner is **auth/launcher gated**: every bootstrap, session, snapshot, run,
-and restore side effect runs only once the account is a *verified* signed-in
-user AND launcher coaching is enabled (`isCoachingEnabled()`, i.e. the launcher
-served the app on its loopback origin). During auth `loading` (a restored but
-unvalidated session) and in plain local/HTTP modes the owner stays inert and
-never reads or clears the persisted resume. An explicitly injected client
+The owner is **auth gated and mode-bound**: every bootstrap, session, snapshot,
+run, and restore side effect runs only once the account is a *verified*
+signed-in user AND coaching is active in this build (the launcher's same-origin
+flag or an authenticated HTTP deployment). During auth `loading` (a restored but
+unvalidated session) and in plain local builds the owner stays inert and never
+reads or clears the persisted resume. An explicitly injected client
 (tests/embedding) is an explicit opt-in. The resume is stored versioned and
-account-bound in `sessionStorage` (`fit-trace.coach.resume.v1`, ids only — never
-tokens, transcripts, or native paths), and a stored resume for another account
-is ignored and cleared.
+account-bound in `sessionStorage` (`fit-trace.coach.resume.v2`, with a v1
+local-pi fallback; ids only — never tokens, transcripts, or native paths), and
+a stored resume for another account is ignored and cleared. The backend
+selection applies only to the NEXT run; replay, cancel, and cleanup always
+address the run's original backend, even after an account switch or a selection
+change.
 
 ### Stream phases and reconnect
 

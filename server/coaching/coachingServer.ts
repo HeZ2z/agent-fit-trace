@@ -78,6 +78,10 @@ import type {
   WorkoutReadContext,
   WorkoutSource,
 } from "./coachingService.ts";
+import type {
+  CoachingRuntimeRegistration,
+  CoachingRuntimeRegistry,
+} from "./runtimeRegistry.ts";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 
 export const CAPABILITY_HEADER = "x-fit-trace-capability";
@@ -103,7 +107,11 @@ export interface CoachingServerOptions {
    * headers / service-role option: the product always acts as the user. */
   upstream?: { baseUrl: string } | null;
   runtimeFactory: RuntimeFactory;
-  serviceOptions?: Omit<CoachingServiceOptions, "source" | "runtimeFactory">;
+  /** Optional backend registry; `runtimeFactory` remains the legacy local-pi path. */
+  runtimeRegistry?: CoachingRuntimeRegistry | readonly CoachingRuntimeRegistration[];
+  serviceOptions?: Omit<CoachingServiceOptions, "source" | "runtimeFactory" | "runtimeRegistry">;
+  /** App-owned durable local journal path; launcher defaults it. Null disables. */
+  journalPath?: string | null;
   publicConfig?: ServerPublicConfig | null;
   host?: string;
   port?: number;
@@ -437,10 +445,12 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
   // is only the test seam. There is no per-request source override.
   const service = createCoachingService({
     ...(options.serviceOptions ?? {}),
+    ...(options.journalPath === undefined ? {} : { journalPath: options.journalPath }),
     source: staticSource ?? fixedUpstream ?? (() => {
       throw new Error("coaching server has no workout source");
     })(),
     runtimeFactory: options.runtimeFactory,
+    ...(options.runtimeRegistry === undefined ? {} : { runtimeRegistry: options.runtimeRegistry }),
   });
   const injectedPublicConfigOption = options.publicConfig;
   const capabilities = new Map<string, Capability>();
@@ -752,6 +762,13 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
             if (cap.accountId === principal.id) capabilities.delete(value);
           }
           json(response, 200, { data: { loggedOut: true } }, corsHeaders);
+          return;
+        }
+
+        if (pathname === "/coaching/capabilities" && method === "GET") {
+          // Versioned, server-derived backend/capability discovery. The
+          // browser cannot assert availability, entitlement, or guest state.
+          json(response, 200, { data: service.discoverBackends(principal) }, corsHeaders);
           return;
         }
 

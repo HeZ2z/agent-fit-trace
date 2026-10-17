@@ -1,0 +1,29 @@
+{
+  "id": "gen-cloud-1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call-analysis-1",
+            "type": "function",
+            "function": {
+              "name": "analyze_progress",
+              "arguments": "{\"from\":\"2026-09-01\",\"to\":\"2026-09-01\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 25,
+    "total_tokens": 145,
+    "cost": 0.00012
+  }
+}

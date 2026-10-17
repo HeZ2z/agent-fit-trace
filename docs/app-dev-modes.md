@@ -219,6 +219,9 @@ committed proxy config against the real dev API), while the root
 ## Next milestone
 
 Account/Postgres foundation is implemented (Supabase Auth + RLS workouts +
-Vercel functions; see `docs/supabase-setup.md`); cloud pi integration stays
-behind the future coaching module. Production HTTP mode requires the
-authenticated API; the dev-only legacy flag cannot bypass its login gate.
+Vercel functions; see `docs/supabase-setup.md`). The coaching module now
+includes the local loopback server, gated local Codex/OpenCode adapters, and the
+hosted cloud routes/worker; cloud stays fail-closed and off by default until a
+formal account, quota, provider resources, and a deployed worker are present.
+Production HTTP mode requires the authenticated API; the dev-only legacy flag
+cannot bypass its login gate.

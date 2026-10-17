@@ -188,6 +188,16 @@ export function isCoachingEnabled(): boolean {
 }
 
 /**
+ * True when the Coach screen/nav should be reachable at all: the launcher's
+ * same-origin local-coaching flag OR a valid authenticated HTTP deployment.
+ * Being visible never means a backend is available — guests get local install
+ * instructions and formal accounts must explicitly opt into cloud credits.
+ */
+export function isCoachVisible(): boolean {
+  return isCoachingEnabled() || isHttpModeActive();
+}
+
+/**
  * Raw `piAvailable` runtime signal from the launcher's presence probe, or
  * `null` when the launcher did not probe (plain local/HTTP mode). `false`
  * means the pi CLI is missing: coaching cannot run, but workout tracking

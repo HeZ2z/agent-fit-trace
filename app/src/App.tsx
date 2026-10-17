@@ -5,7 +5,7 @@ import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
 import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./api/httpFitTraceClient.ts";
 import { LOCAL_DEV_BYPASS_OWNER, LocalFitTraceClient } from "./api/localFitTraceClient.ts";
-import { currentRuntimeMode, isCoachingEnabled } from "./api/runtimeMode.ts";
+import { currentRuntimeMode, isCoachVisible } from "./api/runtimeMode.ts";
 import { HistoryScreen } from "./screens/HistoryScreen.tsx";
 import { WorkoutEditorScreen } from "./screens/WorkoutEditorScreen.tsx";
 import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
@@ -267,7 +267,7 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
           <Route
             path="/coach"
             element={
-              isCoachingEnabled() ? (
+              isCoachVisible() ? (
                 <RequireAuth legacyLoopback={legacyLoopback} client={client}>
                   <CoachScreen />
                 </RequireAuth>

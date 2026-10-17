@@ -1,0 +1,18 @@
+{
+  "id": "gen-cloud-1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Your bench press trend is flat; keep the next session repeatable."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 180,
+    "completion_tokens": 22,
+    "total_tokens": 202
+  }
+}

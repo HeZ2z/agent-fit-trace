@@ -93,17 +93,43 @@ listener — one port for the App shell, the data proxy, and coaching. The
 runtime bootstrap advertises `coaching: "same-origin"` (plus `piAvailable`
 when the presence probe ran).
 
-The App ships a Coach screen (`app/src/screens/CoachScreen.tsx`) gated on that
-exact runtime flag: it appears in the nav only when the launcher wires local
-coaching, and the same-origin `/coaching/*` client drives session/snapshot/run
-lifecycle, streamed text and tool progress, explicit cancel/reconnect, and a
-versioned account-bound resume. When the launcher probe reports
-`piAvailable: false` the screen shows a clear pi-not-installed notice and
-disables asking — workout logging and history keep working. Plain local/HTTP
-builds (no runtime flag) never show the Coach route.
+The App ships a Coach screen (`app/src/screens/CoachScreen.tsx`) in two
+configurations: when the launcher publishes the same-origin coaching flag, or
+when an authenticated HTTP deployment is active. One account-level owner drives
+the session/snapshot/run lifecycle, streamed text and tool progress, explicit
+cancel/reconnect, account-scoped backend selection, and a versioned
+account-bound resume. Discovery and availability are server-derived: the
+launcher exposes local backend descriptors, but it does not mount the cloud
+routes. A stored cloud run is resumed in the cloud-enabled HTTP deployment, not
+through the launcher; selecting cloud in that deployment still requires a
+server-reported formal account, configured quota, and a provider. The selector
+chooses only the NEXT run; replay and cancel keep the run's original backend.
+Guests see local install/launch guidance and never submit to cloud. When the
+launcher probe reports `piAvailable: false`, only the local pi option is
+disabled; other available backends stay selectable, and workout
+logging/history keep working. Plain local builds without either flag still hide
+the route.
+
+The launcher persists local coaching product state to an app-owned
+`.pi/fit-trace/coaching-journal.json` (file `0600`, parent `0700`) before
+acknowledging each mutation. Retained runs, events, idempotency records, and
+native session ownership survive a restart. A run that was active when the
+previous process exited is never adopted; it becomes failed with an
+execution-unconfirmed reason, keeps its capacity slot, and no second process is
+spawned. A malformed journal fails closed instead of resetting.
 
 ## Limitations (current slice)
 
-- The Coach UI is launcher-gated and local-only: there is no hosted cloud
-  coach, no Codex/OpenCode agent execution, and no packaged `npx` install.
+- Local OpenCode is experimental and advertised only when the installed CLI
+  provides positive isolation evidence; this build wires no production
+  isolation verifier, so the CLI currently reports it unavailable. Codex
+  remains unavailable until built-in tool isolation can be proven. There is no
+  packaged `npx` install.
+- Hosted cloud is opt-in and unverified against a real provider or deployed
+  worker. It requires applied migrations, a separate outbox worker, configured
+  quota/provider, and explicit operator enablement.
+- A run left execution-unconfirmed after an abnormal exit keeps capacity held;
+  there is no HTTP recovery/acknowledgement action yet, so recovery is an
+  operator action on the local journal after confirming no child process is
+  still running.
 - No automatic migration between local/memory/Supabase stores.
