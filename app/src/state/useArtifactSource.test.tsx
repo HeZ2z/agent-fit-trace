@@ -170,7 +170,7 @@ describe("useArtifactSource selection races", () => {
     const api = { current: null as ArtifactSource<"analysis"> | null };
     render(<Probe client={client} api={api} />);
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(a.id));
-    expect(screen.getByTestId("selected")).toHaveTextContent(a.id);
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent(a.id));
 
     await act(async () => {
       await api.current?.select(b.id);
@@ -179,7 +179,7 @@ describe("useArtifactSource selection races", () => {
     // The catch re-reads B instead of keeping A, so Retry and the displayed
     // source both match what a reload would load.
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(b.id));
-    expect(screen.getByTestId("selected")).toHaveTextContent(b.id);
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent(b.id));
     expect(screen.getByTestId("status")).toHaveTextContent("ready");
     expect(screen.getByTestId("error")).toHaveTextContent(/response lost/i);
 
