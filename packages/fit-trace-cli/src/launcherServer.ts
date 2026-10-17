@@ -13,6 +13,9 @@ import { CoachedPiProcess } from "../../../server/coaching/piProcessAdapter.ts";
 import { CoachedCodexAppServer } from "../../../server/coaching/codexAppServerAdapter.ts";
 import { probeCodexAppServer } from "../../../server/coaching/codexAppServerCapability.ts";
 import type { CodexAppServerSupport } from "../../../server/coaching/codexAppServerCapability.ts";
+import { CoachedOpenCodeRun } from "../../../server/coaching/opencodeServerAdapter.ts";
+import { probeOpenCodeRun } from "../../../server/coaching/opencodeCapability.ts";
+import type { OpenCodeIsolationEvidence, OpenCodeRunSupport } from "../../../server/coaching/opencodeCapability.ts";
 import type {
   CoachingService,
   RuntimeFactory,
@@ -97,6 +100,21 @@ export interface LauncherServerOptions {
   codexSupport?: CodexAppServerSupport;
   /** Codex binary (default `codex`). */
   codexBinary?: string;
+  /**
+   * Installed OpenCode v2 capability evidence (tests inject it). The
+   * production path probes the installed CLI; without positive isolation
+   * evidence the backend stays unavailable with an explicit gap.
+   */
+  openCodeSupport?: OpenCodeRunSupport;
+  openCodeBinary?: string;
+  /** `provider/model` for generated OpenCode config (default env). */
+  openCodeModel?: string;
+  /** Test/operator seam for positive isolation evidence. */
+  openCodeIsolationVerifier?: (context: {
+    binary: string;
+    version: string;
+    model: string;
+  }) => Promise<OpenCodeIsolationEvidence | null>;
   /**
    * Operator-configured coaching runtime (default `pi`). Only `pi` has an
    * enabled adapter. Codex is gated on a version-specific proof that its
@@ -322,6 +340,34 @@ function defaultCodexRuntimeFactory(options: { binary?: string }): RuntimeFactor
       ...(launch.resumeNativeSessionHandle !== undefined
         ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
         : {}),
+      onEvent: launch.onEvent,
+      onDone: launch.onDone,
+    });
+}
+
+/**
+ * OpenCode runtime factory: one private `opencode run --standalone` per run,
+ * isolated roots under the launch's session dir, generated wildcard-deny
+ * config, and a generated plugin that calls the in-process domain bridge.
+ */
+function defaultOpenCodeRuntimeFactory(options: {
+  binary?: string;
+  model: string;
+}): RuntimeFactory {
+  return (launch) =>
+    new CoachedOpenCodeRun({
+      sessionId: launch.sessionId,
+      runId: launch.runId,
+      prompt: launch.prompt,
+      snapshotFile: launch.snapshotFile,
+      sessionDir: launch.sessionDir,
+      cwd: launch.sessionDir,
+      model: options.model,
+      ...(options.binary !== undefined ? { opencodeBinary: options.binary } : {}),
+      ...(launch.resumeNativeSessionHandle !== undefined
+        ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
+        : {}),
+      isolationVerified: true,
       onEvent: launch.onEvent,
       onDone: launch.onDone,
     });
@@ -577,6 +623,50 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
         },
       });
     }
+  } else if (configuredSelection.backendId === "local-opencode") {
+    // Availability comes from the INSTALLED v2 CLI plus positive isolation
+    // evidence. Without that evidence the adapter remains gated: a wildcard
+    // deny is only trustworthy if the complete built-in inventory, plugin
+    // tool list, and agent set were observed to be excluded.
+    const support =
+      options.openCodeSupport ??
+      (await probeOpenCodeRun({
+        ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
+        ...(options.openCodeModel !== undefined ? { model: options.openCodeModel } : {}),
+        ...(options.openCodeIsolationVerifier !== undefined
+          ? { verifyIsolation: options.openCodeIsolationVerifier }
+          : {}),
+      }));
+    const model = support.model ?? options.openCodeModel ?? "";
+    if (support.supported && support.isolationVerified === true && model !== "") {
+      registrations.push({
+        backendId: "local-opencode",
+        runtimeId: "opencode",
+        executionLocation: "local",
+        displayName: "OpenCode CLI (local)",
+        available: true,
+        ...(support.version !== undefined ? { version: support.version } : {}),
+        capabilities: { nativeContinuation: true, cancelConfirmation: "process-exit" },
+        factory: defaultOpenCodeRuntimeFactory({
+          ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
+          model,
+        }),
+      });
+    } else {
+      registrations.push({
+        backendId: "local-opencode",
+        runtimeId: "opencode",
+        executionLocation: "local",
+        displayName: "OpenCode CLI (local)",
+        available: false,
+        unavailableReason: {
+          code: support.unavailable === true ? "cli-not-installed" : "cli-version-unsupported",
+          message:
+            support.gap ??
+            "the installed OpenCode CLI cannot prove an isolated plugin-only tool surface",
+        },
+      });
+    }
   } else if (configuredSelection.backendId !== "local-pi") {
     // Configured but unimplemented: record the selection, never advertise it
     // as available and never fall back to pi under that backend id.
@@ -584,7 +674,7 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
       backendId: configuredSelection.backendId,
       runtimeId: configuredSelection.runtimeId,
       executionLocation: "local",
-      displayName: "OpenCode CLI (local)",
+      displayName: configuredSelection.backendId,
       available: false,
       unavailableReason: {
         code: "adapter-not-implemented",

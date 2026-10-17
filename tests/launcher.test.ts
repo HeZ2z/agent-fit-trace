@@ -928,3 +928,65 @@ test("codex with dynamicTools but unproven builtin isolation stays unavailable",
     upstream.setResponder(() => null);
   }
 });
+
+test("opencode without positive plugin-isolation evidence stays unavailable", async () => {
+  assert.ok(upstream !== null);
+  const server = await startLauncherServer({
+    distDir,
+    upstreamBaseUrl: upstream.baseUrl,
+    host: "127.0.0.1",
+    port: 0,
+    verifier: createTestVerifier({ "token-opencode-gated": { id: "user-opencode-gated" } }),
+    publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
+    runtimeId: "opencode",
+    piAvailable: false,
+    openCodeSupport: {
+      supported: false,
+      isolationVerified: false,
+      version: "2.0.30",
+      model: "fixture/model",
+      gap: "plugin-isolation-unproven: built-in inventory was not excluded",
+    },
+  });
+  try {
+    const discovery = server.service.discoverBackends({ id: "user-opencode-gated" });
+    const opencode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+    assert.equal(opencode?.available, false);
+    assert.equal(opencode?.unavailableReason?.code, "cli-version-unsupported");
+    assert.match(opencode?.unavailableReason?.message ?? "", /plugin-isolation-unproven/);
+  } finally {
+    await server.close();
+    upstream.setResponder(() => null);
+  }
+});
+
+test("opencode registers only with verified isolation and a configured model", async () => {
+  assert.ok(upstream !== null);
+  const server = await startLauncherServer({
+    distDir,
+    upstreamBaseUrl: upstream.baseUrl,
+    host: "127.0.0.1",
+    port: 0,
+    verifier: createTestVerifier({ "token-opencode-ready": { id: "user-opencode-ready" } }),
+    publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
+    runtimeId: "opencode",
+    piAvailable: false,
+    openCodeSupport: {
+      supported: true,
+      isolationVerified: true,
+      version: "2.0.30",
+      model: "fixture/model",
+    },
+  });
+  try {
+    const discovery = server.service.discoverBackends({ id: "user-opencode-ready" });
+    const opencode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+    assert.equal(opencode?.available, true);
+    assert.equal(opencode?.version, "2.0.30");
+    assert.equal(opencode?.capabilities.nativeContinuation, true);
+    assert.equal(opencode?.capabilities.cancelConfirmation, "process-exit");
+  } finally {
+    await server.close();
+    upstream.setResponder(() => null);
+  }
+});
