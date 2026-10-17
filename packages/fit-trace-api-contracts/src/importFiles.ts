@@ -2,17 +2,15 @@ import { stableStringify, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { ValidationWarning, WorkoutRecord } from "@pi-fit-trace/core";
 import {
   IMPORT_MAX_COLLECTION_LENGTH,
-  IMPORT_MAX_EXERCISES,
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILE_RECORDS,
-  IMPORT_MAX_ID_LENGTH,
-  IMPORT_MAX_REQUEST_BYTES,
-  IMPORT_MAX_SETS_PER_EXERCISE,
   IMPORTED_PAYLOAD_SCHEMA_VERSION,
   ImportValidationError,
+  WORKOUT_MAX_REQUEST_BYTES,
   assertImportJsonBounds,
   parseImportArtifactInput,
   type ImportArtifactInput,
+  type ImportJsonBoundsOptions,
   type ImportedArtifactKind,
 } from "./imports.ts";
 
@@ -79,17 +77,33 @@ export interface ParsedWorkoutImportFile {
 const WORKOUT_FILE_KEYS = new Set(["schema_version", "records"]);
 
 /**
+ * Workout files are bounded by their UTF-8 byte cap, not by the tighter
+ * snapshot payload field limits. String and collection limits are therefore
+ * raised to the file cap: the file itself is already at most that size, and a
+ * locally saved record that core accepts must stay restorable. Depth and
+ * object-key limits still guard the JSON shape.
+ */
+const WORKOUT_JSON_BOUNDS: ImportJsonBoundsOptions = {
+  maxStringLength: IMPORT_MAX_FILE_BYTES,
+  maxCollectionLength: IMPORT_MAX_FILE_BYTES,
+};
+
+/**
  * Parse `{ schema_version, records }` workout backups.
  *
- * Every record is validated before anything is returned. The whole file fails
- * if any record is invalid, an id is missing, or two records share an id with
- * different canonical content; identical repeats are merged and keep their
- * original indexes for the later per-record receipt.
+ * Every record is validated by the core workout validator before anything is
+ * returned. The whole file fails if any record is invalid, an id is missing, or
+ * two records share an id with different canonical content; identical repeats
+ * are merged and keep their original indexes for the later per-record receipt.
+ *
+ * Restore submits one record per `POST /workouts`, so each normalized record
+ * must also fit {@link WORKOUT_MAX_REQUEST_BYTES}. That bound equals the file
+ * bound; the artifact/snapshot request cap is deliberately not applied here.
  */
 export function parseWorkoutImportFile(text: string): ParsedWorkoutImportFile {
   assertFileSize(text);
   const root = parseJsonObject(text, "workout");
-  assertImportJsonBounds(root, "(root)");
+  assertImportJsonBounds(root, "(root)", undefined, 0, WORKOUT_JSON_BOUNDS);
 
   if (root.schema_version !== 1) {
     if (typeof root.schema_version !== "number" || !Number.isInteger(root.schema_version)) {
@@ -126,7 +140,7 @@ export function parseWorkoutImportFile(text: string): ParsedWorkoutImportFile {
 
   root.records.forEach((raw, index) => {
     const field = `records[${index}]`;
-    assertImportJsonBounds(raw, field);
+    assertImportJsonBounds(raw, field, undefined, 0, WORKOUT_JSON_BOUNDS);
     let validated: { record: WorkoutRecord; warnings: ValidationWarning[] };
     try {
       validated = validateWorkoutRecord(raw);
@@ -134,33 +148,16 @@ export function parseWorkoutImportFile(text: string): ParsedWorkoutImportFile {
       throw new ImportValidationError(field, validationReason(error));
     }
     const record = validated.record;
-    if (record.id.length > IMPORT_MAX_ID_LENGTH) {
-      throw new ImportValidationError(
-        `${field}.id`,
-        `must be at most ${IMPORT_MAX_ID_LENGTH} characters`,
-      );
-    }
-    if (record.exercises.length > IMPORT_MAX_EXERCISES) {
-      throw new ImportValidationError(
-        `${field}.exercises`,
-        `must contain at most ${IMPORT_MAX_EXERCISES} exercises`,
-      );
-    }
-    record.exercises.forEach((exercise, exerciseIndex) => {
-      if (exercise.sets.length > IMPORT_MAX_SETS_PER_EXERCISE) {
-        throw new ImportValidationError(
-          `${field}.exercises[${exerciseIndex}].sets`,
-          `must contain at most ${IMPORT_MAX_SETS_PER_EXERCISE} sets`,
-        );
-      }
-    });
-    // The coordinator submits this record as one `POST /workouts` body, so
-    // bound the normalized request (not just the file) to the import limit.
+    // The coordinator submits this record as one `POST /workouts` body, so the
+    // normalized record must fit the workout request bound. The bound equals
+    // the backup file bound, so a record represented by an accepted file always
+    // has a request the restore endpoint can accept; locally saved records are
+    // not rejected by the tighter snapshot request cap.
     const requestBytes = new TextEncoder().encode(stableStringify({ record })).length;
-    if (requestBytes > IMPORT_MAX_REQUEST_BYTES) {
+    if (requestBytes > WORKOUT_MAX_REQUEST_BYTES) {
       throw new ImportValidationError(
         field,
-        `exceeds the ${IMPORT_MAX_REQUEST_BYTES} byte single-record request limit`,
+        `exceeds the ${WORKOUT_MAX_REQUEST_BYTES} byte single-record request limit`,
       );
     }
 

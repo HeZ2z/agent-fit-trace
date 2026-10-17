@@ -6,6 +6,7 @@ import {
   HTTP_STATUS,
   IMPORT_MAX_REQUEST_BYTES,
   ImportValidationError,
+  WORKOUT_MAX_REQUEST_BYTES,
   encodeArtifactCursor,
   isImportedArtifactKind,
   parseArtifactSelectionRequest,
@@ -57,6 +58,14 @@ export interface AuthenticatedHandlerOptions {
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+/**
+ * Largest body any route may need: snapshot imports keep the tighter shared
+ * request cap, while workout restore may submit one whole backup record.
+ */
+export const MAX_REQUEST_BODY_BYTES = Math.max(
+  DEFAULT_MAX_BODY_BYTES,
+  WORKOUT_MAX_REQUEST_BYTES,
+);
 export const WWW_AUTHENTICATE = "Bearer";
 
 const ROUTE_BASE = "http://fit-trace.invalid";
@@ -207,6 +216,10 @@ export function createAuthenticatedHandler(
   options: AuthenticatedHandlerOptions,
 ): (input: string, init?: AuthenticatedRequestInit) => Promise<AuthenticatedResponse> {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  // An explicit bound still applies to every route (including workouts) so
+  // callers/tests can tighten the whole handler. By default workouts get the
+  // restore bound instead of the general 64 KiB cap.
+  const maxWorkoutBodyBytes = options.maxBodyBytes ?? WORKOUT_MAX_REQUEST_BYTES;
 
   return async (input, init = {}) => {
     const url = new URL(input, ROUTE_BASE);
@@ -247,7 +260,7 @@ export function createAuthenticatedHandler(
       }
 
       if (route === API_ENDPOINTS.workouts && method === "POST") {
-        const parsed = parseJsonBody(init.body, "body", maxBodyBytes);
+        const parsed = parseJsonBody(init.body, "body", maxWorkoutBodyBytes);
         const record =
           parsed !== null && typeof parsed === "object" && "record" in parsed
             ? (parsed as { record: WorkoutRecord }).record

@@ -15,6 +15,7 @@ import {
   IMPORT_MAX_FILENAME_LENGTH,
   IMPORT_MAX_JSON_KEY_LENGTH,
   IMPORT_MAX_REQUEST_BYTES,
+  WORKOUT_MAX_REQUEST_BYTES,
   artifactContentDigest,
   applyImportedArtifactKeyset,
   buildImportedArtifact,
@@ -381,7 +382,9 @@ test("workout files enforce version, record count, byte size, and per-record val
     () => parseWorkoutImportFile(workoutFile([{ ...workout, exercises: [] }])),
     /records\[0\]/,
   );
+});
 
+test("workout files accept large valid records that local saves allow", () => {
   const hugeRecord = seedRecord({
     id: "w-huge",
     date: "2026-09-01",
@@ -390,9 +393,39 @@ test("workout files enforce version, record count, byte size, and per-record val
       sets: Array.from({ length: 100 }, () => ({ weight: 1, reps: 1 })),
     })),
   });
-  assert.throws(
-    () => parseWorkoutImportFile(workoutFile([hugeRecord])),
-    /single-record request limit/,
+  // The snapshot request cap is deliberately tighter than the workout restore
+  // bound; this valid workout must not be rejected merely for exceeding it.
+  const requestBytes = new TextEncoder().encode(stableStringify({ record: hugeRecord })).length;
+  assert.ok(requestBytes > IMPORT_MAX_REQUEST_BYTES, "fixture must exceed the snapshot cap");
+  assert.ok(requestBytes <= WORKOUT_MAX_REQUEST_BYTES);
+  assert.equal(
+    parseWorkoutImportFile(workoutFile([hugeRecord])).entries[0]?.record.id,
+    "w-huge",
+  );
+
+  // Locally saved records are only bounded by the workout validator and the
+  // file byte cap, so import must not impose tighter string/exercise/set caps.
+  const notesRecord = seedRecord({
+    id: "w-notes",
+    date: "2026-09-02",
+    notes: "n".repeat(50_000),
+  });
+  assert.equal(
+    parseWorkoutImportFile(workoutFile([notesRecord])).entries[0]?.record.notes?.length,
+    50_000,
+  );
+
+  const manyExercises = seedRecord({
+    id: "w-many",
+    date: "2026-09-03",
+    exercises: Array.from({ length: 101 }, (_, index) => ({
+      name: `exercise-${index}`,
+      sets: [{ weight: 1, reps: 1 }],
+    })),
+  });
+  assert.equal(
+    parseWorkoutImportFile(workoutFile([manyExercises])).entries[0]?.record.exercises.length,
+    101,
   );
 });
 

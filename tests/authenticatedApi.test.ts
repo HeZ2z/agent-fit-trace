@@ -221,6 +221,28 @@ test("oversized bodies reject as VALIDATION_ERROR", async () => {
   assert.equal(body.error.code, API_ERROR_CODES.VALIDATION_ERROR);
 });
 
+test("workout restore requests may carry one large valid backup record", async () => {
+  const handler = makeHandler();
+  // Larger than the 64 KiB general HTTP cap but within the workout restore
+  // bound; restore submits one whole record per request.
+  const record = seedRecord({
+    id: "w-large",
+    date: "2026-09-05",
+    notes: "n".repeat(100_000),
+  });
+  const response = await handler("/workouts", {
+    method: "POST",
+    body: JSON.stringify({ record }),
+    authorization: "Bearer token-a",
+  });
+  assert.equal(response.status, 201);
+  const body = JSON.parse(response.body) as {
+    data: { record: WorkoutRecord; duplicate: boolean };
+  };
+  assert.equal(body.data.duplicate, false);
+  assert.equal(body.data.record.notes?.length, 100_000);
+});
+
 test("import routes are principal-scoped and hide other owners behind NOT_FOUND", async () => {
   const handler = makeHandler();
   const authA = { authorization: "Bearer token-a" };

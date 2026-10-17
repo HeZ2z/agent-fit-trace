@@ -219,8 +219,9 @@ export const API_ERROR_CODES = {
 - `VALIDATION_ERROR` — invalid record or filter (including an inverted date
   range, a missing `{ record }` field, or unparseable JSON). Maps to `400`.
   Oversized general request bodies (over the 64 KiB HTTP cap) are also `400`;
-  import requests have the stricter shared 40 KiB normalized bound described
-  in section 9.
+  snapshot import requests have the stricter shared 40 KiB normalized bound
+  described in section 9, while a workout restore request may carry one whole
+  backup record (up to the 1 MiB backup file bound).
 - `CONFLICT` — the id already exists with different content. Maps to `409`.
 - `CORRUPT_STORE` / `STORAGE_UNAVAILABLE` — store-layer failures; surfaced with
   their codes and mapped to `500` by the memory handler's default branch.
@@ -425,28 +426,31 @@ The shared contract (`src/imports.ts`) enforces these limits before any write:
 
 | Limit | Value |
 | --- | --- |
-| Backup file bytes | 1 MiB (`IMPORT_MAX_FILE_BYTES`) |
-| Records per backup file | 1000 |
-| Normalized single-record/import request | 40 KiB (`IMPORT_MAX_REQUEST_BYTES`) |
-| JSON depth | 16 |
-| JSON object key length | 256 characters |
-| String length | 4096 characters |
-| Workout/source id length | 256 characters |
-| Exercises per workout | 100 |
-| Sets per exercise | 100 |
-| Collection length | 1000 entries |
+| Backup file bytes (snapshots and workouts) | 1 MiB (`IMPORT_MAX_FILE_BYTES`) |
+| Records per workout backup file | 1000 |
+| Normalized snapshot import request | 40 KiB (`IMPORT_MAX_REQUEST_BYTES`) |
+| Normalized workout restore request | 1 MiB (`WORKOUT_MAX_REQUEST_BYTES`) |
+| JSON depth (all imported JSON) | 16 |
+| JSON object key length (all imported JSON) | 256 characters |
+| Snapshot string length | 4096 characters |
+| Snapshot/source id length | 256 characters |
+| Snapshot collection length | 1000 entries |
 | Source filename | 255 characters after path normalization |
 | Import list limit | default 20, maximum 100 |
 
-The file is a container: workout restore submits one normalized record at a
-time, so each request uses the 40 KiB request bound while the whole backup
-uses the 1 MiB file bound. An imported analysis/plan body is likewise bounded
-as one normalized request. The 40 KiB compact limit is deliberately lower
-than the database's 64 KiB `jsonb::text` guard: PostgreSQL adds one space
-after every comma and colon, so the worst-case expansion (arrays of one-byte
-values) is 50%, or 60 KiB. A request accepted by preview is therefore also
-accepted by the SQL save path. Workout export splits large histories into
-numbered files that each satisfy these restore bounds.
+The file is a container. Workout restore submits one normalized record at a
+time, so each `POST /workouts` request is bounded by the same 1 MiB
+`WORKOUT_MAX_REQUEST_BYTES` as the backup file it came from: a record the app
+can save locally is therefore not rejected merely because it is larger than a
+snapshot request. Workout records are validated by the core workout validator
+and are bounded by the file byte/record caps; the stricter snapshot field caps
+(string/collection length) do not apply to them. Snapshot imports remain
+bounded by the 40 KiB compact request limit, which is deliberately lower than
+the database's 64 KiB `jsonb::text` guard: PostgreSQL adds one space after
+every comma and colon, so the worst-case expansion (arrays of one-byte values)
+is 50%, or 60 KiB. A snapshot accepted by preview is therefore also accepted
+by the SQL save path. Workout export splits large histories into numbered
+files that each satisfy these restore bounds.
 
 Identity is content-addressed:
 `id = "<kind>:v1:<sha256(stableStringify(payload))>"`. Saving is idempotent:

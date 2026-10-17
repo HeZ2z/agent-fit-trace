@@ -1,7 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createSupabaseVerifier } from "./auth/supabaseVerifier.ts";
 import { extractBearerToken } from "./auth/verifier.ts";
-import { createAuthenticatedHandler, DEFAULT_MAX_BODY_BYTES } from "./authenticatedHandler.ts";
+import {
+  createAuthenticatedHandler,
+  MAX_REQUEST_BODY_BYTES,
+} from "./authenticatedHandler.ts";
 import { readSupabaseServerEnv } from "./db/env.ts";
 import { createSupabaseWorkoutStore } from "./db/supabaseWorkouts.ts";
 import { getPublicConfig } from "./publicConfig.ts";
@@ -131,7 +134,7 @@ export async function handleVercelApi(
 
   let body: string | undefined;
   try {
-    body = await readBody(request, DEFAULT_MAX_BODY_BYTES);
+    body = await readBody(request, MAX_REQUEST_BODY_BYTES);
   } catch {
     send(
       response,
@@ -139,7 +142,7 @@ export async function handleVercelApi(
       JSON.stringify({
         error: {
           code: "VALIDATION_ERROR",
-          message: `Request body exceeds the ${DEFAULT_MAX_BODY_BYTES} byte limit.`,
+          message: `Request body exceeds the ${MAX_REQUEST_BODY_BYTES} byte limit.`,
         },
       }),
       {},

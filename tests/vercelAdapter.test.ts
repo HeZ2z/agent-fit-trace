@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import type { ServerResponse } from "node:http";
+import { MAX_REQUEST_BODY_BYTES } from "../server/authenticatedHandler.ts";
 import { handleVercelApi } from "../server/vercel.ts";
 import type { VercelRequestLike } from "../server/vercel.ts";
 
@@ -135,8 +136,13 @@ test("vercel adapter: oversized UTF-8 bodies reject by byte count, exact-limit A
   const saved = saveEnv();
   try {
     clearEnv();
-    // 40_000 chars × 2 bytes = 80_000 bytes > 64 KiB limit (`.length` alone would miss it).
-    const utf8 = fakeRequest({ url: "/api/v1/workouts", method: "POST", body: "é".repeat(40_000) });
+    // 600_000 chars × 2 bytes = 1_200_000 bytes > the handler body cap
+    // (`.length` alone would miss the UTF-8 expansion).
+    const utf8 = fakeRequest({
+      url: "/api/v1/workouts",
+      method: "POST",
+      body: "é".repeat(600_000),
+    });
     const first = fakeResponse();
     await bounded(handleVercelApi(utf8, first.response), "oversized UTF-8 body");
     assert.equal(first.captured.status, 400);
@@ -145,9 +151,13 @@ test("vercel adapter: oversized UTF-8 bodies reject by byte count, exact-limit A
       "VALIDATION_ERROR",
     );
 
-    // Exactly 64 KiB of ASCII is within the limit: readBody accepts it and the
+    // Exactly the cap in ASCII is within the limit: readBody accepts it and the
     // request proceeds to the fail-closed handler (500 without env), not a 400.
-    const exact = fakeRequest({ url: "/api/v1/workouts", method: "POST", body: "a".repeat(64 * 1024) });
+    const exact = fakeRequest({
+      url: "/api/v1/workouts",
+      method: "POST",
+      body: "a".repeat(MAX_REQUEST_BODY_BYTES),
+    });
     const second = fakeResponse();
     await bounded(handleVercelApi(exact, second.response), "exact-limit body");
     assert.equal(second.captured.status, 500);

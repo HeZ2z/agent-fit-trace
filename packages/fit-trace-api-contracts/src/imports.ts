@@ -28,22 +28,38 @@ export const IMPORT_MAX_FILE_BYTES = 1024 * 1024;
 export const IMPORT_MAX_FILE_RECORDS = 1000;
 
 /**
- * A single normalized import request must stay at or below 40 KiB of compact
- * JSON. PostgreSQL renders `jsonb` with one space after every comma and colon;
- * the worst case (arrays of one-byte values) adds 50%, so 40 KiB compact can
- * never exceed 60 KiB as `jsonb::text`. That stays below the SQL RPC/table
- * guard of 64 KiB, keeping the pre-save contract and the database check in
- * agreement instead of accepting a file the database would reject.
+ * A single normalized analysis/plan snapshot import request must stay at or
+ * below 40 KiB of compact JSON. PostgreSQL renders `jsonb` with one space after
+ * every comma and colon; the worst case (arrays of one-byte values) adds 50%,
+ * so 40 KiB compact can never exceed 60 KiB as `jsonb::text`. That stays below
+ * the SQL RPC/table guard of 64 KiB, keeping the pre-save contract and the
+ * database check in agreement instead of accepting a file the database would
+ * reject.
+ *
+ * This is deliberately a *snapshot* bound. Workout restores submit one stored
+ * record per request and are not saved through the artifact jsonb guard, so
+ * they use {@link WORKOUT_MAX_REQUEST_BYTES} instead; otherwise a valid local
+ * workout could always be saved but never restored or exported.
  */
 export const IMPORT_MAX_REQUEST_BYTES = 40 * 1024;
+
+/**
+ * Bound for one normalized workout during restore.
+ *
+ * The backup file is the container the user restores, and restore sends one
+ * record per `POST /workouts` body. A workout that fits inside a restorable
+ * {@link IMPORT_MAX_FILE_BYTES} backup therefore also has to fit in one
+ * request. Keeping both bounds equal is what makes every record a backup file
+ * can represent restorable; the tighter snapshot request cap above exists for
+ * the SQL jsonb guard and must not reject locally saved workouts.
+ */
+export const WORKOUT_MAX_REQUEST_BYTES = IMPORT_MAX_FILE_BYTES;
 
 /** Additional structural bounds applied before trusting any imported JSON. */
 export const IMPORT_MAX_JSON_DEPTH = 16;
 export const IMPORT_MAX_JSON_KEY_LENGTH = 256;
 export const IMPORT_MAX_STRING_LENGTH = 4096;
 export const IMPORT_MAX_ID_LENGTH = 256;
-export const IMPORT_MAX_EXERCISES = 100;
-export const IMPORT_MAX_SETS_PER_EXERCISE = 100;
 export const IMPORT_MAX_COLLECTION_LENGTH = 1000;
 export const IMPORT_MAX_FILENAME_LENGTH = 255;
 
@@ -214,19 +230,36 @@ const DIGEST_RE = /^[0-9a-f]{64}$/;
 /* Bounds                                                                    */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * Per-call overrides for the generic structural bounds.
+ *
+ * Snapshot imports use the defaults. Workout backup files are already bounded
+ * as a whole by their UTF-8 byte cap, so their string/collection limits are
+ * raised to that cap: a record accepted by the core workout validator must not
+ * become unrestorable merely because the snapshot limits are tighter than the
+ * save contract. Depth and object-key bounds still apply.
+ */
+export interface ImportJsonBoundsOptions {
+  maxStringLength?: number;
+  maxCollectionLength?: number;
+}
+
 /** Reject JSON deeper than the import bound or containing non-finite numbers. */
 export function assertImportJsonBounds(
   value: unknown,
   field = "(payload)",
   fail: Fail = importFail,
   depth = 0,
+  options: ImportJsonBoundsOptions = {},
 ): void {
+  const maxStringLength = options.maxStringLength ?? IMPORT_MAX_STRING_LENGTH;
+  const maxCollectionLength = options.maxCollectionLength ?? IMPORT_MAX_COLLECTION_LENGTH;
   if (depth > IMPORT_MAX_JSON_DEPTH) {
     fail(field, `exceeds the maximum JSON depth of ${IMPORT_MAX_JSON_DEPTH}`);
   }
   if (typeof value === "string") {
-    if (value.length > IMPORT_MAX_STRING_LENGTH) {
-      fail(field, `must be at most ${IMPORT_MAX_STRING_LENGTH} characters`);
+    if (value.length > maxStringLength) {
+      fail(field, `must be at most ${maxStringLength} characters`);
     }
     return;
   }
@@ -235,11 +268,11 @@ export function assertImportJsonBounds(
     return;
   }
   if (Array.isArray(value)) {
-    if (value.length > IMPORT_MAX_COLLECTION_LENGTH) {
-      fail(field, `must contain at most ${IMPORT_MAX_COLLECTION_LENGTH} entries`);
+    if (value.length > maxCollectionLength) {
+      fail(field, `must contain at most ${maxCollectionLength} entries`);
     }
     value.forEach((entry, index) =>
-      assertImportJsonBounds(entry, `${field}[${index}]`, fail, depth + 1),
+      assertImportJsonBounds(entry, `${field}[${index}]`, fail, depth + 1, options),
     );
     return;
   }
@@ -251,7 +284,7 @@ export function assertImportJsonBounds(
           `must use at most ${IMPORT_MAX_JSON_KEY_LENGTH} characters per object key`,
         );
       }
-      assertImportJsonBounds(entry, `${field}.${key}`, fail, depth + 1);
+      assertImportJsonBounds(entry, `${field}.${key}`, fail, depth + 1, options);
     }
   }
 }

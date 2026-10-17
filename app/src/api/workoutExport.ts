@@ -40,11 +40,13 @@ function byteLengthUtf8(value: string): number {
  * Split records so every part is a file the restore page accepts again.
  *
  * The restore contract rejects a file over 1 MiB, more than 1000 records, or a
- * single record whose normalized request exceeds the shared request bound.
- * Sizing by count only would still let one large record make the backup
+ * single record whose normalized request exceeds the workout restore bound.
+ * That request bound equals the file bound, so a large but valid stored workout
+ * (including one above the tighter snapshot request cap) is still restorable.
+ * Sizing by count only would still let one oversized record make the backup
  * unrestorable, so each candidate part is run through the same parser restore
- * uses. If a single record cannot satisfy that contract the export fails with
- * an explicit error instead of downloading a file this page would refuse.
+ * uses. If a single record exceeds the file container itself the export fails
+ * with an explicit error instead of downloading a file this page would refuse.
  */
 function partitionRestorable(
   records: readonly WorkoutRecord[],

@@ -66,6 +66,22 @@ test("raw POST: 201 on new, 200 duplicate on identical retry, history length sta
   assert.equal(listBody.data.filter((entry) => (entry as { id: string }).id === "w-wire").length, 1);
 });
 
+test("large valid workouts round-trip through the loopback API", async () => {
+  // The body is larger than the old 64 KiB general HTTP cap. Restore submits
+  // one whole record, so the workout route must accept the backup bound.
+  const record = seedRecord({
+    id: "w-large-api",
+    date: "2026-09-13",
+    notes: "n".repeat(200_000),
+  });
+  const created = await client.createWorkout(record);
+  assert.equal(created.duplicate, false);
+  assert.ok(created.record.id === "w-large-api");
+
+  const listed = (await client.listWorkouts()).find((entry) => entry.id === "w-large-api");
+  assert.equal(listed?.notes?.length, 200_000);
+});
+
 test("same id with different content → 409; client surfaces CONFLICT", async () => {
   const record = seedRecord({ id: "w-conflict", date: "2026-09-11" });
   await client.createWorkout(record);

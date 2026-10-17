@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { CURRENT_SCHEMA_VERSION, ValidationError, validateWorkoutRecord } from "@pi-fit-trace/core";
+import {
+  CURRENT_SCHEMA_VERSION,
+  ValidationError,
+  stableStringify,
+  validateWorkoutRecord,
+} from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import {
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILE_RECORDS,
+  IMPORT_MAX_REQUEST_BYTES,
+  WORKOUT_MAX_REQUEST_BYTES,
   parseWorkoutImportFile,
 } from "@pi-fit-trace/api-contracts";
 import { planWorkoutExport, serializeWorkoutExport } from "./workoutExport.ts";
@@ -90,8 +97,24 @@ describe("planWorkoutExport", () => {
     expect(restoredIds).toEqual(records.map((entry) => entry.id));
   });
 
+  it("exports a large but valid stored workout above the snapshot request cap", () => {
+    // Local saves have no snapshot request cap. This is a valid stored record
+    // whose single-record request is above 40 KiB but within the backup file.
+    const large = record({ id: "wkt_large", notes: "n".repeat(50_000) });
+    expect(() => validateWorkoutRecord(large)).not.toThrow();
+    const requestBytes = byteLength(stableStringify({ record: large }));
+    expect(requestBytes).toBeGreaterThan(IMPORT_MAX_REQUEST_BYTES);
+    expect(requestBytes).toBeLessThanOrEqual(WORKOUT_MAX_REQUEST_BYTES);
+
+    const parts = planWorkoutExport([large, record({ id: "wkt_small" })]);
+    expect(parts).toHaveLength(1);
+    const restored = parseWorkoutImportFile(parts[0]?.text as string).entries;
+    expect(restored.map((entry) => entry.record.id)).toEqual(["wkt_large", "wkt_small"]);
+    expect(restored[0]?.record.notes).toHaveLength(50_000);
+  });
+
   it("splits by bytes as well as count while keeping each record restorable", () => {
-    // Each record is under the single-record request bound but 30 of them
+    // Each record is under the workout restore request bound but 30 of them
     // exceed the 1 MiB file bound.
     const sets = Array.from({ length: 80 }, () => ({ weight: 100, reps: 5, rpe: 8 }));
     const exercises = Array.from({ length: 10 }, () => ({ name: "Squat", sets }));

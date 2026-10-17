@@ -3,6 +3,7 @@ import {
   API_ENDPOINTS,
   HTTP_STATUS,
   ImportValidationError,
+  WORKOUT_MAX_REQUEST_BYTES,
   encodeArtifactCursor,
   isImportedArtifactKind,
   parseArtifactSelectionRequest,
@@ -40,6 +41,11 @@ export interface MemoryHandlerOptions {
 }
 
 export const DEFAULT_MEMORY_MAX_BODY_BYTES = 64 * 1024;
+/** Default workout-route cap: one backup record may be submitted per request. */
+export const DEFAULT_MEMORY_MAX_WORKOUT_BODY_BYTES = Math.max(
+  DEFAULT_MEMORY_MAX_BODY_BYTES,
+  WORKOUT_MAX_REQUEST_BYTES,
+);
 
 /** Base so relative route paths parse without a real origin. */
 const ROUTE_BASE = "http://fit-trace.invalid";
@@ -125,6 +131,9 @@ export function createMemoryHandler(
   options: MemoryHandlerOptions = {},
 ): (input: string, init?: HandlerInit) => Promise<HandlerResponse> {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MEMORY_MAX_BODY_BYTES;
+  // An explicit option still bounds every route; by default workouts accept
+  // one whole restore record rather than the general 64 KiB body cap.
+  const maxWorkoutBodyBytes = options.maxBodyBytes ?? DEFAULT_MEMORY_MAX_WORKOUT_BODY_BYTES;
   return async (input, init = {}) => {
     const url = new URL(input, ROUTE_BASE);
     const method = (init.method ?? "GET").toUpperCase();
@@ -136,7 +145,7 @@ export function createMemoryHandler(
       }
 
       if (route === API_ENDPOINTS.workouts && method === "POST") {
-        const parsed = parseJsonBody(init.body, "body", maxBodyBytes);
+        const parsed = parseJsonBody(init.body, "body", maxWorkoutBodyBytes);
         const record =
           parsed !== null && typeof parsed === "object" && "record" in parsed
             ? (parsed as { record: WorkoutRecord }).record

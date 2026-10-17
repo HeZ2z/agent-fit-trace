@@ -214,7 +214,8 @@ explicit replay.
    `{ "schema_version": ..., "records": [...] }`. A history within the restore
    limits is `workout.json`; larger histories are split into numbered
    `workout-01-of-NN.json` files so every file stays within 1 MiB and 1000
-   records. Restore or replay every file.
+   records, and every record fits one restore request. Restore or replay every
+   file.
 2. To move records into an authenticated store, replay each exported record
    explicitly through the normal create endpoint; validate and reconcile IDs
    rather than copying raw storage keys:

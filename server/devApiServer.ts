@@ -2,7 +2,10 @@ import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { pathToFileURL } from "node:url";
 import { createMemoryHandler } from "@pi-fit-trace/api-contracts/testing";
-import { createAuthenticatedHandler, DEFAULT_MAX_BODY_BYTES } from "./authenticatedHandler.ts";
+import {
+  createAuthenticatedHandler,
+  MAX_REQUEST_BODY_BYTES,
+} from "./authenticatedHandler.ts";
 import { createTestVerifier } from "./auth/testVerifier.ts";
 import { createSupabaseVerifier } from "./auth/supabaseVerifier.ts";
 import { createPrincipalMemoryStores } from "./principalMemoryStore.ts";
@@ -100,14 +103,14 @@ export async function startDevApiServer(
       const route = `${rawUrl.pathname.replace(/^\/api\/v1(?=\/|$)/, "")}${rawUrl.search}`;
       let body: string | undefined;
       try {
-        body = await collectBody(request, DEFAULT_MAX_BODY_BYTES);
+        body = await collectBody(request, MAX_REQUEST_BODY_BYTES);
       } catch {
         response.writeHead(400, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
             error: {
               code: "VALIDATION_ERROR",
-              message: `Request body exceeds the ${DEFAULT_MAX_BODY_BYTES} byte limit.`,
+              message: `Request body exceeds the ${MAX_REQUEST_BODY_BYTES} byte limit.`,
             },
           }),
         );

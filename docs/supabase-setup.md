@@ -132,11 +132,13 @@ shut it down separately with `supabase stop`.
   - reads return `owner_id`; the TypeScript client re-verifies it against the
     bearer principal and re-parses every row as defense in depth.
   - two independent payload bounds: the shared TypeScript contract rejects a
-    normalized import request over **40 KiB** compact JSON, while the SQL
-    RPC/table keeps a defensive **64 KiB** `octet_length(payload::text)` guard.
-    jsonb text adds one space after every comma/colon (worst case +50%), so a
-    request at the 40-KiB limit is at most 60 KiB as jsonb text and never
-    passes preview only to fail the database check.
+    normalized snapshot import request over **40 KiB** compact JSON, while the
+    SQL RPC/table keeps a defensive **64 KiB** `octet_length(payload::text)`
+    guard. jsonb text adds one space after every comma/colon (worst case +50%),
+    so a request at the 40-KiB limit is at most 60 KiB as jsonb text and never
+    passes preview only to fail the database check. (Workout restore requests
+    are bounded separately by the backup file limit; they are not saved through
+    this RPC.)
   - digest verification stays in TypeScript on both save and read:
     `sha256(stableStringify(payload))` cannot be reproduced reliably by
     Postgres because `jsonb::text` orders keys differently. SQL enforces the
