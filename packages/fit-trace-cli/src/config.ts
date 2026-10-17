@@ -1,4 +1,9 @@
 import { spawn } from "node:child_process";
+import type { CoachingRuntimeId } from "@pi-fit-trace/api-contracts";
+import {
+  isCoachingRuntimeId,
+  resolveCoachingBackendSelection,
+} from "@pi-fit-trace/api-contracts";
 
 /**
  * Launcher configuration: every value is operator-configured (flags or
@@ -15,6 +20,7 @@ export interface LauncherFlags {
   noOpen?: boolean;
   upstream?: string;
   dist?: string;
+  runtime?: string;
 }
 
 export interface ResolvedLauncherConfig {
@@ -22,6 +28,8 @@ export interface ResolvedLauncherConfig {
   port: number;
   distDir: string;
   noOpen: boolean;
+  /** Configured local runtime (default pi). */
+  runtimeId: CoachingRuntimeId;
 }
 
 /** Absolute http(s) URL without query, credentials, or fragment. */
@@ -64,7 +72,21 @@ export function resolveLauncherConfig(
   // resolve to the process cwd — treat it as unset and use the repo default.
   const distRaw = flags.dist ?? env.FIT_TRACE_APP_DIST;
   const distDir = distRaw === undefined || distRaw.trim() === "" ? `${repoRoot}/app/dist` : distRaw;
-  return { upstreamBaseUrl, port: portRaw, distDir, noOpen: flags.noOpen ?? false };
+  const runtimeRaw = flags.runtime ?? env.FIT_TRACE_RUNTIME ?? "pi";
+  if (!isCoachingRuntimeId(runtimeRaw)) {
+    throw new Error(`invalid coaching runtime: ${runtimeRaw} (expected pi, codex, opencode, or hosted-sdk)`);
+  }
+  const selection = resolveCoachingBackendSelection({ runtimeId: runtimeRaw });
+  if (selection.executionLocation !== "local") {
+    throw new Error(`the local launcher cannot configure the ${runtimeRaw} cloud runtime`);
+  }
+  return {
+    upstreamBaseUrl,
+    port: portRaw,
+    distDir,
+    noOpen: flags.noOpen ?? false,
+    runtimeId: runtimeRaw,
+  };
 }
 
 /** Open only exact loopback URLs in a browser (argv array, no shell). */

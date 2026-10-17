@@ -56,14 +56,19 @@ import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
 import type {
+  CoachingBackendId,
+  CoachingCapabilityDiscovery,
+  CoachingCloudQuota,
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingEventPayload,
   CoachingRun,
   CoachingRunStatus,
+  CoachingRuntimeId,
   CoachingSession,
   CoachingSnapshotReference,
   CoachingTerminalStatus,
+  CoachingTrustedIdentity,
   SubmitCoachingRunInput,
 } from "@pi-fit-trace/api-contracts";
 import {
@@ -80,6 +85,8 @@ import {
   nextRunStatus,
   parseAnalysisResult,
   parseCoachingEventPayload,
+  qualifyCloudBackend,
+  resolveCoachingBackendSelection,
 } from "@pi-fit-trace/api-contracts";
 import { MalformedResponseError } from "@pi-fit-trace/api-contracts";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
@@ -90,8 +97,27 @@ import {
   ValidationError,
 } from "@pi-fit-trace/core";
 import type { PrincipalStoreFactory } from "../auth/verifier.ts";
+import {
+  asCoachingRuntimeRegistry,
+  buildCoachingDiscovery,
+  NATIVE_SESSION_VERSION_BY_BACKEND,
+} from "./runtimeRegistry.ts";
+import type {
+  CoachingRuntimeRegistration,
+  CoachingRuntimeRegistry,
+  RuntimeFactory,
+  RuntimeHandle,
+  RuntimeLaunchOptions,
+} from "./runtimeRegistry.ts";
 import { cleanupSnapshotDir, writeSnapshotDir } from "./snapshotFile.ts";
 import type { SnapshotDir } from "./snapshotFile.ts";
+
+export type {
+  RuntimeDoneInfo,
+  RuntimeFactory,
+  RuntimeHandle,
+  RuntimeLaunchOptions,
+} from "./runtimeRegistry.ts";
 
 /** Per-request read context. The bearer token is ephemeral: it is used only
  * as an `Authorization` header value against the fixed server-configured
@@ -123,37 +149,26 @@ export function storeFactorySource(stores: PrincipalStoreFactory): WorkoutSource
   };
 }
 
-/** Terminal report from the runtime, with exit confirmation from batch 2. */
-export interface RuntimeDoneInfo {
-  sessionFile?: string;
-  processExitConfirmed?: boolean;
-}
-
-export interface RuntimeHandle {
-  start(): void;
-  cancel(reason?: string): void;
-  close(): Promise<void>;
-}
-
-export interface RuntimeLaunchOptions {
-  sessionId: string;
-  runId: string;
-  prompt: string;
-  snapshotFile: string;
-  snapshotDir: string;
-  /** Fixed per-product-session native session dir (never the snapshot default). */
-  sessionDir: string;
-  /** Native session file to resume (same product session/account only). */
-  resumeSessionFile?: string;
-  onEvent(payload: CoachingEventPayload): void;
-  onDone(status: CoachingTerminalStatus, reason?: string, info?: RuntimeDoneInfo): void;
-}
-
-export type RuntimeFactory = (options: RuntimeLaunchOptions) => RuntimeHandle;
-
 export interface CoachingServiceOptions {
   source: WorkoutSource;
-  runtimeFactory: RuntimeFactory;
+  /**
+   * Legacy local-pi factory. Retained for v1 compatibility and existing
+   * launcher wiring; it is never used as a silent fallback for another
+   * backend. Prefer `runtimeRegistry` for all new backends.
+   */
+  runtimeFactory?: RuntimeFactory;
+  /** Registered backends (metadata + optional factories). */
+  runtimeRegistry?: CoachingRuntimeRegistry | readonly CoachingRuntimeRegistration[];
+  /**
+   * #5 seam: authoritative account classification from the validated
+   * identity layer. Returning null/undefined keeps cloud qualification
+   * closed. Request bodies or guest flags must never supply this.
+   */
+  trustedIdentity?: (principal: AuthPrincipal) => CoachingTrustedIdentity | null | undefined;
+  /** Server-configured cloud quota; absent/unconfigured fails closed. */
+  cloudQuota?: CoachingCloudQuota | null;
+  /** True only when a real cloud provider adapter is configured. */
+  cloudProviderConfigured?: boolean;
   /** Max stored events per run (tripping the cap fails the run explicitly). */
   maxEventsPerRun?: number;
   /** Max stored event bytes per run (UTF-8 frame bytes; tripping the cap fails the run explicitly). */
@@ -210,6 +225,14 @@ export const DEFAULT_MAX_SNAPSHOTS_PER_ACCOUNT = 50;
 export const DEFAULT_MAX_RECORDS_PER_SNAPSHOT = 5000;
 export const DEFAULT_RETENTION_MS = 30 * 60 * 1000;
 export const DEFAULT_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Native engine handles are opaque ids, never paths, and are bounded. The
+ * service stores them per backend and only replays one to the same backend.
+ */
+export function isSafeNativeSessionHandle(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value);
+}
 export const DEFAULT_CANCEL_GRACE_MS = 5000;
 
 export const COACHED_SERVICE_ALLOWLIST = COACHED_TOOL_NAMES;
@@ -247,6 +270,16 @@ interface StoredSession extends CoachingSession {
   nativeSessionDir: string;
   /** Last native session handle captured from onDone (same session only). */
   nativeSessionFile?: string;
+  /** Opaque native handle (thread/session id) for a non-file engine. */
+  nativeSessionHandle?: string;
+  /**
+   * Exact owner of whichever native handle is stored above. All three must
+   * match the next run before a handle is replayed; a backend switch starts
+   * fresh and never receives another backend's file/id.
+   */
+  nativeSessionBackendId?: CoachingBackendId;
+  nativeSessionRuntimeId?: CoachingRuntimeId;
+  nativeSessionVersion?: string;
   /** Idle-session expiry (refreshed on create/submit/read activity). */
   expiresAt: number;
 }
@@ -296,11 +329,13 @@ interface StoredRun {
 
 function canonicalizeSubmit(input: {
   prompt: string;
+  backendId: CoachingBackendId;
   runtimeId: string;
   snapshot: CoachingDataSnapshot;
 }): string {
   return JSON.stringify({
     prompt: input.prompt,
+    backendId: input.backendId,
     runtimeId: input.runtimeId,
     snapshot: {
       snapshotId: input.snapshot.snapshotId,
@@ -336,6 +371,8 @@ export interface CoachingService {
     fromSeq?: number,
   ): { events: CoachingEventEnvelope[]; run: CoachingRun; lastSeq: number; firstSeq: number; expiresAt: number };
   cancelRun(principal: AuthPrincipal, runId: string, reason?: string): { run: CoachingRun; lastSeq: number };
+  /** Versioned backend capability discovery for the verified caller. */
+  discoverBackends(principal: AuthPrincipal): CoachingCapabilityDiscovery;
   /** Logout support: cancel the caller's active runs and drop their sessions/snapshots. */
   logoutAccount(principal: AuthPrincipal): Promise<void>;
   activeRunCount(): number;
@@ -359,6 +396,48 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   const cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   const snapshotSource = options.snapshotSource ?? "authenticated-store";
   const writeSnapshot = options.writeSnapshot ?? writeSnapshotDir;
+  const runtimeRegistry = asCoachingRuntimeRegistry(options.runtimeRegistry);
+  const legacyRuntimeFactory = options.runtimeFactory;
+
+  /**
+   * Resolve ONE registration for a backend. An EXPLICIT registry entry always
+   * wins, including an unavailable local-pi entry, so discovery and submit
+   * cannot disagree. The legacy factory is only a fallback when the registry
+   * has no local-pi entry at all; it never backs codex/opencode/cloud.
+   */
+  function resolveRuntimeRegistration(backendId: CoachingBackendId): {
+    factory: RuntimeFactory;
+    available: boolean;
+    unavailableMessage?: string;
+  } {
+    const registration = runtimeRegistry.get(backendId);
+    if (registration !== undefined) {
+      if (!registration.available) {
+        throw new CoachingServiceError(
+          "VALIDATION_ERROR",
+          registration.unavailableReason?.message ?? `Coaching backend ${backendId} is unavailable.`,
+        );
+      }
+      if (registration.factory === undefined) {
+        throw new CoachingServiceError("VALIDATION_ERROR", `Coaching backend ${backendId} has no runtime adapter.`);
+      }
+      return { factory: registration.factory, available: true };
+    }
+    if (backendId === "local-pi" && legacyRuntimeFactory !== undefined) {
+      return { factory: legacyRuntimeFactory, available: true };
+    }
+    throw new CoachingServiceError("VALIDATION_ERROR", `Coaching backend ${backendId} is not configured.`);
+  }
+
+  /** Fail-closed cloud gate used by BOTH discovery and run submission. */
+  function cloudQualification(principal: AuthPrincipal) {
+    const identity = options.trustedIdentity?.(principal) ?? null;
+    return qualifyCloudBackend({
+      identity,
+      quota: options.cloudQuota ?? null,
+      providerConfigured: options.cloudProviderConfigured === true,
+    });
+  }
 
   const sessions = new Map<string, StoredSession>();
   const snapshots = new Map<string, StoredSnapshot>();
@@ -994,13 +1073,19 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       // (stale-map deletion) and resolves to null — it is NOT fatal yet,
       // because an owned retained run replays from its own stored snapshot.
       const stored = resolveLiveSnapshot(principal, ref);
-      // RuntimeId supports only pi today; anything else was already
-      // rejected by the contract guard — refuse again in depth. A runtime
-      // change under an existing key is never a replay.
-      const runtimeId = input.runtimeId ?? "pi";
-      if (runtimeId !== "pi") {
-        throw new CoachingServiceError("VALIDATION_ERROR", "Only the pi runtime is supported.");
+      // Validate the backend/runtime/location triple in depth (the contract
+      // guard already did). A runtime change under an existing key is never a
+      // replay: backendId is part of the canonical request.
+      let selection: ReturnType<typeof resolveCoachingBackendSelection>;
+      try {
+        selection = resolveCoachingBackendSelection({
+          backendId: input.backendId,
+          runtimeId: input.runtimeId,
+        });
+      } catch {
+        throw new CoachingServiceError("VALIDATION_ERROR", "Invalid backend/runtime selection.");
       }
+      const { backendId, runtimeId, executionLocation } = selection;
 
       const key = idemKey(principal.id, session.id, input.idempotencyKey);
       const existingId = idempotency.get(key);
@@ -1021,6 +1106,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           }
           const requested = canonicalizeSubmit({
             prompt: input.prompt,
+            backendId,
             runtimeId,
             snapshot: {
               ...existing.run.snapshot,
@@ -1047,8 +1133,22 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       if (stored === null) {
         throw new CoachingServiceError("SNAPSHOT_NOT_FOUND", "Snapshot not found or expired.");
       }
+      // Only a NEW execution is gated: an identical retained replay above is
+      // served even if quota/config changed after the original run.
+      if (executionLocation === "cloud") {
+        // Guests and unverified identities NEVER reach cloud dispatch, no
+        // matter what the request selected. Qualification is server-derived.
+        const qualification = cloudQualification(principal);
+        if (!qualification.eligible) {
+          throw new CoachingServiceError(
+            "VALIDATION_ERROR",
+            qualification.reason?.message ?? "Cloud coaching is not available for this account.",
+          );
+        }
+      }
+      const runtimeRegistration = resolveRuntimeRegistration(backendId);
       const resolved: CoachingDataSnapshot = stored.snapshot;
-      const canonical = canonicalizeSubmit({ prompt: input.prompt, runtimeId, snapshot: resolved });
+      const canonical = canonicalizeSubmit({ prompt: input.prompt, backendId, runtimeId, snapshot: resolved });
 
       // 1 active run per session + 1 global pi process; never queue implicitly.
       for (const entry of runs.values()) {
@@ -1073,6 +1173,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         prompt: input.prompt,
         snapshot: resolved,
         runtimeId,
+        backendId,
       };
       const entry: StoredRun = {
         run,
@@ -1171,7 +1272,19 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         session.nativeSessionDir = allocSessionDir();
       }
       const sessionDir = session.nativeSessionDir;
-      const resumeCandidate = session.nativeSessionFile;
+      const expectedNativeVersion = NATIVE_SESSION_VERSION_BY_BACKEND[backendId];
+      // A native handle belongs to one backend + runtime + protocol version.
+      // Switching any of them starts fresh: a pi session file is NEVER handed
+      // to Codex/OpenCode, and an engine id is never treated as a pi path.
+      const ownsStoredNativeSession =
+        expectedNativeVersion !== undefined &&
+        session.nativeSessionBackendId === backendId &&
+        session.nativeSessionRuntimeId === runtimeId &&
+        session.nativeSessionVersion === expectedNativeVersion;
+      const resumeCandidate = ownsStoredNativeSession ? session.nativeSessionFile : undefined;
+      const resumeNativeCandidate = ownsStoredNativeSession
+        ? session.nativeSessionHandle
+        : undefined;
       const launch: RuntimeLaunchOptions = {
         sessionId: session.id,
         runId,
@@ -1185,6 +1298,9 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         ...(resumeCandidate !== undefined && isWithinDir(sessionDir, resumeCandidate)
           ? { resumeSessionFile: resumeCandidate }
           : {}),
+        ...(resumeNativeCandidate !== undefined && isSafeNativeSessionHandle(resumeNativeCandidate)
+          ? { resumeNativeSessionHandle: resumeNativeCandidate }
+          : {}),
         onEvent: (payload) => {
           const current = runs.get(runId);
           if (current === undefined) return;
@@ -1197,14 +1313,24 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           // capacity + snapshot and withholds success.
           const confirmed = info?.processExitConfirmed === true;
           current.processExitConfirmed = confirmed;
-          if (info?.sessionFile !== undefined) {
-            const owner = sessions.get(current.run.sessionId);
-            if (
-              owner !== undefined &&
-              owner.accountId === current.accountId &&
-              isWithinDir(owner.nativeSessionDir, info.sessionFile)
-            ) {
+          const runBackendId = current.run.backendId ?? "local-pi";
+          const runRuntimeId = current.run.runtimeId as CoachingRuntimeId;
+          const runNativeVersion = NATIVE_SESSION_VERSION_BY_BACKEND[runBackendId];
+          const owner = sessions.get(current.run.sessionId);
+          if (owner !== undefined && owner.accountId === current.accountId && runNativeVersion !== undefined) {
+            if (info?.sessionFile !== undefined && isWithinDir(owner.nativeSessionDir, info.sessionFile)) {
               owner.nativeSessionFile = info.sessionFile;
+              delete owner.nativeSessionHandle;
+              owner.nativeSessionBackendId = runBackendId;
+              owner.nativeSessionRuntimeId = runRuntimeId;
+              owner.nativeSessionVersion = runNativeVersion;
+            }
+            if (info?.nativeSessionHandle !== undefined && isSafeNativeSessionHandle(info.nativeSessionHandle)) {
+              owner.nativeSessionHandle = info.nativeSessionHandle;
+              delete owner.nativeSessionFile;
+              owner.nativeSessionBackendId = runBackendId;
+              owner.nativeSessionRuntimeId = runRuntimeId;
+              owner.nativeSessionVersion = runNativeVersion;
             }
           }
           // Cancel wins over any late completion arriving during the grace.
@@ -1245,7 +1371,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       };
       let handle: RuntimeHandle;
       try {
-        handle = options.runtimeFactory(launch);
+        handle = runtimeRegistration.factory(launch);
       } catch {
         // Construction threw before any child existed: no exit to confirm,
         // but the reservation must still be released (capacity + workspace).
@@ -1365,6 +1491,16 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       // over any late completion via onDone's cancelRequested branch.
       armCancelGrace(stored);
       return { run: cloneRun(stored.run), lastSeq: lastSeqOf(stored) };
+    },
+
+    discoverBackends(principal: AuthPrincipal): CoachingCapabilityDiscovery {
+      return buildCoachingDiscovery({
+        registry: runtimeRegistry,
+        ...(legacyRuntimeFactory === undefined ? {} : { legacyLocalPiFactory: legacyRuntimeFactory }),
+        identity: options.trustedIdentity?.(principal) ?? null,
+        cloudQuota: options.cloudQuota ?? null,
+        cloudProviderConfigured: options.cloudProviderConfigured === true,
+      });
     },
 
     async logoutAccount(principal: AuthPrincipal): Promise<void> {

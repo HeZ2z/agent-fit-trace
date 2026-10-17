@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
 import {
+  COACHING_CAPABILITY_VERSION,
+  COACHING_DISCOVERY_VERSION,
   COACHING_PROTOCOL_VERSION,
   COACHING_SSE_RESERVED_FRAME_BYTES,
   COACHING_SSE_TERMINAL_RESERVE_BYTES,
@@ -18,7 +20,9 @@ import {
   isTerminalStatus,
   nextRunStatus,
   parseCancelCoachingRunBody,
+  parseCoachingBackendDescriptor,
   parseCoachingBootstrapResult,
+  parseCoachingCapabilityDiscovery,
   parseCoachingDataSnapshot,
   parseCoachingEventEnvelope,
   parseCoachingLogoutResult,
@@ -28,7 +32,9 @@ import {
   parseRuntimeEventEnvelope,
   parseSnapshotFilter,
   parseSubmitCoachingRunInput,
+  qualifyCloudBackend,
   replayRunState,
+  resolveCoachingBackendSelection,
   utf8ByteLength,
 } from "@pi-fit-trace/api-contracts";
 import type {
@@ -237,25 +243,251 @@ test("snapshot/read parsers enforce handle binding and server-resolved consisten
   assert.throws(() => parseReadCoachingRunResult(badCursor));
 });
 
-test("cancel body carries no runId; runtime ids are pi-only; calendar dates are strict", () => {
+test("cancel body carries no runId; runtime ids are strict; calendar dates are strict", () => {
   assert.deepEqual(parseCancelCoachingRunBody(undefined), {});
   assert.deepEqual(parseCancelCoachingRunBody({}), {});
   assert.deepEqual(parseCancelCoachingRunBody({ reason: "stop" }), { reason: "stop" });
   // Stray runId is ignored (path owns the id).
   assert.deepEqual(parseCancelCoachingRunBody({ runId: "run-1", reason: "stop" }), { reason: "stop" });
   assert.throws(() => parseCancelCoachingRunBody({ reason: 42 }));
-  // pi-only runtime ids.
+  // v1 omitted selection stays omitted (service maps it to local-pi).
+  const legacy = parseSubmitCoachingRunInput({
+    sessionId: "s",
+    prompt: "p",
+    idempotencyKey: "k",
+    snapshot: snapshotHandle(),
+  });
+  assert.equal(legacy.backendId, undefined);
+  assert.equal(legacy.runtimeId, undefined);
   assert.deepEqual(
     parseSubmitCoachingRunInput({ sessionId: "s", prompt: "p", idempotencyKey: "k", snapshot: snapshotHandle(), runtimeId: "pi" }).runtimeId,
     "pi",
   );
   assert.throws(() =>
-    parseSubmitCoachingRunInput({ sessionId: "s", prompt: "p", idempotencyKey: "k", snapshot: snapshotHandle(), runtimeId: "codex" }),
+    parseSubmitCoachingRunInput({ sessionId: "s", prompt: "p", idempotencyKey: "k", snapshot: snapshotHandle(), runtimeId: "shell" }),
+  );
+  // Backend/runtime pairs must agree.
+  assert.throws(() =>
+    parseSubmitCoachingRunInput({
+      sessionId: "s",
+      prompt: "p",
+      idempotencyKey: "k",
+      snapshot: snapshotHandle(),
+      backendId: "local-codex",
+      runtimeId: "pi",
+    }),
+  );
+  assert.deepEqual(
+    parseSubmitCoachingRunInput({
+      sessionId: "s",
+      prompt: "p",
+      idempotencyKey: "k",
+      snapshot: snapshotHandle(),
+      backendId: "local-codex",
+    }),
+    { sessionId: "s", prompt: "p", idempotencyKey: "k", snapshot: snapshotHandle(), backendId: "local-codex" },
   );
   // Strict calendar dates: rollover rejects.
   assert.throws(() => parseSnapshotFilter({ from: "2026-02-30" }));
   assert.throws(() => parseSnapshotFilter({ from: "2026-09-10", to: "2026-09-01" }));
   assert.deepEqual(parseSnapshotFilter({ from: "2026-09-01", to: "2026-09-03" }), { from: "2026-09-01", to: "2026-09-03" });
+});
+
+test("backend/runtime selection defaults to local-pi and never silently chooses cloud", () => {
+  assert.deepEqual(resolveCoachingBackendSelection({}), {
+    backendId: "local-pi",
+    runtimeId: "pi",
+    executionLocation: "local",
+  });
+  assert.deepEqual(resolveCoachingBackendSelection({ runtimeId: "pi" }), {
+    backendId: "local-pi",
+    runtimeId: "pi",
+    executionLocation: "local",
+  });
+  assert.deepEqual(resolveCoachingBackendSelection({ backendId: "local-codex" }), {
+    backendId: "local-codex",
+    runtimeId: "codex",
+    executionLocation: "local",
+  });
+  assert.deepEqual(resolveCoachingBackendSelection({ backendId: "cloud-default" }), {
+    backendId: "cloud-default",
+    runtimeId: "hosted-sdk",
+    executionLocation: "cloud",
+  });
+  assert.deepEqual(resolveCoachingBackendSelection({ runtimeId: "hosted-sdk" }), {
+    backendId: "cloud-default",
+    runtimeId: "hosted-sdk",
+    executionLocation: "cloud",
+  });
+  // Mismatches and unknown ids fail closed.
+  assert.throws(() => resolveCoachingBackendSelection({ backendId: "local-opencode", runtimeId: "codex" }));
+  assert.throws(() => resolveCoachingBackendSelection({ backendId: "cloud-default", runtimeId: "pi" }));
+  assert.throws(() => resolveCoachingBackendSelection({ runtimeId: "shell" }));
+  assert.throws(() => resolveCoachingBackendSelection({ backendId: "local-cloud" }));
+});
+
+function capabilities(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    capabilityVersion: COACHING_CAPABILITY_VERSION,
+    protocolVersion: COACHING_PROTOCOL_VERSION,
+    tools: ["get_training_history", "analyze_progress"],
+    productReplay: true,
+    nativeContinuation: true,
+    cancelConfirmation: "process-exit",
+    maxInputBytes: 65536,
+    maxEvents: 1000,
+    maxEventBytes: 4 * 1024 * 1024,
+    accountEligibility: "not-required",
+    quotaReservation: "not-required",
+    dataDestination: "cli-provider",
+    ...over,
+  };
+}
+
+function backend(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    backendId: "local-pi",
+    runtimeId: "pi",
+    executionLocation: "local",
+    displayName: "pi CLI (local)",
+    available: true,
+    capabilities: capabilities(),
+    ...over,
+  };
+}
+
+test("capability discovery is versioned, strict, and keeps planned backends unavailable", () => {
+  const discovery = {
+    discoveryVersion: COACHING_DISCOVERY_VERSION,
+    protocolVersion: COACHING_PROTOCOL_VERSION,
+    tools: ["get_training_history", "analyze_progress"],
+    backends: [
+      backend(),
+      backend({
+        backendId: "local-codex",
+        runtimeId: "codex",
+        displayName: "Codex CLI (local)",
+        available: false,
+        capabilities: capabilities({ nativeContinuation: false, cancelConfirmation: "unsupported" }),
+        unavailableReason: { code: "adapter-not-implemented", message: "not implemented" },
+      }),
+      backend({
+        backendId: "cloud-default",
+        runtimeId: "hosted-sdk",
+        executionLocation: "cloud",
+        displayName: "Cloud coach",
+        available: false,
+        capabilities: capabilities({
+          nativeContinuation: false,
+          cancelConfirmation: "unsupported",
+          accountEligibility: "required",
+          quotaReservation: "required",
+          dataDestination: "vendor-api",
+        }),
+        unavailableReason: { code: "identity-unverified", message: "identity missing" },
+      }),
+    ],
+  };
+  assert.deepEqual(parseCoachingCapabilityDiscovery(JSON.parse(JSON.stringify(discovery))), discovery);
+
+  // Unavailable requires a reason; available forbids one.
+  assert.throws(() => parseCoachingBackendDescriptor(backend({ available: false })));
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(backend({ unavailableReason: { code: "adapter-not-implemented", message: "x" } })),
+  );
+  // Unknown reason codes and non-read-only tools reject.
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(
+      backend({ available: false, unavailableReason: { code: "because", message: "x" } }),
+    ),
+  );
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(backend({ capabilities: capabilities({ tools: ["bash"] }) })),
+  );
+  // Cloud descriptors must require account qualification + quota.
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(
+      backend({
+        backendId: "cloud-default",
+        runtimeId: "hosted-sdk",
+        available: false,
+        capabilities: capabilities({ accountEligibility: "not-required", quotaReservation: "required" }),
+        unavailableReason: { code: "quota-not-configured", message: "x" },
+      }),
+    ),
+  );
+  // Cloud descriptors must declare a vendor data destination.
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(
+      backend({
+        backendId: "cloud-default",
+        runtimeId: "hosted-sdk",
+        executionLocation: "cloud",
+        available: false,
+        capabilities: capabilities({
+          accountEligibility: "required",
+          quotaReservation: "required",
+          dataDestination: "cli-provider",
+        }),
+        unavailableReason: { code: "quota-not-configured", message: "x" },
+      }),
+    ),
+  );
+  // The location is fixed by the backend and must not be misreported.
+  assert.throws(() => parseCoachingBackendDescriptor(backend({ executionLocation: "cloud" })));
+  // Backend/runtime mismatch and duplicate backends reject.
+  assert.throws(() => parseCoachingBackendDescriptor(backend({ runtimeId: "codex" })));
+  assert.throws(() =>
+    parseCoachingCapabilityDiscovery({
+      ...discovery,
+      backends: [backend(), backend()],
+    }),
+  );
+  // Wrong discovery version rejects instead of guessing.
+  assert.throws(() =>
+    parseCoachingCapabilityDiscovery({ ...discovery, discoveryVersion: COACHING_DISCOVERY_VERSION + 1 }),
+  );
+});
+
+test("cloud qualification fails closed for missing/guest identity and missing quota", () => {
+  const formal = { accountId: "user-1", isAnonymous: false };
+  const guest = { accountId: "guest-1", isAnonymous: true };
+  const quota = { configured: true, remaining: 5 };
+
+  assert.equal(qualifyCloudBackend({}).eligible, false);
+  assert.equal(qualifyCloudBackend({}).reason?.code, "identity-unverified");
+  assert.equal(qualifyCloudBackend({ quota, providerConfigured: true }).eligible, false);
+  assert.equal(qualifyCloudBackend({ identity: guest, quota, providerConfigured: true }).reason?.code, "guest-cloud-forbidden");
+  assert.equal(qualifyCloudBackend({ identity: formal, providerConfigured: true }).reason?.code, "quota-not-configured");
+  assert.equal(
+    qualifyCloudBackend({ identity: formal, quota: { configured: false, remaining: 5 }, providerConfigured: true }).reason?.code,
+    "quota-not-configured",
+  );
+  assert.equal(
+    qualifyCloudBackend({ identity: formal, quota: { configured: true, remaining: 0 }, providerConfigured: true }).reason?.code,
+    "quota-exhausted",
+  );
+  assert.equal(qualifyCloudBackend({ identity: formal, quota, providerConfigured: false }).reason?.code, "provider-unconfigured");
+  assert.deepEqual(qualifyCloudBackend({ identity: formal, quota, providerConfigured: true }), { eligible: true });
+
+  // A caller-supplied guest/entitlement flag is not an input: the trusted
+  // classification is authoritative, so a forged object cannot unlock cloud.
+  assert.equal(
+    qualifyCloudBackend({
+      identity: { ...guest, guestAllowed: true, isAnonymous: true } as { accountId: string; isAnonymous: boolean },
+      quota,
+      providerConfigured: true,
+    }).eligible,
+    false,
+  );
+  assert.equal(
+    qualifyCloudBackend({
+      identity: { ...formal, isAnonymous: undefined } as unknown as { accountId: string; isAnonymous: boolean },
+      quota,
+      providerConfigured: true,
+    }).reason?.code,
+    "identity-unverified",
+  );
 });
 
 test("bootstrap/logout/runtime/events guards round-trip", () => {
@@ -270,7 +502,11 @@ test("bootstrap/logout/runtime/events guards round-trip", () => {
     parseCoachingRuntimeInfo({ id: "pi", kind: "local", displayName: "Pi", available: true }),
     { id: "pi", kind: "local", displayName: "Pi", available: true },
   );
-  assert.throws(() => parseCoachingRuntimeInfo({ id: "codex", kind: "x", displayName: "X", available: true }));
+  assert.deepEqual(
+    parseCoachingRuntimeInfo({ id: "codex", kind: "local", displayName: "Codex", available: false }),
+    { id: "codex", kind: "local", displayName: "Codex", available: false },
+  );
+  assert.throws(() => parseCoachingRuntimeInfo({ id: "shell", kind: "x", displayName: "X", available: true }));
   const env = envelope(0, { type: "text_delta", delta: "hi" });
   assert.deepEqual(parseRuntimeEventEnvelope(JSON.parse(JSON.stringify(env))), env);
   assert.throws(() => parseRuntimeEventEnvelope({ ...JSON.parse(JSON.stringify(env)), seq: -1 }));

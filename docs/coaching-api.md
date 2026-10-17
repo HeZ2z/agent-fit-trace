@@ -43,12 +43,52 @@ requests without `Origin` still require both credentials.
 | `POST` | `/coaching/sessions` | `{ id? }` | `201 session` |
 | `GET` | `/coaching/sessions/:id` | — | `200 session` |
 | `POST` | `/coaching/snapshots` | `{ from?, to? }` | `201 snapshot` |
-| `POST` | `/coaching/runs` | `{ sessionId, prompt, idempotencyKey, snapshot, runtimeId? }` | `201` created / `200` replayed `{ run, lastSeq, replayed }` |
+| `POST` | `/coaching/runs` | `{ sessionId, prompt, idempotencyKey, snapshot, backendId?, runtimeId? }` | `201` created / `200` replayed `{ run, lastSeq, replayed }` |
 | `GET` | `/coaching/runs/:id` | — | `200 { run, lastSeq, firstSeq, expiresAt }` |
 | `GET` | `/coaching/runs/:id/events?fromSeq=` | — | `200 SSE` (see below) |
 | `POST` | `/coaching/runs/:id/cancel` | `{ reason? }` (`runId` stays in the path) | `200 { run, lastSeq }` |
 | `POST` | `/coaching/logout` | — | `200 { loggedOut: true }` |
+| `GET` | `/coaching/capabilities` | — | `200` versioned backend/capability discovery |
 | `GET` | `/public-config` | public, no token | `200 { supabaseUrl, supabasePublishableKey }` (secret keys never served) |
+
+### Backend capability discovery
+
+`GET /coaching/capabilities` returns the versioned discovery payload defined in
+`packages/fit-trace-api-contracts/src/coaching.ts`. It is authenticated like
+every other coaching route, and every field is server-derived: the browser
+cannot assert availability, entitlement, or quota.
+
+- `discoveryVersion` versions this payload; `protocolVersion` still describes
+  the event-line format; each backend carries its own `capabilityVersion`.
+- All known backends are listed (`local-pi`, `local-codex`, `local-opencode`,
+  `cloud-default`). An unavailable backend includes an
+  `unavailableReason { code, message }`; an available one omits it.
+- Only `local-pi` can be available today. Codex/OpenCode report
+  `adapter-not-implemented` unless a registered adapter exists. A Codex
+  app-server that exposes `dynamicTools` is still not enough: dynamic tools are
+  additive and leave built-in shell/file/network/MCP/hook/plugin tools
+  available. Until the installed version provides a verifiable way to exclude
+  that entire inventory, `local-codex` stays unavailable with
+  `builtin-isolation-unproven`.
+- `productReplay` is `false` until a durable local journal exists. The current
+  service can replay in-process runs only; it does not promise restart
+  durability.
+- `cloud-default` is available only when all of the following hold: the caller
+  has a server-verified formal account (`isAnonymous: false`), the server has
+  cloud quota configured with `remaining >= 1`, a provider is configured, and a
+  cloud adapter is registered. Missing identity, a guest account, or missing
+  configuration fails closed. Guests may use their own local agent only.
+- Capabilities stay conservative: pi advertises `nativeContinuation: true` and
+  `cancelConfirmation: "process-exit"`; unimplemented engines advertise
+  `false`/`"unsupported"`.
+
+Run selection follows the same matrix: `local-pi`/`pi`, `local-codex`/`codex`,
+`local-opencode`/`opencode`, `cloud-default`/`hosted-sdk`. A v1 request that
+omits both `backendId` and `runtimeId` resolves to `local-pi`; it never maps to
+cloud. Naming both fields requires an exact match. The backend is pinned on the
+run and is part of the idempotency comparison. The full rationale and provider
+constraints are in
+[`adr/0001-agent-execution-backends.md`](adr/0001-agent-execution-backends.md).
 
 Snapshots are read-only handles: the client sends only
 `{ snapshotId, source, accountId }` (`recordIds`/`recordCount` in a submit
@@ -75,9 +115,11 @@ substituted for a changed request.
 
 Refusals keep their existing semantics:
 
-- a changed prompt or `snapshotId` under the same key is
-  `409 IDEMPOTENCY_CONFLICT`, and an unsupported `runtimeId` stays
-  `400 VALIDATION_ERROR` (only `pi` is wired);
+- a changed prompt, `snapshotId`, backend, or runtime under the same key is
+  `409 IDEMPOTENCY_CONFLICT`; an unknown or mismatched selection is
+  `400 VALIDATION_ERROR`, and a known but unconfigured/unavailable backend stays
+  `400 VALIDATION_ERROR` with its server-derived reason (only `local-pi` is
+  wired in the launcher);
 - a changed `source` for the same `snapshotId`, or a snapshot reference bound to
   another account, is `403 FORBIDDEN`;
 - a replay is only ever served to the owning account on the same session; a

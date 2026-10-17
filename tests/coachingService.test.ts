@@ -44,6 +44,7 @@ import type {
 } from "../server/coaching/coachingService.ts";
 import { writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
 import type { SnapshotDir } from "../server/coaching/snapshotFile.ts";
+import { createCoachingRuntimeRegistry } from "../server/coaching/runtimeRegistry.ts";
 
 const PRINCIPAL = { id: "user-a", email: "a@example.com" };
 
@@ -763,10 +764,10 @@ test("after snapshot expiry, changed content/source conflicts against the stored
       service.submitRun(PRINCIPAL, { ...input, prompt: "different question" }),
       hasCode("IDEMPOTENCY_CONFLICT"),
     );
-    // Runtime change is still refused in depth (only pi is wired).
+    // Backend/runtime change is still refused in depth under the same key.
     await assert.rejects(
       service.submitRun(PRINCIPAL, { ...input, runtimeId: "codex" }),
-      hasCode("VALIDATION_ERROR"),
+      hasCode("IDEMPOTENCY_CONFLICT"),
     );
     // Source change on the SAME snapshot handle keeps the live-path FORBIDDEN.
     await assert.rejects(
@@ -1156,5 +1157,307 @@ test("the per-run byte cap is exact and counted in UTF-8 full-frame bytes (bound
     } finally {
       await service.shutdown();
     }
+  }
+});
+
+test("runtime registry routes the selected backend and pins backendId in the run", async () => {
+  const calls: string[] = [];
+  const stores = await seedWorkouts();
+  const factoryFor = (label: string): RuntimeFactory => (options) => {
+    calls.push(label);
+    return {
+      start(): void {
+        for (const payload of contentEvents()) options.onEvent(payload);
+        options.onEvent({ type: "terminal", status: "completed" });
+        options.onDone("completed", undefined, { processExitConfirmed: true });
+      },
+      cancel(): void {},
+      async close(): Promise<void> {},
+    };
+  };
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeRegistry: createCoachingRuntimeRegistry([
+      {
+        backendId: "local-pi",
+        runtimeId: "pi",
+        executionLocation: "local",
+        displayName: "pi CLI (local)",
+        available: true,
+        factory: factoryFor("pi"),
+      },
+      {
+        backendId: "local-codex",
+        runtimeId: "codex",
+        executionLocation: "local",
+        displayName: "Codex CLI (local)",
+        available: true,
+        factory: factoryFor("codex"),
+      },
+    ]),
+    cancelGraceMs: 30,
+  });
+  try {
+    const legacy = await setupService(service, undefined, "legacy-key");
+    assert.equal(legacy.runId.length > 0, true);
+    const legacyRun = service.readRun(PRINCIPAL, legacy.runId);
+    assert.equal(legacyRun.run.backendId, "local-pi");
+    assert.equal(legacyRun.run.runtimeId, "pi");
+
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const codex = await service.submitRun(PRINCIPAL, {
+      sessionId: session.id,
+      prompt: "analyze with codex",
+      idempotencyKey: "codex-key",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+      backendId: "local-codex",
+      runtimeId: "codex",
+    });
+    assert.equal(codex.run.backendId, "local-codex");
+    assert.equal(codex.run.runtimeId, "codex");
+    assert.deepEqual(calls, ["pi", "codex"]);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("native continuation handles are partitioned by backend/runtime/version", async () => {
+  const launches: RuntimeLaunchOptions[] = [];
+  const factoryFor = (label: "pi" | "codex"): RuntimeFactory => (options) => {
+    launches.push(options);
+    return {
+      start(): void {
+        options.onEvent({ type: "terminal", status: "completed" });
+        options.onDone("completed", undefined, {
+          processExitConfirmed: true,
+          ...(label === "pi"
+            ? { sessionFile: `${options.sessionDir}/pi-session.json` }
+            : { nativeSessionHandle: "thr_codex_native_1" }),
+        });
+      },
+      cancel(): void {},
+      async close(): Promise<void> {},
+    };
+  };
+  const stores = await seedWorkouts();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeRegistry: createCoachingRuntimeRegistry([
+      {
+        backendId: "local-pi",
+        runtimeId: "pi",
+        executionLocation: "local",
+        displayName: "pi CLI (local)",
+        available: true,
+        factory: factoryFor("pi"),
+      },
+      {
+        backendId: "local-codex",
+        runtimeId: "codex",
+        executionLocation: "local",
+        displayName: "Codex CLI (local)",
+        available: true,
+        factory: factoryFor("codex"),
+      },
+    ]),
+    cancelGraceMs: 30,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const ref = { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId };
+    const submit = async (backendId: "local-pi" | "local-codex", runtimeId: "pi" | "codex", key: string) => {
+      const result = await service.submitRun(PRINCIPAL, {
+        sessionId: session.id,
+        prompt: "partitioned resume",
+        idempotencyKey: key,
+        snapshot: ref,
+        backendId,
+        runtimeId,
+      });
+      await waitForTerminal(service, result.run.id);
+    };
+
+    await submit("local-pi", "pi", "partition-pi-1");
+    await submit("local-codex", "codex", "partition-codex-1");
+    // Switching back to pi must not receive the codex thread id, and pi's old
+    // file was replaced by the codex owner.
+    await submit("local-pi", "pi", "partition-pi-2");
+    await submit("local-pi", "pi", "partition-pi-3");
+
+    assert.equal(launches.length, 4);
+    assert.equal(launches[0]?.resumeSessionFile, undefined);
+    assert.equal(launches[0]?.resumeNativeSessionHandle, undefined);
+    assert.equal(launches[1]?.resumeSessionFile, undefined);
+    assert.equal(launches[1]?.resumeNativeSessionHandle, undefined);
+    assert.equal(launches[2]?.resumeSessionFile, undefined);
+    assert.equal(launches[2]?.resumeNativeSessionHandle, undefined);
+    // Only the immediately preceding same-backend/same-version handle resumes.
+    assert.match(launches[3]?.resumeSessionFile ?? "", /pi-session\.json$/);
+    assert.equal(launches[3]?.resumeNativeSessionHandle, undefined);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("an explicit unavailable local-pi registry entry beats the legacy factory", async () => {
+  const stores = await seedWorkouts();
+  let legacyCalls = 0;
+  const legacyFactory: RuntimeFactory = () => {
+    legacyCalls += 1;
+    return { start(): void {}, cancel(): void {}, async close(): Promise<void> {} };
+  };
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: legacyFactory,
+    runtimeRegistry: createCoachingRuntimeRegistry([
+      {
+        backendId: "local-pi",
+        runtimeId: "pi",
+        executionLocation: "local",
+        displayName: "pi CLI (local)",
+        available: false,
+        unavailableReason: { code: "cli-not-installed", message: "pi CLI is not available on PATH." },
+      },
+    ]),
+    cancelGraceMs: 30,
+  });
+  try {
+    const discovery = service.discoverBackends(PRINCIPAL);
+    const pi = discovery.backends.find((entry) => entry.backendId === "local-pi");
+    assert.equal(pi?.available, false);
+    assert.equal(pi?.unavailableReason?.code, "cli-not-installed");
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, {
+        sessionId: session.id,
+        prompt: "must not fall back",
+        idempotencyKey: "unavailable-legacy",
+        snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+      }),
+      /pi CLI is not available/,
+    );
+    assert.equal(legacyCalls, 0);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("runtime selection rejects mismatches/unavailable backends and backend changes conflict under one key", async () => {
+  const stores = await seedWorkouts();
+  const factory: RuntimeFactory = (options) => ({
+    start(): void {
+      for (const payload of contentEvents()) options.onEvent(payload);
+      options.onEvent({ type: "terminal", status: "completed" });
+      options.onDone("completed", undefined, { processExitConfirmed: true });
+    },
+    cancel(): void {},
+    async close(): Promise<void> {},
+  });
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeRegistry: createCoachingRuntimeRegistry([
+      {
+        backendId: "local-pi",
+        runtimeId: "pi",
+        executionLocation: "local",
+        displayName: "pi CLI (local)",
+        available: true,
+        factory,
+      },
+      {
+        backendId: "local-codex",
+        runtimeId: "codex",
+        executionLocation: "local",
+        displayName: "Codex CLI (local)",
+        available: false,
+        unavailableReason: { code: "cli-not-installed", message: "Codex CLI is not installed." },
+      },
+    ]),
+    cancelGraceMs: 30,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL);
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const ref = { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId };
+
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, {
+        sessionId: session.id,
+        prompt: "mismatch",
+        idempotencyKey: "mismatch-key",
+        snapshot: ref,
+        backendId: "local-codex",
+        runtimeId: "pi",
+      }),
+      /backend\/runtime selection/,
+    );
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, {
+        sessionId: session.id,
+        prompt: "unavailable",
+        idempotencyKey: "unavailable-key",
+        snapshot: ref,
+        backendId: "local-codex",
+        runtimeId: "codex",
+      }),
+      /Codex CLI is not installed/,
+    );
+
+    const first = await service.submitRun(PRINCIPAL, {
+      sessionId: session.id,
+      prompt: "same prompt",
+      idempotencyKey: "shared-key",
+      snapshot: ref,
+    });
+    const replay = await service.submitRun(PRINCIPAL, {
+      sessionId: session.id,
+      prompt: "same prompt",
+      idempotencyKey: "shared-key",
+      snapshot: ref,
+    });
+    assert.equal(first.run.id, replay.run.id);
+    assert.equal(replay.replayed, true);
+    // Same key, different backend is a conflict, never a silent reroute.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, {
+        sessionId: session.id,
+        prompt: "same prompt",
+        idempotencyKey: "shared-key",
+        snapshot: ref,
+        backendId: "local-codex",
+        runtimeId: "codex",
+      }),
+      (error: unknown) => error instanceof CoachingServiceError && error.code === "IDEMPOTENCY_CONFLICT",
+    );
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("discovery marks planned CLIs unavailable and fails cloud closed without trusted identity", async () => {
+  const stores = await seedWorkouts();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: captureFactory([]),
+    trustedIdentity: () => null,
+    cloudQuota: { configured: true, remaining: 10 },
+    cloudProviderConfigured: true,
+  });
+  try {
+    const discovery = service.discoverBackends(PRINCIPAL);
+    const byId = new Map(discovery.backends.map((entry) => [entry.backendId, entry]));
+    assert.equal(byId.get("local-pi")?.available, true);
+    assert.equal(byId.get("local-codex")?.available, false);
+    assert.equal(byId.get("local-codex")?.unavailableReason?.code, "adapter-not-implemented");
+    assert.equal(byId.get("local-opencode")?.available, false);
+    assert.equal(byId.get("cloud-default")?.available, false);
+    assert.equal(byId.get("cloud-default")?.unavailableReason?.code, "identity-unverified");
+    assert.equal(byId.get("cloud-default")?.capabilities.accountEligibility, "required");
+    assert.equal(byId.get("cloud-default")?.capabilities.quotaReservation, "required");
+  } finally {
+    await service.shutdown();
   }
 });

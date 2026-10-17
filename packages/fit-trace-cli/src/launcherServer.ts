@@ -10,10 +10,17 @@ import type { TokenVerifier } from "../../../server/auth/verifier.ts";
 import type { ServerPublicConfig } from "../../../server/publicConfig.ts";
 import { isRejectedSupabaseKey, isSafeSupabaseUrl } from "../../../server/db/env.ts";
 import { CoachedPiProcess } from "../../../server/coaching/piProcessAdapter.ts";
+import { CoachedCodexAppServer } from "../../../server/coaching/codexAppServerAdapter.ts";
+import { probeCodexAppServer } from "../../../server/coaching/codexAppServerCapability.ts";
+import type { CodexAppServerSupport } from "../../../server/coaching/codexAppServerCapability.ts";
 import type {
   CoachingService,
   RuntimeFactory,
 } from "../../../server/coaching/coachingService.ts";
+import { createCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
+import type { CoachingRuntimeRegistration } from "../../../server/coaching/runtimeRegistry.ts";
+import type { CoachingRuntimeId } from "@pi-fit-trace/api-contracts";
+import { resolveCoachingBackendSelection } from "@pi-fit-trace/api-contracts";
 
 /**
  * Same-origin launcher server: ONE loopback listener owned by the reviewed
@@ -83,6 +90,21 @@ export interface LauncherServerOptions {
   piCwd?: string;
   /** Pi CLI presence for the runtime bootstrap (default: omitted). */
   piAvailable?: boolean;
+  /**
+   * Installed Codex app-server capability (tests inject it). Undefined probes
+   * the installed CLI only when `runtimeId` is `codex`.
+   */
+  codexSupport?: CodexAppServerSupport;
+  /** Codex binary (default `codex`). */
+  codexBinary?: string;
+  /**
+   * Operator-configured coaching runtime (default `pi`). Only `pi` has an
+   * enabled adapter. Codex is gated on a version-specific proof that its
+   * entire built-in tool inventory is excluded; OpenCode has no adapter yet.
+   * Discovery reports the concrete unavailable reason instead of advertising
+   * either one.
+   */
+  runtimeId?: CoachingRuntimeId;
 }
 
 export interface LauncherServer {
@@ -282,6 +304,30 @@ function defaultRuntimeFactory(extensionPath: string, cwd: string): RuntimeFacto
 }
 
 /**
+ * Codex runtime factory: the child gets a controlled empty working directory,
+ * the launch's immutable snapshot stays in this process, and a stored native
+ * handle is resumed only when the service already matched it to this backend.
+ */
+function defaultCodexRuntimeFactory(options: { binary?: string }): RuntimeFactory {
+  return (launch) =>
+    new CoachedCodexAppServer({
+      sessionId: launch.sessionId,
+      runId: launch.runId,
+      prompt: launch.prompt,
+      snapshotFile: launch.snapshotFile,
+      sessionDir: launch.sessionDir,
+      // Controlled per-product-session directory; never the snapshot dir.
+      cwd: launch.sessionDir,
+      ...(options.binary !== undefined ? { codexBinary: options.binary } : {}),
+      ...(launch.resumeNativeSessionHandle !== undefined
+        ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
+        : {}),
+      onEvent: launch.onEvent,
+      onDone: launch.onDone,
+    });
+}
+
+/**
  * Shared-guard validation for any public config (upstream bootstrap or
  * injected): secret/service-role keys and unsafe URLs are rejected so a
  * misconfigured key can never reach the browser or the verifier.
@@ -462,11 +508,91 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
           publishableKey: publicConfig.supabasePublishableKey,
         })
         : null;
+  const configuredRuntimeId = options.runtimeId ?? "pi";
+  const configuredSelection = resolveCoachingBackendSelection({ runtimeId: configuredRuntimeId });
+  if (configuredSelection.executionLocation !== "local") {
+    throw new Error("the local launcher can only configure a local coaching runtime");
+  }
   const runtimeFactory =
     options.runtimeFactory ??
     (options.piAvailable === false
       ? unavailablePiRuntimeFactory()
       : defaultRuntimeFactory(options.extensionPath ?? defaultExtensionPath(), options.piCwd ?? process.cwd()));
+  // local-pi remains the legacy v1 path even when another runtime is
+  // configured: an omitted backend always maps to local-pi, never cloud.
+  const localPiAvailable = options.piAvailable !== false || options.runtimeFactory !== undefined;
+  const registrations: CoachingRuntimeRegistration[] = [
+    {
+      backendId: "local-pi",
+      runtimeId: "pi",
+      executionLocation: "local",
+      displayName: "pi CLI (local)",
+      available: localPiAvailable,
+      ...(localPiAvailable
+        ? {}
+        : {
+            unavailableReason: {
+              code: "cli-not-installed" as const,
+              message: "pi CLI is not available on PATH.",
+            },
+          }),
+      factory: runtimeFactory,
+    },
+  ];
+  if (configuredSelection.backendId === "local-codex") {
+    // Availability is derived from the INSTALLED app-server schema. The
+    // adapter declares only the two coached dynamic tools; without that
+    // protocol surface a read-only sandbox still leaves built-in file/shell
+    // tools usable, so the backend must stay unavailable.
+    const support =
+      options.codexSupport ??
+      (await probeCodexAppServer(
+        options.codexBinary !== undefined ? { binary: options.codexBinary } : {},
+      ));
+    if (support.supported && support.builtinIsolationVerified === true) {
+      registrations.push({
+        backendId: "local-codex",
+        runtimeId: "codex",
+        executionLocation: "local",
+        displayName: "Codex CLI (local)",
+        available: true,
+        ...(support.version !== undefined ? { version: support.version } : {}),
+        capabilities: { nativeContinuation: true, cancelConfirmation: "process-exit" },
+        factory: defaultCodexRuntimeFactory(
+          options.codexBinary !== undefined ? { binary: options.codexBinary } : {},
+        ),
+      });
+    } else {
+      registrations.push({
+        backendId: "local-codex",
+        runtimeId: "codex",
+        executionLocation: "local",
+        displayName: "Codex CLI (local)",
+        available: false,
+        unavailableReason: {
+          code: support.unavailable === true ? "cli-not-installed" : "cli-version-unsupported",
+          message:
+            support.gap ??
+            "the installed Codex app-server cannot guarantee an isolated read-only tool surface",
+        },
+      });
+    }
+  } else if (configuredSelection.backendId !== "local-pi") {
+    // Configured but unimplemented: record the selection, never advertise it
+    // as available and never fall back to pi under that backend id.
+    registrations.push({
+      backendId: configuredSelection.backendId,
+      runtimeId: configuredSelection.runtimeId,
+      executionLocation: "local",
+      displayName: "OpenCode CLI (local)",
+      available: false,
+      unavailableReason: {
+        code: "adapter-not-implemented",
+        message: `${configuredSelection.backendId} is configured but its adapter is not implemented.`,
+      },
+    });
+  }
+  const runtimeRegistry = createCoachingRuntimeRegistry(registrations);
   const runtimeScript = buildRuntimeScriptBody(
     options.piAvailable === undefined ? undefined : { piAvailable: options.piAvailable },
   );
@@ -656,6 +782,7 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
         verifier,
         upstream: { baseUrl: upstreamBase },
         runtimeFactory,
+        runtimeRegistry,
         publicConfig,
         host,
         port: candidate,

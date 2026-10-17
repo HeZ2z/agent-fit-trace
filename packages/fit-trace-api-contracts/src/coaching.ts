@@ -44,10 +44,119 @@ export interface CoachingRuntimeInfo {
   version?: string;
 }
 
-/** Only the local pi runtime is wired today; other ids reject, never route. */
-export const COACHING_RUNTIME_IDS = ["pi"] as const;
+/**
+ * Execution engine ids. An engine is NOT an execution location: `pi` can run
+ * on the user's machine (`local-pi`) while `hosted-sdk` always runs in the
+ * hosted cloud backend. See {@link COACHING_BACKEND_DEFINITIONS}.
+ *
+ * Only `pi` is implemented today. The other ids are accepted by the
+ * versioned contract so discovery can describe them truthfully as
+ * unavailable; they never route without a matching registered adapter.
+ */
+export const COACHING_RUNTIME_IDS = ["pi", "codex", "opencode", "hosted-sdk"] as const;
 
 export type CoachingRuntimeId = (typeof COACHING_RUNTIME_IDS)[number];
+
+/** Where a backend executes. Never inferred from the runtime id. */
+export const COACHING_EXECUTION_LOCATIONS = ["local", "cloud"] as const;
+
+export type CoachingExecutionLocation = (typeof COACHING_EXECUTION_LOCATIONS)[number];
+
+/**
+ * Backend ids identify a concrete deployable execution capability. The pair
+ * (backend, runtime) is fixed: a request that names both must match exactly.
+ */
+export const COACHING_BACKEND_IDS = [
+  "local-pi",
+  "local-codex",
+  "local-opencode",
+  "cloud-default",
+] as const;
+
+export type CoachingBackendId = (typeof COACHING_BACKEND_IDS)[number];
+
+export const COACHING_BACKEND_DEFINITIONS = {
+  "local-pi": { runtimeId: "pi", executionLocation: "local" },
+  "local-codex": { runtimeId: "codex", executionLocation: "local" },
+  "local-opencode": { runtimeId: "opencode", executionLocation: "local" },
+  "cloud-default": { runtimeId: "hosted-sdk", executionLocation: "cloud" },
+} as const satisfies Record<
+  CoachingBackendId,
+  { runtimeId: CoachingRuntimeId; executionLocation: CoachingExecutionLocation }
+>;
+
+/**
+ * Discovery/capability schema version. Separate from the event-line
+ * protocol version: capabilities can grow without changing event framing.
+ */
+export const COACHING_CAPABILITY_VERSION = 1;
+export const COACHING_DISCOVERY_VERSION = 1;
+
+export function isCoachingBackendId(value: unknown): value is CoachingBackendId {
+  return typeof value === "string" && (COACHING_BACKEND_IDS as readonly string[]).includes(value);
+}
+
+export function isCoachingRuntimeId(value: unknown): value is CoachingRuntimeId {
+  return typeof value === "string" && (COACHING_RUNTIME_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Resolve the backend/runtime/location selection for a submitted run.
+ *
+ * Compatibility rule: a v1 request that omits BOTH fields maps to the legacy
+ * `local-pi` backend — never to a paid cloud backend. Naming only a runtime
+ * maps to that runtime's one backend. Naming a backend resolves its fixed
+ * runtime; if both are named they must agree.
+ */
+export function resolveCoachingBackendSelection(selection: {
+  backendId?: unknown;
+  runtimeId?: unknown;
+}): {
+  backendId: CoachingBackendId;
+  runtimeId: CoachingRuntimeId;
+  executionLocation: CoachingExecutionLocation;
+} {
+  const { backendId, runtimeId } = selection;
+  if (backendId !== undefined) {
+    if (!isCoachingBackendId(backendId)) fail("backendId", `must be one of ${COACHING_BACKEND_IDS.join(", ")}`);
+    const definition = COACHING_BACKEND_DEFINITIONS[backendId];
+    if (runtimeId !== undefined) {
+      if (!isCoachingRuntimeId(runtimeId)) {
+        fail("runtimeId", `must be one of ${COACHING_RUNTIME_IDS.join(", ")}`);
+      }
+      if (definition.runtimeId !== runtimeId) {
+        fail(
+          "runtimeId",
+          `backend ${backendId} requires runtime ${definition.runtimeId}, not ${runtimeId}`,
+        );
+      }
+    }
+    return {
+      backendId,
+      runtimeId: definition.runtimeId,
+      executionLocation: definition.executionLocation,
+    };
+  }
+  // No backend named. Omitted runtime keeps the legacy local-pi mapping.
+  if (runtimeId === undefined) {
+    return { backendId: "local-pi", runtimeId: "pi", executionLocation: "local" };
+  }
+  if (!isCoachingRuntimeId(runtimeId)) {
+    fail("runtimeId", `must be one of ${COACHING_RUNTIME_IDS.join(", ")}`);
+  }
+  const backendIdForRuntime = (Object.entries(COACHING_BACKEND_DEFINITIONS) as Array<
+    [CoachingBackendId, (typeof COACHING_BACKEND_DEFINITIONS)[CoachingBackendId]]
+  >).find(([, definition]) => definition.runtimeId === runtimeId)?.[0];
+  if (backendIdForRuntime === undefined) {
+    fail("runtimeId", `runtime ${runtimeId} has no registered backend`);
+  }
+  const definition = COACHING_BACKEND_DEFINITIONS[backendIdForRuntime];
+  return {
+    backendId: backendIdForRuntime,
+    runtimeId,
+    executionLocation: definition.executionLocation,
+  };
+}
 
 /**
  * Read-only tools a coached (analysis-only) run may expose. Single source of
@@ -56,6 +165,156 @@ export type CoachingRuntimeId = (typeof COACHING_RUNTIME_IDS)[number];
  * its own check against this list.
  */
 export const COACHED_TOOL_NAMES = ["get_training_history", "analyze_progress"] as const;
+
+export type CoachingToolName = (typeof COACHED_TOOL_NAMES)[number];
+
+/**
+ * Why a backend cannot run. Reasons are server-derived: CLI presence/auth,
+ * configured adapter, provider configuration, trusted account classification,
+ * and quota are separate facts. The browser cannot assert any of them.
+ */
+export const COACHING_AVAILABILITY_REASON_CODES = [
+  "cli-not-installed",
+  "cli-auth-required",
+  "cli-version-unsupported",
+  "adapter-not-implemented",
+  "provider-unconfigured",
+  "identity-unverified",
+  "guest-cloud-forbidden",
+  "quota-not-configured",
+  "quota-exhausted",
+  "policy-not-configured",
+] as const;
+
+export type CoachingAvailabilityReasonCode = (typeof COACHING_AVAILABILITY_REASON_CODES)[number];
+
+export interface CoachingAvailabilityReason {
+  code: CoachingAvailabilityReasonCode;
+  message: string;
+}
+
+export type CoachingCancelConfirmation = "process-exit" | "provider" | "unsupported";
+
+export interface CoachingBackendCapabilities {
+  /** Version of this capability shape. */
+  capabilityVersion: number;
+  /** Event-line protocol this backend emits. */
+  protocolVersion: number;
+  /** Read-only tools this backend can actually expose (subset of COACHED_TOOL_NAMES). */
+  tools: CoachingToolName[];
+  /** Product-level replay from stored events. */
+  productReplay: boolean;
+  /** Native continuation of the same backend's own session. */
+  nativeContinuation: boolean;
+  /** What counts as proof the execution stopped (capacity release). */
+  cancelConfirmation: CoachingCancelConfirmation;
+  maxInputBytes: number;
+  maxEvents: number;
+  maxEventBytes: number;
+  /** Cloud backends REQUIRE server-verified account qualification. */
+  accountEligibility: "not-required" | "required";
+  /** Cloud backends REQUIRE a configured quota reservation. */
+  quotaReservation: "not-required" | "required";
+  /**
+   * Where prompts/snapshots are sent. Never inferred from the runtime name.
+   * A local CLI executes on the user's device but still sends the prompt and
+   * snapshot-derived context to the CLI's configured model provider, so
+   * `cli-provider` describes the data destination for local backends.
+   */
+  dataDestination: "cli-provider" | "vendor-api";
+}
+
+export interface CoachingBackendDescriptor {
+  backendId: CoachingBackendId;
+  runtimeId: CoachingRuntimeId;
+  executionLocation: CoachingExecutionLocation;
+  displayName: string;
+  available: boolean;
+  /** Required when `available` is false; forbidden when true. */
+  unavailableReason?: CoachingAvailabilityReason;
+  version?: string;
+  capabilities: CoachingBackendCapabilities;
+}
+
+export interface CoachingCapabilityDiscovery {
+  discoveryVersion: number;
+  protocolVersion: number;
+  /** Read-only tool names shared by this deployment (never write tools). */
+  tools: CoachingToolName[];
+  backends: CoachingBackendDescriptor[];
+}
+
+/**
+ * Trusted account classification supplied by the identity layer (#5).
+ *
+ * MUST be derived from a validated bearer/server session, never from request
+ * body fields, guest flags, local storage, or UI state. A missing/unset
+ * classification fails cloud qualification closed.
+ */
+export interface CoachingTrustedIdentity {
+  accountId: string;
+  isAnonymous: boolean;
+}
+
+/** Server-configured cloud quota. Missing configuration is NOT unlimited. */
+export interface CoachingCloudQuota {
+  configured: boolean;
+  remaining: number;
+}
+
+export interface CoachingCloudQualificationInput {
+  identity?: CoachingTrustedIdentity | null;
+  quota?: CoachingCloudQuota | null;
+  providerConfigured?: boolean;
+}
+
+export interface CoachingCloudQualification {
+  eligible: boolean;
+  reason?: CoachingAvailabilityReason;
+}
+
+/**
+ * Fail-closed cloud gate. Guests (anonymous accounts) may use their own LOCAL
+ * agent only; cloud requires an authoritative formal-account classification
+ * AND configured remaining quota AND configured provider. There is
+ * deliberately no client-controlled guest/entitlement flag in this input.
+ */
+export function qualifyCloudBackend(input: CoachingCloudQualificationInput): CoachingCloudQualification {
+  const identity = input.identity;
+  if (
+    identity === undefined ||
+    identity === null ||
+    typeof identity.accountId !== "string" ||
+    identity.accountId.trim() === "" ||
+    typeof identity.isAnonymous !== "boolean"
+  ) {
+    return unavailable("identity-unverified", "Cloud coaching requires a server-verified account identity.");
+  }
+  if (identity.isAnonymous) {
+    return unavailable(
+      "guest-cloud-forbidden",
+      "Guest accounts can use their own local agent only; cloud coaching requires a formal account.",
+    );
+  }
+  if (input.providerConfigured !== true) {
+    return unavailable("provider-unconfigured", "Cloud coaching is not configured on this server.");
+  }
+  const quota = input.quota;
+  if (quota === undefined || quota === null || quota.configured !== true) {
+    return unavailable("quota-not-configured", "Cloud coaching quota is not configured.");
+  }
+  if (typeof quota.remaining !== "number" || !Number.isFinite(quota.remaining) || quota.remaining < 1) {
+    return unavailable("quota-exhausted", "No cloud coaching quota remains for this account.");
+  }
+  return { eligible: true };
+}
+
+function unavailable(
+  code: CoachingAvailabilityReasonCode,
+  message: string,
+): CoachingCloudQualification {
+  return { eligible: false, reason: { code, message } };
+}
 
 /**
  * Cursor semantics (shared by the run service, HTTP server, and SSE):
@@ -113,7 +372,13 @@ export interface CoachingRun {
   idempotencyKey: string;
   prompt: string;
   snapshot: CoachingDataSnapshot;
+  /**
+   * Execution engine. Kept for v1 clients; always paired with the backend
+   * recorded below. Legacy runs without `backendId` are local-pi.
+   */
   runtimeId: string;
+  /** Backend pinned at run creation (replay/cancel resolve against it). */
+  backendId?: CoachingBackendId;
   failure?: { code: string; message: string };
 }
 
@@ -264,7 +529,13 @@ export interface SubmitCoachingRunInput {
   prompt: string;
   idempotencyKey: string;
   snapshot: CoachingSnapshotReference;
-  runtimeId?: string;
+  /**
+   * Optional backend selection. Omit both fields for the legacy local-pi
+   * mapping; a cloud backend must be named explicitly and is rejected unless
+   * the server has already qualified the trusted account.
+   */
+  backendId?: CoachingBackendId;
+  runtimeId?: CoachingRuntimeId;
 }
 
 export interface ReadCoachingRunResult {
@@ -509,9 +780,24 @@ function parseStoredRun(value: unknown, field: string): CoachingRun {
     snapshot: parseCoachingDataSnapshot(runObj.snapshot),
     runtimeId: assertNonBlankString(runObj.runtimeId, `${field}.runtimeId`),
   };
-  if ((COACHING_RUNTIME_IDS as readonly string[]).includes(run.runtimeId) === false) {
-    fail(`${field}.runtimeId`, `must be one of ${(COACHING_RUNTIME_IDS as readonly string[]).join(", ")} (only pi is wired)`);
+  if (!isCoachingRuntimeId(run.runtimeId)) {
+    fail(`${field}.runtimeId`, `must be one of ${COACHING_RUNTIME_IDS.join(", ")}`);
   }
+  if (runObj.backendId !== undefined) {
+    if (!isCoachingBackendId(runObj.backendId)) {
+      fail(`${field}.backendId`, `must be one of ${COACHING_BACKEND_IDS.join(", ")}`);
+    }
+    const definition = COACHING_BACKEND_DEFINITIONS[runObj.backendId];
+    if (definition.runtimeId !== run.runtimeId) {
+      fail(
+        `${field}.backendId`,
+        `backend ${runObj.backendId} requires runtime ${definition.runtimeId}`,
+      );
+    }
+    run.backendId = runObj.backendId;
+  }
+  // A legacy v1 run without backendId remains readable; clients resolve it as
+  // local-pi via resolveCoachingBackendSelection({ runtimeId }), never cloud.
   if (runObj.failure !== undefined) {
     if (!isObject(runObj.failure)) fail(`${field}.failure`, "must be an object");
     run.failure = {
@@ -671,13 +957,14 @@ export function parseSubmitCoachingRunInput(value: unknown): SubmitCoachingRunIn
     idempotencyKey: assertNonBlankString(value.idempotencyKey, "idempotencyKey"),
     snapshot: assertSnapshotReference(value.snapshot, "snapshot"),
   };
-  if (value.runtimeId !== undefined) {
-    const runtimeId = assertNonBlankString(value.runtimeId, "runtimeId");
-    if (!(COACHING_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
-      fail("runtimeId", `must be one of ${(COACHING_RUNTIME_IDS as readonly string[]).join(", ")} (only pi is wired)`);
-    }
-    input.runtimeId = runtimeId;
-  }
+  // Validate the selection as a unit (backend/runtime must agree) but keep
+  // omitted fields omitted: the service applies the legacy local-pi default.
+  const selection = resolveCoachingBackendSelection({
+    backendId: value.backendId,
+    runtimeId: value.runtimeId,
+  });
+  if (value.backendId !== undefined) input.backendId = selection.backendId;
+  if (value.runtimeId !== undefined) input.runtimeId = selection.runtimeId;
   return input;
 }
 
@@ -834,12 +1121,12 @@ export function parseCoachingLogoutResult(value: unknown): CoachingLogoutResult 
   return { loggedOut: true };
 }
 
-/** Guard one runtime descriptor (`CoachingRuntimeInfo`); only `pi` is wired. */
+/** Guard the legacy runtime descriptor; ids are validated, `kind` is informational. */
 export function parseCoachingRuntimeInfo(value: unknown): CoachingRuntimeInfo {
   if (!isObject(value)) fail("(root)", "must be an object");
   const id = assertNonBlankString(value.id, "id");
-  if (!(COACHING_RUNTIME_IDS as readonly string[]).includes(id)) {
-    fail("id", `must be one of ${(COACHING_RUNTIME_IDS as readonly string[]).join(", ")} (only pi is wired)`);
+  if (!isCoachingRuntimeId(id)) {
+    fail("id", `must be one of ${COACHING_RUNTIME_IDS.join(", ")}`);
   }
   if (typeof value.available !== "boolean") fail("available", "must be a boolean");
   return {
@@ -848,6 +1135,175 @@ export function parseCoachingRuntimeInfo(value: unknown): CoachingRuntimeInfo {
     displayName: assertNonBlankString(value.displayName, "displayName"),
     available: value.available,
     ...(value.version === undefined ? {} : { version: assertNonBlankString(value.version, "version") }),
+  };
+}
+
+function parseToolNames(value: unknown, field: string): CoachingToolName[] {
+  if (!Array.isArray(value) || value.length === 0) fail(field, "must be a non-empty array");
+  const seen = new Set<string>();
+  return value.map((entry: unknown, index: number) => {
+    const name = assertNonBlankString(entry, `${field}[${index}]`);
+    if (!(COACHED_TOOL_NAMES as readonly string[]).includes(name)) {
+      fail(`${field}[${index}]`, `must be a read-only coached tool (${COACHED_TOOL_NAMES.join(", ")})`);
+    }
+    if (seen.has(name)) fail(`${field}[${index}]`, "duplicate tool name");
+    seen.add(name);
+    return name as CoachingToolName;
+  });
+}
+
+function parseAvailabilityReason(value: unknown, field: string): CoachingAvailabilityReason {
+  if (!isObject(value)) fail(field, "must be an object");
+  const code = assertNonBlankString(value.code, `${field}.code`);
+  if (!(COACHING_AVAILABILITY_REASON_CODES as readonly string[]).includes(code)) {
+    fail(`${field}.code`, `must be one of ${COACHING_AVAILABILITY_REASON_CODES.join(", ")}`);
+  }
+  return { code: code as CoachingAvailabilityReasonCode, message: assertNonBlankString(value.message, `${field}.message`) };
+}
+
+function assertPositiveInt(value: unknown, field: string): number {
+  const parsed = assertSafeNonNegativeInt(value, field);
+  if (parsed === 0) fail(field, "must be > 0");
+  return parsed;
+}
+
+/** Guard one backend capability block. */
+export function parseCoachingBackendCapabilities(value: unknown): CoachingBackendCapabilities {
+  if (!isObject(value)) fail("(root)", "must be an object");
+  const capabilityVersion = assertSafeNonNegativeInt(value.capabilityVersion, "capabilityVersion");
+  if (capabilityVersion !== COACHING_CAPABILITY_VERSION) {
+    fail("capabilityVersion", `must be ${COACHING_CAPABILITY_VERSION}`);
+  }
+  const protocolVersion = assertSafeNonNegativeInt(value.protocolVersion, "protocolVersion");
+  if (protocolVersion !== COACHING_PROTOCOL_VERSION) {
+    fail("protocolVersion", `must be ${COACHING_PROTOCOL_VERSION}`);
+  }
+  const cancelConfirmation = assertNonBlankString(value.cancelConfirmation, "cancelConfirmation");
+  if (
+    cancelConfirmation !== "process-exit" &&
+    cancelConfirmation !== "provider" &&
+    cancelConfirmation !== "unsupported"
+  ) {
+    fail("cancelConfirmation", "must be one of process-exit, provider, unsupported");
+  }
+  const accountEligibility = assertNonBlankString(value.accountEligibility, "accountEligibility");
+  if (accountEligibility !== "not-required" && accountEligibility !== "required") {
+    fail("accountEligibility", "must be one of not-required, required");
+  }
+  const quotaReservation = assertNonBlankString(value.quotaReservation, "quotaReservation");
+  if (quotaReservation !== "not-required" && quotaReservation !== "required") {
+    fail("quotaReservation", "must be one of not-required, required");
+  }
+  const dataDestination = assertNonBlankString(value.dataDestination, "dataDestination");
+  if (dataDestination !== "cli-provider" && dataDestination !== "vendor-api") {
+    fail("dataDestination", "must be one of cli-provider, vendor-api");
+  }
+  for (const flag of ["productReplay", "nativeContinuation"] as const) {
+    if (typeof value[flag] !== "boolean") fail(flag, "must be a boolean");
+  }
+  return {
+    capabilityVersion,
+    protocolVersion,
+    tools: parseToolNames(value.tools, "tools"),
+    productReplay: value.productReplay as boolean,
+    nativeContinuation: value.nativeContinuation as boolean,
+    cancelConfirmation: cancelConfirmation as CoachingCancelConfirmation,
+    maxInputBytes: assertPositiveInt(value.maxInputBytes, "maxInputBytes"),
+    maxEvents: assertPositiveInt(value.maxEvents, "maxEvents"),
+    maxEventBytes: assertPositiveInt(value.maxEventBytes, "maxEventBytes"),
+    accountEligibility,
+    quotaReservation,
+    dataDestination,
+  };
+}
+
+/**
+ * Guard one backend descriptor. Invariants enforced here (not just in
+ * adapters): backend/runtime pairs are fixed, unavailable implies a reason,
+ * available forbids one, and a cloud backend must require account
+ * qualification and quota reservation.
+ */
+export function parseCoachingBackendDescriptor(value: unknown): CoachingBackendDescriptor {
+  if (!isObject(value)) fail("(root)", "must be an object");
+  if (!isCoachingBackendId(value.backendId)) {
+    fail("backendId", `must be one of ${COACHING_BACKEND_IDS.join(", ")}`);
+  }
+  if (!isCoachingRuntimeId(value.runtimeId)) {
+    fail("runtimeId", `must be one of ${COACHING_RUNTIME_IDS.join(", ")}`);
+  }
+  const definition = COACHING_BACKEND_DEFINITIONS[value.backendId];
+  if (definition.runtimeId !== value.runtimeId) {
+    fail("runtimeId", `backend ${value.backendId} requires runtime ${definition.runtimeId}`);
+  }
+  if (value.executionLocation !== definition.executionLocation) {
+    fail("executionLocation", `backend ${value.backendId} requires ${definition.executionLocation}`);
+  }
+  if (typeof value.available !== "boolean") fail("available", "must be a boolean");
+  let unavailableReason: CoachingAvailabilityReason | undefined;
+  if (value.available) {
+    if (value.unavailableReason !== undefined) {
+      fail("unavailableReason", "must be omitted when the backend is available");
+    }
+  } else {
+    unavailableReason = parseAvailabilityReason(value.unavailableReason, "unavailableReason");
+  }
+  const capabilities = parseCoachingBackendCapabilities(value.capabilities);
+  if (definition.executionLocation === "cloud") {
+    if (capabilities.accountEligibility !== "required") {
+      fail("capabilities.accountEligibility", "cloud backends must require server-verified account eligibility");
+    }
+    if (capabilities.quotaReservation !== "required") {
+      fail("capabilities.quotaReservation", "cloud backends must require a quota reservation");
+    }
+    if (capabilities.dataDestination !== "vendor-api") {
+      fail("capabilities.dataDestination", "cloud backends must send data to the vendor API");
+    }
+  }
+  const descriptor: CoachingBackendDescriptor = {
+    backendId: value.backendId,
+    runtimeId: value.runtimeId,
+    executionLocation: definition.executionLocation,
+    displayName: assertNonBlankString(value.displayName, "displayName"),
+    available: value.available,
+    capabilities,
+  };
+  if (unavailableReason !== undefined) descriptor.unavailableReason = unavailableReason;
+  if (value.version !== undefined) descriptor.version = assertNonBlankString(value.version, "version");
+  return descriptor;
+}
+
+/** Guard the versioned discovery response returned to clients. */
+export function parseCoachingCapabilityDiscovery(value: unknown): CoachingCapabilityDiscovery {
+  if (!isObject(value)) fail("(root)", "must be an object");
+  const discoveryVersion = assertSafeNonNegativeInt(value.discoveryVersion, "discoveryVersion");
+  if (discoveryVersion !== COACHING_DISCOVERY_VERSION) {
+    fail("discoveryVersion", `must be ${COACHING_DISCOVERY_VERSION}`);
+  }
+  const protocolVersion = assertSafeNonNegativeInt(value.protocolVersion, "protocolVersion");
+  if (protocolVersion !== COACHING_PROTOCOL_VERSION) {
+    fail("protocolVersion", `must be ${COACHING_PROTOCOL_VERSION}`);
+  }
+  if (!Array.isArray(value.backends) || value.backends.length === 0) {
+    fail("backends", "must be a non-empty array");
+  }
+  const seen = new Set<string>();
+  const backends = value.backends.map((entry: unknown, index: number) => {
+    let descriptor: CoachingBackendDescriptor;
+    try {
+      descriptor = parseCoachingBackendDescriptor(entry);
+    } catch (error) {
+      if (error instanceof MalformedResponseError) fail(`backends[${index}]`, error.message);
+      throw error;
+    }
+    if (seen.has(descriptor.backendId)) fail(`backends[${index}].backendId`, "duplicate backend");
+    seen.add(descriptor.backendId);
+    return descriptor;
+  });
+  return {
+    discoveryVersion,
+    protocolVersion,
+    tools: parseToolNames(value.tools, "tools"),
+    backends,
   };
 }
 

@@ -19,12 +19,13 @@ import { startLauncherServer } from "./launcherServer.ts";
 function printUsage(): void {
   console.log(
     [
-      "Usage: agent-fit-trace start [--port N] [--no-open] [--upstream URL] [--dist PATH]",
+      "Usage: agent-fit-trace start [--port N] [--no-open] [--upstream URL] [--dist PATH] [--runtime ID]",
       "",
       "  --port N       preferred loopback port (default 5198, falls forward when busy)",
       "  --no-open      do not try to open a browser (for tests/headless)",
       "  --upstream URL fixed authenticated API base (default $FIT_TRACE_API_BASE_URL)",
       "  --dist PATH    built app directory (default <repo>/app/dist)",
+      "  --runtime ID   local coaching runtime: pi (default), codex, or opencode",
     ].join("\n"),
   );
 }
@@ -52,6 +53,9 @@ function parseArgs(argv: string[]): { command: string; flags: LauncherFlags } {
       index += 1;
     } else if (token === "--dist") {
       flags.dist = takeValue(argv, index + 1, "--dist");
+      index += 1;
+    } else if (token === "--runtime") {
+      flags.runtime = takeValue(argv, index + 1, "--runtime");
       index += 1;
     } else if (token === "--help" || token === "-h") {
       printUsage();
@@ -105,6 +109,11 @@ async function main(): Promise<void> {
       "pi CLI not found on PATH — workout tracking works; coaching runs report unconfigured until pi is installed.",
     );
   }
+  if (config.runtimeId !== "pi") {
+    console.log(
+      `configured runtime ${config.runtimeId} has no adapter yet; discovery reports it unavailable (legacy pi requests still map to local-pi).`,
+    );
+  }
 
   const server = await startLauncherServer({
     distDir: config.distDir,
@@ -112,6 +121,7 @@ async function main(): Promise<void> {
     host: BIND_HOST,
     port: config.port,
     piAvailable: pi.available,
+    runtimeId: config.runtimeId,
   });
   console.log(`fit-trace coach listening at ${server.url}`);
 

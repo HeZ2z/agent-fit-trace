@@ -90,6 +90,10 @@ FIT_TRACE_OPENROUTER_MODEL=
 These are planned configuration names, not currently implemented settings.
 Missing configuration must show an unconfigured agent state, never silently
 use a paid model. Workout tracking and deterministic analysis remain usable.
+The intended native-`fetch` request shape, the fail-closed guest/account/quota
+rules, and the provider's documented cancellation limits are recorded in
+[`adr/0001-agent-execution-backends.md`](adr/0001-agent-execution-backends.md);
+no cloud adapter or provider call exists yet.
 
 User-owned Codex/OpenCode/pi agents run on the user's computer and require
 a locally started, paired connector. Local agent credentials remain local;

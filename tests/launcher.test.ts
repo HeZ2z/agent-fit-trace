@@ -9,7 +9,11 @@ import { spawn } from "node:child_process";
 
 import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { parseAnalysisResult, parseWorkoutList } from "@pi-fit-trace/api-contracts";
+import {
+  parseAnalysisResult,
+  parseCoachingCapabilityDiscovery,
+  parseWorkoutList,
+} from "@pi-fit-trace/api-contracts";
 import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
 import {
   checkNodeRuntime,
@@ -710,6 +714,15 @@ test("an empty FIT_TRACE_APP_DIST is treated as unset (repo default)", () => {
   assert.equal(flagged.distDir, "/repo/app/dist");
 });
 
+test("launcher runtime config defaults to pi, accepts local CLIs, and rejects cloud/unknown", () => {
+  const base = { FIT_TRACE_API_BASE_URL: "https://example.com/api/v1" };
+  assert.equal(resolveLauncherConfig(base, {}, "/repo").runtimeId, "pi");
+  assert.equal(resolveLauncherConfig({ ...base, FIT_TRACE_RUNTIME: "codex" }, {}, "/repo").runtimeId, "codex");
+  assert.equal(resolveLauncherConfig(base, { runtime: "opencode" }, "/repo").runtimeId, "opencode");
+  assert.throws(() => resolveLauncherConfig(base, { runtime: "shell" }, "/repo"), /invalid coaching runtime/);
+  assert.throws(() => resolveLauncherConfig(base, { runtime: "hosted-sdk" }, "/repo"), /cannot configure/);
+});
+
 test("browser open is loopback-only", () => {
   assert.equal(isSafeOpenUrl("http://127.0.0.1:5198/"), true);
   assert.equal(isSafeOpenUrl("http://localhost:5198/"), true);
@@ -808,6 +821,19 @@ test("pi-unavailable launches fail coaching runs clearly, not as spawn errors", 
     assert.equal(bootstrap.status, 200);
     const capability = ((await bootstrap.json()) as { data: { capability: string } }).data.capability;
     const creds = { authorization: "Bearer token-nopi", [CAPABILITY_HEADER]: capability };
+    // The discovery route is authenticated and parses through the shared
+    // versioned contract.
+    const capabilitiesResponse = await fetch(`${server.url}/coaching/capabilities`, { headers: creds });
+    assert.equal(capabilitiesResponse.status, 200);
+    const discovery = parseCoachingCapabilityDiscovery(
+      ((await capabilitiesResponse.json()) as { data: unknown }).data,
+    );
+    assert.equal(discovery.discoveryVersion, 1);
+    assert.equal(discovery.backends.find((entry) => entry.backendId === "local-pi")?.available, false);
+    assert.equal(
+      discovery.backends.find((entry) => entry.backendId === "cloud-default")?.available,
+      false,
+    );
     const session = await fetch(`${server.url}/coaching/sessions`, {
       method: "POST",
       headers: { ...creds, "content-type": "application/json" },
@@ -849,23 +875,54 @@ test("pi-unavailable launches fail coaching runs clearly, not as spawn errors", 
         },
       }),
     });
-    assert.equal(run.status, 201);
-    const runId = ((await run.json()) as { data: { run: { id: string } } }).data.run.id;
-    const start = Date.now();
-    let status = "";
-    for (;;) {
-      const read = await fetch(`${server.url}/coaching/runs/${runId}`, { headers: creds });
-      assert.equal(read.status, 200);
-      status = ((await read.json()) as { data: { run: { status: string } } }).data.run.status;
-      if (status === "failed" || status === "completed") break;
-      assert.ok(Date.now() - start < 8000, `timed out waiting for terminal, still ${status}`);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    assert.equal(status, "failed");
-    const events = await fetch(`${server.url}/coaching/runs/${runId}/events`, { headers: creds });
-    assert.match(await events.text(), /pi CLI is not available/);
+    // Discovery and submit agree: an explicitly unavailable local-pi registry
+    // entry is refused up front, never silently routed through a legacy
+    // factory that would launch and fail later.
+    assert.equal(run.status, 400);
+    assert.match(await run.text(), /pi CLI is not available/);
     const runtime = await (await fetch(`${server.url}/fit-trace-runtime.js`)).text();
     assert.match(runtime, /piAvailable: false/);
+    // Discovery tells the truth: pi is unavailable with a reason, and the
+    // planned CLIs/cloud are never advertised as available.
+    const directDiscovery = server.service.discoverBackends({ id: "user-nopi" });
+    const byId = new Map(directDiscovery.backends.map((entry) => [entry.backendId, entry]));
+    assert.equal(byId.get("local-pi")?.available, false);
+    assert.equal(byId.get("local-pi")?.unavailableReason?.code, "cli-not-installed");
+    assert.equal(byId.get("local-codex")?.available, false);
+    assert.equal(byId.get("local-codex")?.unavailableReason?.code, "adapter-not-implemented");
+    assert.equal(byId.get("cloud-default")?.available, false);
+    assert.equal(byId.get("cloud-default")?.unavailableReason?.code, "identity-unverified");
+  } finally {
+    await server.close();
+    upstream.setResponder(() => null);
+  }
+});
+
+test("codex with dynamicTools but unproven builtin isolation stays unavailable", async () => {
+  assert.ok(upstream !== null);
+  const server = await startLauncherServer({
+    distDir,
+    upstreamBaseUrl: upstream.baseUrl,
+    host: "127.0.0.1",
+    port: 0,
+    verifier: createTestVerifier({ "token-codex-gated": { id: "user-codex-gated" } }),
+    publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
+    runtimeId: "codex",
+    piAvailable: false,
+    // The schema has dynamicTools (supported: true), but the launcher must
+    // still deny it: dynamic tools do not exclude built-ins.
+    codexSupport: {
+      supported: true,
+      builtinIsolationVerified: false,
+      gap: "builtin-isolation-unproven: dynamicTools is additive",
+    },
+  });
+  try {
+    const discovery = server.service.discoverBackends({ id: "user-codex-gated" });
+    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
+    assert.equal(codex?.available, false);
+    assert.equal(codex?.unavailableReason?.code, "cli-version-unsupported");
+    assert.match(codex?.unavailableReason?.message ?? "", /builtin-isolation-unproven/);
   } finally {
     await server.close();
     upstream.setResponder(() => null);
