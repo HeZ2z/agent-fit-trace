@@ -2,11 +2,15 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IMPORT_MAX_FILENAME_LENGTH } from "@pi-fit-trace/api-contracts";
+import {
+  IMPORT_MAX_FILE_BYTES,
+  IMPORT_MAX_FILENAME_LENGTH,
+  parseWorkoutImportFile,
+} from "@pi-fit-trace/api-contracts";
 import type { FitTraceClient, PublicApiConfig } from "@pi-fit-trace/api-contracts";
 import { analyzeProgress, generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { readTextFile } from "../api/fileTransport.ts";
+import { downloadJson, readTextFile } from "../api/fileTransport.ts";
 import { AuthProvider, useAuth } from "../auth/AuthContext.tsx";
 import type { SupabaseSession } from "../auth/supabaseAuth.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
@@ -34,6 +38,7 @@ vi.mock("../coaching/useCoach.ts", async (importOriginal) => {
 });
 
 const readTextFileMock = vi.mocked(readTextFile);
+const downloadJsonMock = vi.mocked(downloadJson);
 
 function record(overrides: Partial<WorkoutRecord> = {}): WorkoutRecord {
   return validateWorkoutRecord({
@@ -154,6 +159,33 @@ describe("MeScreen", () => {
     expect(screen.getByText(/storage scope: local mode/i)).toBeInTheDocument();
     expect(screen.getByText(/this browser on this device/i)).toBeInTheDocument();
     expect(screen.queryByText(/actions arrive with/i)).not.toBeInTheDocument();
+  });
+
+  it("splits a 1001-record export into files restore accepts", async () => {
+    const records = Array.from({ length: 1001 }, (_, index) =>
+      record({ id: `wkt_export_${index}`, date: "2026-01-05" }),
+    );
+    renderMe(new FakeFitTraceClient({ records }));
+    await screen.findByText(/local session/i);
+    const exportButton = screen.getByRole("button", { name: /export workouts \(json\)/i });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+
+    await userEvent.click(exportButton);
+
+    expect(downloadJsonMock).toHaveBeenCalledTimes(2);
+    const restoredIds = downloadJsonMock.mock.calls.flatMap(([filename, text]) => {
+      expect(filename).toMatch(/^workout-\d{2}-of-02\.json$/);
+      expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(IMPORT_MAX_FILE_BYTES);
+      const parsed = parseWorkoutImportFile(text);
+      expect(parsed.entries.length).toBeGreaterThan(0);
+      expect(parsed.entries.length).toBeLessThanOrEqual(1000);
+      return parsed.entries.map((entry) => entry.record.id);
+    });
+    expect(restoredIds).toHaveLength(1001);
+    expect(restoredIds).toEqual(records.map((entry) => entry.id));
+    expect(await screen.findByTestId("me-export-result")).toHaveTextContent(
+      /2 backup files/i,
+    );
   });
 
   it("previews and sequentially appends workout records with an indexed receipt", async () => {

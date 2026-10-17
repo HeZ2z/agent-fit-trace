@@ -210,18 +210,23 @@ record belongs to: review ownership and provenance of every record before any
 explicit replay.
 
 1. Sign in to the source store and choose **History → Export workouts (JSON)**.
-   This downloads `workout.json` with
-   `{ "schema_version": ..., "records": [...] }`.
+   This downloads restorable backup files with
+   `{ "schema_version": ..., "records": [...] }`. A history within the restore
+   limits is `workout.json`; larger histories are split into numbered
+   `workout-01-of-NN.json` files so every file stays within 1 MiB and 1000
+   records. Restore or replay every file.
 2. To move records into an authenticated store, replay each exported record
    explicitly through the normal create endpoint; validate and reconcile IDs
    rather than copying raw storage keys:
 
    ```sh
-   jq -c '.records[]' workout.json | while read -r record; do
-     curl -fsS -X POST "$FIT_TRACE_API_BASE_URL/workouts" \
-       -H "Authorization: Bearer $ACCESS_TOKEN" \
-       -H 'Content-Type: application/json' \
-       --data "{\"record\":$record}"
+   for file in workout*.json; do
+     jq -c '.records[]' "$file" | while read -r record; do
+       curl -fsS -X POST "$FIT_TRACE_API_BASE_URL/workouts" \
+         -H "Authorization: Bearer $ACCESS_TOKEN" \
+         -H 'Content-Type: application/json' \
+         --data "{\"record\":$record}"
+     done
    done
    ```
 

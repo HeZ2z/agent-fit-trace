@@ -365,7 +365,7 @@ type WorkoutPreviewState = WorkoutImportPreview & {
 export function MeScreen() {
   const { client, records, status: historyStatus, reload } = useWorkouts();
   const { user } = useAuth();
-  const { exportWorkouts, error: exportError } = useWorkoutExport(records);
+  const { exportWorkouts, error: exportError, result: exportResult } = useWorkoutExport(records);
   const owner = user?.id ?? "local";
   const [workoutFileText, setWorkoutFileText] = useState<string | null>(null);
   const [workoutFileError, setWorkoutFileError] = useState<string | null>(null);
@@ -623,7 +623,8 @@ export function MeScreen() {
         <h2 id="me-export">Export workouts</h2>
         <p className="me-help">
           Downloads every record as <code>workout.json</code> in the v1 backup format.
-          Exported file bytes must stay within the 1 MiB import limit.
+          Histories that exceed the restore limits are split into numbered files, each
+          within 1 MiB and 1000 records, so every downloaded file can be restored.
         </p>
         <button type="button" onClick={exportWorkouts} disabled={records.length === 0}>
           Export workouts (JSON)
@@ -632,6 +633,13 @@ export function MeScreen() {
           <div role="alert" className="validation-summary" data-testid="me-export-error">
             <p>Could not export workouts: {exportError}</p>
           </div>
+        )}
+        {exportResult !== null && (
+          <p role="status" className="me-help" data-testid="me-export-result">
+            {exportResult.files === 1
+              ? `Downloaded 1 backup file with ${exportResult.records} record(s).`
+              : `Downloaded ${exportResult.files} backup files with ${exportResult.records} record(s) total. Restore each file separately; the numbered filenames keep them in order.`}
+          </p>
         )}
       </section>
 
