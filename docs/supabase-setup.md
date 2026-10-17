@@ -114,8 +114,9 @@ Local config does not change the cloud project. Before releasing auth:
    origin(s), including `/auth/callback`.
 3. Create users via Dashboard → Authentication → Users → **Invite user** (or
    the Admin API). No self-registration exists.
-4. Vercel env: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (or
-   `SUPABASE_ANON_KEY`) for Development/Preview/Production. Never add the
+4. Vercel env: `VITE_FIT_TRACE_MODE=http`, `SUPABASE_URL`,
+   `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) for Preview and
+   Production (add Development too when using `vercel dev`). Never add the
    service-role key to the browser or `VITE_*`.
 
 ## 4. API and app behavior
