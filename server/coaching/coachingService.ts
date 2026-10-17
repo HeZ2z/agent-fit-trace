@@ -27,7 +27,12 @@
  * Snapshots: the snapshot store keeps source records only, for a bounded
  * lifetime (`snapshotTtlMs`). Every run writes its own fresh immutable
  * validated file (`writeSnapshotDir`) — snapshot handles are never reused
- * across runs after a file is unlinked. Native pi session state (session
+ * across runs after a file is unlinked. Idempotent replay outlives the
+ * snapshot: a retained run resolves from its OWN canonical stored snapshot,
+ * so an identical retry returns that same run (no runtime launch) after the
+ * handle expires. The incoming prompt/runtime/ref is compared against that
+ * stored canonical request (never blindly substituted), and a NEW run always
+ * requires an owned live snapshot. Native pi session state (session
  * dir + last native handle) belongs to the product session/account and is
  * passed to subsequent launches of that session for resume.
  *
@@ -425,6 +430,28 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     const stored = runs.get(runId);
     if (stored === undefined || stored.accountId !== principal.id) {
       throw new CoachingServiceError("RUN_NOT_FOUND", "Coaching run not found.");
+    }
+    return stored;
+  }
+
+  /** Resolve a client-supplied handle to a live snapshot OWNED by the caller.
+   * An expired entry is dropped from the map (never served, never reused) and
+   * resolves to `null`; a live source mismatch is FORBIDDEN exactly as before.
+   * `null` is fatal only for a NEW run: an owned retained run replays from its
+   * own stored canonical snapshot after the snapshot lifetime has passed. */
+  function resolveLiveSnapshot(
+    principal: AuthPrincipal,
+    ref: CoachingSnapshotReference,
+  ): StoredSnapshot | null {
+    const stored = snapshots.get(ref.snapshotId);
+    if (stored === undefined) return null;
+    if (stored.expiresAt <= Date.now()) {
+      snapshots.delete(ref.snapshotId);
+      return null;
+    }
+    if (stored.accountId !== principal.id) return null;
+    if (stored.snapshot.source !== ref.source) {
+      throw new CoachingServiceError("FORBIDDEN", "Snapshot source mismatch.");
     }
     return stored;
   }
@@ -963,29 +990,46 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       if (ref.accountId !== principal.id) {
         throw new CoachingServiceError("FORBIDDEN", "Snapshot is not bound to this account.");
       }
-      const stored = snapshots.get(ref.snapshotId);
-      if (stored === undefined || stored.accountId !== principal.id || stored.expiresAt <= Date.now()) {
-        if (stored !== undefined && stored.expiresAt <= Date.now()) snapshots.delete(ref.snapshotId);
-        throw new CoachingServiceError("SNAPSHOT_NOT_FOUND", "Snapshot not found or expired.");
-      }
-      if (stored.snapshot.source !== ref.source) {
-        throw new CoachingServiceError("FORBIDDEN", "Snapshot source mismatch.");
-      }
+      // Resolve the handle only when it is still live. Expiry drops the entry
+      // (stale-map deletion) and resolves to null — it is NOT fatal yet,
+      // because an owned retained run replays from its own stored snapshot.
+      const stored = resolveLiveSnapshot(principal, ref);
       // RuntimeId supports only pi today; anything else was already
-      // rejected by the contract guard — refuse again in depth.
+      // rejected by the contract guard — refuse again in depth. A runtime
+      // change under an existing key is never a replay.
       const runtimeId = input.runtimeId ?? "pi";
       if (runtimeId !== "pi") {
         throw new CoachingServiceError("VALIDATION_ERROR", "Only the pi runtime is supported.");
       }
-      const resolved: CoachingDataSnapshot = stored.snapshot;
-      const canonical = canonicalizeSubmit({ prompt: input.prompt, runtimeId, snapshot: resolved });
 
       const key = idemKey(principal.id, session.id, input.idempotencyKey);
       const existingId = idempotency.get(key);
       if (existingId !== undefined) {
         const existing = runs.get(existingId);
         if (existing !== undefined && existing.accountId === principal.id && existing.run.sessionId === session.id) {
-          if (existing.canonical !== canonical) {
+          // Compare the INCOMING prompt/runtime/ref against the run's own
+          // canonical stored snapshot instead of substituting it: only the
+          // client-supplied ref fields are replaced, so a changed prompt,
+          // source, snapshotId, or principal is refused rather than replayed.
+          // This runs BEFORE the live-snapshot requirement, so an identical
+          // retry still resolves after the snapshot TTL has passed.
+          if (
+            existing.run.snapshot.snapshotId === ref.snapshotId &&
+            existing.run.snapshot.source !== ref.source
+          ) {
+            throw new CoachingServiceError("FORBIDDEN", "Snapshot source mismatch.");
+          }
+          const requested = canonicalizeSubmit({
+            prompt: input.prompt,
+            runtimeId,
+            snapshot: {
+              ...existing.run.snapshot,
+              snapshotId: ref.snapshotId,
+              source: ref.source,
+              accountId: ref.accountId,
+            },
+          });
+          if (existing.canonical !== requested) {
             throw new CoachingServiceError(
               "IDEMPOTENCY_CONFLICT",
               "Idempotency key was already used with different content.",
@@ -997,6 +1041,14 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         // and fall through to create a fresh run. Never serve removed data.
         idempotency.delete(key);
       }
+      // A NEW run still requires an owned, live snapshot: the replay above is
+      // the only path that survives expiry. Sessions with retained runs stay
+      // resolvable by that run reference (see the sweep).
+      if (stored === null) {
+        throw new CoachingServiceError("SNAPSHOT_NOT_FOUND", "Snapshot not found or expired.");
+      }
+      const resolved: CoachingDataSnapshot = stored.snapshot;
+      const canonical = canonicalizeSubmit({ prompt: input.prompt, runtimeId, snapshot: resolved });
 
       // 1 active run per session + 1 global pi process; never queue implicitly.
       for (const entry of runs.values()) {

@@ -30,6 +30,7 @@ import {
 } from "@pi-fit-trace/api-contracts";
 import { createPrincipalMemoryStores } from "../server/principalMemoryStore.ts";
 import {
+  CoachingServiceError,
   createCoachingService,
   DEFAULT_MAX_EVENT_BYTES_PER_RUN,
   normalizeMaxEventBytesPerRun,
@@ -39,6 +40,7 @@ import type {
   CoachingService,
   RuntimeFactory,
   RuntimeLaunchOptions,
+  ServiceErrorCode,
 } from "../server/coaching/coachingService.ts";
 import { writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
 import type { SnapshotDir } from "../server/coaching/snapshotFile.ts";
@@ -672,6 +674,209 @@ test("a cancelled reservation retains its idempotency mapping for identical retr
     await assert.rejects(service.submitRun(PRINCIPAL, input), /not found/i);
   } finally {
     gated.release();
+    await service.shutdown();
+  }
+});
+
+// --- retained-run replay after snapshot expiry (review finding 4266413460) ---
+
+const PRINCIPAL_B = { id: "user-b", email: "b@example.com" };
+
+/** Assert a service error code without depending on message text. */
+function hasCode(code: ServiceErrorCode): (error: unknown) => boolean {
+  return (error: unknown) => error instanceof CoachingServiceError && error.code === code;
+}
+
+/**
+ * The snapshot store keeps source records only for `snapshotTtlMs`; a run is
+ * retained for `retentionMs`. A same-key retry that arrives between the two
+ * lifetimes must replay the stored run, so submission resolves the caller's
+ * idempotency record BEFORE it demands a live snapshot.
+ */
+async function setupExpiredSnapshotReplay(options?: { retentionMs?: number }): Promise<{
+  service: CoachingService;
+  starts: RuntimeLaunchOptions[];
+  sessionId: string;
+  input: {
+    sessionId: string;
+    prompt: string;
+    idempotencyKey: string;
+    snapshot: { snapshotId: string; source: string; accountId: string };
+  };
+  firstRunId: string;
+}> {
+  const starts: RuntimeLaunchOptions[] = [];
+  const stores = await seedWorkouts();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: idleRuntimeFactory(starts),
+    snapshotTtlMs: 100,
+    retentionMs: options?.retentionMs ?? 60_000,
+    cancelGraceMs: 50,
+  });
+  const session = service.createSession(PRINCIPAL, "sess-replay");
+  const snapshot = await service.createSnapshot(PRINCIPAL);
+  const input = {
+    sessionId: session.id,
+    prompt: "analyze my training",
+    idempotencyKey: "replay-key",
+    snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+  };
+  const first = await service.submitRun(PRINCIPAL, input);
+  assert.equal(first.created, true);
+  assert.equal(starts.length, 1);
+  // Let the snapshot TTL lapse while the run stays retained (active run: its
+  // retention clock has not started, and its idempotency mapping is retained).
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  return { service, starts, sessionId: session.id, input, firstRunId: first.run.id };
+}
+
+test("an identical retry replays the retained run after its snapshot expires", async () => {
+  const { service, starts, input, firstRunId } = await setupExpiredSnapshotReplay();
+  try {
+    // The expired handle itself no longer resolves: a different key cannot
+    // start a new run from it (no fake resurrection of removed records).
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, idempotencyKey: "other-key" }),
+      hasCode("SNAPSHOT_NOT_FOUND"),
+    );
+    assert.equal(starts.length, 1);
+
+    // The identical retry replays the SAME run without launching a runtime.
+    const replay = await service.submitRun(PRINCIPAL, input);
+    assert.equal(replay.replayed, true, "a retained run must replay after snapshot expiry");
+    assert.equal(replay.created, false);
+    assert.equal(replay.run.id, firstRunId);
+    assert.equal(replay.run.status, "queued");
+    assert.equal(starts.length, 1, "replay must never launch another runtime");
+    assert.equal(service.runCount(), 1, "replay must never create a second run");
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("after snapshot expiry, changed content/source conflicts against the stored run", async () => {
+  const { service, starts, input, firstRunId } = await setupExpiredSnapshotReplay();
+  try {
+    // Prompt change under the same key: the stored canonical content wins.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, prompt: "different question" }),
+      hasCode("IDEMPOTENCY_CONFLICT"),
+    );
+    // Runtime change is still refused in depth (only pi is wired).
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, runtimeId: "codex" }),
+      hasCode("VALIDATION_ERROR"),
+    );
+    // Source change on the SAME snapshot handle keeps the live-path FORBIDDEN.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, snapshot: { ...input.snapshot, source: "other-source" } }),
+      hasCode("FORBIDDEN"),
+    );
+    // A different (even newly live) snapshot handle is a different request
+    // under the key: no blind substitution of the stored snapshot.
+    const live = await service.createSnapshot(PRINCIPAL);
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, {
+        ...input,
+        snapshot: { snapshotId: live.snapshotId, source: live.source, accountId: live.accountId },
+      }),
+      hasCode("IDEMPOTENCY_CONFLICT"),
+    );
+    // Foreign account principal on the reference is always FORBIDDEN.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, snapshot: { ...input.snapshot, accountId: PRINCIPAL_B.id } }),
+      hasCode("FORBIDDEN"),
+    );
+    // Nothing above created a run or launched a runtime; the original still replays.
+    assert.equal(starts.length, 1);
+    assert.equal(service.runCount(), 1);
+    const replay = await service.submitRun(PRINCIPAL, input);
+    assert.equal(replay.run.id, firstRunId);
+    assert.equal(replay.replayed, true);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("another account cannot replay a retained run after its snapshot expires", async () => {
+  const { service, starts, input, firstRunId } = await setupExpiredSnapshotReplay();
+  try {
+    const foreignSession = service.createSession(PRINCIPAL_B, "sess-foreign");
+    // Same session id is not the foreign account's: not found, never replayed.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL_B, { ...input, sessionId: input.sessionId }),
+      hasCode("SESSION_NOT_FOUND"),
+    );
+    // Foreign session + the other account's snapshot handle: FORBIDDEN.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL_B, { ...input, sessionId: foreignSession.id }),
+      hasCode("FORBIDDEN"),
+    );
+    // Re-labelling the handle as the foreign account does not resolve it.
+    await assert.rejects(
+      service.submitRun(PRINCIPAL_B, {
+        ...input,
+        sessionId: foreignSession.id,
+        snapshot: { ...input.snapshot, accountId: PRINCIPAL_B.id },
+      }),
+      hasCode("SNAPSHOT_NOT_FOUND"),
+    );
+    // A different owned session under the same key is a fresh key scope.
+    const otherSession = service.createSession(PRINCIPAL, "sess-replay-2");
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, sessionId: otherSession.id }),
+      hasCode("SNAPSHOT_NOT_FOUND"),
+    );
+    assert.equal(starts.length, 1);
+    // Only the original account on the original session replays.
+    const replay = await service.submitRun(PRINCIPAL, input);
+    assert.equal(replay.run.id, firstRunId);
+    assert.equal(replay.replayed, true);
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("a run removed by retention plus an expired snapshot cannot launch a new run", async () => {
+  const captured: Captured[] = [];
+  const stores = await seedWorkouts();
+  const service = createCoachingService({
+    source: storeFactorySource(stores),
+    runtimeFactory: captureFactory(captured, {
+      onStart: (options) => {
+        for (const payload of contentEvents()) options.onEvent(payload);
+        options.onDone("completed", undefined, { processExitConfirmed: true });
+      },
+    }),
+    snapshotTtlMs: 100,
+    retentionMs: 100,
+    cancelGraceMs: 50,
+  });
+  try {
+    const session = service.createSession(PRINCIPAL, "sess-retained");
+    const snapshot = await service.createSnapshot(PRINCIPAL);
+    const input = {
+      sessionId: session.id,
+      prompt: "analyze my training",
+      idempotencyKey: "retained-key",
+      snapshot: { snapshotId: snapshot.snapshotId, source: snapshot.source, accountId: snapshot.accountId },
+    };
+    const first = await service.submitRun(PRINCIPAL, input);
+    assert.equal(first.run.status, "completed");
+    const launches = captured.length;
+    // Past both lifetimes: the run and its session are gone, the snapshot too.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(service.runCount(), 0);
+    await assert.rejects(service.submitRun(PRINCIPAL, input), hasCode("SESSION_NOT_FOUND"));
+    // A renewed session cannot revive the expired handle either.
+    const renewed = service.createSession(PRINCIPAL, "sess-retained");
+    await assert.rejects(
+      service.submitRun(PRINCIPAL, { ...input, sessionId: renewed.id }),
+      hasCode("SNAPSHOT_NOT_FOUND"),
+    );
+    assert.equal(captured.length, launches, "no runtime may launch for a removed run or expired handle");
+  } finally {
     await service.shutdown();
   }
 });

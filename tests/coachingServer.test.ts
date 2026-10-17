@@ -1234,6 +1234,72 @@ test("unused snapshot expiry: the handle stops resolving after its TTL", async (
   }
 });
 
+test("a retained run replays over HTTP after its snapshot expires; changed requests still refuse", async () => {
+  const captures: LaunchCapture[] = [];
+  const { server, base } = await startTestServer(captures, "hang", { snapshotTtlMs: 150 });
+  try {
+    const creds = await bothCreds(base, AUTH_A);
+    const session = await postJson(base, "/coaching/sessions", {}, creds);
+    const sessionId = (session.json.data as { id: string }).id;
+    const snapshot = await postJson(base, "/coaching/snapshots", {}, creds);
+    const snap = snapshot.json.data as { snapshotId: string; source: string; accountId: string };
+    const payload = {
+      sessionId,
+      prompt: "analyze",
+      idempotencyKey: "expired-replay",
+      snapshot: { snapshotId: snap.snapshotId, source: snap.source, accountId: snap.accountId },
+    };
+    const first = await postJson(base, "/coaching/runs", payload, creds);
+    assert.equal(first.status, 201);
+    const runId = (first.json.data as { run: { id: string } }).run.id;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Same-key retry after the snapshot TTL: 200 replay of the SAME run, no launch.
+    const replay = await postJson(base, "/coaching/runs", payload, creds);
+    assert.equal(replay.status, 200);
+    assert.equal((replay.json.data as { replayed: boolean }).replayed, true);
+    assert.equal((replay.json.data as { run: { id: string } }).run.id, runId);
+    assert.equal(captures.length, 1);
+
+    // Changed prompt under the same key is a conflict, never a substitution.
+    const conflict = await postJson(base, "/coaching/runs", { ...payload, prompt: "different" }, creds);
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.json.error?.code, "IDEMPOTENCY_CONFLICT");
+
+    // A changed snapshot handle under the same key conflicts too.
+    const nextSnapshot = await postJson(base, "/coaching/snapshots", {}, creds);
+    const nextSnap = nextSnapshot.json.data as { snapshotId: string; source: string; accountId: string };
+    const swap = await postJson(base, "/coaching/runs", {
+      ...payload,
+      snapshot: { snapshotId: nextSnap.snapshotId, source: nextSnap.source, accountId: nextSnap.accountId },
+    }, creds);
+    assert.equal(swap.status, 409);
+    assert.equal(swap.json.error?.code, "IDEMPOTENCY_CONFLICT");
+
+    // A new key still needs a LIVE owned snapshot: the expired handle is 404.
+    const fresh = await postJson(base, "/coaching/runs", { ...payload, idempotencyKey: "fresh-after-expiry" }, creds);
+    assert.equal(fresh.status, 404);
+    assert.equal(fresh.json.error?.code, "SNAPSHOT_NOT_FOUND");
+
+    // Cross-account isolation: B cannot replay A's run/handle or borrow session.
+    const credsB = await bothCreds(base, AUTH_B);
+    const sessionB = await postJson(base, "/coaching/sessions", {}, credsB);
+    const sessionBId = (sessionB.json.data as { id: string }).id;
+    const foreignHandle = await postJson(base, "/coaching/runs", {
+      ...payload,
+      sessionId: sessionBId,
+    }, credsB);
+    assert.equal(foreignHandle.status, 403);
+    assert.equal(foreignHandle.json.error?.code, "FORBIDDEN");
+    const foreignSession = await postJson(base, "/coaching/runs", payload, credsB);
+    assert.equal(foreignSession.status, 404);
+    assert.equal(foreignSession.json.error?.code, "SESSION_NOT_FOUND");
+    assert.equal(captures.length, 1, "no refused request may launch a runtime");
+  } finally {
+    await server.close();
+  }
+});
+
 test("event cap stops the child and fails the run explicitly", async () => {
   // The success factory emits 4 content events; with maxEventsPerRun 3 the
   // 4th trips the cap: the child is stopped (cancel invoked) and the run

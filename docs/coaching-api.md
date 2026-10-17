@@ -61,6 +61,34 @@ Empty history is an explicit completed result: a `recordCount: 0` snapshot
 submits to `completed` with an empty-history reason and never invokes the
 runtime.
 
+### Idempotent submission and retained-run replay
+
+The snapshot store keeps source records only for `snapshotTtlMs`, while a run
+stays readable for `retentionMs`. Submission therefore resolves the caller's
+idempotency record BEFORE it requires a live snapshot: an identical retry of an
+accepted `POST /coaching/runs` keeps returning that same run (HTTP `200`,
+`replayed: true`, no runtime launch) after the snapshot handle has expired, for
+as long as the run itself is retained. Replay compares the incoming prompt,
+runtime, and snapshot reference (`snapshotId`, `source`, `accountId`) against
+the run's own canonical stored snapshot; the stored snapshot is never blindly
+substituted for a changed request.
+
+Refusals keep their existing semantics:
+
+- a changed prompt or `snapshotId` under the same key is
+  `409 IDEMPOTENCY_CONFLICT`, and an unsupported `runtimeId` stays
+  `400 VALIDATION_ERROR` (only `pi` is wired);
+- a changed `source` for the same `snapshotId`, or a snapshot reference bound to
+  another account, is `403 FORBIDDEN`;
+- a replay is only ever served to the owning account on the same session; a
+  foreign session is `404 SESSION_NOT_FOUND`;
+- a NEW key still needs an owned, live snapshot, so an expired handle is
+  `404 SNAPSHOT_NOT_FOUND`, and a run removed by retention is never resurrected
+  (its idempotency mapping is dropped with it).
+
+A session referenced by a retained run survives its own idle expiry, so the
+replay path stays reachable without extending the snapshot lifetime.
+
 ## Envelopes, status, and cursor semantics
 
 Success is `{ data }`; failure is `{ error: { code, message } }` (see
@@ -189,7 +217,19 @@ cancelled honestly and never dispatches the renewed POST. An ambiguous network
 failure during any submit is never silently re-POSTed: the stable key is kept
 for an explicit user Retry, and a cancel that collides with an unresolved POST
 stays `unconfirmed` (resolved through the same key) rather than claiming a false
-cancellation.
+cancellation. While that ambiguous key is held, fresh work (submit or New
+analysis) is blocked and the Ask UI stays disabled; only the same-key Retry
+(or its cancel resolution) is offered. Only a known pre-execution refusal for
+the FIRST submit (`VALIDATION_ERROR`, `RUN_BUSY`, `FORBIDDEN`,
+`SESSION_NOT_FOUND`) proves no run was created, so the pending key is cleared
+and fresh work stays recoverable. An unknown/proxy `API_ERROR` 5xx, an auth
+refusal, a lost ack, or a malformed success stays unknown and keeps the same
+key. A same-key retry rejection cannot prove the ORIGINAL accepted run is
+absent, so it never erases the original key — the user retries the same
+request. A cancel during a same-key retry is carried through the retry POST
+and then cancels the resolved run (or lands `unconfirmed` if the retry is
+still unknown) — never a local cancelled while the original accept is
+unresolved.
 
 ## Capacity rule: `processExitConfirmed`
 
