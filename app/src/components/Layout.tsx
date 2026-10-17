@@ -1,16 +1,27 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
+import { isCoachingEnabled } from "../api/runtimeMode.ts";
+import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
+import { useCoach } from "../coaching/useCoach.ts";
 
-const navLinks = [
+const baseNavLinks = [
   { to: "/", label: "History" },
   { to: "/workout/new", label: "Log Workout" },
   { to: "/analysis", label: "Analysis" },
   { to: "/plan", label: "Plan" },
 ];
 
+function navLinks() {
+  // The Coach entry is launcher-gated: only the explicit same-origin runtime
+  // flag shows it, so the App never advertises a fake cloud coach.
+  if (isCoachingEnabled()) return [...baseNavLinks, { to: "/coach", label: "Coach" }];
+  return baseNavLinks;
+}
+
 function AccountArea() {
   const { status, user, signOutSession } = useAuth();
+  const coach = useCoach();
   const navigate = useNavigate();
   if (status === "signed-in" && user !== null) {
     return (
@@ -19,6 +30,11 @@ function AccountArea() {
         <button
           type="button"
           onClick={() => {
+            // Tear down the account-level coach with A's still-live credentials
+            // BEFORE the auth session is cleared (the gate then unmounts the
+            // Coach, so its own effects can never observe the transition). The
+            // owner is the same instance for the whole account, mounted or not.
+            coach.teardown();
             void signOutSession().then(() => navigate("/login", { replace: true }));
           }}
         >
@@ -32,31 +48,33 @@ function AccountArea() {
 
 export function Layout() {
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <span className="app-title">pi-fit-trace</span>
-        <nav aria-label="Primary">
-          <ul className="nav-list">
-            {navLinks.map((link) => (
-              <li key={link.to}>
-                <NavLink
-                  to={link.to}
-                  end={link.to === "/"}
-                  className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
-                >
-                  {link.label}
-                </NavLink>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <AccountArea />
-      </header>
-      <AuthOutageNotice />
-      <main className="app-main">
-        <Outlet />
-      </main>
-    </div>
+    <CoachingProvider>
+      <div className="app-shell">
+        <header className="app-header">
+          <span className="app-title">agent-fit-trace</span>
+          <nav aria-label="Primary">
+            <ul className="nav-list">
+              {navLinks().map((link) => (
+                <li key={link.to}>
+                  <NavLink
+                    to={link.to}
+                    end={link.to === "/"}
+                    className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+                  >
+                    {link.label}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <AccountArea />
+        </header>
+        <AuthOutageNotice />
+        <main className="app-main">
+          <Outlet />
+        </main>
+      </div>
+    </CoachingProvider>
   );
 }
 

@@ -1,0 +1,144 @@
+#!/usr/bin/env node
+/**
+ * `agent-fit-trace` source-run launcher entry.
+ *
+ * Usage:
+ *   node packages/fit-trace-cli/src/cli.ts start [--port N] [--no-open]
+ *     [--upstream https://<app>/api/v1] [--dist <path>]
+ *
+ * Packaged `npx` distribution is not published; this file is the CLI start
+ * interface run from source via `pnpm start` / `pnpm coach:local`.
+ */
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { BIND_HOST, checkNodeRuntime, checkPiCli, isSafeOpenUrl, resolveLauncherConfig } from "./config.ts";
+import type { LauncherFlags } from "./config.ts";
+import { startLauncherServer } from "./launcherServer.ts";
+
+function printUsage(): void {
+  console.log(
+    [
+      "Usage: agent-fit-trace start [--port N] [--no-open] [--upstream URL] [--dist PATH]",
+      "",
+      "  --port N       preferred loopback port (default 5198, falls forward when busy)",
+      "  --no-open      do not try to open a browser (for tests/headless)",
+      "  --upstream URL fixed authenticated API base (default $FIT_TRACE_API_BASE_URL)",
+      "  --dist PATH    built app directory (default <repo>/app/dist)",
+    ].join("\n"),
+  );
+}
+
+function takeValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index];
+  if (value === undefined || value === "" || value.startsWith("--")) {
+    throw new Error(`missing value for ${flag}`);
+  }
+  return value;
+}
+
+function parseArgs(argv: string[]): { command: string; flags: LauncherFlags } {
+  const flags: LauncherFlags = {};
+  let command = "";
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (token === "--port") {
+      flags.port = Number(takeValue(argv, index + 1, "--port"));
+      index += 1;
+    } else if (token === "--no-open") {
+      flags.noOpen = true;
+    } else if (token === "--upstream") {
+      flags.upstream = takeValue(argv, index + 1, "--upstream");
+      index += 1;
+    } else if (token === "--dist") {
+      flags.dist = takeValue(argv, index + 1, "--dist");
+      index += 1;
+    } else if (token === "--help" || token === "-h") {
+      printUsage();
+      process.exit(0);
+    } else if (!token.startsWith("--") && command === "") {
+      command = token;
+    } else {
+      throw new Error(`unknown argument: ${token}`);
+    }
+  }
+  return { command, flags };
+}
+
+/** Open only exact loopback URLs in a browser (argv array, no shell). */
+function tryOpenBrowser(url: string): void {
+  if (!isSafeOpenUrl(url)) {
+    console.log(`Open this address manually: ${url}`);
+    return;
+  }
+  const platform = process.platform;
+  const command = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
+  const args = platform === "darwin" ? [url] : platform === "win32" ? ["/c", "start", "", url] : [url];
+  try {
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {
+      console.log(`Open this address manually: ${url}`);
+    });
+    child.unref();
+  } catch {
+    console.log(`Open this address manually: ${url}`);
+  }
+}
+
+async function main(): Promise<void> {
+  const { command, flags } = parseArgs(process.argv.slice(2));
+  if (command !== "start") {
+    printUsage();
+    process.exit(command === "" ? 0 : 2);
+  }
+
+  checkNodeRuntime();
+  const here = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(here, "..", "..", "..");
+  const config = resolveLauncherConfig(process.env, flags, repoRoot);
+
+  const pi = await checkPiCli();
+  if (pi.available) {
+    console.log(`pi CLI detected${pi.version === null ? "" : `: ${pi.version}`}`);
+  } else {
+    console.log(
+      "pi CLI not found on PATH — workout tracking works; coaching runs report unconfigured until pi is installed.",
+    );
+  }
+
+  const server = await startLauncherServer({
+    distDir: config.distDir,
+    upstreamBaseUrl: config.upstreamBaseUrl,
+    host: BIND_HOST,
+    port: config.port,
+    piAvailable: pi.available,
+  });
+  console.log(`fit-trace coach listening at ${server.url}`);
+
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) {
+      process.exit(1);
+    }
+    shuttingDown = true;
+    void server.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+    void signal;
+  };
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+  const interactive = Boolean(process.stdout.isTTY);
+  if (!config.noOpen && interactive) {
+    tryOpenBrowser(server.url);
+  }
+}
+
+try {
+  await main();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(2);
+}
