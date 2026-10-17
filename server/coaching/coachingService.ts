@@ -472,7 +472,15 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   // is cleared on shutdown.
   const sweepIntervalMs = Math.max(25, Math.min(60_000, retentionMs, snapshotTtlMs));
   const sweepTimer = setInterval(() => {
-    if (!shutDown) expireSweep();
+    if (shutDown) return;
+    try {
+      expireSweep();
+    } catch {
+      // A journal write failure must never escape a timer callback and kill
+      // the process mid-stream. The next mutation retries persistence and
+      // surfaces STORAGE_UNAVAILABLE if the filesystem is still unhealthy.
+      clearInterval(sweepTimer);
+    }
   }, sweepIntervalMs);
   if (typeof sweepTimer.unref === "function") sweepTimer.unref();
 
@@ -1227,7 +1235,16 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       globalActive += 1;
       entry.capacityHeld = true;
       evictOverflow();
-      persistJournal();
+      try {
+        persistJournal();
+      } catch (error) {
+        // The caller never received a run id, so it cannot cancel this ghost
+        // reservation. Roll it back before surfacing the storage failure.
+        if (runs.get(runId) === entry) runs.delete(runId);
+        if (idempotency.get(key) === runId) idempotency.delete(key);
+        releaseCapacity(entry);
+        throw error;
+      }
 
       // Empty history is a normal new-user state: explicit completed result,
       // runtime never invoked, no capacity consumed beyond this tick.

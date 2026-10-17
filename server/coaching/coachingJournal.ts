@@ -30,6 +30,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type {
@@ -597,7 +598,10 @@ function validateJournal(path: string, raw: unknown): LoadedCoachingJournal {
   let capacityHeld = 0;
   for (const stored of runs) {
     const session = sessionById.get(stored.run.sessionId);
-    if (session !== undefined && session.accountId !== stored.accountId) {
+    if (session === undefined) {
+      fail(path, `run ${stored.run.id} references missing session ${JSON.stringify(stored.run.sessionId)}`);
+    }
+    if (session.accountId !== stored.accountId) {
       fail(path, `run ${stored.run.id} crosses account boundaries with its session`);
     }
     if (stored.capacityHeld) capacityHeld += 1;
@@ -674,6 +678,129 @@ function ensureJournalDirectory(path: string): string {
 }
 
 /**
+ * Refuse to replace a journal another writer advanced. The in-memory generation
+ * is not sufficient: two launchers can both load generation N and then race to
+ * write N+1, silently dropping the other's sessions/runs/idempotency.
+ */
+function assertCurrentGeneration(path: string, expected: number): void {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      if (expected === 0) return;
+      fail(path, `journal disappeared (expected generation ${expected})`);
+    }
+    fail(
+      path,
+      `cannot verify the journal generation (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text) as unknown;
+  } catch {
+    fail(path, "file is not valid JSON");
+  }
+  const root = asObject(path, raw, "root");
+  const onDisk = asSafeInteger(path, root.generation, "generation");
+  if (onDisk !== expected) {
+    fail(
+      path,
+      `journal generation changed from ${expected} to ${onDisk}; refusing to overwrite another writer`,
+    );
+  }
+}
+
+export interface CoachingJournalLock {
+  readonly path: string;
+  release(): void;
+}
+
+interface JournalLockFile {
+  pid: number;
+  token: string;
+}
+
+function processIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+function readLockFile(path: string): JournalLockFile | null {
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!isObject(raw)) return null;
+    if (typeof raw.pid !== "number" || !Number.isSafeInteger(raw.pid) || raw.pid <= 0) {
+      return null;
+    }
+    if (typeof raw.token !== "string" || raw.token === "") return null;
+    return { pid: raw.pid, token: raw.token };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Claim the journal for this launcher process. The lock is removed on clean
+ * close; a dead owner's lock is reclaimed once, while an unreadable lock fails
+ * closed rather than guessing. This is advisory process ownership, not a
+ * security boundary against a hostile local user.
+ */
+export function acquireCoachingJournalLock(path: string): CoachingJournalLock {
+  const resolved = resolve(path);
+  const lockPath = `${resolved}.lock`;
+  ensureJournalDirectory(resolved);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = randomUUID();
+    try {
+      const fd = openSync(lockPath, "wx", 0o600);
+      try {
+        writeFileSync(
+          fd,
+          `${JSON.stringify({ pid: process.pid, token })}\n`,
+          { encoding: "utf8" },
+        );
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      let released = false;
+      return {
+        path: lockPath,
+        release(): void {
+          if (released) return;
+          released = true;
+          const current = readLockFile(lockPath);
+          if (current !== null && current.token === token) {
+            rmSync(lockPath, { force: true });
+          }
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+      const current = readLockFile(lockPath);
+      if (current === null) {
+        fail(
+          lockPath,
+          "lock file exists but is unreadable; remove it manually after confirming no launcher is running",
+        );
+      }
+      if (processIsAlive(current.pid)) {
+        fail(lockPath, `another launcher (pid ${String(current.pid)}) already owns this journal`);
+      }
+      rmSync(lockPath, { force: true });
+    }
+  }
+  fail(lockPath, "could not acquire the journal lock");
+}
+
+/**
  * Atomically replace the journal with `state` at `previousGeneration + 1`.
  * Synchronous by design: callers flush before acknowledging a mutation.
  */
@@ -687,11 +814,12 @@ export function writeCoachingJournal(
   }
   const resolved = resolve(path);
   ensureJournalDirectory(resolved);
+  assertCurrentGeneration(resolved, previousGeneration);
   const generation = previousGeneration + 1;
   if (!Number.isSafeInteger(generation)) {
     throw new CoachingJournalCorruptError(resolved, "journal generation overflow");
   }
-  const temp = `${resolved}.${process.pid}.${generation}.tmp`;
+  const temp = `${resolved}.${process.pid}.${generation}.${randomUUID()}.tmp`;
   const payload = `${JSON.stringify({
     version: COACHING_JOURNAL_VERSION,
     generation,
@@ -709,6 +837,18 @@ export function writeCoachingJournal(
     fd = null;
     renameSync(temp, resolved);
     chmodSync(resolved, 0o600);
+    // Best-effort directory durability. Some platforms/filesystems reject
+    // opening a directory; the file fsync + rename above still hold.
+    try {
+      const dirFd = openSync(dirname(resolved), "r");
+      try {
+        fsyncSync(dirFd);
+      } finally {
+        closeSync(dirFd);
+      }
+    } catch {
+      // Directory fsync is not portable; the atomic rename is still in place.
+    }
   } catch (error) {
     if (fd !== null) {
       try {

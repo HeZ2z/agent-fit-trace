@@ -22,6 +22,10 @@ import type {
 } from "../../../server/coaching/coachingService.ts";
 import { createCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
 import type { CoachingRuntimeRegistration } from "../../../server/coaching/runtimeRegistry.ts";
+import {
+  acquireCoachingJournalLock,
+} from "../../../server/coaching/coachingJournal.ts";
+import type { CoachingJournalLock } from "../../../server/coaching/coachingJournal.ts";
 import type { CoachingRuntimeId } from "@pi-fit-trace/api-contracts";
 import { resolveCoachingBackendSelection } from "@pi-fit-trace/api-contracts";
 
@@ -872,36 +876,47 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
   // port falls forward (port 0 binds once, no scan).
   const preferred = options.port ?? Number(process.env.FIT_TRACE_COACH_PORT ?? DEFAULT_PORT);
   const attempts = preferred === 0 ? 1 : PORT_SCAN_LIMIT + 1;
+  // Two launchers over the same cwd would otherwise load and rewrite the same
+  // journal with independent generation counters. Hold process ownership for
+  // the listener lifetime; the lock is released on close or a failed startup.
+  const journalLock: CoachingJournalLock | null =
+    journalPath === null ? null : acquireCoachingJournalLock(journalPath);
   let server: CoachingServer | null = null;
   let lastError: unknown = null;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const candidate = preferred + attempt;
-    if (candidate > 65535) break;
-    try {
-      server = await startCoachingServer({
-        verifier,
-        upstream: { baseUrl: upstreamBase },
-        runtimeFactory,
-        runtimeRegistry,
-        publicConfig,
-        host,
-        port: candidate,
-        journalPath,
-        trustedHandler,
-      });
-      lastError = null;
-      break;
-    } catch (error) {
-      const code =
-        typeof error === "object" && error !== null && "code" in error
-          ? String((error as { code: unknown }).code)
-          : "";
-      if (code !== "EADDRINUSE") throw error;
-      lastError = error;
+  try {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const candidate = preferred + attempt;
+      if (candidate > 65535) break;
+      try {
+        server = await startCoachingServer({
+          verifier,
+          upstream: { baseUrl: upstreamBase },
+          runtimeFactory,
+          runtimeRegistry,
+          publicConfig,
+          host,
+          port: candidate,
+          journalPath,
+          trustedHandler,
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        const code =
+          typeof error === "object" && error !== null && "code" in error
+            ? String((error as { code: unknown }).code)
+            : "";
+        if (code !== "EADDRINUSE") throw error;
+        lastError = error;
+      }
     }
+  } catch (error) {
+    journalLock?.release();
+    throw error;
   }
   const bound = server;
   if (bound === null) {
+    journalLock?.release();
     throw lastError instanceof Error ? lastError : new Error("launcher could not bind an available port");
   }
 
@@ -910,6 +925,12 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
     port: bound.port,
     upstreamBaseUrl: upstreamBase,
     service: bound.service,
-    close: () => bound.close(),
+    close: async () => {
+      try {
+        await bound.close();
+      } finally {
+        journalLock?.release();
+      }
+    },
   };
 }

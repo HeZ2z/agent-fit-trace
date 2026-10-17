@@ -32,6 +32,10 @@ import type {
 } from "../server/coaching/coachingService.ts";
 import { createCoachingRuntimeRegistry } from "../server/coaching/runtimeRegistry.ts";
 import { CoachingJournalCorruptError } from "../server/coaching/coachingJournal.ts";
+import {
+  acquireCoachingJournalLock,
+  writeCoachingJournal,
+} from "../server/coaching/coachingJournal.ts";
 import type { CoachingJournalState } from "../server/coaching/coachingJournal.ts";
 
 const PRINCIPAL_A = { id: "journal-user-a", email: "journal-a@example.com" };
@@ -150,7 +154,7 @@ test("terminal run, events, native ownership, and expired-snapshot replay surviv
   let serviceA: CoachingService | null = null;
   let serviceB: CoachingService | null = null;
   try {
-    serviceA = serviceFor(stores, path, completingFactory(capturesA), { snapshotTtlMs: 40 });
+    serviceA = serviceFor(stores, path, completingFactory(capturesA), { snapshotTtlMs: 1_000 });
     const session = serviceA.createSession(PRINCIPAL_A, "journal-sess-a");
     const snapshot = await serviceA.createSnapshot(PRINCIPAL_A);
     const input = submitInput(session.id, snapshot, "journal-key-1");
@@ -160,7 +164,7 @@ test("terminal run, events, native ownership, and expired-snapshot replay surviv
     assert.ok(before.events.some((envelope) => envelope.event.type === "analysis_result"));
 
     // Snapshot TTL lapses while the terminal run stays retained.
-    await wait(120);
+    await wait(1_200);
     await serviceA.shutdown();
     serviceA = null;
 
@@ -174,7 +178,7 @@ test("terminal run, events, native ownership, and expired-snapshot replay surviv
     assert.equal(statSync(path).mode & 0o777, 0o600, "journal file is private");
     assert.equal(statSync(dirname(path)).mode & 0o777, 0o700, "journal parent is private");
 
-    serviceB = serviceFor(stores, path, completingFactory(capturesB), { snapshotTtlMs: 40 });
+    serviceB = serviceFor(stores, path, completingFactory(capturesB), { snapshotTtlMs: 1_000 });
     // Idempotent replay survives restart even though the snapshot handle expired.
     const replay = await serviceB.submitRun(PRINCIPAL_A, input);
     assert.equal(replay.replayed, true);
@@ -207,7 +211,7 @@ test("retention expiry after restart removes the run/session and refuses a repla
   try {
     serviceA = serviceFor(stores, path, completingFactory(capturesA), {
       retentionMs: 100,
-      snapshotTtlMs: 100,
+      snapshotTtlMs: 1_000,
     });
     const session = serviceA.createSession(PRINCIPAL_A, "journal-expiry-sess");
     const snapshot = await serviceA.createSnapshot(PRINCIPAL_A);
@@ -220,7 +224,7 @@ test("retention expiry after restart removes the run/session and refuses a repla
     await wait(300);
     serviceB = serviceFor(stores, path, completingFactory(capturesB), {
       retentionMs: 100,
-      snapshotTtlMs: 100,
+      snapshotTtlMs: 1_000,
     });
     assert.equal(serviceB.runCount(), 0, "expired terminal run must not be resurrected");
     assert.throws(() => serviceB?.readRun(PRINCIPAL_A, first.run.id), /not found/i);
@@ -278,6 +282,11 @@ test("corrupt journal state fails closed without rewriting the file", async () =
     const next = structuredClone(base);
     next.idempotency[0]!.runId = "run-missing";
     tampered.push({ label: "references missing run", value: next });
+  }
+  {
+    const next = structuredClone(base);
+    next.sessions = [];
+    tampered.push({ label: "references missing session", value: next });
   }
   {
     const next = structuredClone(base);
@@ -521,6 +530,50 @@ test("native continuation stays partitioned by backend/runtime/version across re
     await serviceA?.shutdown().catch(() => undefined);
     await serviceB?.shutdown().catch(() => undefined);
     cleanupCaptures([...capturesA, ...capturesB]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stale writer cannot overwrite a newer journal generation", () => {
+  const { dir, path } = makeJournal();
+  const state: CoachingJournalState = {
+    sessions: [],
+    snapshots: [],
+    runs: [],
+    idempotency: [],
+  };
+  try {
+    assert.equal(writeCoachingJournal(path, 0, state), 1);
+    assert.throws(
+      () => writeCoachingJournal(path, 0, state),
+      (error: unknown) =>
+        error instanceof CoachingJournalCorruptError &&
+        /generation changed/.test(error.message),
+    );
+    const persisted = JSON.parse(readFileSync(path, "utf8")) as { generation: number };
+    assert.equal(persisted.generation, 1, "the newer file is not overwritten");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("one launcher owns the journal lock at a time, and release re-opens it", () => {
+  const { dir, path } = makeJournal();
+  try {
+    const first = acquireCoachingJournalLock(path);
+    try {
+      assert.throws(
+        () => acquireCoachingJournalLock(path),
+        (error: unknown) =>
+          error instanceof CoachingJournalCorruptError &&
+          /another launcher/.test(error.message),
+      );
+    } finally {
+      first.release();
+    }
+    const second = acquireCoachingJournalLock(path);
+    second.release();
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
