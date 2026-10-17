@@ -22,6 +22,7 @@ import type { CreateWorkoutResult, FitTraceClient } from "@pi-fit-trace/api-cont
 import { createMemoryHandler } from "@pi-fit-trace/api-contracts/testing";
 import type { HandlerResponse } from "@pi-fit-trace/api-contracts/testing";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { createInMemoryWorkoutStore } from "../server/inMemoryWorkoutStore.ts";
 
 function record(over: Partial<WorkoutRecord> & { id: string; date: string }): WorkoutRecord {
   return validateWorkoutRecord({
@@ -166,6 +167,7 @@ test("ApiError carries code, details and status; codes are exported", () => {
     STORAGE_UNAVAILABLE: "STORAGE_UNAVAILABLE",
     UNAUTHENTICATED: "UNAUTHENTICATED",
     FORBIDDEN: "FORBIDDEN",
+    NOT_FOUND: "NOT_FOUND",
     NETWORK_ERROR: "NETWORK_ERROR",
     MALFORMED_RESPONSE: "MALFORMED_RESPONSE",
     API_ERROR: "API_ERROR",
@@ -175,7 +177,11 @@ test("ApiError carries code, details and status; codes are exported", () => {
 function makeClient(): FitTraceClient {
   const store = new Map<string, WorkoutRecord>();
   store.set(r1.id, r1);
+  // Import methods come from the real in-memory store; this double only
+  // narrows the four workout methods used by these route tests.
+  const importMethods = createInMemoryWorkoutStore();
   return {
+    ...importMethods,
     async listWorkouts() {
       return [...store.values()];
     },

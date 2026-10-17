@@ -13,10 +13,45 @@ import type {
   ValidationWarning,
   WorkoutRecord,
 } from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError, deriveWorkoutId } from "@pi-fit-trace/api-contracts";
-import type { CreateWorkoutResult, FitTraceClient } from "@pi-fit-trace/api-contracts";
+import {
+  API_ERROR_CODES,
+  ApiError,
+  HTTP_STATUS,
+  buildImportedArtifact,
+  deriveWorkoutId,
+  encodeArtifactCursor,
+  isImportedArtifactKind,
+  normalizeListImportedArtifactsQuery,
+  parseImportArtifactInput,
+} from "@pi-fit-trace/api-contracts";
+import type {
+  ArtifactSelection,
+  CreateWorkoutResult,
+  FitTraceClient,
+  ImportArtifactInput,
+  ImportedArtifact,
+  ImportedArtifactKind,
+  ImportedArtifactPage,
+  ListImportedArtifactsQuery,
+  PlanAdoption,
+  PlanAdoptionInput,
+  SaveImportedArtifactResult,
+} from "@pi-fit-trace/api-contracts";
 import { LocalStorageAdapter, StorageUnavailableError } from "../storage/adapter.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
+import {
+  ImportStorageCorruptionError,
+  clearPlanAdoptionRecord,
+  loadArtifactSelection,
+  loadImportedArtifact,
+  loadImportedArtifacts,
+  loadPlanAdoptionRecord,
+  metadataFor,
+  pageArtifacts,
+  saveArtifactSelection,
+  saveImportedArtifactRecord,
+  savePlanAdoptionRecord,
+} from "../storage/importRepository.ts";
 import {
   StorageCorruptionError,
   loadRecord,
@@ -39,14 +74,53 @@ function toApiError(error: unknown): unknown {
   if (error instanceof StorageUnavailableError) {
     return new ApiError({ code: API_ERROR_CODES.STORAGE_UNAVAILABLE, message: error.message });
   }
-  if (error instanceof StorageCorruptionError) {
+  if (error instanceof StorageCorruptionError || error instanceof ImportStorageCorruptionError) {
     return new ApiError({ code: API_ERROR_CODES.CORRUPT_STORE, message: error.message });
+  }
+  // Custom adapters may throw the platform DOMException directly instead of
+  // wrapping it. Treat the storage-blocked names as unavailable storage.
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as { name?: unknown }).name === "string" &&
+    STORAGE_DOM_EXCEPTION_NAMES.has((error as { name: string }).name)
+  ) {
+    const message = (error as { message?: unknown }).message;
+    return new ApiError({
+      code: API_ERROR_CODES.STORAGE_UNAVAILABLE,
+      message: typeof message === "string" && message !== "" ? message : "Storage is unavailable.",
+    });
   }
   return error;
 }
 
+const STORAGE_DOM_EXCEPTION_NAMES = new Set([
+  "QuotaExceededError",
+  "SecurityError",
+  "InvalidStateError",
+  "NotSupportedError",
+]);
+
 function hasUsableId(record: WorkoutRecord): boolean {
   return typeof record.id === "string" && record.id.trim() !== "";
+}
+
+function notFound(message: string, details?: unknown): ApiError {
+  return new ApiError({
+    code: API_ERROR_CODES.NOT_FOUND,
+    message,
+    status: HTTP_STATUS.notFound,
+    ...(details === undefined ? {} : { details }),
+  });
+}
+
+function validation(message: string, details?: unknown): ApiError {
+  return new ApiError({
+    code: API_ERROR_CODES.VALIDATION_ERROR,
+    message,
+    status: HTTP_STATUS.badRequest,
+    ...(details === undefined ? {} : { details }),
+  });
 }
 
 /**
@@ -63,9 +137,9 @@ export const LOCAL_DEV_BYPASS_OWNER = "dev-loopback-bypass";
  * legacy unowned v1 keys stay hidden. Omitting `ownerId` keeps the legacy
  * (unowned) namespace for tests/tools only; the App always passes an owner.
  *
- * Every method is async, which is what turns synchronous storage throws
- * (blocked `localStorage`) into promise rejections; error translation happens
- * in `toApiError`, never by swallowing.
+ * Imported artifacts live under separate per-owner keys; saving one never
+ * rewrites another. Every method is async, which is what turns synchronous
+ * storage throws (blocked `localStorage`) into promise rejections.
  */
 export interface LocalFitTraceClientOptions {
   ownerId?: string;
@@ -80,6 +154,14 @@ export interface LocalFitTraceClientOptions {
 export class LocalFitTraceClient implements FitTraceClient {
   private readonly adapter: StorageAdapter;
   private readonly ownerId: string | undefined;
+  private readonly now: () => Date;
+  /**
+   * Per-client promise queue for artifact saves. Artifact reads/hash are async
+   * (native Web Crypto), so the check-then-write sequence must be serialized
+   * to keep identical concurrent saves to one duplicate. This is per client
+   * instance: cross-tab/cross-client atomicity is an explicit known gap.
+   */
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(
     adapter: StorageAdapter = new LocalStorageAdapter(),
@@ -88,11 +170,29 @@ export class LocalFitTraceClient implements FitTraceClient {
     this.adapter = adapter;
     if (typeof ownerOrOptions === "string") {
       this.ownerId = ownerOrOptions;
+      this.now = () => new Date();
     } else {
       this.ownerId = ownerOrOptions?.ownerId;
-      // `now` is consumed by sibling methods when this branch merges; the
-      // string form remains fully supported here.
+      this.now = ownerOrOptions?.now ?? (() => new Date());
     }
+  }
+
+  /**
+   * Imported artifacts always live in an explicit namespace. The fallback
+   * keeps the pre-auth single-user local store isolated; verified identities
+   * always pass their account id.
+   */
+  private get artifactOwnerId(): string {
+    return this.ownerId ?? "local";
+  }
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async listWorkouts(): Promise<WorkoutRecord[]> {
@@ -152,6 +252,174 @@ export class LocalFitTraceClient implements FitTraceClient {
   async createPlanDraft(input?: PlanConstraints): Promise<PlanDraft> {
     try {
       return generateNextPlan(loadRecords(this.adapter, this.ownerId), input);
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async saveImportedArtifact<K extends ImportedArtifactKind>(
+    input: ImportArtifactInput<K>,
+  ): Promise<SaveImportedArtifactResult<K>> {
+    return this.enqueue(async () => {
+      try {
+        const { input: normalizedInput, warnings } = parseImportArtifactInput(input);
+        const artifact = await buildImportedArtifact(normalizedInput as ImportArtifactInput<K>, {
+          created_at: this.now().toISOString(),
+        });
+        const existing = await loadImportedArtifact(this.adapter, this.artifactOwnerId, artifact.id);
+        if (existing !== null) {
+          if (
+            existing.kind === artifact.kind &&
+            stableStringify(existing.payload) === stableStringify(artifact.payload)
+          ) {
+            return { artifact: existing as ImportedArtifact<K>, duplicate: true, warnings };
+          }
+          throw new ApiError({
+            code: API_ERROR_CODES.CONFLICT,
+            message: `An imported artifact with id "${artifact.id}" already exists with different content.`,
+            details: { id: artifact.id },
+          });
+        }
+        saveImportedArtifactRecord(this.adapter, this.artifactOwnerId, artifact);
+        return { artifact, duplicate: false, warnings };
+      } catch (error) {
+        throw toApiError(error);
+      }
+    });
+  }
+
+  async listImportedArtifacts(
+    query: ListImportedArtifactsQuery = {},
+  ): Promise<ImportedArtifactPage> {
+    try {
+      const normalized = normalizeListImportedArtifactsQuery(query);
+      const all = (await loadImportedArtifacts(this.adapter, this.artifactOwnerId)).map(metadataFor);
+      const items = pageArtifacts(all, normalized);
+      const hasMore = pageArtifacts(all, { ...normalized, limit: normalized.limit + 1 }).length > normalized.limit;
+      const last = items[items.length - 1];
+      return {
+        items,
+        next_cursor:
+          hasMore && last !== undefined
+            ? encodeArtifactCursor({
+                kind: last.kind,
+                created_at: last.created_at,
+                id: last.id,
+              })
+            : null,
+      };
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async getImportedArtifact(id: string): Promise<ImportedArtifact> {
+    try {
+      if (typeof id !== "string" || id === "" || id.length > 256) {
+        throw validation("Invalid imported artifact id.");
+      }
+      const artifact = await loadImportedArtifact(this.adapter, this.artifactOwnerId, id);
+      if (artifact === null) {
+        throw notFound(`No imported artifact with id "${id}".`, { id });
+      }
+      return artifact;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async getArtifactSelection(kind: ImportedArtifactKind): Promise<ArtifactSelection> {
+    try {
+      if (!isImportedArtifactKind(kind)) throw validation("Invalid artifact kind.");
+      return await loadArtifactSelection(this.adapter, this.artifactOwnerId, kind);
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async setArtifactSelection(
+    kind: ImportedArtifactKind,
+    artifactId: string | null,
+  ): Promise<ArtifactSelection> {
+    try {
+      if (!isImportedArtifactKind(kind)) throw validation("Invalid artifact kind.");
+      if (artifactId === null) {
+        const selection: ArtifactSelection = { artifact_id: null };
+        saveArtifactSelection(this.adapter, this.artifactOwnerId, kind, selection);
+        return selection;
+      }
+      if (typeof artifactId !== "string" || artifactId === "" || artifactId.length > 256) {
+        throw validation("Invalid imported artifact id.");
+      }
+      const artifact = await loadImportedArtifact(this.adapter, this.artifactOwnerId, artifactId);
+      if (artifact === null) {
+        throw notFound(`No imported artifact with id "${artifactId}".`, { id: artifactId });
+      }
+      if (artifact.kind !== kind) {
+        throw validation(`Imported artifact "${artifactId}" is not a ${kind} snapshot.`, {
+          id: artifactId,
+          kind,
+        });
+      }
+      const selection: ArtifactSelection = { artifact_id: artifactId };
+      saveArtifactSelection(this.adapter, this.artifactOwnerId, kind, selection);
+      return selection;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async getPlanAdoption(): Promise<PlanAdoption | null> {
+    try {
+      return await loadPlanAdoptionRecord(this.adapter, this.artifactOwnerId);
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async setPlanAdoption(input: PlanAdoptionInput | null): Promise<PlanAdoption | null> {
+    try {
+      if (input === null) {
+        clearPlanAdoptionRecord(this.adapter, this.artifactOwnerId);
+        return null;
+      }
+      if (
+        typeof input !== "object" ||
+        typeof input.artifact_id !== "string" ||
+        input.artifact_id === "" ||
+        input.artifact_id.length > 256
+      ) {
+        throw validation("Invalid plan adoption request.");
+      }
+      const artifact = await loadImportedArtifact(this.adapter, this.artifactOwnerId, input.artifact_id);
+      if (artifact === null) {
+        throw notFound(`No imported artifact with id "${input.artifact_id}".`, {
+          id: input.artifact_id,
+        });
+      }
+      if (artifact.kind !== "plan") {
+        throw validation("Only a plan snapshot can be adopted.", { id: input.artifact_id });
+      }
+      if (artifact.content_digest !== input.confirmed_digest) {
+        throw validation("The confirmed digest does not match the stored plan snapshot.", {
+          id: input.artifact_id,
+        });
+      }
+      const existing = await loadPlanAdoptionRecord(this.adapter, this.artifactOwnerId);
+      if (
+        existing !== null &&
+        existing.artifact_id === input.artifact_id &&
+        existing.confirmed_digest === input.confirmed_digest
+      ) {
+        return existing;
+      }
+      const adoption: PlanAdoption = {
+        artifact_id: input.artifact_id,
+        confirmed_digest: input.confirmed_digest,
+        confirmed_at: this.now().toISOString(),
+      };
+      savePlanAdoptionRecord(this.adapter, this.artifactOwnerId, adoption);
+      return adoption;
     } catch (error) {
       throw toApiError(error);
     }

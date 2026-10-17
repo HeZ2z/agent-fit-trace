@@ -6,6 +6,17 @@ import type {
   ValidationWarning,
   WorkoutRecord,
 } from "@pi-fit-trace/core";
+import type {
+  ArtifactSelection,
+  ImportArtifactInput,
+  ImportedArtifact,
+  ImportedArtifactKind,
+  ImportedArtifactPage,
+  ListImportedArtifactsQuery,
+  PlanAdoption,
+  PlanAdoptionInput,
+  SaveImportedArtifactResult,
+} from "./imports.ts";
 
 /**
  * Transport contract shared by the fit-trace app and any HTTP-shaped backend.
@@ -30,11 +41,33 @@ export interface CreateWorkoutResult {
  * way they resolve with unwrapped domain values (the envelope is stripped by
  * the transport, not by callers).
  */
-export interface FitTraceClient {
+export interface FitTraceClient extends FitTraceImportClient {
   listWorkouts(): Promise<WorkoutRecord[]>;
   createWorkout(record: WorkoutRecord): Promise<CreateWorkoutResult>;
   analyze(filter?: AnalysisFilter): Promise<AnalysisResult>;
   createPlanDraft(input?: PlanConstraints): Promise<PlanDraft>;
+}
+
+/**
+ * Immutable imported snapshots plus the mutable, explicitly separate
+ * "currently viewing" and plan-adoption state.
+ *
+ * Saving a snapshot never selects it, and selecting it never adopts a plan:
+ * each mutation is a separate call so the UI cannot silently change meaning.
+ */
+export interface FitTraceImportClient {
+  saveImportedArtifact<K extends ImportedArtifactKind>(
+    input: ImportArtifactInput<K>,
+  ): Promise<SaveImportedArtifactResult<K>>;
+  listImportedArtifacts(query?: ListImportedArtifactsQuery): Promise<ImportedArtifactPage>;
+  getImportedArtifact(id: string): Promise<ImportedArtifact>;
+  getArtifactSelection(kind: ImportedArtifactKind): Promise<ArtifactSelection>;
+  setArtifactSelection(
+    kind: ImportedArtifactKind,
+    artifactId: string | null,
+  ): Promise<ArtifactSelection>;
+  getPlanAdoption(): Promise<PlanAdoption | null>;
+  setPlanAdoption(input: PlanAdoptionInput | null): Promise<PlanAdoption | null>;
 }
 
 export interface OkEnvelope<T> {
@@ -112,6 +145,9 @@ export const API_ENDPOINTS = {
   workouts: "/workouts",
   analysis: "/analysis",
   planDrafts: "/plans/drafts",
+  imports: "/imports",
+  importSelections: "/import-selections",
+  planAdoption: "/plan-adoption",
   publicConfig: "/public-config",
 } as const;
 
@@ -123,8 +159,21 @@ export const API_ENDPOINTS = {
  * - `GET /workouts` → 200 list.
  * - `GET /analysis` (optional `from`/`to`/`exercises` query) → 200.
  * - `POST /plans/drafts` (optional `PlanConstraints` body) → 200.
+ * - `POST /imports` (`{ kind, payload_schema_version, payload, source_filename? }`)
+ *   → 201 on a new snapshot, 200 on an identical duplicate, 409 when the same
+ *   id exists with different content. The server recomputes the id/digest and
+ *   never accepts an owner.
+ * - `GET /imports?kind=&limit=&cursor=` → 200 metadata page
+ *   (`{ items, next_cursor }`); the payload is never included in list reads.
+ * - `GET /imports/:id` → 200 full snapshot; another owner's or a missing id is
+ *   uniformly 404 `NOT_FOUND`.
+ * - `GET|PUT /import-selections/:kind` → 200 `{ artifact_id }`; null clears the
+ *   selection. Switching what is displayed never adopts a plan.
+ * - `GET|PUT /plan-adoption` → 200 `null` or
+ *   `{ artifact_id, confirmed_digest, confirmed_at }`; PUT null revokes only
+ *   the adoption metadata.
  * - Authenticated deployments reject missing/invalid bearer tokens on all
- *   four endpoints with 401 `UNAUTHENTICATED` (plus a `WWW-Authenticate:
+ *   data endpoints with 401 `UNAUTHENTICATED` (plus a `WWW-Authenticate:
  *   Bearer` header) and out-of-scope callers with 403 `FORBIDDEN`.
  * - `GET /public-config` → 200 without authentication; it only exposes the
  *   public Supabase URL and publishable key needed to start a login.

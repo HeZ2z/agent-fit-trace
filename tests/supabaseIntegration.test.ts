@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { after, afterEach, test } from "node:test";
 
 import { validateWorkoutRecord } from "@pi-fit-trace/core";
@@ -31,6 +32,8 @@ const SUPABASE_URL = (process.env.SUPABASE_URL ?? "").replace(/\/+$/, "");
 const PUBLISHABLE_KEY =
   process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+/** Optional direct Postgres URL, used only for a read-only privilege assertion. */
+const DB_URL = process.env.SUPABASE_DB_URL ?? "";
 const ENABLED = process.env.FIT_TRACE_SUPABASE_INTEGRATION === "1";
 
 function isLoopback(url: string): boolean {
@@ -1213,4 +1216,483 @@ test("cloud worker RPC (real DB): an expired accepted lease is reaped as unconfi
   const quotaRow = (quota.json as { tokens_reserved: number; reserved_count: number }[])[0];
   assert.equal(quotaRow?.tokens_reserved, 20_000);
   assert.equal(quotaRow?.reserved_count, 1);
+});
+
+async function importStore(user: TestUser) {
+  const { createSupabaseImportMethods } = await import("../server/db/supabaseImports.ts");
+  return createSupabaseImportMethods(
+    { id: user.id },
+    {
+      supabaseUrl: SUPABASE_URL,
+      publishableKey: PUBLISHABLE_KEY,
+      accessToken: user.accessToken,
+      fetchImpl: fetch as typeof fetch,
+    },
+  );
+}
+
+async function apiErrorCode(run: Promise<unknown>): Promise<string> {
+  try {
+    await run;
+    return "resolved";
+  } catch (error) {
+    return String((error as { code?: string }).code ?? "unknown");
+  }
+}
+
+test("imports: anonymous denied, two owners isolated, selections/adoption owner+kind bound", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) {
+    assert.fail("local Supabase stack is not running (`supabase start`).");
+  }
+
+  const { analyzeProgress, generateNextPlan } = await import("@pi-fit-trace/core");
+  const userA = await provisionUser("imp-a");
+  const userB = await provisionUser("imp-b");
+  const workout = seedRecord({ id: `w-imports-${Date.now()}`, date: "2026-09-20" });
+  const analysisInput = {
+    kind: "analysis" as const,
+    payload_schema_version: 1 as const,
+    payload: analyzeProgress([workout]),
+  };
+  const planInput = {
+    kind: "plan" as const,
+    payload_schema_version: 1 as const,
+    payload: generateNextPlan([workout], { goal: "add 5 kg to bench" }),
+  };
+
+  // Anonymous callers cannot execute any import RPC or read the table.
+  for (const [name, body] of [
+    ["list_imported_artifacts_page", { p_kind: null, p_after_created_at: null, p_after_id: null, p_limit: 1 }],
+    ["get_imported_artifact", { p_id: `analysis:v1:${"0".repeat(64)}` }],
+    ["save_imported_artifact", {
+      p_kind: "analysis",
+      p_id: `analysis:v1:${"0".repeat(64)}`,
+      p_payload_schema_version: 1,
+      p_payload: {},
+      p_source_filename: null,
+      p_source_record_ids: [],
+      p_content_digest: "0".repeat(64),
+    }],
+    ["get_artifact_selection", { p_kind: "analysis" }],
+    ["set_artifact_selection", { p_kind: "analysis", p_artifact_id: null }],
+    ["get_plan_adoption", {}],
+    ["set_plan_adoption", { p_artifact_id: null, p_confirmed_digest: null }],
+  ] as const) {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+      method: "POST",
+      headers: { apikey: PUBLISHABLE_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const once = await readOnce(response);
+    assert.ok(
+      once.status === 401 || once.status === 403 || once.status === 404,
+      `anonymous ${name} must be denied, got ${once.status}: ${once.text.slice(0, 160)}`,
+    );
+  }
+  const anonTable = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/imported_artifacts?select=id`, {
+      headers: { apikey: PUBLISHABLE_KEY },
+    }),
+  );
+  assert.ok(
+    anonTable.status === 401 || anonTable.status === 403 || anonTable.text === "[]",
+    `anonymous table read must be denied or empty, got ${anonTable.status}`,
+  );
+
+  const createdWorkout = await readOnce(await rpcCreate(userA.accessToken, workout));
+  assert.equal(createdWorkout.status, 200, createdWorkout.text.slice(0, 200));
+  const workoutsBefore = await listPayloads(userA.accessToken);
+
+  const storeA = await importStore(userA);
+  const storeB = await importStore(userB);
+  const savedAnalysis = await storeA.saveImportedArtifact(analysisInput);
+  assert.equal(savedAnalysis.duplicate, false);
+  const retry = await storeA.saveImportedArtifact(analysisInput);
+  assert.equal(retry.duplicate, true);
+  assert.deepEqual(retry.artifact, savedAnalysis.artifact);
+
+  assert.equal((await storeB.listImportedArtifacts()).items.length, 0);
+  assert.equal(
+    await apiErrorCode(storeB.getImportedArtifact(savedAnalysis.artifact.id)),
+    "NOT_FOUND",
+  );
+
+  const savedPlan = await storeA.saveImportedArtifact(planInput);
+  await storeA.setArtifactSelection("analysis", savedAnalysis.artifact.id);
+  await storeA.setArtifactSelection("plan", savedPlan.artifact.id);
+  assert.deepEqual(await storeA.getArtifactSelection("plan"), {
+    artifact_id: savedPlan.artifact.id,
+  });
+  // Selecting across kinds is rejected by both the RPC and the composite FK.
+  assert.equal(
+    await apiErrorCode(storeA.setArtifactSelection("plan", savedAnalysis.artifact.id)),
+    "VALIDATION_ERROR",
+  );
+
+  // Adoption requires a plan, the exact digest, and the same owner.
+  assert.equal(
+    await apiErrorCode(
+      storeA.setPlanAdoption({
+        artifact_id: savedAnalysis.artifact.id,
+        confirmed_digest: savedAnalysis.artifact.content_digest,
+      }),
+    ),
+    "VALIDATION_ERROR",
+  );
+  assert.equal(
+    await apiErrorCode(
+      storeA.setPlanAdoption({
+        artifact_id: savedPlan.artifact.id,
+        confirmed_digest: savedAnalysis.artifact.content_digest,
+      }),
+    ),
+    "VALIDATION_ERROR",
+  );
+  assert.equal(
+    await apiErrorCode(
+      storeB.setPlanAdoption({
+        artifact_id: savedPlan.artifact.id,
+        confirmed_digest: savedPlan.artifact.content_digest,
+      }),
+    ),
+    "NOT_FOUND",
+  );
+  const adopted = await storeA.setPlanAdoption({
+    artifact_id: savedPlan.artifact.id,
+    confirmed_digest: savedPlan.artifact.content_digest,
+  });
+  assert.equal(adopted?.artifact_id, savedPlan.artifact.id);
+  assert.equal(adopted?.confirmed_at === undefined, false);
+  assert.equal(await storeA.getPlanAdoption().then((value) => value?.artifact_id), savedPlan.artifact.id);
+
+  // Importing and selecting/adopting never touches the old workout.
+  const workoutsAfter = await listPayloads(userA.accessToken);
+  assert.deepEqual(workoutsAfter, workoutsBefore);
+
+  const bOnly = await storeB.saveImportedArtifact({
+    kind: "analysis",
+    payload_schema_version: 1,
+    payload: analyzeProgress([
+      seedRecord({
+        id: `w-imports-b-${Date.now()}`,
+        date: "2026-09-23",
+        exercises: [{ name: "squat", sets: [{ weight: 120, reps: 3 }] }],
+      }),
+    ]),
+  });
+
+  // Direct cross-owner selections/adoptions are blocked by the composite FKs.
+  const crossOwnerSelection = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/artifact_preferences`, {
+      method: "POST",
+      headers: { ...headers(userA.accessToken), Prefer: "return=representation" },
+      body: JSON.stringify({
+        owner_id: userA.id,
+        kind: "analysis",
+        artifact_id: bOnly.artifact.id,
+      }),
+    }),
+  );
+  assert.ok(
+    crossOwnerSelection.status === 400 || crossOwnerSelection.status === 409,
+    `cross-owner selection must be rejected by the FK, got ${crossOwnerSelection.status}: ${crossOwnerSelection.text.slice(0, 200)}`,
+  );
+
+  const crossSelection = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/artifact_preferences`, {
+      method: "POST",
+      headers: { ...headers(userA.accessToken), Prefer: "return=representation" },
+      body: JSON.stringify({
+        owner_id: userA.id,
+        kind: "plan",
+        artifact_id: savedAnalysis.artifact.id,
+      }),
+    }),
+  );
+  assert.ok(
+    crossSelection.status === 400 || crossSelection.status === 409,
+    `cross-kind selection must be rejected by the FK, got ${crossSelection.status}: ${crossSelection.text.slice(0, 200)}`,
+  );
+  const crossAdoption = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/plan_adoptions`, {
+      method: "POST",
+      headers: { ...headers(userA.accessToken), Prefer: "return=representation" },
+      body: JSON.stringify({
+        owner_id: userA.id,
+        artifact_id: savedPlan.artifact.id,
+        kind: "plan",
+        confirmed_digest: savedAnalysis.artifact.content_digest,
+      }),
+    }),
+  );
+  assert.ok(
+    crossAdoption.status === 400 || crossAdoption.status === 409,
+    `cross-digest adoption must be rejected by the FK, got ${crossAdoption.status}: ${crossAdoption.text.slice(0, 200)}`,
+  );
+});
+
+test("imports: direct artifact writes are denied and TRUNCATE is not granted", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) {
+    assert.fail("local Supabase stack is not running (`supabase start`).");
+  }
+
+  const { analyzeProgress } = await import("@pi-fit-trace/core");
+  const user = await provisionUser("immutable");
+  const store = await importStore(user);
+  const record = seedRecord({ id: `w-immutable-${Date.now()}`, date: "2026-09-21" });
+  const saved = await store.saveImportedArtifact({
+    kind: "analysis",
+    payload_schema_version: 1,
+    payload: analyzeProgress([record]),
+  });
+  const id = saved.artifact.id;
+  const digest = saved.artifact.content_digest;
+
+  const directInsert = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/imported_artifacts`, {
+      method: "POST",
+      headers: { ...headers(user.accessToken), Prefer: "return=representation" },
+      body: JSON.stringify({
+        owner_id: user.id,
+        id,
+        kind: "analysis",
+        schema_version: 1,
+        payload_schema_version: 1,
+        source: "file_import",
+        source_filename: null,
+        source_record_ids: saved.artifact.source_record_ids,
+        content_digest: digest,
+        payload: saved.artifact.payload,
+      }),
+    }),
+  );
+  assert.ok(
+    directInsert.status === 401 || directInsert.status === 403,
+    `direct INSERT must be denied, got ${directInsert.status}: ${directInsert.text.slice(0, 200)}`,
+  );
+
+  const patch = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/imported_artifacts?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { ...headers(user.accessToken), Prefer: "return=representation" },
+      body: JSON.stringify({ source_filename: "forged.json" }),
+    }),
+  );
+  assert.ok(
+    patch.status === 401 || patch.status === 403,
+    `UPDATE must be denied, got ${patch.status}: ${patch.text.slice(0, 200)}`,
+  );
+
+  const deleted = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/imported_artifacts?id=eq.${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { ...headers(user.accessToken), Prefer: "return=representation" },
+    }),
+  );
+  assert.ok(
+    deleted.status === 401 || deleted.status === 403,
+    `DELETE must be denied, got ${deleted.status}: ${deleted.text.slice(0, 200)}`,
+  );
+
+  // TRUNCATE has no PostgREST surface. Never execute it here: even inside a
+  // transaction, a mistaken grant would run a destructive statement against
+  // the shared local database. Ask the catalog whether the role holds the
+  // privilege instead; this is read-only and cannot delete anything.
+  if (DB_URL === "" || !isLoopback(SUPABASE_URL)) {
+    t.diagnostic(
+      "TRUNCATE privilege not checked: set SUPABASE_DB_URL to the local Postgres URL (psql) to run it.",
+    );
+    return;
+  }
+  const privilege = spawnSync(
+    "psql",
+    [
+      DB_URL,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-t",
+      "-A",
+      "-c",
+      "select has_table_privilege('authenticated', 'public.imported_artifacts', 'TRUNCATE')::text;",
+    ],
+    { encoding: "utf8" },
+  );
+  if (privilege.error !== undefined || privilege.status === null) {
+    t.diagnostic(
+      `TRUNCATE privilege not checked: psql unavailable (${privilege.error?.message ?? "no status"}).`,
+    );
+    return;
+  }
+  assert.equal(
+    privilege.status,
+    0,
+    `read-only privilege query failed: ${privilege.stderr.slice(0, 200)}`,
+  );
+  assert.equal(
+    privilege.stdout.trim(),
+    "false",
+    "authenticated must not hold TRUNCATE on imported_artifacts",
+  );
+
+  // The row still exists after all denial attempts.
+  const stored = await store.getImportedArtifact(id);
+  assert.deepEqual(stored, saved.artifact);
+});
+
+test("imports: the save RPC rejects invalid drafts and forged source/id refs", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) {
+    assert.fail("local Supabase stack is not running (`supabase start`).");
+  }
+
+  const { analyzeProgress, generateNextPlan } = await import("@pi-fit-trace/core");
+  const user = await provisionUser("forged");
+  const record = seedRecord({ id: `w-forged-${Date.now()}`, date: "2026-09-22" });
+  const analysis = analyzeProgress([record]);
+  const plan = generateNextPlan([record], { goal: "add 5 kg to bench" });
+  const zeroDigest = "0".repeat(64);
+
+  async function saveRpc(body: Record<string, unknown>) {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/save_imported_artifact`, {
+      method: "POST",
+      headers: headers(user.accessToken),
+      body: JSON.stringify(body),
+    });
+    const once = await readOnce(response);
+    return once;
+  }
+
+  // id must equal kind:v1:digest.
+  const forgedId = await saveRpc({
+    p_kind: "analysis",
+    p_id: `analysis:v1:${"1".repeat(64)}`,
+    p_payload_schema_version: 1,
+    p_payload: analysis,
+    p_source_filename: null,
+    p_source_record_ids: analysis.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(forgedId.status, 400, forgedId.text.slice(0, 200));
+
+  // Denormalized source refs must equal the payload refs.
+  const forgedSource = await saveRpc({
+    p_kind: "analysis",
+    p_id: `analysis:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: analysis,
+    p_source_filename: null,
+    p_source_record_ids: [],
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(forgedSource.status, 400, forgedSource.text.slice(0, 200));
+
+  // A plan must be an unconfirmed draft even when the caller supplies a
+  // structurally valid id/digest pair.
+  const forgedDraft = await saveRpc({
+    p_kind: "plan",
+    p_id: `plan:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: { ...plan, is_draft: false, requires_confirmation: false },
+    p_source_filename: null,
+    p_source_record_ids: plan.based_on.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(forgedDraft.status, 400, forgedDraft.text.slice(0, 200));
+
+  // `requires_confirmation` must be a JSON boolean: the string "true" is not
+  // acceptable even though `is_draft` is a real boolean true.
+  const forgedConfirmationType = await saveRpc({
+    p_kind: "plan",
+    p_id: `plan:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: { ...plan, is_draft: true, requires_confirmation: "true" },
+    p_source_filename: null,
+    p_source_record_ids: plan.based_on.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(forgedConfirmationType.status, 400, forgedConfirmationType.text.slice(0, 200));
+
+  // Payload byte limit (60 * 1024) is enforced before insert. The large
+  // unknown field keeps every existing shape check satisfied.
+  const oversized = await saveRpc({
+    p_kind: "analysis",
+    p_id: `analysis:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: { ...analysis, unknown_bloat: "x".repeat(70000) },
+    p_source_filename: null,
+    p_source_record_ids: analysis.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(oversized.status, 400, oversized.text.slice(0, 200));
+
+  // A null source id list is rejected even though the helper/table are NOT NULL.
+  const nullSourceIds = await saveRpc({
+    p_kind: "analysis",
+    p_id: `analysis:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: analysis,
+    p_source_filename: null,
+    p_source_record_ids: null,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(nullSourceIds.status, 400, nullSourceIds.text.slice(0, 200));
+
+  // Independent analysis shape checks (metrics object required).
+  const missingMetrics = await saveRpc({
+    p_kind: "analysis",
+    p_id: `analysis:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: { ...analysis, metrics: null },
+    p_source_filename: null,
+    p_source_record_ids: analysis.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(missingMetrics.status, 400, missingMetrics.text.slice(0, 200));
+
+  // Independent plan shape checks (recommendations/safety_notes arrays required).
+  const missingRecommendations = await saveRpc({
+    p_kind: "plan",
+    p_id: `plan:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: { ...plan, recommendations: null },
+    p_source_filename: null,
+    p_source_record_ids: plan.based_on.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(missingRecommendations.status, 400, missingRecommendations.text.slice(0, 200));
+
+  const missingSafetyNotes = await saveRpc({
+    p_kind: "plan",
+    p_id: `plan:v1:${zeroDigest}`,
+    p_payload_schema_version: 1,
+    p_payload: { ...plan, safety_notes: null },
+    p_source_filename: null,
+    p_source_record_ids: plan.based_on.source_records,
+    p_content_digest: zeroDigest,
+  });
+  assert.equal(missingSafetyNotes.status, 400, missingSafetyNotes.text.slice(0, 200));
+
+  // None of the rejected writes created a row.
+  const store = await importStore(user);
+  assert.equal((await store.listImportedArtifacts()).items.length, 0);
 });
