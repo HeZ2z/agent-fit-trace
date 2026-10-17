@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
@@ -21,11 +21,23 @@ import {
   normalizeUpstreamBaseUrl,
   resolveLauncherConfig,
 } from "../packages/fit-trace-cli/src/config.ts";
-import { RUNTIME_SCRIPT_BODY, startLauncherServer } from "../packages/fit-trace-cli/src/launcherServer.ts";
-import type { LauncherServer } from "../packages/fit-trace-cli/src/launcherServer.ts";
+import {
+  RUNTIME_SCRIPT_BODY,
+  startLauncherServer as startLauncherServerBase,
+} from "../packages/fit-trace-cli/src/launcherServer.ts";
+import type { LauncherServer, LauncherServerOptions } from "../packages/fit-trace-cli/src/launcherServer.ts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import { CAPABILITY_HEADER } from "../server/coaching/coachingServer.ts";
 import type { RuntimeFactory, RuntimeLaunchOptions } from "../server/coaching/coachingService.ts";
+
+/**
+ * These tests exercise launcher wiring, not durability. Keep them in-process
+ * so a shared run never writes `.pi/fit-trace/coaching-journal.json` into the
+ * repository or inherits history from a previous boot.
+ */
+function startLauncherServer(options: LauncherServerOptions): Promise<LauncherServer> {
+  return startLauncherServerBase({ journalPath: null, ...options });
+}
 
 interface RecordedRequest {
   method: string;
@@ -441,6 +453,8 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     }
     return null;
   });
+  const journalDir = await mkdtemp(join(tmpdir(), "fit-trace-launcher-journal-"));
+  const journalPath = join(journalDir, "coaching-journal.json");
   const sameOrigin = await startLauncherServer({
     distDir,
     upstreamBaseUrl: upstream.baseUrl,
@@ -449,6 +463,7 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     verifier: createTestVerifier({ "token-coach": { id: "user-coach" } }),
     publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
     runtimeFactory,
+    journalPath,
   });
   try {
     // Tracking shell + runtime bootstrap advertise same-origin coaching.
@@ -483,6 +498,12 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     });
     assert.equal(session.status, 201);
     const sessionId = ((await session.json()) as { data: { id: string } }).data.id;
+    // The launcher-owned journal is flushed before the session is acknowledged.
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
+      sessions: Array<{ id: string }>;
+    };
+    assert.deepEqual(journal.sessions.map((entry) => entry.id), [sessionId]);
+    assert.equal((await stat(journalPath)).mode & 0o777, 0o600);
 
     const snapshot = await fetch(`${sameOrigin.url}/coaching/snapshots`, {
       method: "POST",
@@ -537,6 +558,7 @@ test("one listener serves tracking, data proxy, and coaching bootstrap/run/event
     assert.equal(evil.status, 403);
   } finally {
     await sameOrigin.close();
+    await rm(journalDir, { recursive: true, force: true });
   }
   await assert.rejects(fetch(`${sameOrigin.url}/`), /fetch failed|ECONNREFUSED/);
 });

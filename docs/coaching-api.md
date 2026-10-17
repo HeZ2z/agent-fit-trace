@@ -71,9 +71,10 @@ cannot assert availability, entitlement, or quota.
   available. Until the installed version provides a verifiable way to exclude
   that entire inventory, `local-codex` stays unavailable with
   `builtin-isolation-unproven`.
-- `productReplay` is `false` until a durable local journal exists. The current
-  service can replay in-process runs only; it does not promise restart
-  durability.
+- `productReplay` remains `false` in local discovery. The launcher keeps a
+  durable local journal for restart and idempotency safety, but restart replay
+  is not yet advertised as a capability guarantee; the contract promises only
+  in-process replay.
 - `cloud-default` is available only when all of the following hold: the caller
   has a server-verified formal account (`isAnonymous: false`), the server has
   cloud quota configured, a provider is configured, and a cloud adapter is
@@ -135,6 +136,17 @@ Refusals keep their existing semantics:
 
 A session referenced by a retained run survives its own idle expiry, so the
 replay path stays reachable without extending the snapshot lifetime.
+
+The launcher persists this bounded state to an app-owned local journal
+(`.pi/fit-trace/coaching-journal.json`, file mode `0600`, parent mode `0700`)
+before acknowledging each mutation. After a restart, retained runs, events,
+and idempotency records replay normally, and native session ownership survives
+only for the same backend/runtime/version. A run that was active when the
+previous process exited is never adopted: it becomes failed with an unconfirmed
+execution outcome, keeps its capacity slot, and no second process is spawned.
+A malformed journal fails closed with `CORRUPT_STORE` instead of resetting. The
+journal path is a server startup concern only; no HTTP request can select or
+relocate it.
 
 ## Envelopes, status, and cursor semantics
 

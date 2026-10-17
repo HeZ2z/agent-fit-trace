@@ -110,6 +110,8 @@ export interface CoachingServerOptions {
   /** Optional backend registry; `runtimeFactory` remains the legacy local-pi path. */
   runtimeRegistry?: CoachingRuntimeRegistry | readonly CoachingRuntimeRegistration[];
   serviceOptions?: Omit<CoachingServiceOptions, "source" | "runtimeFactory" | "runtimeRegistry">;
+  /** App-owned durable local journal path; launcher defaults it. Null disables. */
+  journalPath?: string | null;
   publicConfig?: ServerPublicConfig | null;
   host?: string;
   port?: number;
@@ -443,6 +445,7 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
   // is only the test seam. There is no per-request source override.
   const service = createCoachingService({
     ...(options.serviceOptions ?? {}),
+    ...(options.journalPath === undefined ? {} : { journalPath: options.journalPath }),
     source: staticSource ?? fixedUpstream ?? (() => {
       throw new Error("coaching server has no workout source");
     })(),

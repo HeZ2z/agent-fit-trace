@@ -73,12 +73,13 @@ cancel routing.
 - `protocolVersion` keeps constraining the event-line format;
 - `capabilityVersion` versions each backend's capability shape.
 
-Capability flags are conservative facts, not intentions. `productReplay` is
-false everywhere in the local discovery payload until a durable local journal
-exists: the local service only has in-process replay, which must not be
-advertised as restart-durable. The separate cloud API has durable stored-event
-replay; it is not folded into the local launcher's discovery payload. A local
-backend's data destination is `cli-provider`, because the CLI sends prompts and
+Capability flags are conservative facts, not intentions. `productReplay` stays
+false in the local discovery payload: the launcher keeps a durable local journal
+for restart and idempotency safety, but the contract advertises only in-process
+replay and does not yet promise restart durability. The separate cloud API has
+durable stored-event replay; it is not folded into the local launcher's
+discovery payload. A local backend's data destination is `cli-provider`,
+because the CLI sends prompts and
 snapshot-derived context to its configured model provider even though execution
 is local. `nativeContinuation` and `cancelConfirmation: "process-exit"` are
 advertised only for an adapter that actually implements them. Unimplemented

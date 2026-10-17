@@ -195,8 +195,9 @@ export function defaultCapabilitiesFor(backendId: CoachingBackendId): CoachingBa
     capabilityVersion: COACHING_CAPABILITY_VERSION,
     protocolVersion: COACHING_PROTOCOL_VERSION,
     tools: [...COACHED_TOOL_NAMES],
-    // Only in-process replay is implemented. There is no durable journal yet,
-    // so the product must not promise replay across a server restart.
+    // The launcher keeps a durable local journal for restart/idempotency
+    // safety, but the advertised capability stays conservative until restart
+    // replay is part of the product contract.
     productReplay: false,
     nativeContinuation: isPi,
     cancelConfirmation: isPi ? "process-exit" : "unsupported",

@@ -111,6 +111,19 @@ import type {
 } from "./runtimeRegistry.ts";
 import { cleanupSnapshotDir, writeSnapshotDir } from "./snapshotFile.ts";
 import type { SnapshotDir } from "./snapshotFile.ts";
+import { canonicalizeCoachingSubmit } from "./coachingCanonical.ts";
+import {
+  CoachingJournalCorruptError,
+  loadCoachingJournal,
+  writeCoachingJournal,
+} from "./coachingJournal.ts";
+import type {
+  CoachingJournalIdempotency,
+  CoachingJournalRun,
+  CoachingJournalSession,
+  CoachingJournalSnapshot,
+  CoachingJournalState,
+} from "./coachingJournal.ts";
 
 export type {
   RuntimeDoneInfo,
@@ -195,6 +208,12 @@ export interface CoachingServiceOptions {
    * workspace write window. Production never overrides it.
    */
   writeSnapshot?: (records: WorkoutRecord[]) => Promise<SnapshotDir>;
+  /**
+   * Durable local journal path. The launcher defaults to
+   * `.pi/fit-trace/coaching-journal.json` in the process cwd; omitted/null
+   * keeps the service in-process only (direct unit tests).
+   */
+  journalPath?: string | null;
 }
 
 export const DEFAULT_MAX_EVENTS_PER_RUN = 1000;
@@ -264,89 +283,14 @@ export class CoachingServiceError extends Error {
   }
 }
 
-interface StoredSession extends CoachingSession {
-  accountId: string;
-  /** Fixed native pi session dir owned by this product session (resume scope). */
-  nativeSessionDir: string;
-  /** Last native session handle captured from onDone (same session only). */
-  nativeSessionFile?: string;
-  /** Opaque native handle (thread/session id) for a non-file engine. */
-  nativeSessionHandle?: string;
-  /**
-   * Exact owner of whichever native handle is stored above. All three must
-   * match the next run before a handle is replayed; a backend switch starts
-   * fresh and never receives another backend's file/id.
-   */
-  nativeSessionBackendId?: CoachingBackendId;
-  nativeSessionRuntimeId?: CoachingRuntimeId;
-  nativeSessionVersion?: string;
-  /** Idle-session expiry (refreshed on create/submit/read activity). */
-  expiresAt: number;
-}
+type StoredSession = CoachingJournalSession;
 
-interface StoredSnapshot {
-  snapshot: CoachingDataSnapshot;
-  accountId: string;
-  records: WorkoutRecord[];
-  expiresAt: number;
-}
+type StoredSnapshot = CoachingJournalSnapshot;
 
-interface StoredRun {
-  run: CoachingRun;
-  accountId: string;
-  canonical: string;
-  events: CoachingEventEnvelope[];
-  eventBytes: number;
+interface StoredRun extends CoachingJournalRun {
   runtime: RuntimeHandle | null;
   /** This run's OWN fresh snapshot dir (never shared, never reused). */
   snapshotDir: string | null;
-  cancelRequested: boolean;
-  cancelReason?: string;
-  /** Event/byte cap tripped: terminal is forced to this instead. */
-  sealed: { status: CoachingTerminalStatus; reason: string } | null;
-  /** Buffered runtime terminal intent from onEvent: NOT yet an event. The
-   * single terminal event is emitted only by applyTerminal on confirmed
-   * onDone (cancel/seal/tool-refusal win). Late nonterminals after an
-   * intent are dropped. */
-  terminalIntent: { status: CoachingTerminalStatus; reason?: string } | null;
-  terminated: boolean;
-  /** Capacity is held until confirmed cleanup — independent of the handle. */
-  capacityHeld: boolean;
-  /** True once the runtime exit was confirmed and teardown completed. */
-  cleanupConfirmed: boolean;
-  /** True only when onDone carried processExitConfirmed === true. */
-  processExitConfirmed: boolean;
-  /** A non-allowlisted tool was attempted: completion is withheld. */
-  toolRefused: boolean;
-  /** True once a runtime analysis_result passed validation. Completion
-   * requires this (except the empty-history path, which never runs). */
-  hasAnalysis: boolean;
-  /** First fatal tool/result failure (tool_end ok:false, INVALID_ANALYSIS,
-   * or runtime run_error): completion is withheld. */
-  fatalError: { code: string; message: string } | null;
-  expiresAt: number;
-}
-
-function canonicalizeSubmit(input: {
-  prompt: string;
-  backendId: CoachingBackendId;
-  runtimeId: string;
-  snapshot: CoachingDataSnapshot;
-}): string {
-  return JSON.stringify({
-    prompt: input.prompt,
-    backendId: input.backendId,
-    runtimeId: input.runtimeId,
-    snapshot: {
-      snapshotId: input.snapshot.snapshotId,
-      source: input.snapshot.source,
-      accountId: input.snapshot.accountId,
-      recordIds: input.snapshot.recordIds,
-      recordCount: input.snapshot.recordCount,
-      ...(input.snapshot.from === undefined ? {} : { from: input.snapshot.from }),
-      ...(input.snapshot.to === undefined ? {} : { to: input.snapshot.to }),
-    },
-  });
 }
 
 export interface CoachingService {
@@ -449,6 +393,78 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
   const closeTimers = new Set<ReturnType<typeof setTimeout>>();
   let globalActive = 0;
   let shutDown = false;
+
+  const journalPath = options.journalPath ?? null;
+  let journalGeneration = 0;
+
+  function journalState(): CoachingJournalState {
+    const idempotencyEntries: CoachingJournalIdempotency[] = [];
+    for (const runId of idempotency.values()) {
+      const stored = runs.get(runId);
+      if (stored === undefined) continue;
+      idempotencyEntries.push({
+        accountId: stored.accountId,
+        sessionId: stored.run.sessionId,
+        key: stored.run.idempotencyKey,
+        runId,
+      });
+    }
+    return {
+      sessions: [...sessions.values()].map((session) => structuredClone(session)),
+      snapshots: [...snapshots.values()].map((snapshot) => ({
+        snapshot: structuredClone(snapshot.snapshot),
+        accountId: snapshot.accountId,
+        records: snapshot.records.map((record) => structuredClone(record)),
+        expiresAt: snapshot.expiresAt,
+      })),
+      // The live runtime handle is process state, never journal state.
+      runs: [...runs.values()].map(({ runtime: _runtime, ...stored }) => structuredClone(stored)),
+      idempotency: idempotencyEntries,
+    };
+  }
+
+  /** Flush the current product state before acknowledging a mutation. */
+  function persistJournal(): void {
+    if (journalPath === null) return;
+    try {
+      journalGeneration = writeCoachingJournal(journalPath, journalGeneration, journalState());
+    } catch (error) {
+      if (error instanceof CoachingJournalCorruptError) throw error;
+      throw new CoachingServiceError("STORAGE_UNAVAILABLE", "The coaching journal is temporarily unavailable.");
+    }
+  }
+
+  function hydrateJournal(): void {
+    if (journalPath === null) return;
+    const loaded = loadCoachingJournal(journalPath);
+    journalGeneration = loaded.generation;
+    for (const session of loaded.state.sessions) sessions.set(session.id, session);
+    for (const snapshot of loaded.state.snapshots) {
+      snapshots.set(snapshot.snapshot.snapshotId, snapshot);
+    }
+    for (const stored of loaded.state.runs) {
+      runs.set(stored.run.id, { ...stored, runtime: null });
+    }
+    for (const entry of loaded.state.idempotency) {
+      idempotency.set(idemKey(entry.accountId, entry.sessionId, entry.key), entry.runId);
+    }
+    globalActive = [...runs.values()].filter((stored) => stored.capacityHeld).length;
+    // A process restart loses every runtime handle. A run that was still
+    // active cannot be adopted: mark it execution-unconfirmed, keep its
+    // capacity (so no second process is spawned) and retain its history.
+    for (const stored of [...runs.values()]) {
+      if (stored.terminated) continue;
+      applyTerminal(
+        stored,
+        "failed",
+        "process execution unconfirmed after server restart; outcome unknown",
+        false,
+      );
+    }
+    expireSweep();
+  }
+
+  hydrateJournal();
 
   // Automatic expiry: idle retention applies even with no subsequent calls.
   // The interval scales with the configured lifetimes so small-TTL tests
@@ -569,6 +585,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       stored.snapshotDir = null;
       void cleanupSnapshotDir(dir).catch(() => undefined);
     }
+    persistJournal();
   }
 
   function expireSweep(): void {
@@ -609,6 +626,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         snapRemoved += 1;
       }
     }
+    if (sessRemoved > 0 || snapRemoved > 0) persistJournal();
   }
 
   /** The next envelope for a run: `seq` is the current log length and the
@@ -700,6 +718,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       }
     }
     evictOverflow();
+    persistJournal();
   }
 
   /** Stop the child after an event/byte cap trip; the terminal applies only
@@ -720,6 +739,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       code: "EVENT_CAP",
       message,
     }));
+    persistJournal();
     const handle = stored.runtime;
     if (handle !== null) {
       try {
@@ -763,6 +783,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
     if (payload.type !== "terminal" && stored.run.status === "queued") {
       stored.run = { ...stored.run, status: "running" };
     }
+    persistJournal();
   }
 
   /** Validate runtime analysis output before forwarding; malformed analysis
@@ -951,6 +972,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           throw new CoachingServiceError("SESSION_NOT_FOUND", "Coaching session not found.");
         }
         existing.expiresAt = Date.now() + retentionMs;
+        persistJournal();
         return cloneSession(existing);
       }
       let owned = 0;
@@ -967,12 +989,14 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         expiresAt: Date.now() + retentionMs,
       };
       sessions.set(sessionId, session);
+      persistJournal();
       return cloneSession(session);
     },
 
     readSession(principal: AuthPrincipal, id: string): CoachingSession {
       const session = getSessionOwned(principal, id);
       session.expiresAt = Date.now() + retentionMs;
+      persistJournal();
       return cloneSession(session);
     },
 
@@ -1053,6 +1077,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       const byId = new Map(capped.map((record) => [record.id, record]));
       const ordered = recordIds.map((id) => byId.get(id)).filter((r) => r !== undefined) as WorkoutRecord[];
       snapshots.set(snapshotId, { snapshot, accountId: principal.id, records: ordered, expiresAt: Date.now() + snapshotTtlMs });
+      persistJournal();
       return structuredClone(snapshot);
     },
 
@@ -1104,7 +1129,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           ) {
             throw new CoachingServiceError("FORBIDDEN", "Snapshot source mismatch.");
           }
-          const requested = canonicalizeSubmit({
+          const requested = canonicalizeCoachingSubmit({
             prompt: input.prompt,
             backendId,
             runtimeId,
@@ -1148,7 +1173,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       }
       const runtimeRegistration = resolveRuntimeRegistration(backendId);
       const resolved: CoachingDataSnapshot = stored.snapshot;
-      const canonical = canonicalizeSubmit({ prompt: input.prompt, backendId, runtimeId, snapshot: resolved });
+      const canonical = canonicalizeCoachingSubmit({ prompt: input.prompt, backendId, runtimeId, snapshot: resolved });
 
       // 1 active run per session + 1 global pi process; never queue implicitly.
       for (const entry of runs.values()) {
@@ -1202,6 +1227,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       globalActive += 1;
       entry.capacityHeld = true;
       evictOverflow();
+      persistJournal();
 
       // Empty history is a normal new-user state: explicit completed result,
       // runtime never invoked, no capacity consumed beyond this tick.
@@ -1225,6 +1251,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         if (runs.get(runId) === entry) runs.delete(runId);
         if (idempotency.get(key) === runId) idempotency.delete(key);
         releaseCapacity(entry);
+        persistJournal();
         throw new CoachingServiceError("STORAGE_UNAVAILABLE", "Snapshot workspace is temporarily unavailable.");
       }
 
@@ -1272,6 +1299,8 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         session.nativeSessionDir = allocSessionDir();
       }
       const sessionDir = session.nativeSessionDir;
+      // The workspace + native session ownership are durable before launch.
+      persistJournal();
       const expectedNativeVersion = NATIVE_SESSION_VERSION_BY_BACKEND[backendId];
       // A native handle belongs to one backend + runtime + protocol version.
       // Switching any of them starts fresh: a pi session file is NEVER handed
@@ -1490,6 +1519,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
       // grace path invokes close() and awaits confirmation. Cancel wins
       // over any late completion via onDone's cancelRequested branch.
       armCancelGrace(stored);
+      persistJournal();
       return { run: cloneRun(stored.run), lastSeq: lastSeqOf(stored) };
     },
 
@@ -1569,6 +1599,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
           cancelTimers.delete(runId);
         }
       }
+      persistJournal();
     },
 
     activeRunCount(): number {
@@ -1616,8 +1647,13 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         }
         if (!confirmed) unconfirmed.push(entry.run.id);
       }
+      // Persist BEFORE workspace cleanup: shutdown retains product history
+      // (runs/events/sessions) while scratch dirs may be removed.
+      persistJournal();
       // Workspace cleanup: only confirmed-terminal run dirs go. Session dirs
-      // go only when every run of that session is confirmed-terminal.
+      // go only when every run of that session is confirmed-terminal. With a
+      // durable journal the native session dirs are retained so a restart can
+      // still honor the persisted native ownership boundary.
       for (const entry of [...runs.values()]) {
         if (entry.snapshotDir !== null && entry.terminated && entry.cleanupConfirmed) {
           const dir = entry.snapshotDir;
@@ -1632,7 +1668,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         if (!pending) {
           const dir = (session as { nativeSessionDir?: string }).nativeSessionDir;
           sessions.delete(id);
-          if (dir !== undefined) {
+          if (journalPath === null && dir !== undefined) {
             await cleanupSnapshotDir(dir).catch(() => undefined);
           }
         }

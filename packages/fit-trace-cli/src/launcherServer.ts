@@ -123,6 +123,12 @@ export interface LauncherServerOptions {
    * either one.
    */
   runtimeId?: CoachingRuntimeId;
+  /**
+   * App-owned durable local journal path. Undefined uses
+   * `.pi/fit-trace/coaching-journal.json` under the process cwd; null keeps
+   * this launcher in-process only (tests).
+   */
+  journalPath?: string | null;
 }
 
 export interface LauncherServer {
@@ -522,6 +528,10 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
   const host = options.host ?? BIND_HOST;
   assertLoopbackHost(host);
   const distDir = resolve(options.distDir);
+  const journalPath =
+    options.journalPath === undefined
+      ? join(process.cwd(), ".pi", "fit-trace", "coaching-journal.json")
+      : options.journalPath;
 
   let indexHtml: string;
   try {
@@ -876,6 +886,7 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
         publicConfig,
         host,
         port: candidate,
+        journalPath,
         trustedHandler,
       });
       lastError = null;
