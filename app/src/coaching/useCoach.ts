@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalysisResult } from "@pi-fit-trace/core";
-import { ApiError, NetworkError } from "@pi-fit-trace/api-contracts";
+import { API_ERROR_CODES, ApiError, COACHING_ERROR_CODES, NetworkError } from "@pi-fit-trace/api-contracts";
 import type {
   CoachingDataSnapshot,
   CoachingEventEnvelope,
@@ -82,6 +82,27 @@ function isDefinitiveMissingResumeError(error: unknown): boolean {
 }
 
 /**
+ * Trusted FIRST-submit rejection: the server answered with a known
+ * pre-execution refusal, which proves no run was created under our key, so the
+ * pending handle must not trap fresh work.
+ *
+ * Deliberately narrow — an unknown/proxy 5xx (`API_ERROR`), an idempotency
+ * conflict, an auth refusal, a transport loss, or an unparsable success cannot
+ * prove absence and must keep the same-key retry (never classify every
+ * `ApiError` as definitive).
+ */
+const DEFINITIVE_SUBMIT_REJECTION_CODES: ReadonlySet<string> = new Set([
+  API_ERROR_CODES.VALIDATION_ERROR,
+  API_ERROR_CODES.FORBIDDEN,
+  COACHING_ERROR_CODES.RUN_BUSY,
+  COACHING_ERROR_CODES.SESSION_NOT_FOUND,
+]);
+
+function isDefinitiveSubmitRejection(error: unknown): boolean {
+  return error instanceof ApiError && DEFINITIVE_SUBMIT_REJECTION_CODES.has(error.code);
+}
+
+/**
  * A stored resume whose session/run is definitively gone is a clean reset,
  * never a hard error — a network/auth failure cannot prove absence and must be
  * retried instead (see the restore effect).
@@ -120,6 +141,8 @@ interface PendingSubmit {
   filter: { from?: string; to?: string };
   idempotencyKey: string;
   snapshotHandle: { snapshotId: string; source: string; accountId: string };
+  /** Session the ambiguous POST was sent under; retry reuses it verbatim. */
+  sessionId: string;
 }
 
 function newIdempotencyKey(): string {
@@ -529,8 +552,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
    * pre-run operation — blocks a fresh submit / new analysis. The phase label
    * alone is NOT enough: an EXPIRED_CURSOR or a generic stream failure still
    * leaves a live run server-side that must never be silently abandoned.
+   * An ambiguous submit (accepted-but-unacked, pending same-key retry) also
+   * blocks: the key must be resolved before any fresh key is minted.
    */
   const blocksFreshRun = useCallback((): boolean => {
+    if (pendingRetryRef.current !== null) return true;
     if (runIdRef.current !== null && !terminatedRef.current) return true;
     const current = phaseRef.current;
     return (
@@ -623,7 +649,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
           return;
         }
         const handle = { snapshotId: created.snapshotId, source: created.source, accountId: created.accountId };
-        pendingRetryRef.current = { prompt: question, filter, idempotencyKey, snapshotHandle: handle };
+        pendingRetryRef.current = { prompt: question, filter, idempotencyKey, snapshotHandle: handle, sessionId };
         postDispatched = true;
         postInflightRef.current = true;
         let submitted: SubmitCoachingRunResult;
@@ -657,6 +683,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
           }
           sessionId = renewed.id;
           sessionIdRef.current = sessionId;
+          // The renewed session owns the same-key re-send: keep the pending
+          // handle pointed at it so an ambiguous second POST retries here.
+          if (pendingRetryRef.current !== null) {
+            pendingRetryRef.current = { ...pendingRetryRef.current, sessionId };
+          }
           submitted = await client.submitRun({
             sessionId,
             prompt: question,
@@ -664,8 +695,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
             snapshot: handle,
           });
         }
-        postInflightRef.current = false;
-        postDispatched = false;
+        if (generationRef.current === gen) postInflightRef.current = false;
+        if (generationRef.current === gen) postDispatched = false;
         if (generationRef.current !== gen) return;
         if (cancelRequestedRef.current) {
           // Cancel won the race while submit was in flight (item 2): the
@@ -697,10 +728,15 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         beginPhase("streaming");
         attachStream(gen, sessionId, submitted.run.id, 0);
       } catch (caught) {
-        postInflightRef.current = false;
+        if (generationRef.current === gen) postInflightRef.current = false;
         if (generationRef.current !== gen) return;
+        // A trusted structured rejection proves no run was created: clear the
+        // pending key so fresh work stays recoverable. Anything else is an
+        // unknown outcome (lost ack / malformed success) and keeps same-key retry.
+        const definitiveSubmitRejection = isDefinitiveSubmitRejection(caught);
+        if (definitiveSubmitRejection) pendingRetryRef.current = null;
         if (cancelRequestedRef.current) {
-          if (postDispatched) {
+          if (postDispatched && !definitiveSubmitRejection) {
             // The submit POST was dispatched and its outcome is unknown: the
             // server may have accepted the run. Keep the ambiguous same-key
             // handle and surface "cancellation unconfirmed" — never claim
@@ -734,8 +770,10 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
   /** Explicit retry of an AMBIGUOUS submit with the SAME key/snapshot (no implicit replay). */
   const retrySubmit = useCallback(async (): Promise<void> => {
     const pending = pendingRetryRef.current;
-    const sessionId = sessionIdRef.current;
-    if (pending === null || sessionId === null) return;
+    if (pending === null) return;
+    // The retry resolves the ORIGINAL unknown request: same session, same
+    // snapshot handle, same idempotency key. Never mints a fresh key.
+    const sessionId = pending.sessionId;
     // A retry is only meaningful while no run is established: stream errors
     // reconnect and run cancellation never resubmits (item 5).
     if (runIdRef.current !== null) return;
@@ -758,7 +796,6 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     terminatedRef.current = false;
     lastConsumedRef.current = -1;
     runIdRef.current = null;
-    let postDispatched = false;
     clearStoredCoachResume();
     setText("");
     setTools([]);
@@ -767,13 +804,24 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     setTerminal(null);
     setError(null);
     try {
+      // Reuse a still-valid capability. Every bootstrap MINTS a new short-TTL
+      // capability that the server retains until it expires (bounded per
+      // account), so an unconditional refresh would exhaust that cap across
+      // repeated same-key Retries and turn an unknown submit into a permanent
+      // 503. Only a missing/expired capability is renewed here; a structured
+      // UNAUTHENTICATED below drops the REJECTED capability for the NEXT
+      // explicit Retry. Bootstrap creates nothing — the run POST below stays
+      // the single same-key retry.
       if (!client.isBootstrapped) await client.bootstrap();
       if (generationRef.current !== gen) return;
-      if (cancelRequestedRef.current && !keepCancelIntent) {
-        beginPhase("cancelled");
-        return;
+      if (cancelRequestedRef.current) {
+        // The original accept is still unknown: a local cancelled here would
+        // be dishonest while the server may hold the run. Carry the intent
+        // through the same-key POST below, which resolves the run then
+        // cancels it (or lands unconfirmed on another ambiguous failure).
+        // Never clears the pending key before the POST resolves.
+        resolvingCancelRef.current = true;
       }
-      postDispatched = true;
       postInflightRef.current = true;
       const submitted = await client.submitRun({
         sessionId,
@@ -781,8 +829,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         idempotencyKey: pending.idempotencyKey,
         snapshot: pending.snapshotHandle,
       });
-      postInflightRef.current = false;
-      postDispatched = false;
+      if (generationRef.current === gen) postInflightRef.current = false;
       if (generationRef.current !== gen) return;
       if (cancelRequestedRef.current) {
         const ambiguousRunId = submitted.run.id;
@@ -805,23 +852,32 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
       beginPhase("streaming");
       attachStream(gen, sessionId, submitted.run.id, 0);
     } catch (caught) {
-      postInflightRef.current = false;
+      if (generationRef.current === gen) postInflightRef.current = false;
       if (generationRef.current !== gen) return;
+      // The capability this retry presented was refused. It is dropped for the
+      // NEXT explicit retry (which then bootstraps fresh), but the run POST is
+      // never auto-repeated and the ORIGINAL key is never touched.
+      if (caught instanceof ApiError && caught.code === API_ERROR_CODES.UNAUTHENTICATED) {
+        client.discardCredentials();
+      }
+      // A same-key retry rejection CANNOT prove the ORIGINAL accepted run is
+      // absent: an expired snapshot or a transient auth/capability failure is
+      // refused before the retained run is looked up, so the original key is
+      // never erased here. A cancel stays unconfirmed; otherwise the same-key
+      // Retry remains offered until the original request is resolved.
       if (cancelRequestedRef.current) {
-        if (postDispatched) {
-          // Same ambiguity as a first submit: the server may have accepted the
-          // replayed key, so stay unconfirmed rather than claiming cancelled.
-          cancelUnconfirmedRef.current = true;
-          beginPhase("unconfirmed");
-          return;
-        }
-        beginPhase("cancelled");
+        // Same ambiguity as a first submit: the server may have accepted the
+        // replayed key, so stay unconfirmed rather than claiming cancelled.
+        // Covers a dispatched retry POST and a bootstrap failure while the
+        // ORIGINAL request is still unknown.
+        cancelUnconfirmedRef.current = true;
+        beginPhase("unconfirmed");
         return;
       }
       setError(friendlyCoachError(caught));
       beginPhase("failed");
     } finally {
-      resolvingCancelRef.current = false;
+      if (generationRef.current === gen) resolvingCancelRef.current = false;
     }
   }, [attachStream, beginPhase, client, persistResume]);
 
@@ -912,6 +968,14 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
         // accepted the run, so do NOT claim cancelled. Stay cancelling; the
         // submit path resolves it (established run -> server cancel; lost ack
         // -> unconfirmed). No date/state is fabricated.
+        beginPhase("cancelling");
+        return;
+      }
+      if (pendingRetryRef.current !== null) {
+        // An ambiguous submit owns an unresolved request (original accept
+        // unknown, retry perhaps bootstrapping): a local cancelled would be
+        // dishonest. Hold cancelling; the same-key retry continuation resolves
+        // the run then cancels it (or lands unconfirmed on failure).
         beginPhase("cancelling");
         return;
       }
@@ -1333,15 +1397,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachingClien
     phase,
     // Every button capability is DERIVED from the single phase plus the live
     // run, never a scattered duplicate boolean. A known nonterminal run keeps
-    // `isRunning` true in ANY phase (expired/disconnected included) so fresh
-    // work is blocked and cancel/reconnect stay offered.
-    isRunning:
-      hasActiveRun ||
-      phase === "preparing" ||
-      phase === "restoring" ||
-      phase === "streaming" ||
-      phase === "cancelling" ||
-      phase === "disconnected",
+    // `isRunning` true in ANY phase (expired/disconnected/unconfirmed included,
+    // plus an ambiguous submit holding a same-key retry) so fresh work is
+    // blocked and cancel/reconnect stay offered. Single shared guard with
+    // submit/newAnalysis via blocksFreshRun().
+    isRunning: hasActiveRun || blocksFreshRun(),
     snapshot,
     text,
     tools,

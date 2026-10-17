@@ -113,7 +113,6 @@ export function CoachScreen() {
               disabled={
                 coach.isRunning ||
                 piUnavailable ||
-                coach.phase === "unconfirmed" ||
                 question.trim() === ""
               }
             >
@@ -254,7 +253,7 @@ export function CoachScreen() {
             </div>
           )}
 
-          {(coach.phase === "done" || coach.phase === "failed") && !coach.isRunning && (
+          {(coach.phase === "done" || coach.phase === "failed") && !coach.isRunning && coach.error === null && (
             <div className="plan-actions">
               <button type="button" onClick={coach.newAnalysis}>
                 New analysis
