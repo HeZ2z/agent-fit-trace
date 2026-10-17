@@ -194,17 +194,28 @@ export class HttpFitTraceClient implements FitTraceClient {
     this.getAccessToken = getAccessToken;
   }
 
+  private async resolveAccessToken(): Promise<string | null> {
+    return this.getAccessToken === undefined ? null : await this.getAccessToken();
+  }
+
   private async request<T>(
     path: string,
     init: HttpRequestInit | undefined,
     unwrap: (data: unknown) => T | Promise<T>,
+    /**
+     * Credential captured before an earlier await in a multi-step write.
+     * Passing it pins the request to the account that started the operation;
+     * omitting it resolves the live session per request.
+     */
+    boundAccessToken?: string | null,
   ): Promise<T> {
     let response: HttpResponseLike;
     // Resolve credentials per request so a refreshed session applies to the
     // next call without recreating the client. Exactly one HTTP attempt is
     // made here — 401s (including expired sessions) are surfaced, never
     // silently retried, so an ambiguous write cannot double-apply.
-    const accessToken = this.getAccessToken === undefined ? null : await this.getAccessToken();
+    const accessToken =
+      boundAccessToken === undefined ? await this.resolveAccessToken() : boundAccessToken;
     const headers: Record<string, string> = {
       ...(init?.body === undefined ? {} : { "content-type": "application/json" }),
       ...(accessToken === null || accessToken === "" ? {} : { authorization: `Bearer ${accessToken}` }),
@@ -275,6 +286,13 @@ export class HttpFitTraceClient implements FitTraceClient {
     // raw input are preserved and merged with the server's warnings.
     const { input: normalized, warnings } = parseImportArtifactInput(input);
     const normalizedInput = normalized as ImportArtifactInput<K>;
+    // Pin the save to the account that is signed in when this operation
+    // starts. Digesting is async, and a cross-tab account switch can replace
+    // the live session before the request is sent; resolving the token after
+    // the await could save this account's file under the next account. A
+    // token that expires during the digest fails closed with 401 (writes are
+    // never retried), while a switch can no longer redirect the snapshot.
+    const accessToken = await this.resolveAccessToken();
     const digest = await artifactContentDigest(normalizedInput.payload);
     const expectedId = importedArtifactId(normalizedInput.kind, digest);
 
@@ -290,6 +308,7 @@ export class HttpFitTraceClient implements FitTraceClient {
         }),
       },
       parseSaveImportedArtifactResult,
+      accessToken,
     );
     if (result.artifact.kind !== normalizedInput.kind) {
       throw new MalformedResponseError("kind", "does not match the requested artifact kind");
