@@ -92,20 +92,28 @@ test("cloud guards: every referenced coaching_quota column exists in the base sc
   assert.ok(!referenced.has("quota_configured"));
 });
 
-test("cloud guards: session creation reclaims expired sessions before enforcing the cap", async () => {
+test("cloud guards: session creation reclaims only expired sessions no retained run references", async () => {
   const guards = await read(GUARDS);
   const session = functionBody(guards, "coaching_create_session");
   const lock = session.indexOf(
     "pg_advisory_xact_lock(hashtext('fit-trace-cloud-sessions-v1:' || v_uid::text))",
   );
   const reclaim = session.indexOf("delete from public.coaching_sessions s");
-  const count = session.indexOf("select count(*) into v_count");
+  const count = session.indexOf("select count(*) into v_count", reclaim);
   const live = session.indexOf("s.expires_at > now()", count);
   const cap = session.indexOf("v_count >= 50");
   assert.ok(lock >= 0, "session creation serializes per account");
   assert.ok(reclaim > lock, "expired sessions are reclaimed under the per-account lock");
-  assert.match(session, /where s\.owner_id = v_uid and s\.expires_at <= now\(\)/);
   assert.ok(count > reclaim, "the capped count runs after reclamation");
+  // A run keeps its session id as text, and restore reads the session BEFORE
+  // the run. Dropping a referenced expired row would clear a valid resume, so
+  // reclamation must exclude every session a retained run references.
+  const reclaimed = session.slice(reclaim, count);
+  assert.match(reclaimed, /s\.expires_at <= now\(\)/);
+  assert.match(
+    reclaimed,
+    /not exists \(\s*select 1 from public\.coaching_runs r\s*where r\.owner_id = s\.owner_id and r\.session_id = s\.id\s*\)/,
+  );
   assert.ok(live > count && cap > live, "the cap counts only sessions with a live TTL");
 });
 

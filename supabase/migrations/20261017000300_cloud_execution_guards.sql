@@ -210,12 +210,20 @@ declare
 begin
   perform public.coaching_assert_bounded_text(v_id, 128);
   perform pg_advisory_xact_lock(hashtext('fit-trace-cloud-sessions-v1:' || v_uid::text));
-  -- Expired sessions do not need retention. Reclaim them under the same
-  -- per-account lock, then count only sessions whose TTL has not elapsed.
-  -- Nothing references a session row by FK; a run keeps its session id as
-  -- text, so dropping an expired row never orphans an accepted run.
+  -- Reclaim expired sessions under the same per-account lock, but ONLY those
+  -- no retained run references. A run stores its session id as text (there is
+  -- no FK), and restore reads the session BEFORE the run; the base
+  -- `coaching_read_session()` does not reject expired rows. Dropping a
+  -- referenced expired session therefore turns a valid restore into
+  -- SESSION_NOT_FOUND and clears the client's saved resume. The cap below
+  -- still counts only live sessions, so retained rows never block new work.
   delete from public.coaching_sessions s
-  where s.owner_id = v_uid and s.expires_at <= now();
+  where s.owner_id = v_uid
+    and s.expires_at <= now()
+    and not exists (
+      select 1 from public.coaching_runs r
+      where r.owner_id = s.owner_id and r.session_id = s.id
+    );
   select count(*) into v_count
   from public.coaching_sessions s
   where s.owner_id = v_uid and s.expires_at > now();
