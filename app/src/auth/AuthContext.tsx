@@ -246,6 +246,29 @@ export function AuthProvider({
     setPendingGuestUpgrade(null);
   }, []);
 
+  /**
+   * Promote an existing pending marker when ANY verified same-UID response
+   * proves the invited email is now confirmed. This is shared by the explicit
+   * check button, token refresh, and restored-session validation so a
+   * verification completed in another tab cannot lose the password-setup path.
+   */
+  const promotePendingGuestUpgrade = useCallback((verified: SupabaseAuthUser): boolean => {
+    const pending = loadPendingGuestUpgrade();
+    if (pending === null || pending.verified) return false;
+    if (
+      pending.userId !== verified.id ||
+      verified.isAnonymous !== false ||
+      verified.emailConfirmedAt === undefined ||
+      normalizeGuestUpgradeEmail(verified.email ?? "") !== pending.email
+    ) {
+      return false;
+    }
+    const promoted: PendingGuestUpgrade = { ...pending, verified: true };
+    savePendingGuestUpgrade(promoted);
+    setPendingGuestUpgrade(promoted);
+    return true;
+  }, []);
+
   /** Cancel a pending refresh retry and invalidate its fired task, if any. */
   const clearRefreshRetry = useCallback(() => {
     retryTimerIdRef.current += 1;
@@ -337,12 +360,21 @@ export function AuthProvider({
       const next = loadStoredSession(event.newValue);
       if (next === null) return;
       const current = sessionRef.current;
-      if (current !== null && sessionIdentity(current) === sessionIdentity(next)) return;
+      if (
+        current !== null &&
+        current.user.id === next.user.id &&
+        current.accessToken === next.accessToken
+      ) {
+        return;
+      }
+      // Same UID with a new token is a credential refresh, not an identity
+      // replacement: revalidate the token but keep this tab's pending upgrade.
+      const sameUser = current !== null && current.user.id === next.user.id;
       generationRef.current += 1;
       refreshInflightRef.current = null;
       resetRefreshRetry();
       clearGuestCandidate();
-      clearGuestUpgrade();
+      if (!sameUser) clearGuestUpgrade();
       setSessionSync(next);
       setAuthError(null);
       setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
@@ -403,10 +435,13 @@ export function AuthProvider({
       setValidatedIdentity(
         next === null ? null : validated ? (sessionIdentity(next) ?? "validated") : null,
       );
-      if (next !== null && validated) clearGuestCandidate();
+      if (next !== null && validated) {
+        clearGuestCandidate();
+        promotePendingGuestUpgrade(next.user);
+      }
       return true;
     },
-    [clearGuestCandidate, setSessionSync],
+    [clearGuestCandidate, promotePendingGuestUpgrade, setSessionSync],
   );
 
   const resolveConfig = useCallback(async (): Promise<PublicApiConfig> => {
@@ -863,22 +898,9 @@ export function AuthProvider({
       // a late PUT response cannot overwrite the promoted pending marker.
       upgradeAttemptRef.current += 1;
     }
-
-    const pending = loadPendingGuestUpgrade();
-    if (
-      pending !== null &&
-      pending.userId === verified.id &&
-      !pending.verified &&
-      verified.isAnonymous === false &&
-      verified.emailConfirmedAt !== undefined &&
-      normalizeGuestUpgradeEmail(verified.email ?? "") === pending.email
-    ) {
-      const promoted: PendingGuestUpgrade = { ...pending, verified: true };
-      savePendingGuestUpgrade(promoted);
-      setPendingGuestUpgrade(promoted);
-    }
+    promotePendingGuestUpgrade(verified);
     return verified;
-  }, [fetchImpl, resolveConfig, setSessionSync]);
+  }, [fetchImpl, promotePendingGuestUpgrade, resolveConfig, setSessionSync]);
 
   /**
    * Final password step guard. The password update itself uses the verified
@@ -1108,6 +1130,7 @@ export function AuthProvider({
         setSessionSync(reconciled);
         setValidatedIdentity(sessionIdentity(reconciled));
         clearGuestCandidate();
+        promotePendingGuestUpgrade(verified);
       } catch (error) {
         if (cancelled || generationRef.current !== generation) return;
         // Transient Auth outages must not log the user out: leave the

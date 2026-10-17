@@ -1677,6 +1677,93 @@ describe("invited guest upgrade", () => {
     expect(screen.getByTestId("token").textContent).toBe("callback-access");
   });
 
+  it("keeps a pending upgrade when another tab only refreshes the same guest token", async () => {
+    savePendingGuestUpgrade({
+      userId: "guest-1",
+      email: "invite@example.com",
+      verified: false,
+      startedAt: 1,
+    });
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com");
+
+    const refreshed: SupabaseSession = {
+      ...guestSession,
+      accessToken: "access-guest-1-refreshed",
+      refreshToken: "refresh-guest-1-refreshed",
+    };
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: AUTH_STORAGE_KEY,
+          newValue: serializeSession(refreshed),
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("token").textContent).toBe("access-guest-1-refreshed"),
+    );
+    // Same UID: the token changed, but the pending verification marker is not
+    // an account switch and must survive for the password-setup step.
+    expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toContain(
+      "invite@example.com",
+    );
+  });
+
+  it("promotes the pending upgrade when a restored same-UID session is already verified", async () => {
+    savePendingGuestUpgrade({
+      userId: "guest-1",
+      email: "invite@example.com",
+      verified: false,
+      startedAt: 1,
+    });
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({
+            id: "guest-1",
+            email: "invite@example.com",
+            is_anonymous: false,
+            email_confirmed_at: "2026-10-17T00:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap={false}
+        skipValidation={false}
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("anon").textContent).toBe("false"));
+    // Verification happened in another tab (or a token refresh applied it):
+    // the restored session must promote the marker, not hide the setup path.
+    await waitFor(() => expect(screen.getByTestId("pending-verified").textContent).toBe("true"));
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toContain('"verified":true');
+  });
+
   it("rejects a wrong-UID callback without replacing the current guest", async () => {
     const fetchImpl = (async (url: unknown, init?: RequestInit) => {
       const target = String(url);
