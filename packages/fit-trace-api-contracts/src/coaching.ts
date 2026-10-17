@@ -852,10 +852,37 @@ export function parseCoachingRuntimeInfo(value: unknown): CoachingRuntimeInfo {
 }
 
 /** Guard the public bootstrap config (`{ supabaseUrl, supabasePublishableKey }`). */
-export function parsePublicApiConfig(value: unknown): { supabaseUrl: string; supabasePublishableKey: string } {
+export function parsePublicApiConfig(value: unknown): {
+  supabaseUrl: string;
+  supabasePublishableKey: string;
+  guestSignInEnabled?: boolean;
+  guestUpgradeEnabled?: boolean;
+  guestSignInCaptchaRequired?: boolean;
+} {
   if (!isObject(value)) fail("(root)", "must be an object");
+  if (value.guestSignInEnabled !== undefined && typeof value.guestSignInEnabled !== "boolean") {
+    fail("guestSignInEnabled", "must be a boolean");
+  }
+  if (value.guestUpgradeEnabled !== undefined && typeof value.guestUpgradeEnabled !== "boolean") {
+    fail("guestUpgradeEnabled", "must be a boolean");
+  }
+  if (
+    value.guestSignInCaptchaRequired !== undefined &&
+    typeof value.guestSignInCaptchaRequired !== "boolean"
+  ) {
+    fail("guestSignInCaptchaRequired", "must be a boolean");
+  }
   return {
     supabaseUrl: assertNonBlankString(value.supabaseUrl, "supabaseUrl"),
     supabasePublishableKey: assertNonBlankString(value.supabasePublishableKey, "supabasePublishableKey"),
+    ...(value.guestSignInEnabled === undefined
+      ? {}
+      : { guestSignInEnabled: value.guestSignInEnabled }),
+    ...(value.guestUpgradeEnabled === undefined
+      ? {}
+      : { guestUpgradeEnabled: value.guestUpgradeEnabled }),
+    ...(value.guestSignInCaptchaRequired === undefined
+      ? {}
+      : { guestSignInCaptchaRequired: value.guestSignInCaptchaRequired }),
   };
 }

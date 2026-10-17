@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext.tsx";
+import { clearExplicitSignOut, consumeReturnTarget, saveReturnTarget } from "./returnTarget.ts";
 import {
   clearAuthHash,
   clearRecoveryToken,
+  isEmailVerificationType,
   isPasswordSetupType,
   loadRecoveryToken,
   parseAuthCallbackHash,
@@ -20,12 +22,49 @@ import {
  */
 
 export function SignInScreen() {
-  const { signIn, authError, publicConfig, configError } = useAuth();
+  const {
+    signIn,
+    signInAsGuest,
+    guestSignInEnabled,
+    guestSignInCaptchaRequired,
+    status,
+    user,
+    authError,
+    publicConfig,
+    configError,
+  } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
+  const [guestPending, setGuestPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Remember where the user was when this gate appeared so a successful
+  // sign-in returns there. The sanitizer rejects auth screens, so landing on
+  // `/login` itself never stores a loop.
+  useEffect(() => {
+    saveReturnTarget(`${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
+
+  // Explicit sign-out clears its own target but keeps a short marker so the
+  // protected gate cannot immediately re-capture the page being left. Once the
+  // /login route has committed, release it so a later intentional visit to
+  // that same page is captured normally.
+  useEffect(() => {
+    if (location.pathname !== "/login") return;
+    const timer = window.setTimeout(clearExplicitSignOut, 0);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname]);
+
+  function returnAfterSignIn(): void {
+    // Consume only after a successful sign-in: a failed attempt must keep the
+    // target for the next try. Success also ends any explicit-sign-out
+    // suppression so later deep links are captured normally.
+    clearExplicitSignOut();
+    navigate(consumeReturnTarget() ?? "/", { replace: true });
+  }
 
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -33,7 +72,7 @@ export function SignInScreen() {
     setError(null);
     try {
       await signIn(email.trim(), password);
-      navigate("/", { replace: true });
+      returnAfterSignIn();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Sign-in failed.");
     } finally {
@@ -41,13 +80,38 @@ export function SignInScreen() {
     }
   }
 
+  async function onGuest(): Promise<void> {
+    setGuestPending(true);
+    setError(null);
+    try {
+      await signInAsGuest();
+      returnAfterSignIn();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Guest sign-in failed.");
+    } finally {
+      setGuestPending(false);
+    }
+  }
+
+  // Only a verified guest (`isAnonymous === true`) triggers the replacement
+  // warning; unclassified users are neither accounts nor guests.
+  const signedInAsGuest = status === "signed-in" && user?.isAnonymous === true;
+  const signedInAsAccount = status === "signed-in" && user?.isAnonymous === false;
+  const guestDisabled =
+    guestPending ||
+    pending ||
+    signedInAsGuest ||
+    signedInAsAccount ||
+    publicConfig === null ||
+    guestSignInEnabled !== true;
+
   return (
     <section aria-labelledby="signin-heading">
       <h1 id="signin-heading">Sign in</h1>
       <p>
-        Workout tracking is invite-only. If you were invited, sign in with your email and
-        password below. There is no public registration — new accounts are created by
-        invitation only.
+        Accounts are invite-only. If you were invited, sign in with your email and password
+        below; there is no public registration. Workout tracking is available as a guest when
+        the deployment enables guest access.
       </p>
       {configError !== null ? (
         <div className="validation-summary" role="alert">
@@ -57,6 +121,14 @@ export function SignInScreen() {
       {(error ?? authError?.message) !== null && (error ?? authError?.message) !== undefined ? (
         <div className="validation-summary" role="alert">
           <p>{error ?? authError?.message}</p>
+        </div>
+      ) : null}
+      {signedInAsGuest ? (
+        <div className="validation-warnings" role="note">
+          <p>
+            Signing in to an account replaces this browser session. Guest workouts are not
+            merged or transferred.
+          </p>
         </div>
       ) : null}
       <form onSubmit={onSubmit}>
@@ -89,6 +161,31 @@ export function SignInScreen() {
       <p>
         <Link to="/forgot-password">Forgot your password?</Link>
       </p>
+      <section className="signin-guest" aria-labelledby="guest-signin-heading">
+        <h2 id="guest-signin-heading">Guest access</h2>
+        <p>
+          Guest data is tied to this browser and cannot be merged into an account later.
+        </p>
+        {guestSignInCaptchaRequired ? (
+          <p>
+            Guest sign-in requires CAPTCHA on this deployment. This app does not yet include a
+            CAPTCHA widget, so guest entry is disabled rather than sending a request that cannot
+            pass.
+          </p>
+        ) : guestSignInEnabled !== true ? (
+          <p>
+            {configError !== null
+              ? "Guest sign-in is unavailable because login configuration failed to load."
+              : "Guest sign-in is not enabled on this deployment."}
+          </p>
+        ) : null}
+        {signedInAsAccount ? (
+          <p>Sign out before starting a guest session; an account is never replaced by guest data.</p>
+        ) : null}
+        <button type="button" onClick={onGuest} disabled={guestDisabled}>
+          Continue as guest
+        </button>
+      </section>
     </section>
   );
 }
@@ -194,13 +291,22 @@ function resolveResetToken(): string | null {
 }
 
 export function ResetPasswordScreen() {
-  const { publicConfig, configError } = useAuth();
+  const { publicConfig, configError, session, pendingGuestUpgrade, finishGuestUpgrade } = useAuth();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const configPending = publicConfig === null && configError === null;
   const configFailed = publicConfig === null && configError !== null;
+  // A verified upgrade is a signed-in account without a password yet. The
+  // callback stored this marker only after same-UID/verified-email checks;
+  // password setup is the last step, and the marker is not cleared before it.
+  const upgradePending = pendingGuestUpgrade !== null && pendingGuestUpgrade.verified;
+  const upgradeSessionMatches =
+    pendingGuestUpgrade !== null &&
+    upgradePending &&
+    session !== null &&
+    session.user.id === pendingGuestUpgrade.userId;
 
   // Consume any direct `#access_token=…` hash on mount so the token leaves
   // the address bar immediately, even while the public config is still
@@ -219,7 +325,20 @@ export function ResetPasswordScreen() {
       );
       return;
     }
-    const accessToken = resolveResetToken();
+    let accessToken: string | null;
+    let upgradeUserId: string | null = null;
+    if (upgradePending) {
+      if (!upgradeSessionMatches || session === null || pendingGuestUpgrade === null) {
+        setError(
+          "Open this page in the tab where the email was verified. Your current session was not changed.",
+        );
+        return;
+      }
+      accessToken = session.accessToken;
+      upgradeUserId = pendingGuestUpgrade.userId;
+    } else {
+      accessToken = resolveResetToken();
+    }
     if (accessToken === null) {
       setError("This reset link is invalid or expired. Request a new one.");
       return;
@@ -235,9 +354,27 @@ export function ResetPasswordScreen() {
         accessToken,
         password,
       );
+      if (upgradePending && upgradeUserId !== null) {
+        // The update response can arrive after a switch/logout. Re-fetch and
+        // require the same UID + pending confirmed email before clearing the
+        // marker or navigating; a failed check leaves the pending state.
+        const finished = await finishGuestUpgrade(upgradeUserId);
+        if (!finished) {
+          setError(
+            "The password was saved, but this session changed before the upgrade could be confirmed. The pending upgrade was kept; reopen this tab to finish.",
+          );
+          return;
+        }
+      }
       clearRecoveryToken();
       clearAuthHash();
-      navigate("/login", { replace: true });
+      if (upgradePending) {
+        // Password setup is the final upgrade step; only now is the pending
+        // marker cleared. The account already kept the guest's same UID.
+        navigate("/", { replace: true });
+      } else {
+        navigate("/login", { replace: true });
+      }
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not update the password.",
@@ -249,8 +386,18 @@ export function ResetPasswordScreen() {
 
   return (
     <section aria-labelledby="reset-heading">
-      <h1 id="reset-heading">Choose a new password</h1>
-      <p>Invited users set their first password here as well as password resets.</p>
+      <h1 id="reset-heading">
+        {upgradePending ? "Finish your account setup" : "Choose a new password"}
+      </h1>
+      {upgradePending ? (
+        <p>
+          Your email is verified and this guest session now has an account. Set a password to
+          finish. Your existing workout history stays attached to this same user; nothing is
+          merged into another account.
+        </p>
+      ) : (
+        <p>Invited users set their first password here as well as password resets.</p>
+      )}
       {configPending ? <p>Loading configuration…</p> : null}
       {configFailed ? (
         <div className="validation-summary" role="alert">
@@ -260,6 +407,14 @@ export function ResetPasswordScreen() {
               Reload
             </button>{" "}
             <Link to="/forgot-password">Request a new link</Link>
+          </p>
+        </div>
+      ) : null}
+      {upgradePending && !upgradeSessionMatches ? (
+        <div className="validation-summary" role="alert">
+          <p>
+            This verified upgrade belongs to the tab that started it. Open this page in that
+            tab; your current session was not changed.
           </p>
         </div>
       ) : null}
@@ -282,7 +437,7 @@ export function ResetPasswordScreen() {
           />
         </div>
         <button type="submit" disabled={pending || publicConfig === null}>
-          {pending ? "Updating…" : "Update password"}
+          {pending ? "Updating…" : upgradePending ? "Set password" : "Update password"}
         </button>
       </form>
     </section>
@@ -293,10 +448,12 @@ export function ResetPasswordScreen() {
  * Handles Auth redirects (`/auth/callback`): implicit-hash invite/recovery
  * sessions route to `/reset-password` for password creation; anything else
  * goes home. The hash is consumed into tab-scoped storage and stripped from
- * the URL before navigating. No network or public config is needed — the
- * password is set on `/reset-password`, which reads the handed-off token.
+ * the URL before navigating. Email-change callbacks go through the same-UID
+ * pending-upgrade verifier and require the Auth server; invite/recovery only
+ * hand off the token locally.
  */
 export function AuthCallbackScreen() {
+  const { completeGuestUpgrade } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
@@ -315,11 +472,34 @@ export function AuthCallbackScreen() {
       setPending(false);
       return;
     }
+
+    // Email-change/confirmation callbacks are only applied through the
+    // same-UID pending-upgrade verifier. The token is stripped from the URL
+    // immediately either way; it is never handed to the ordinary
+    // recovery-token flow.
+    if (isEmailVerificationType(hashSession.type)) {
+      clearAuthHash();
+      void completeGuestUpgrade(hashSession).then(
+        () => {
+          setPending(false);
+          navigate("/reset-password", { replace: true });
+        },
+        (caught: unknown) => {
+          setPending(false);
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "This verification link could not be applied. Your current session was not changed.",
+          );
+        },
+      );
+      return;
+    }
+
     if (hashSession.accessToken !== "") saveRecoveryToken(hashSession.accessToken);
     clearAuthHash();
     setPending(false);
-    // Both invite and recovery links create a password through the same
-    // reset form; other types (e.g. email confirmation) go home.
+    // Invite and recovery links create a password through the same reset form.
     if (isPasswordSetupType(hashSession.type)) navigate("/reset-password", { replace: true });
     else navigate("/", { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps

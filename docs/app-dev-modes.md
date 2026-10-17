@@ -6,27 +6,54 @@ All modes run the same deterministic core and satisfy the same client
 contract; they differ only in where records live. There are three
 separate modes — pick exactly one:
 
-1. **Local browser** (default): `localStorage`, no server.
+1. **Local browser storage** (development default): `localStorage` is the
+   storage backend only. The app still requires `GET /api/v1/public-config`
+   and a verified Supabase session.
 2. **Memory HTTP** (development/tests legacy opt-in): unauthenticated
    loopback dev API + `VITE_FIT_TRACE_LEGACY_LOOPBACK=1`.
 3. **Authenticated Supabase HTTP**: local Supabase stack +
    `FIT_TRACE_DEV_API_MODE=supabase` dev API, app in plain HTTP mode
    (no legacy flag).
 
-## Local mode (default)
+Production requires an effective **HTTP** mode. A launcher may inject
+`window.__FIT_TRACE_RUNTIME = { mode: "http" }`; otherwise
+`VITE_FIT_TRACE_MODE=http` must be built in. Missing, `local`, unknown, or
+malformed explicit runtime values fail closed with a configuration error
+**before** `AuthProvider` or any protected provider mounts. Only the explicit
+development bypass below skips that gate.
 
-Selection: `VITE_FIT_TRACE_MODE` unset, or any value other than `"http"`.
+## Local browser storage (development default, still authenticated)
 
-- The app uses `LocalFitTraceClient` over browser `localStorage`.
-- Records live under per-record keys `pi-fit-trace:workout:v1:<id>`.
-- The browser owns the data; it persists across reloads.
-- Unknown mode values fall back to local and must not break the app.
+Selection: `VITE_FIT_TRACE_MODE` unset, or any value other than `"http"`, in a
+development build.
 
-Run it:
+- This is a storage choice, **not** an auth bypass. The app still bootstraps
+  Supabase URL + publishable key from `GET /api/v1/public-config` and requires
+  a verified session. Run the dev API with valid server Supabase env (see
+  below) and sign in; local mode then uses `LocalFitTraceClient` over browser
+  `localStorage`.
+- Records live under owner-scoped v2 keys:
+  `pi-fit-trace:workout:v2:owner:<encoded-user-id>:<record-id>`. The browser
+  owns this data; it persists across reloads.
+- Legacy unowned `pi-fit-trace:workout:v1:<id>` keys are preserved on disk but
+  hidden from owner-scoped clients. They are **not** automatically attributed
+  to the signed-in user and are **not** migrated or deleted.
+- Unknown build mode values keep the development local fallback; they still
+  go through the auth gate.
 
-```
+Run it from the repo root with the authenticated dev API serving
+`/api/v1/public-config`:
+
+```sh
+# Terminal 1 — server env in repo-root .env.local
+FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
+
+# Terminal 2 — leave VITE_FIT_TRACE_MODE unset/local
 pnpm --filter @pi-fit-trace/app dev
 ```
+
+Sign in before using the app. Workout reads/writes stay in this browser; only
+public configuration and authentication leave the browser.
 
 ## HTTP mode with memory loopback (development/tests legacy opt-in)
 
@@ -37,6 +64,10 @@ Selection: app in `VITE_FIT_TRACE_MODE=http` **plus**
   `legacyLoopback` opt-in bypasses the session gate so the
   unauthenticated loopback dev API (`pnpm dev:api`, default
   `FIT_TRACE_DEV_API_MODE=memory`) can serve workouts without login.
+- The bypass uses the fixed local owner namespace `dev-loopback-bypass`
+  (`LOCAL_DEV_BYPASS_OWNER`). That is not a verified identity and has **no
+  per-user isolation**: every bypass user of the same browser profile sees the
+  same records. Use a throwaway profile and synthetic data only.
 - The dev API owns the data in an in-memory append-only store —
   **restarting it clears all records**.
 - `VITE_FIT_TRACE_LEGACY_LOOPBACK` is development-only: `App.tsx`
@@ -130,12 +161,52 @@ suite refuses non-loopback URLs.
 
 The three modes do not share data and there is NO automatic migration:
 
-- Local browser: records live in `localStorage` and persist across reloads.
+- Local browser: records live in owner-scoped `localStorage` v2 keys
+  (`pi-fit-trace:workout:v2:owner:<encoded-user-id>:<record-id>`) and persist
+  across reloads for that verified user.
 - Memory HTTP: records live in the dev API process and are lost on restart.
 - Authenticated Supabase: records persist in Postgres (RLS-isolated per user).
 
-Switching modes never uploads or copies records; existing local records
-remain available when you return to local mode.
+Legacy unowned `pi-fit-trace:workout:v1:<id>` keys are preserved but invisible
+to owner-scoped clients. They are not attributed to the current account, not
+migrated, and not deleted. Switching modes never uploads or copies records;
+existing v2 records remain available when you return to local mode.
+
+### Explicit developer JSON export/import
+
+There is no automatic upload, background migration, or bulk import button.
+
+**History exports only the current verified owner's v2 records.** Hidden
+unowned legacy `pi-fit-trace:workout:v1:<id>` records cannot be exported
+through History and are never attributed automatically. For manual legacy
+recovery, a developer may inspect only keys with the exact
+`pi-fit-trace:workout:v1:` prefix in browser devtools and copy only those JSON
+values into a separate offline workout file. Leave the original localStorage
+keys and values untouched. Because v1 is unowned, the app cannot prove who a
+record belongs to: review ownership and provenance of every record before any
+explicit replay.
+
+1. Sign in to the source store and choose **History → Export workouts (JSON)**.
+   This downloads `workout.json` with
+   `{ "schema_version": ..., "records": [...] }`.
+2. To move records into an authenticated store, replay each exported record
+   explicitly through the normal create endpoint; validate and reconcile IDs
+   rather than copying raw storage keys:
+
+   ```sh
+   jq -c '.records[]' workout.json | while read -r record; do
+     curl -fsS -X POST "$FIT_TRACE_API_BASE_URL/workouts" \
+       -H "Authorization: Bearer $ACCESS_TOKEN" \
+       -H 'Content-Type: application/json' \
+       --data "{\"record\":$record}"
+   done
+   ```
+
+Use a short-lived bearer token from your signed-in session; do not commit or
+log it. The API applies normal validation, idempotent-by-id behavior, conflict
+detection, and RLS ownership. The browser-local store has no bulk-import UI:
+use the app's normal create flow for the signed-in owner. Never edit v1 keys in
+place or treat a mode switch as permission to upload them.
 
 ## Coverage
 

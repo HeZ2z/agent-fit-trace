@@ -17,7 +17,7 @@ const downloadJsonMock = vi.mocked(downloadJson);
 
 function renderApp(adapter: MemoryStorageAdapter) {
   const user = userEvent.setup();
-  const view = render(<App client={clientFor(adapter)} />);
+  const view = render(<App client={clientFor(adapter)} legacyLoopback />);
   return { user, ...view };
 }
 

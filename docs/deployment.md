@@ -23,12 +23,14 @@ The React/Vite application deploys from the repository root using
 serves `app/dist`. SPA rewrites support direct visits to `/analysis`,
 `/plan`, and workout routes. API and asset paths are excluded from rewrites.
 
-Leave `VITE_FIT_TRACE_MODE` unset for browser-local behavior: records live in
-the browser's localStorage. Set `VITE_FIT_TRACE_MODE=http` for the
-authenticated Supabase deployment: the app shows the invite-only login UI and
-talks to the Vercel functions under `/api/v1` (see `docs/supabase-setup.md`
-for the required `SUPABASE_URL` / publishable-key env and the dashboard
-invite-only checklist). The Vite loopback proxy is development-only.
+Vercel Preview and Production deployments are both production builds: set
+`VITE_FIT_TRACE_MODE=http` for both. Leaving it unset, empty, or `local` now
+fails closed with the configuration screen instead of falling back to
+browser-local storage. Browser-local mode is development-only (`pnpm dev`).
+With `http`, the app shows the invite-only login UI and talks to the Vercel
+functions under `/api/v1` (see `docs/supabase-setup.md` for the required
+`SUPABASE_URL` / publishable-key env and the dashboard invite-only checklist).
+The Vite loopback proxy is development-only.
 
 To deploy via Vercel's Git integration, import this repository with the
 repository root as Root Directory. Use Node 24 and the committed build
@@ -68,10 +70,11 @@ and production, and do not run production migrations from preview builds.
 ## Release verification
 
 Run `pnpm typecheck`, `pnpm test`, and `pnpm build` before deployment.
-The current preview demonstrates browser-local behavior only. A full
-release additionally requires authenticated API tests, ownership/RLS tests,
-database persistence tests, login/session tests, and default pi coaching
-integration tests.
+Preview deployments are production builds too: they need the same HTTP mode and
+Supabase env as production, otherwise they intentionally show the configuration
+error. A full release additionally requires authenticated API tests,
+ownership/RLS tests, database persistence tests, login/session tests, and
+default pi coaching integration tests.
 
 ## Agent configuration (planned)
 

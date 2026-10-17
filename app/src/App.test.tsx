@@ -4,7 +4,7 @@ import App from "./App.tsx";
 
 describe("App", () => {
   it("renders the primary navigation and the history screen at /", async () => {
-    render(<App />);
+    render(<App legacyLoopback />);
 
     expect(screen.getByRole("navigation", { name: /primary/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /history/i })).toBeInTheDocument();

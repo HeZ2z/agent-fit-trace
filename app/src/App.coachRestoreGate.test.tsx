@@ -217,7 +217,7 @@ describe("Coaching owner auth/coaching gate (batch 3 review item 1)", () => {
       }) as unknown as typeof fetch,
     );
 
-    render(<App client={new FakeFitTraceClient({ records: [workout()] })} />);
+    render(<App client={new FakeFitTraceClient({ records: [workout()] })} legacyLoopback />);
     expect(await screen.findByText("agent-fit-trace")).toBeInTheDocument();
     await new Promise((resolve) => setTimeout(resolve, 30));
 

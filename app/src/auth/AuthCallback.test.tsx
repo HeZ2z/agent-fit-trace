@@ -1,15 +1,23 @@
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./AuthContext.tsx";
 import { AuthCallbackScreen, ResetPasswordScreen } from "./AuthScreens.tsx";
 import {
   RECOVERY_TOKEN_KEY,
+  AUTH_STORAGE_KEY,
   loadRecoveryToken,
   resetRecoveryTokenMemoryForTests,
+  serializeSession,
 } from "./supabaseAuth.ts";
+import type { SupabaseSession } from "./supabaseAuth.ts";
+import {
+  GUEST_UPGRADE_STORAGE_KEY,
+  resetPendingGuestUpgradeForTests,
+  savePendingGuestUpgrade,
+} from "./guestUpgrade.ts";
 
 const PUBLIC_CONFIG = { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub" };
 
@@ -33,6 +41,7 @@ describe("auth callback and reset screens", () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     resetRecoveryTokenMemoryForTests();
+    resetPendingGuestUpgradeForTests();
     vi.restoreAllMocks();
     window.location.hash = "";
     window.history.pushState({}, "", "/");
@@ -42,6 +51,7 @@ describe("auth callback and reset screens", () => {
   afterEach(() => {
     window.sessionStorage.clear();
     resetRecoveryTokenMemoryForTests();
+    resetPendingGuestUpgradeForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -379,5 +389,74 @@ describe("auth callback and reset screens", () => {
     await user.click(screen.getByRole("button", { name: /update password/i }));
     await waitFor(() => expect(screen.queryByText("Login stub")).toBeInTheDocument());
     expect(putSeen).toEqual(["Bearer direct-token"]);
+  });
+
+  it("does not finish or navigate when the upgrade session switches during password setup", async () => {
+    savePendingGuestUpgrade({
+      userId: "guest-1",
+      email: "invite@example.com",
+      verified: true,
+      startedAt: 1,
+    });
+    let resolvePut!: (response: Response) => void;
+    const pendingPut = new Promise<Response>((resolve) => {
+      resolvePut = resolve;
+    });
+    const stubFetch = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes("/auth/v1/user") && init?.method === "PUT") return pendingPut;
+      if (String(url).includes("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({ id: "user-b", email: "b@example.com", is_anonymous: false }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", stubFetch);
+    const verifiedUpgradeSession: SupabaseSession = {
+      accessToken: "access-guest-1",
+      refreshToken: "refresh-guest-1",
+      expiresAt: Date.now() + 3600_000,
+      user: {
+        id: "guest-1",
+        email: "invite@example.com",
+        isAnonymous: false,
+        emailConfirmedAt: "2026-10-17T00:00:00Z",
+      },
+    };
+    renderAt("/reset-password", {
+      skipValidation: true,
+      initialSession: verifiedUpgradeSession,
+      fetchImpl: stubFetch,
+    });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("New password"), "new-password-1");
+    await user.click(screen.getByRole("button", { name: /set password/i }));
+
+    const switched: SupabaseSession = {
+      accessToken: "access-user-b",
+      refreshToken: "refresh-user-b",
+      expiresAt: Date.now() + 3600_000,
+      user: { id: "user-b", email: "b@example.com", isAnonymous: false },
+    };
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: AUTH_STORAGE_KEY,
+          newValue: serializeSession(switched),
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toContain("user-b"),
+    );
+    resolvePut(new Response(JSON.stringify({ id: "guest-1" }), { status: 200 }));
+
+    expect(
+      await screen.findByText(/password was saved, but this session changed/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Home")).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toContain("user-b");
   });
 });

@@ -1,11 +1,17 @@
-import { StrictMode } from "react";
+import { StrictMode, useState } from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./AuthContext.tsx";
 import { Layout } from "../components/Layout.tsx";
-import { AUTH_STORAGE_KEY } from "./supabaseAuth.ts";
+import { AUTH_STORAGE_KEY, serializeSession } from "./supabaseAuth.ts";
 import type { SupabaseSession } from "./supabaseAuth.ts";
+import {
+  GUEST_UPGRADE_STORAGE_KEY,
+  loadPendingGuestUpgrade,
+  resetPendingGuestUpgradeForTests,
+  savePendingGuestUpgrade,
+} from "./guestUpgrade.ts";
 
 function sessionFor(id: string, email: string): SupabaseSession {
   return {
@@ -161,6 +167,57 @@ describe("AuthProvider", () => {
     );
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
     expect(screen.getByTestId("email").textContent).toBe("verified@example.com");
+  });
+
+  it("does not authorize from a cached anonymous classification before verification", async () => {
+    // A stale/tampered cache claims a formal account; the verified endpoint
+    // says guest. Nothing may treat the cached `false` as trustworthy.
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-user-1",
+        refreshToken: "refresh-user-1",
+        expiresAt: Date.now() + 3600_000,
+        user: { id: "user-1", isAnonymous: false },
+      }),
+    );
+    let resolveUser!: (value: Response) => void;
+    const userCall = new Promise<Response>((res) => {
+      resolveUser = res;
+    });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes("/auth/v1/user")) return userCall;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    function AnonProbe() {
+      const { status, user } = useAuth();
+      return (
+        <div>
+          <span data-testid="status">{status}</span>
+          <span data-testid="anon">{user?.isAnonymous === undefined ? "none" : String(user.isAnonymous)}</span>
+        </div>
+      );
+    }
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={{ supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub" }}
+        fetchImpl={fetchImpl}
+      >
+        <AnonProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("status").textContent).toBe("loading");
+    expect(screen.getByTestId("anon").textContent).toBe("none");
+
+    await act(async () => {
+      resolveUser(
+        new Response(JSON.stringify({ id: "user-1", is_anonymous: true }), { status: 200 }),
+      );
+    });
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
+    expect(screen.getByTestId("anon").textContent).toBe("true");
   });
 
   it("ignores a pending refresh after logout (generation guard) and shares inflight refreshes", async () => {
@@ -366,6 +423,12 @@ function makeRecoveryFetch(script: RefreshStep[], calls: CallRecord[]) {
     const target = String(url);
     if (target.includes("/auth/v1/user") && (init?.method ?? "GET") === "GET") {
       calls.push({ at: Date.now(), kind: "getUser" });
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const authorization = headers.authorization ?? headers.Authorization ?? "";
+      const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+      if (token.startsWith("access-user-2")) {
+        return new Response(JSON.stringify({ id: "user-2", email: "b@example.com" }), { status: 200 });
+      }
       return new Response(JSON.stringify({ id: "user-1", email: "a@example.com" }), { status: 200 });
     }
     if (target.includes("grant_type=refresh_token")) {
@@ -726,7 +789,9 @@ describe("signed-in outage notice", () => {
           { status: 200 },
         );
       }
-      return new Response("{}", { status: 200 });
+      return new Response(JSON.stringify({ id: "user-1", email: "a@example.com", is_anonymous: false }), {
+        status: 200,
+      });
     }) as unknown as typeof fetch;
     function BreakProbe() {
       const { refresh, getAccessToken } = useAuth();
@@ -953,5 +1018,1181 @@ describe("deferred public config bootstrap", () => {
     );
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
     expect(screen.getByTestId("config").textContent).toBe("http://127.0.0.1:54321");
+  });
+});
+
+function GuestProbe() {
+  const {
+    status,
+    user,
+    getAccessToken,
+    authError,
+    guestSignInEnabled,
+    guestSignInCaptchaRequired,
+    signInAsGuest,
+    signIn,
+  } = useAuth();
+  return (
+    <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="user">{user?.id ?? "none"}</span>
+      <span data-testid="token">{getAccessToken() ?? "none"}</span>
+      <span data-testid="anon">
+        {user?.isAnonymous === undefined ? "none" : String(user.isAnonymous)}
+      </span>
+      <span data-testid="guest-enabled">{String(guestSignInEnabled)}</span>
+      <span data-testid="captcha-required">{String(guestSignInCaptchaRequired)}</span>
+      <span data-testid="auth-error">{authError?.code ?? "none"}</span>
+      <button type="button" onClick={() => void signInAsGuest().catch(() => undefined)}>
+        continue as guest
+      </button>
+      <button type="button" onClick={() => void signIn("b@example.com", "pw-b-1234").catch(() => undefined)}>
+        sign in account
+      </button>
+    </div>
+  );
+}
+
+describe("guest sign-in", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  const guestConfig = { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub", guestSignInEnabled: true };
+
+  it("shares one request across concurrent clicks and uses the verified classification", async () => {
+    let signupCalls = 0;
+    let userCalls = 0;
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      if (target.endsWith("/auth/v1/signup")) {
+        signupCalls += 1;
+        return new Response(
+          JSON.stringify({
+            access_token: "access-guest-1",
+            refresh_token: "refresh-guest-1",
+            expires_in: 3600,
+            user: { id: "guest-1" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        userCalls += 1;
+        return new Response(JSON.stringify({ id: "guest-1", is_anonymous: true }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+        initialSession={null}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("continue as guest"));
+    fireEvent.click(screen.getByText("continue as guest"));
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
+    expect(signupCalls).toBe(1);
+    expect(userCalls).toBe(1);
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(screen.getByTestId("token").textContent).toBe("access-guest-1");
+    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toContain("guest-1");
+  });
+
+  it("fails closed before any network call when the deployment capability is off", async () => {
+    let signupCalls = 0;
+    const fetchImpl = (async () => {
+      signupCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={{ ...guestConfig, guestSignInEnabled: false }}
+        fetchImpl={fetchImpl}
+        initialSession={null}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("guest-enabled").textContent).toBe("false");
+    fireEvent.click(screen.getByText("continue as guest"));
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-error").textContent).toBe("GUEST_SIGN_IN_DISABLED"),
+    );
+    expect(signupCalls).toBe(0);
+    expect(screen.getByTestId("status").textContent).toBe("signed-out");
+  });
+
+  it("fails closed without a CAPTCHA widget when the deployment requires CAPTCHA", async () => {
+    let signupCalls = 0;
+    const fetchImpl = (async () => {
+      signupCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={{
+          ...guestConfig,
+          guestSignInCaptchaRequired: true,
+        }}
+        fetchImpl={fetchImpl}
+        initialSession={null}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("captcha-required").textContent).toBe("true");
+    expect(screen.getByTestId("guest-enabled").textContent).toBe("false");
+    fireEvent.click(screen.getByText("continue as guest"));
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-error").textContent).toBe("GUEST_SIGN_IN_DISABLED"),
+    );
+    expect(signupCalls).toBe(0);
+  });
+
+  it("keeps a valid guest on failed account login and replaces it only after verification", async () => {
+    let acceptAccount = false;
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      if (target.includes("grant_type=password")) {
+        if (!acceptAccount) {
+          return new Response(JSON.stringify({ msg: "Invalid login credentials" }), { status: 400 });
+        }
+        return new Response(
+          JSON.stringify({
+            access_token: "access-account-2",
+            refresh_token: "refresh-account-2",
+            expires_in: 3600,
+            user: { id: "user-2", email: "b@example.com" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({ id: "user-2", email: "b@example.com", is_anonymous: false }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const guestSession: SupabaseSession = {
+      ...sessionFor("guest-1", ""),
+      user: { id: "guest-1", isAnonymous: true },
+    };
+    render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+
+    fireEvent.click(screen.getByText("sign in account"));
+    await waitFor(() => expect(screen.getByTestId("auth-error").textContent).toBe("SIGN_IN_FAILED"));
+    // The failed account attempt must not sign out or clear the guest.
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(screen.getByTestId("token").textContent).toBe("access-guest-1");
+
+    acceptAccount = true;
+    fireEvent.click(screen.getByText("sign in account"));
+    await waitFor(() => expect(screen.getByTestId("user").textContent).toBe("user-2"));
+    expect(screen.getByTestId("anon").textContent).toBe("false");
+    expect(screen.getByTestId("token").textContent).toBe("access-account-2");
+    expect(screen.getByTestId("auth-error").textContent).toBe("none");
+  });
+
+  it("retains an unverified guest candidate and retries verification without another POST", async () => {
+    let signupCalls = 0;
+    let verifyCalls = 0;
+    let verifyStatus = 503;
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      if (target.endsWith("/auth/v1/signup")) {
+        signupCalls += 1;
+        return new Response(
+          JSON.stringify({
+            access_token: "access-guest-candidate",
+            refresh_token: "refresh-guest-candidate",
+            expires_in: 3600,
+            user: { id: "guest-candidate" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        verifyCalls += 1;
+        if (verifyStatus >= 500) {
+          return new Response(JSON.stringify({ message: "overloaded" }), { status: verifyStatus });
+        }
+        return new Response(
+          JSON.stringify({ id: "guest-candidate", is_anonymous: true }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const view = render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+        initialSession={null}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("continue as guest"));
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE"),
+    );
+    expect(signupCalls).toBe(1);
+    expect(verifyCalls).toBe(1);
+    expect(screen.getByTestId("status").textContent).toBe("signed-out");
+    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).toContain(
+      "access-guest-candidate",
+    );
+
+    // Same mount retry: verification only, never a second anonymous user.
+    verifyStatus = 200;
+    fireEvent.click(screen.getByText("continue as guest"));
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
+    expect(signupCalls).toBe(1);
+    expect(verifyCalls).toBe(2);
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).toBeNull();
+
+    // A reload restores the verified session, not the candidate.
+    view.unmount();
+    render(
+      <AuthProvider skipBootstrap publicConfig={guestConfig} fetchImpl={fetchImpl}>
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("user").textContent).toBe("guest-candidate"));
+    expect(signupCalls).toBe(1);
+  });
+
+  it("retries a stored candidate after reload without creating another guest", async () => {
+    let signupCalls = 0;
+    let verifyStatus = 503;
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      if (target.endsWith("/auth/v1/signup")) {
+        signupCalls += 1;
+        return new Response(
+          JSON.stringify({
+            access_token: "access-guest-reload",
+            refresh_token: "refresh-guest-reload",
+            expires_in: 3600,
+            user: { id: "guest-reload" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        if (verifyStatus >= 500) {
+          return new Response(JSON.stringify({ message: "overloaded" }), { status: verifyStatus });
+        }
+        return new Response(
+          JSON.stringify({ id: "guest-reload", is_anonymous: true }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const first = render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+        initialSession={null}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("continue as guest"));
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE"),
+    );
+    expect(signupCalls).toBe(1);
+    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).not.toBeNull();
+    first.unmount();
+
+    // Reload: the candidate is restored as an unvalidated session and the
+    // normal bootstrap verifies it; no signup endpoint is touched again.
+    verifyStatus = 200;
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
+    expect(screen.getByTestId("user").textContent).toBe("guest-reload");
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(signupCalls).toBe(1);
+    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).toBeNull();
+  });
+
+  it("never replaces an existing verified account with a direct guest call", async () => {
+    let signupCalls = 0;
+    const fetchImpl = (async () => {
+      signupCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const account: SupabaseSession = {
+      ...sessionFor("user-existing", "existing@example.com"),
+      user: { id: "user-existing", email: "existing@example.com", isAnonymous: false },
+    };
+    render(
+      <AuthProvider
+        skipBootstrap
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+        initialSession={account}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("continue as guest"));
+    await waitFor(() => expect(signupCalls).toBe(0));
+    expect(screen.getByTestId("user").textContent).toBe("user-existing");
+    expect(screen.getByTestId("anon").textContent).toBe("false");
+    expect(screen.getByTestId("token").textContent).toBe("access-user-existing");
+  });
+
+  it("validates a cross-tab identity replacement instead of trusting its cached classification", async () => {
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/auth/v1/user")) {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        const authorization = headers.authorization ?? headers.Authorization ?? "";
+        const tokenName = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+        if (tokenName === "access-guest-a") {
+          return new Response(JSON.stringify({ id: "guest-a", is_anonymous: true }), { status: 200 });
+        }
+        if (tokenName === "access-user-b") {
+          return new Response(
+            JSON.stringify({ id: "user-b", email: "b@example.com", is_anonymous: false }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ msg: "bad token" }), { status: 401 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const guestA: SupabaseSession = {
+      ...sessionFor("guest-a", ""),
+      accessToken: "access-guest-a",
+      user: { id: "guest-a", isAnonymous: true },
+    };
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation={false}
+        publicConfig={guestConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestA}
+      >
+        <GuestProbe />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-in"));
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+
+    const userB: SupabaseSession = {
+      accessToken: "access-user-b",
+      refreshToken: "refresh-user-b",
+      expiresAt: Date.now() + 3600_000,
+      // Deliberately cached as an account; only verified data may release the gate.
+      user: { id: "user-b", email: "b@example.com", isAnonymous: false },
+    };
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: AUTH_STORAGE_KEY,
+          newValue: serializeSession(userB),
+        }),
+      );
+    });
+    await waitFor(() => expect(screen.getByTestId("user").textContent).toBe("user-b"));
+    expect(screen.getByTestId("status").textContent).toBe("signed-in");
+    expect(screen.getByTestId("anon").textContent).toBe("false");
+    expect(screen.getByTestId("token").textContent).toBe("access-user-b");
+  });
+});
+
+function UpgradeProbe() {
+  const {
+    status,
+    user,
+    getAccessToken,
+    authError,
+    guestUpgradeEnabled,
+    pendingGuestUpgrade,
+    beginGuestUpgrade,
+    completeGuestUpgrade,
+    refreshVerifiedUser,
+    finishGuestUpgrade,
+    signIn,
+    signOutSession,
+  } = useAuth();
+  const [lastError, setLastError] = useState("none");
+  return (
+    <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="user">{user?.id ?? "none"}</span>
+      <span data-testid="anon">
+        {user?.isAnonymous === undefined ? "none" : String(user.isAnonymous)}
+      </span>
+      <span data-testid="token">{getAccessToken() ?? "none"}</span>
+      <span data-testid="upgrade-enabled">{String(guestUpgradeEnabled)}</span>
+      <span data-testid="pending-email">{pendingGuestUpgrade?.email ?? "none"}</span>
+      <span data-testid="pending-verified">{String(pendingGuestUpgrade?.verified ?? false)}</span>
+      <span data-testid="auth-error">{authError?.code ?? "none"}</span>
+      <span data-testid="last-error">{lastError}</span>
+      <button
+        type="button"
+        onClick={() =>
+          void beginGuestUpgrade(" Invite@Example.com ").catch((caught: unknown) =>
+            setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        begin upgrade
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void beginGuestUpgrade(" Invite@Example.com ", { resend: true }).catch((caught: unknown) =>
+            setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        resend upgrade
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void beginGuestUpgrade("alternate@example.com").catch((caught: unknown) =>
+            setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        begin alternate
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void refreshVerifiedUser().then(
+            (verified) => setLastError(verified === null ? "refresh-null" : "refresh-ok"),
+            (caught: unknown) =>
+              setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        refresh user
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void finishGuestUpgrade("guest-1").then(
+            (finished) => setLastError(finished ? "finished" : "finish-false"),
+            (caught: unknown) =>
+              setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        finish upgrade
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void signIn("b@example.com", "password").catch((caught: unknown) =>
+            setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        sign in B
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void completeGuestUpgrade({
+            accessToken: "callback-access",
+            refreshToken: "callback-refresh",
+            type: "email_change",
+            expiresAt: Date.now() + 3600_000,
+          }).catch((caught: unknown) =>
+            setLastError(caught instanceof Error && "code" in caught ? String(caught.code) : "error"),
+          )
+        }
+      >
+        complete upgrade
+      </button>
+      <button type="button" onClick={() => void signOutSession()}>
+        sign out
+      </button>
+    </div>
+  );
+}
+
+describe("invited guest upgrade", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    resetPendingGuestUpgradeForTests();
+  });
+
+  const upgradeConfig = {
+    supabaseUrl: "http://127.0.0.1:54321",
+    supabasePublishableKey: "pub",
+    guestUpgradeEnabled: true,
+  };
+
+  const guestSession: SupabaseSession = {
+    accessToken: "access-guest-1",
+    refreshToken: "refresh-guest-1",
+    expiresAt: Date.now() + 3600_000,
+    user: { id: "guest-1", isAnonymous: true },
+  };
+
+  it("uses tab storage as the source of truth across provider lifecycles", () => {
+    savePendingGuestUpgrade({
+      userId: "guest-1",
+      email: " Invite@Example.com ",
+      verified: false,
+      startedAt: 1,
+    });
+    expect(loadPendingGuestUpgrade()).toEqual({
+      userId: "guest-1",
+      email: "invite@example.com",
+      verified: false,
+      startedAt: 1,
+    });
+
+    // A fresh provider lifecycle sees the persisted tab value, not stale
+    // module memory: a newer storage write wins...
+    window.sessionStorage.setItem(
+      GUEST_UPGRADE_STORAGE_KEY,
+      JSON.stringify({
+        userId: "guest-1",
+        email: "newer@example.com",
+        verified: false,
+        startedAt: 2,
+      }),
+    );
+    expect(loadPendingGuestUpgrade()?.email).toBe("newer@example.com");
+    // ...and clearing real storage clears the visible state.
+    window.sessionStorage.clear();
+    expect(loadPendingGuestUpgrade()).toBeNull();
+  });
+
+  it("requests the invite once, stays pending, then applies only the verified same UID", async () => {
+    let updateCalls = 0;
+    let verifiedCalls = 0;
+    let updateUrl = "";
+    let updateBody: unknown = null;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") {
+        updateCalls += 1;
+        updateUrl = target;
+        updateBody = JSON.parse(String(init.body)) as unknown;
+        return new Response("{}", { status: 200 });
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        verifiedCalls += 1;
+        return new Response(
+          JSON.stringify({
+            id: "guest-1",
+            email: "invite@example.com",
+            is_anonymous: false,
+            email_confirmed_at: "2026-10-17T00:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    expect(screen.getByTestId("upgrade-enabled").textContent).toBe("true");
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() => expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"));
+    expect(updateCalls).toBe(1);
+    expect(verifiedCalls).toBe(0);
+    expect(updateUrl).toContain("redirect_to=");
+    expect(updateBody).toEqual({ email: "invite@example.com" });
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+    // Still a guest: no false success while the email is pending.
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toContain("invite@example.com");
+
+    // Same pending target is idempotent: no second email request.
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(updateCalls).toBe(1);
+
+    fireEvent.click(screen.getByText("complete upgrade"));
+    await waitFor(() => expect(screen.getByTestId("pending-verified").textContent).toBe("true"));
+    expect(verifiedCalls).toBe(1);
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("false");
+    expect(screen.getByTestId("token").textContent).toBe("callback-access");
+  });
+
+  it("keeps a pending upgrade when another tab only refreshes the same guest token", async () => {
+    savePendingGuestUpgrade({
+      userId: "guest-1",
+      email: "invite@example.com",
+      verified: false,
+      startedAt: 1,
+    });
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com");
+
+    const refreshed: SupabaseSession = {
+      ...guestSession,
+      accessToken: "access-guest-1-refreshed",
+      refreshToken: "refresh-guest-1-refreshed",
+    };
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: AUTH_STORAGE_KEY,
+          newValue: serializeSession(refreshed),
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("token").textContent).toBe("access-guest-1-refreshed"),
+    );
+    // Same UID: the token changed, but the pending verification marker is not
+    // an account switch and must survive for the password-setup step.
+    expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toContain(
+      "invite@example.com",
+    );
+  });
+
+  it("promotes the pending upgrade when a restored same-UID session is already verified", async () => {
+    savePendingGuestUpgrade({
+      userId: "guest-1",
+      email: "invite@example.com",
+      verified: false,
+      startedAt: 1,
+    });
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({
+            id: "guest-1",
+            email: "invite@example.com",
+            is_anonymous: false,
+            email_confirmed_at: "2026-10-17T00:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap={false}
+        skipValidation={false}
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("anon").textContent).toBe("false"));
+    // Verification happened in another tab (or a token refresh applied it):
+    // the restored session must promote the marker, not hide the setup path.
+    await waitFor(() => expect(screen.getByTestId("pending-verified").textContent).toBe("true"));
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toContain('"verified":true');
+  });
+
+  it("rejects a wrong-UID callback without replacing the current guest", async () => {
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") {
+        return new Response("{}", { status: 200 });
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({
+            id: "other-user",
+            email: "invite@example.com",
+            is_anonymous: false,
+            email_confirmed_at: "2026-10-17T00:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() => expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"));
+    fireEvent.click(screen.getByText("complete upgrade"));
+    await waitFor(() =>
+      expect(screen.getByTestId("last-error").textContent).toBe("GUEST_UPGRADE_IDENTITY_MISMATCH"),
+    );
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(screen.getByTestId("token").textContent).toBe("access-guest-1");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+  });
+
+  it("does not report success when the same UID is still anonymous", async () => {
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") {
+        return new Response("{}", { status: 200 });
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({
+            id: "guest-1",
+            email: "invite@example.com",
+            is_anonymous: true,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() => expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"));
+    fireEvent.click(screen.getByText("complete upgrade"));
+    await waitFor(() =>
+      expect(screen.getByTestId("last-error").textContent).toBe("GUEST_UPGRADE_NOT_READY"),
+    );
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+  });
+
+  it("fails closed before a request when upgrade readiness is off and clears on sign-out", async () => {
+    let updateCalls = 0;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith("/auth/v1/user") && init?.method === "PUT") updateCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const view = render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={{ ...upgradeConfig, guestUpgradeEnabled: false }}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+    expect(screen.getByTestId("upgrade-enabled").textContent).toBe("false");
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-error").textContent).toBe("GUEST_UPGRADE_DISABLED"),
+    );
+    expect(updateCalls).toBe(0);
+    view.unmount();
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() => expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).not.toBeNull());
+    fireEvent.click(screen.getByText("sign out"));
+    await waitFor(() => expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toBeNull());
+  });
+
+  it("resends only on explicit request; a failed resend keeps the pending marker", async () => {
+    let updateCalls = 0;
+    let failResend = false;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes("/auth/v1/user") && init?.method === "PUT") {
+        updateCalls += 1;
+        if (failResend) {
+          return new Response(JSON.stringify({ message: "rate limited" }), { status: 429 });
+        }
+        return new Response("{}", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() =>
+      expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"),
+    );
+    expect(updateCalls).toBe(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Repeating the normal action remains idempotent.
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(updateCalls).toBe(1);
+
+    // Only the explicit resend sends a second PUT.
+    fireEvent.click(screen.getByText("resend upgrade"));
+    await waitFor(() => expect(updateCalls).toBe(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+
+    // A rate/transient failure is surfaced but does not drop the pending link
+    // state or turn the guest into an account.
+    failResend = true;
+    fireEvent.click(screen.getByText("resend upgrade"));
+    await waitFor(() => expect(screen.getByTestId("last-error").textContent).toBe("AUTH_UNAVAILABLE"));
+    expect(updateCalls).toBe(3);
+    expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE");
+    expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(window.sessionStorage.getItem(GUEST_UPGRADE_STORAGE_KEY)).toContain("invite@example.com");
+  });
+
+  it("resumes external verification by promotion, and a wrong-UID refresh preserves G", async () => {
+    let externallyVerified = false;
+    let fetchedId = "guest-1";
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") {
+        return new Response("{}", { status: 200 });
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        const id = fetchedId;
+        return new Response(
+          JSON.stringify({
+            id,
+            email: "invite@example.com",
+            is_anonymous: externallyVerified ? false : true,
+            ...(externallyVerified
+              ? { email_confirmed_at: "2026-10-17T00:00:00Z" }
+              : {}),
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const firstView = render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() => expect(screen.getByTestId("pending-verified").textContent).toBe("false"));
+    // The email was verified in another tab: the original tab still has the
+    // guest session and pending marker, but no completion has been claimed.
+    externallyVerified = true;
+    fireEvent.click(screen.getByText("refresh user"));
+    await waitFor(() => expect(screen.getByTestId("pending-verified").textContent).toBe("true"));
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("false");
+    expect(screen.getByTestId("last-error").textContent).toBe("refresh-ok");
+    firstView.unmount();
+
+    // A refresh that returns a different UUID is rejected before apply.
+    resetPendingGuestUpgradeForTests();
+    window.sessionStorage.clear();
+    externallyVerified = false;
+    // Reset to a fresh provider shape for the wrong-UID part.
+    const secondView = render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() =>
+      expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"),
+    );
+    fetchedId = "other-user";
+    fireEvent.click(screen.getByText("refresh user"));
+    await waitFor(() => expect(screen.getByTestId("last-error").textContent).toBe("refresh-null"));
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("true");
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+    secondView.unmount();
+  });
+
+  it("ignores a stale initiation failure after B signs in (no B authError)", async () => {
+    let resolvePut!: (response: Response) => void;
+    const pendingPut = new Promise<Response>((resolve) => {
+      resolvePut = resolve;
+    });
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") return pendingPut;
+      if (target.includes("/auth/v1/token?grant_type=password")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "access-user-b",
+            refresh_token: "refresh-user-b",
+            expires_in: 3600,
+            user: { id: "user-b", email: "b@example.com" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({ id: "user-b", email: "b@example.com", is_anonymous: false }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={{ ...upgradeConfig, guestSignInEnabled: true }}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByText("sign in B"));
+    await waitFor(() => expect(screen.getByTestId("user").textContent).toBe("user-b"));
+    resolvePut(new Response("{}", { status: 200 }));
+    await waitFor(() =>
+      expect(screen.getByTestId("last-error").textContent).toBe("GUEST_UPGRADE_SUPERSEDED"),
+    );
+    expect(screen.getByTestId("auth-error").textContent).toBe("none");
+    expect(screen.getByTestId("user").textContent).toBe("user-b");
+    expect(screen.getByTestId("pending-email").textContent).toBe("none");
+  });
+
+  it("serializes initiation and rejects a different target while in flight", async () => {
+    let resolvePut!: (response: Response) => void;
+    const pendingPut = new Promise<Response>((resolve) => {
+      resolvePut = resolve;
+    });
+    let markPutStarted!: () => void;
+    const putStarted = new Promise<void>((resolve) => {
+      markPutStarted = resolve;
+    });
+    let putCount = 0;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes("/auth/v1/user") && init?.method === "PUT") {
+        putCount += 1;
+        markPutStarted();
+        return pendingPut;
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await act(async () => {
+      await putStarted;
+    });
+    // The identical request shares the in-flight mutation...
+    fireEvent.click(screen.getByText("begin upgrade"));
+    // ...while a different target is rejected before a second PUT can race the
+    // server's email_change value.
+    fireEvent.click(screen.getByText("begin alternate"));
+    await waitFor(() =>
+      expect(screen.getByTestId("last-error").textContent).toBe("GUEST_UPGRADE_IN_FLIGHT"),
+    );
+    expect(putCount).toBe(1);
+    expect(screen.getByTestId("auth-error").textContent).toBe("none");
+
+    resolvePut(new Response("{}", { status: 200 }));
+    await waitFor(() =>
+      expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"),
+    );
+    expect(putCount).toBe(1);
+    expect(screen.getByTestId("pending-verified").textContent).toBe("false");
+  });
+
+  it("finishes only after a same-UID reverify and keeps pending on mismatch", async () => {
+    let fetchedId = "guest-1";
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/user") && init?.method === "PUT") {
+        return new Response("{}", { status: 200 });
+      }
+      if (target.endsWith("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({
+            id: fetchedId,
+            email: "invite@example.com",
+            is_anonymous: false,
+            email_confirmed_at: "2026-10-17T00:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AuthProvider
+        skipBootstrap
+        skipValidation
+        publicConfig={upgradeConfig}
+        fetchImpl={fetchImpl}
+        initialSession={guestSession}
+      >
+        <UpgradeProbe />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(screen.getByText("begin upgrade"));
+    await waitFor(() =>
+      expect(screen.getByTestId("pending-email").textContent).toBe("invite@example.com"),
+    );
+    fireEvent.click(screen.getByText("complete upgrade"));
+    await waitFor(() => expect(screen.getByTestId("pending-verified").textContent).toBe("true"));
+
+    fetchedId = "other-user";
+    fireEvent.click(screen.getByText("finish upgrade"));
+    await waitFor(() => expect(screen.getByTestId("last-error").textContent).toBe("finish-false"));
+    expect(screen.getByTestId("pending-verified").textContent).toBe("true");
+
+    fetchedId = "guest-1";
+    fireEvent.click(screen.getByText("finish upgrade"));
+    await waitFor(() => expect(screen.getByTestId("last-error").textContent).toBe("finished"));
+    expect(screen.getByTestId("pending-email").textContent).toBe("none");
+    expect(screen.getByTestId("user").textContent).toBe("guest-1");
+    expect(screen.getByTestId("anon").textContent).toBe("false");
   });
 });

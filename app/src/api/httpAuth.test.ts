@@ -123,7 +123,72 @@ describe("fetchPublicConfig", () => {
     expect(await fetchPublicConfig("/api/v1", ok)).toEqual({
       supabaseUrl: "http://x",
       supabasePublishableKey: "pub",
+      guestSignInEnabled: false,
+      guestUpgradeEnabled: false,
+      guestSignInCaptchaRequired: false,
     });
+
+    const enabled = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            guestSignInEnabled: true,
+            guestUpgradeEnabled: true,
+            guestSignInCaptchaRequired: true,
+          },
+        }),
+      )) as unknown as typeof fetch;
+    expect(await fetchPublicConfig("/api/v1", enabled)).toEqual({
+      supabaseUrl: "http://x",
+      supabasePublishableKey: "pub",
+      guestSignInEnabled: true,
+      guestUpgradeEnabled: true,
+      guestSignInCaptchaRequired: true,
+    });
+
+    const malformedCapability = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            guestSignInEnabled: "yes",
+          },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", malformedCapability)).rejects.toThrow(
+      /guestSignInEnabled/,
+    );
+
+    const malformedUpgrade = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            guestUpgradeEnabled: "yes",
+          },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", malformedUpgrade)).rejects.toThrow(
+      /guestUpgradeEnabled/,
+    );
+
+    const malformedCaptcha = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            guestSignInCaptchaRequired: "yes",
+          },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", malformedCaptcha)).rejects.toThrow(
+      /guestSignInCaptchaRequired/,
+    );
 
     const empty = (async () => new Response(JSON.stringify({ data: {} }))) as unknown as typeof fetch;
     await expect(fetchPublicConfig("/api/v1", empty)).rejects.toThrow(/supabaseUrl/);

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AuthError,
   RECOVERY_TOKEN_KEY,
+  beginGuestUpgrade,
   clearRecoveryToken,
   isPasswordSetupType,
   isSessionExpired,
@@ -15,6 +16,7 @@ import {
   resetRecoveryTokenMemoryForTests,
   saveRecoveryToken,
   serializeSession,
+  signInAnonymously,
   signInWithPassword,
   signOut,
   updatePassword,
@@ -173,6 +175,219 @@ describe("supabaseAuth", () => {
     expect(restored?.user.id).toBe("user-1");
   });
 
+  it("trusts is_anonymous only from the verified /auth/v1/user response", async () => {
+    const guest = await fetchAuthUser(
+      config,
+      "access",
+      jsonFetch(200, { id: "guest-1", is_anonymous: true }),
+    );
+    expect(guest).toEqual({ id: "guest-1", isAnonymous: true });
+
+    const account = await fetchAuthUser(
+      config,
+      "access",
+      jsonFetch(200, { id: "user-1", email: "u@example.com", is_anonymous: false }),
+    );
+    expect(account).toEqual({ id: "user-1", email: "u@example.com", isAnonymous: false });
+
+    // Missing or malformed provider classification stays unclassified
+    // (fail closed); it is never inferred from the absent email.
+    const missing = await fetchAuthUser(config, "access", jsonFetch(200, { id: "user-2" }));
+    expect(missing).toEqual({ id: "user-2" });
+    expect(missing.isAnonymous).toBeUndefined();
+
+    const malformed = await fetchAuthUser(
+      config,
+      "access",
+      jsonFetch(200, { id: "user-3", is_anonymous: "false" }),
+    );
+    expect(malformed).toEqual({ id: "user-3" });
+    expect(malformed.isAnonymous).toBeUndefined();
+  });
+
+  it("does not classify a password-grant session from its token response", async () => {
+    const next = await signInWithPassword(
+      config,
+      "u@example.com",
+      "password",
+      jsonFetch(200, {
+        access_token: "a",
+        refresh_token: "r",
+        expires_in: 3600,
+        user: { id: "user-1", email: "u@example.com", is_anonymous: true },
+      }),
+    );
+    expect(next.user).toEqual({ id: "user-1", email: "u@example.com" });
+    expect(next.user.isAnonymous).toBeUndefined();
+  });
+
+  it("creates a guest session and classifies it only from /auth/v1/user", async () => {
+    const calls: {
+      path: string;
+      method: string | undefined;
+      body: string | undefined;
+      authorization: string | undefined;
+    }[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      calls.push({
+        path: new URL(String(url)).pathname,
+        method: init?.method,
+        body: typeof init?.body === "string" ? init.body : undefined,
+        authorization: headers?.Authorization,
+      });
+      if (String(url).endsWith("/auth/v1/signup")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "guest-access",
+            refresh_token: "guest-refresh",
+            expires_in: 3600,
+            // Token responses are not authoritative: this forged `false` must
+            // be replaced by the verified `/user` classification.
+            user: { id: "guest-1", is_anonymous: false },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: "guest-1", is_anonymous: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const guest = await signInAnonymously(config, fetchImpl);
+    expect(calls.map((call) => call.path)).toEqual(["/auth/v1/signup", "/auth/v1/user"]);
+    expect(calls[0]).toMatchObject({ method: "POST", body: '{"data":{}}', authorization: undefined });
+    expect(calls[1]?.authorization).toBe("Bearer guest-access");
+    expect(guest.accessToken).toBe("guest-access");
+    expect(guest.refreshToken).toBe("guest-refresh");
+    expect(guest.user).toEqual({ id: "guest-1", isAnonymous: true });
+  });
+
+  it("supports the official CAPTCHA token body and exposes the unverified candidate", async () => {
+    let signupBody: string | undefined;
+    const candidates: SupabaseSession[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith("/auth/v1/signup")) {
+        signupBody = typeof init?.body === "string" ? init.body : undefined;
+        return new Response(
+          JSON.stringify({
+            access_token: "guest-candidate-access",
+            refresh_token: "guest-candidate-refresh",
+            expires_in: 3600,
+            user: { id: "guest-candidate" },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ message: "overloaded" }), { status: 503 });
+    }) as unknown as typeof fetch;
+
+    const failed = await signInAnonymously(config, fetchImpl, {
+      captchaToken: "captcha-token",
+      onCandidate: (candidate) => candidates.push(candidate),
+    }).catch((caught: unknown) => caught);
+    expect(failed).toBeInstanceOf(AuthError);
+    expect((failed as AuthError).code).toBe("AUTH_UNAVAILABLE");
+    expect(JSON.parse(signupBody ?? "{}")).toEqual({
+      data: {},
+      gotrue_meta_security: { captcha_token: "captcha-token" },
+    });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.accessToken).toBe("guest-candidate-access");
+    expect(candidates[0]?.refreshToken).toBe("guest-candidate-refresh");
+  });
+
+  it("keeps missing guest classification undefined and fails closed on verification errors", async () => {
+    let step = 0;
+    const fetchImpl = (async () => {
+      step += 1;
+      if (step === 1) {
+        return new Response(
+          JSON.stringify({
+            access_token: "guest-access",
+            refresh_token: "guest-refresh",
+            user: { id: "guest-2", is_anonymous: true },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: "guest-2" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const guest = await signInAnonymously(config, fetchImpl);
+    expect(guest.user).toEqual({ id: "guest-2" });
+    expect(guest.user.isAnonymous).toBeUndefined();
+
+    let verifyStep = 0;
+    const expiredFetch = (async () => {
+      verifyStep += 1;
+      if (verifyStep === 1) {
+        return new Response(
+          JSON.stringify({ access_token: "a", refresh_token: "r", user: { id: "guest-3" } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ msg: "invalid token" }), { status: 401 });
+    }) as unknown as typeof fetch;
+
+    const expired = await signInAnonymously(config, expiredFetch).catch((caught: unknown) => caught);
+    expect(expired).toBeInstanceOf(AuthError);
+    expect((expired as AuthError).code).toBe("SESSION_EXPIRED");
+  });
+
+  it("maps disabled and transient guest sign-in failures", async () => {
+    const disabled = await signInAnonymously(
+      config,
+      jsonFetch(422, { msg: "Anonymous sign-ins are disabled" }),
+    ).catch((caught: unknown) => caught);
+    expect(disabled).toBeInstanceOf(AuthError);
+    expect((disabled as AuthError).code).toBe("GUEST_SIGN_IN_FAILED");
+    expect((disabled as AuthError).status).toBe(422);
+    expect((disabled as Error).message).toContain("Anonymous sign-ins are disabled");
+
+    for (const failing of [
+      (async () => {
+        throw new TypeError("offline");
+      }) as unknown as typeof fetch,
+      jsonFetch(429, { message: "limited" }),
+      jsonFetch(503, { message: "overloaded" }),
+    ]) {
+      const error = await signInAnonymously(config, failing).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AuthError);
+      expect((error as AuthError).code).toBe("AUTH_UNAVAILABLE");
+    }
+
+    const invalid = await signInAnonymously(
+      config,
+      jsonFetch(200, { user: { id: "guest-4" } }),
+    ).catch((caught: unknown) => caught);
+    expect(invalid).toBeInstanceOf(AuthError);
+    expect((invalid as AuthError).code).toBe("GUEST_SIGN_IN_FAILED");
+  });
+
+  it("never persists or restores anonymous classification from cached sessions", () => {
+    const serialized = serializeSession({
+      ...session(),
+      user: { id: "user-1", email: "u@example.com", isAnonymous: false },
+    });
+    expect(serialized).not.toContain("isAnonymous");
+    expect((JSON.parse(serialized) as { user: unknown }).user).toEqual({
+      id: "user-1",
+      email: "u@example.com",
+    });
+
+    // A tampered/legacy cache claiming an account classification is ignored
+    // until the Auth server verifies the session.
+    const restored = loadStoredSession(
+      JSON.stringify({
+        accessToken: "a",
+        refreshToken: "r",
+        expiresAt: Date.now() + 3600_000,
+        user: { id: "user-1", isAnonymous: false },
+      }),
+    );
+    expect(restored?.user).toEqual({ id: "user-1" });
+    expect(restored?.user.isAnonymous).toBeUndefined();
+  });
+
   it("prefers the newest in-memory token when sessionStorage set fails", () => {
     window.sessionStorage.setItem(RECOVERY_TOKEN_KEY, "old-token");
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
@@ -213,5 +428,74 @@ describe("supabaseAuth", () => {
       throw new Error("storage denied");
     });
     expect(loadRecoveryToken()).toBeNull();
+  });
+});
+
+describe("guest upgrade transport", () => {
+  it("sends an authenticated email change with the official redirect_to query", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await beginGuestUpgrade(config, "guest-access", " Invite@Example.com ", fetchImpl, {
+      emailRedirectTo: "http://127.0.0.1:5173/auth/callback",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(
+      "http://127.0.0.1:54321/auth/v1/user?redirect_to=http%3A%2F%2F127.0.0.1%3A5173%2Fauth%2Fcallback",
+    );
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(calls[0]?.init?.headers).toMatchObject({
+      apikey: "pub-key",
+      Authorization: "Bearer guest-access",
+    });
+    // Transport does not silently trim/normalize; the caller owns the target
+    // identity and the database normalizes lower(btrim(...)).
+    expect(JSON.parse(String(calls[0]?.init?.body)) as unknown).toEqual({
+      email: " Invite@Example.com ",
+    });
+  });
+
+  it("maps upgrade failures without leaking the session token", async () => {
+    const error = await beginGuestUpgrade(
+      config,
+      "secret-guest-token",
+      "invite@example.com",
+      jsonFetch(422, { msg: "Email address is already registered" }),
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AuthError);
+    expect((error as AuthError).code).toBe("GUEST_UPGRADE_FAILED");
+    expect((error as Error).message).not.toContain("secret-guest-token");
+  });
+
+  it("parses callback expiry and only accepts verified email fields from /user", async () => {
+    const callback = parseAuthCallbackHash(
+      "#access_token=a&refresh_token=r&type=email_change&expires_at=1893456000",
+    );
+    expect(callback).toMatchObject({
+      accessToken: "a",
+      refreshToken: "r",
+      type: "email_change",
+      expiresAt: 1893456000 * 1000,
+    });
+    const verified = await fetchAuthUser(
+      config,
+      "a",
+      jsonFetch(200, {
+        id: "guest-1",
+        email: "invite@example.com",
+        is_anonymous: false,
+        email_confirmed_at: "2026-10-17T00:00:00Z",
+      }),
+    );
+    expect(verified).toMatchObject({
+      id: "guest-1",
+      email: "invite@example.com",
+      isAnonymous: false,
+      emailConfirmedAt: "2026-10-17T00:00:00Z",
+    });
   });
 });

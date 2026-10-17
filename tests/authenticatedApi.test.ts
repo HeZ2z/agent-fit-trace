@@ -152,7 +152,16 @@ test("public-config is public and carries only public fields", async () => {
   const body = JSON.parse(response.body) as {
     data: Record<string, unknown>;
   };
-  assert.deepEqual(Object.keys(body.data).sort(), ["supabasePublishableKey", "supabaseUrl"]);
+  assert.deepEqual(Object.keys(body.data).sort(), [
+    "guestSignInCaptchaRequired",
+    "guestSignInEnabled",
+    "guestUpgradeEnabled",
+    "supabasePublishableKey",
+    "supabaseUrl",
+  ]);
+  assert.equal(body.data.guestSignInEnabled, false);
+  assert.equal(body.data.guestUpgradeEnabled, false);
+  assert.equal(body.data.guestSignInCaptchaRequired, false);
 });
 
 test("missing verifier or stores fail closed (never anonymous access)", async () => {

@@ -18,6 +18,19 @@
 export interface SupabaseAuthUser {
   id: string;
   email?: string;
+  /**
+   * Trusted anonymous classification from `GET /auth/v1/user` only. Token
+   * responses, stored sessions, request bodies, and metadata are never
+   * authoritative. `undefined` means "not verified yet" or "provider did not
+   * classify"; callers must fail closed for account-only capabilities.
+   */
+  isAnonymous?: boolean;
+  /**
+   * Verified email-confirmation timestamp, also accepted only from
+   * `GET /auth/v1/user`. A guest-upgrade callback must require it before
+   * offering password setup; `email` alone can still be a pending change.
+   */
+  emailConfirmedAt?: string;
 }
 
 export interface SupabaseSession {
@@ -54,6 +67,27 @@ function toUser(raw: unknown): SupabaseAuthUser | null {
   return {
     id,
     ...(typeof email === "string" && email !== "" ? { email } : {}),
+  };
+}
+
+/**
+ * Parse the verified `GET /auth/v1/user` response. This is the only place the
+ * client accepts `is_anonymous`; token-grant responses are not used for
+ * classification, and cached sessions never carry it.
+ */
+function toVerifiedUser(raw: unknown): SupabaseAuthUser | null {
+  const user = toUser(raw);
+  if (user === null) return null;
+  const record = raw as { is_anonymous?: unknown; email_confirmed_at?: unknown };
+  const emailConfirmedAt = record.email_confirmed_at;
+  return {
+    ...user,
+    ...(typeof record.is_anonymous === "boolean"
+      ? { isAnonymous: record.is_anonymous }
+      : {}),
+    ...(typeof emailConfirmedAt === "string" && emailConfirmedAt !== ""
+      ? { emailConfirmedAt }
+      : {}),
   };
 }
 
@@ -142,6 +176,136 @@ export async function signInWithPassword(
   return session;
 }
 
+/**
+ * Create an anonymous guest session.
+ *
+ * GoTrue routes `POST /auth/v1/signup` to `SignupAnonymously` when the body
+ * carries neither `email` nor `phone` (pinned source:
+ * `supabase/auth@ce9a8eee0...`, `internal/api/api.go`), and rejects it with 422
+ * when anonymous sign-ins are disabled or global signup is disabled.
+ *
+ * The token response is used for tokens only: guest classification is read
+ * from the subsequent verified `GET /auth/v1/user` call, and a missing
+ * `is_anonymous` stays `undefined` (fail closed). Callers must not treat this
+ * as account eligibility. Public AuthContext hook names planned for the next
+ * slice: `signInAsGuest`, `beginGuestUpgrade`, `refreshVerifiedUser`.
+ */
+/** Optional official anonymous-signup transport fields. */
+export interface GuestSignInOptions {
+  /**
+   * CAPTCHA token obtained by the host page. GoTrue expects it under
+   * `gotrue_meta_security.captcha_token`; this client does not solve or verify
+   * CAPTCHAs and does not claim that a deployment has them enabled.
+   */
+  captchaToken?: string;
+  /**
+   * Receives the unverified token session immediately after the successful
+   * signup POST and before `GET /auth/v1/user`. Callers persist this candidate
+   * so a transient verification outage can be retried without another guest
+   * POST.
+   */
+  onCandidate?: (session: SupabaseSession) => void;
+}
+
+export async function signInAnonymously(
+  config: SupabaseAuthConfig,
+  fetchImpl: AuthFetch = fetch,
+  options: GuestSignInOptions = {},
+): Promise<SupabaseSession> {
+  // Match the official auth-js anonymous transport: `data` is always present
+  // and the CAPTCHA token is optional.
+  const requestBody: Record<string, unknown> = { data: {} };
+  if (typeof options.captchaToken === "string" && options.captchaToken !== "") {
+    requestBody.gotrue_meta_security = { captcha_token: options.captchaToken };
+  }
+  let response: Response;
+  try {
+    response = await fetchImpl(`${config.supabaseUrl}/auth/v1/signup`, {
+      method: "POST",
+      headers: authHeaders(config),
+      body: JSON.stringify(requestBody),
+    });
+  } catch {
+    throw unavailableError();
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    // 429/5xx are transient; 4xx (422 disabled, 400 invalid) are terminal.
+    if (response.status === 429 || response.status >= 500) throw unavailableError();
+    throw new AuthError(
+      "GUEST_SIGN_IN_FAILED",
+      authErrorMessage(body, "Guest sessions are unavailable. Try again later."),
+      response.status,
+    );
+  }
+  const session = sessionFromTokenResponse(body);
+  if (session === null) {
+    throw new AuthError("GUEST_SIGN_IN_FAILED", "Guest sign-in returned an invalid session.");
+  }
+  // The guest now exists server-side. Hand the unverified credentials to the
+  // caller before verification so a transient `/user` outage cannot orphan
+  // them behind a second signup POST.
+  options.onCandidate?.(session);
+  const verified = await fetchAuthUser(config, session.accessToken, fetchImpl);
+  return { ...session, user: verified };
+}
+
+/**
+ * Start the invited same-UID guest upgrade by requesting an email change on
+ * the CURRENT guest session (`PUT /auth/v1/user`).
+ *
+ * This is only the initiation step: GoTrue sends a confirmation link while the
+ * user remains anonymous, and the pending invite is preserved until the
+ * verify transaction converts the user (see
+ * `supabase/migrations/20261017000100_signup_gate.sql`). Callers must not
+ * report an upgraded account until a later callback verifies the same UID,
+ * `is_anonymous === false`, and a confirmed target email.
+ *
+ * `emailRedirectTo` is sent in the official `redirect_to` query parameter for
+ * the email template. The request deliberately does not invent a CAPTCHA
+ * field: GoTrue v2.197.0's `UserUpdateParams` has no CAPTCHA field for this
+ * authenticated endpoint, so claiming CAPTCHA enforcement here would be
+ * false. The deployment must enforce its own abuse controls.
+ */
+export interface GuestUpgradeRequestOptions {
+  emailRedirectTo?: string;
+}
+
+export async function beginGuestUpgrade(
+  config: SupabaseAuthConfig,
+  accessToken: string,
+  email: string,
+  fetchImpl: AuthFetch = fetch,
+  options: GuestUpgradeRequestOptions = {},
+): Promise<void> {
+  const redirect =
+    typeof options.emailRedirectTo === "string" && options.emailRedirectTo !== ""
+      ? `?redirect_to=${encodeURIComponent(options.emailRedirectTo)}`
+      : "";
+  let response: Response;
+  try {
+    response = await fetchImpl(`${config.supabaseUrl}/auth/v1/user${redirect}`, {
+      method: "PUT",
+      headers: authHeaders(config, accessToken),
+      body: JSON.stringify({ email }),
+    });
+  } catch {
+    throw unavailableError();
+  }
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    if (response.status === 429 || response.status >= 500) throw unavailableError();
+    throw new AuthError(
+      "GUEST_UPGRADE_FAILED",
+      authErrorMessage(
+        body,
+        "That email cannot be used for an account upgrade. Ask an administrator for an invitation.",
+      ),
+      response.status,
+    );
+  }
+}
+
 /** Global sign-out; failures still clear local state (see AuthProvider). */
 export async function signOut(
   config: SupabaseAuthConfig,
@@ -209,7 +373,7 @@ export async function fetchAuthUser(
     );
   }
   const body: unknown = await response.json().catch(() => null);
-  const user = toUser(body);
+  const user = toVerifiedUser(body);
   if (user === null) throw new AuthError("SESSION_EXPIRED", "Session is no longer valid.");
   return user;
 }
@@ -275,6 +439,8 @@ export interface CallbackSession {
   accessToken: string;
   refreshToken: string;
   type: string | null;
+  /** Epoch milliseconds when the callback access token expires (0 unknown). */
+  expiresAt: number;
 }
 
 /**
@@ -289,14 +455,30 @@ export function parseAuthCallbackHash(hash: string): CallbackSession | null {
   const params = new URLSearchParams(fragment);
   const accessToken = params.get("access_token");
   if (accessToken === null || accessToken === "") return null;
+  const expiresAtRaw = params.get("expires_at");
+  const expiresInRaw = params.get("expires_in");
+  const parsedExpiresAt = expiresAtRaw === null ? NaN : Number(expiresAtRaw);
+  const parsedExpiresIn = expiresInRaw === null ? NaN : Number(expiresInRaw);
+  const expiresAt = Number.isFinite(parsedExpiresAt) && parsedExpiresAt > 0
+    ? parsedExpiresAt * 1000
+    : Number.isFinite(parsedExpiresIn) && parsedExpiresIn > 0
+      ? Date.now() + parsedExpiresIn * 1000
+      : 0;
   return {
     accessToken,
     refreshToken: params.get("refresh_token") ?? "",
     type: params.get("type"),
+    expiresAt,
   };
 }
 
-/** Deserialize a stored session; anything malformed is discarded (null). */
+/**
+ * Deserialize a stored session; anything malformed is discarded (null).
+ *
+ * Only the stable id/email are restored. `isAnonymous` is intentionally not
+ * read from storage: cached classification must never authorize anything
+ * before `GET /auth/v1/user` verifies the session.
+ */
 export function loadStoredSession(raw: string | null): SupabaseSession | null {
   if (raw === null || raw === "") return null;
   try {
@@ -331,7 +513,13 @@ export function serializeSession(session: SupabaseSession): string {
     accessToken: session.accessToken,
     refreshToken: session.refreshToken,
     expiresAt: session.expiresAt,
-    user: session.user,
+    // Never persist the trusted classification: it is re-read from the Auth
+    // server after restore. A stale "false" in localStorage must not look
+    // like a verified account.
+    user: {
+      id: session.user.id,
+      ...(session.user.email === undefined ? {} : { email: session.user.email }),
+    },
   });
 }
 
@@ -431,4 +619,14 @@ export function clearAuthHash(): void {
 /** Invite links create the account password through the same reset form. */
 export function isPasswordSetupType(type: string | null): boolean {
   return type === "recovery" || type === "invite";
+}
+
+/**
+ * Auth redirect types that can carry the result of an email confirmation or
+ * change. GoTrue/auth-js use `email_change`; `email` is accepted as the
+ * generic email-confirmation type. A callback is only applied when the
+ * tab-scoped pending upgrade matches the verified same UID.
+ */
+export function isEmailVerificationType(type: string | null): boolean {
+  return type === "email_change" || type === "email";
 }

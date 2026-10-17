@@ -90,7 +90,7 @@ describe.each([
     vi.clearAllMocks();
     window.history.pushState({}, "", "/");
     setup = make();
-    render(<App client={setup.client} />);
+    render(<App client={setup.client} legacyLoopback />);
   });
 
   it("drives log → history → summary → analysis → unconfirmed draft plan, and confirmation writes nothing", async () => {

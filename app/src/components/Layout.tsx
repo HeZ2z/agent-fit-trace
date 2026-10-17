@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
+import {
+  GuestAccountControls,
+  GuestUpgradePasswordNotice,
+} from "../auth/GuestAccountControls.tsx";
 import { isCoachingEnabled } from "../api/runtimeMode.ts";
 import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { useCoach } from "../coaching/useCoach.ts";
@@ -23,30 +27,38 @@ function AccountArea() {
   const { status, user, signOutSession } = useAuth();
   const coach = useCoach();
   const navigate = useNavigate();
-  if (status === "signed-in" && user !== null) {
-    return (
-      <div className="account-area" aria-label="Account">
-        <span className="history-summary">{user.email ?? user.id}</span>{" "}
-        <button
-          type="button"
-          onClick={() => {
-            // Tear down the account-level coach with A's still-live credentials
-            // BEFORE the auth session is cleared (the gate then unmounts the
-            // Coach, so its own effects can never observe the transition). The
-            // owner is the same instance for the whole account, mounted or not.
-            coach.teardown();
-            void signOutSession().then(() => navigate("/login", { replace: true }));
-          }}
-        >
-          Sign out
-        </button>
-      </div>
-    );
+  if (status !== "signed-in" || user === null) return null;
+
+  // `isAnonymous === true` is the only verified guest signal. `false` is a
+  // verified account and `undefined` is not classified yet, so neither may be
+  // presented as a guest. The reusable component owns the upgrade/switch
+  // form; the header only keeps a compact badge and the safe sign-out.
+  if (user.isAnonymous === true) {
+    return <GuestAccountControls compact />;
   }
-  return null;
+
+  return (
+    <div className="account-area" aria-label="Account">
+      <span className="history-summary">{user.email ?? user.id}</span>{" "}
+      <button
+        type="button"
+        onClick={() => {
+          // Tear down the account-level coach with A's still-live credentials
+          // BEFORE the auth session is cleared (the gate then unmounts the
+          // Coach, so its own effects can never observe the transition). The
+          // owner is the same instance for the whole account, mounted or not.
+          coach.teardown();
+          void signOutSession();
+          navigate("/login", { replace: true });
+        }}
+      >
+        Sign out
+      </button>
+    </div>
+  );
 }
 
-export function Layout() {
+export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean }) {
   return (
     <CoachingProvider>
       <div className="app-shell">
@@ -69,7 +81,17 @@ export function Layout() {
           </nav>
           <AccountArea />
         </header>
+        {legacyLoopback ? (
+          <div className="validation-warnings" role="status">
+            <p>
+              Development bypass: no account login. Data uses the fixed
+              dev-loopback-bypass namespace in this browser and is not isolated by
+              identity.
+            </p>
+          </div>
+        ) : null}
         <AuthOutageNotice />
+        <GuestUpgradePasswordNotice />
         <main className="app-main">
           <Outlet />
         </main>

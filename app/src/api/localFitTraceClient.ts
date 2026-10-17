@@ -50,24 +50,54 @@ function hasUsableId(record: WorkoutRecord): boolean {
 }
 
 /**
- * `FitTraceClient` over the browser's own storage, reusing the repository's
- * per-record keys (`pi-fit-trace:workout:v1:<id>`) so records written by the
- * existing store remain readable verbatim.
+ * Fixed owner namespace for the explicit development-only unauthenticated
+ * loopback bypass. It is deliberately not a real Supabase user id and never
+ * falls back to legacy unowned keys.
+ */
+export const LOCAL_DEV_BYPASS_OWNER = "dev-loopback-bypass";
+
+/**
+ * `FitTraceClient` over the browser's own storage. When `ownerId` is provided,
+ * every repository key is namespaced to that verified Supabase user id, so two
+ * account identities on the same browser never see each other's records and
+ * legacy unowned v1 keys stay hidden. Omitting `ownerId` keeps the legacy
+ * (unowned) namespace for tests/tools only; the App always passes an owner.
  *
  * Every method is async, which is what turns synchronous storage throws
  * (blocked `localStorage`) into promise rejections; error translation happens
  * in `toApiError`, never by swallowing.
  */
+export interface LocalFitTraceClientOptions {
+  ownerId?: string;
+  /**
+   * Injectable clock for sibling client methods (issue 6). Keeping it in the
+   * options object lets both branches merge on one constructor signature
+   * without dropping either branch's methods.
+   */
+  now?: () => Date;
+}
+
 export class LocalFitTraceClient implements FitTraceClient {
   private readonly adapter: StorageAdapter;
+  private readonly ownerId: string | undefined;
 
-  constructor(adapter: StorageAdapter = new LocalStorageAdapter()) {
+  constructor(
+    adapter: StorageAdapter = new LocalStorageAdapter(),
+    ownerOrOptions?: string | LocalFitTraceClientOptions,
+  ) {
     this.adapter = adapter;
+    if (typeof ownerOrOptions === "string") {
+      this.ownerId = ownerOrOptions;
+    } else {
+      this.ownerId = ownerOrOptions?.ownerId;
+      // `now` is consumed by sibling methods when this branch merges; the
+      // string form remains fully supported here.
+    }
   }
 
   async listWorkouts(): Promise<WorkoutRecord[]> {
     try {
-      return loadRecords(this.adapter);
+      return loadRecords(this.adapter, this.ownerId);
     } catch (error) {
       throw toApiError(error);
     }
@@ -91,7 +121,7 @@ export class LocalFitTraceClient implements FitTraceClient {
 
       // Idempotency runs on the normalized record: identical content is a
       // no-op duplicate, differing content under the same id is a conflict.
-      const existing = loadRecord(this.adapter, normalized.id);
+      const existing = loadRecord(this.adapter, normalized.id, this.ownerId);
       if (existing !== null) {
         if (stableStringify(existing) === stableStringify(normalized)) {
           return { record: existing, duplicate: true, warnings };
@@ -103,7 +133,7 @@ export class LocalFitTraceClient implements FitTraceClient {
         });
       }
 
-      saveRecord(this.adapter, normalized);
+      saveRecord(this.adapter, normalized, this.ownerId);
       return { record: normalized, duplicate: false, warnings };
     } catch (error) {
       throw toApiError(error);
@@ -113,7 +143,7 @@ export class LocalFitTraceClient implements FitTraceClient {
   async analyze(filter?: AnalysisFilter): Promise<AnalysisResult> {
     try {
       // Core throws ValidationError on invalid or inverted filter dates.
-      return analyzeProgress(loadRecords(this.adapter), filter);
+      return analyzeProgress(loadRecords(this.adapter, this.ownerId), filter);
     } catch (error) {
       throw toApiError(error);
     }
@@ -121,7 +151,7 @@ export class LocalFitTraceClient implements FitTraceClient {
 
   async createPlanDraft(input?: PlanConstraints): Promise<PlanDraft> {
     try {
-      return generateNextPlan(loadRecords(this.adapter), input);
+      return generateNextPlan(loadRecords(this.adapter, this.ownerId), input);
     } catch (error) {
       throw toApiError(error);
     }

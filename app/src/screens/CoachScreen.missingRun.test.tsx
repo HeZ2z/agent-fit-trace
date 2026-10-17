@@ -369,6 +369,12 @@ describe("definitive missing-run recovery", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
+      if (String(url).includes("/auth/v1/user")) {
+        return new Response(
+          JSON.stringify({ id: "user-2", email: "b@example.com", is_anonymous: false }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
       return new Response("{}", { status: 200 });
     }) as unknown as typeof fetch;
 

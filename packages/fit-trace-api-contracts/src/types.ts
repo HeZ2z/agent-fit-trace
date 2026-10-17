@@ -66,12 +66,45 @@ export const FIT_TRACE_API_VERSION = "v1";
 export interface AuthPrincipal {
   id: string;
   email?: string;
+  /**
+   * Trusted anonymous classification copied from the identity provider's
+   * verified user response (`GET /auth/v1/user` → `is_anonymous`).
+   *
+   * `undefined` means the provider did not return a usable classification
+   * (or this principal came from a verifier that cannot classify it). It is
+   * deliberately not inferred from a missing email, request body, client
+   * cache, or user metadata. Account-only capabilities must treat both
+   * `true` and `undefined` as ineligible; cloud policy and quotas are owned by
+   * the sibling identity slice, not by a helper here.
+   */
+  isAnonymous?: boolean;
 }
 
 /** Public (unauthenticated) bootstrap configuration served by the API. */
 export interface PublicApiConfig {
   supabaseUrl: string;
   supabasePublishableKey: string;
+  /**
+   * Deployment-readiness flag for Supabase anonymous guest sign-in. Defaults
+   * to false and is only true when the server explicitly reports
+   * `FIT_TRACE_GUEST_SIGN_IN=1` (after the guest profile is verified live).
+   * The client must keep guest entry disabled unless this is exactly `true`.
+   */
+  guestSignInEnabled?: boolean;
+  /**
+   * Deployment-readiness flag for invited guest -> account upgrades. Defaults
+   * to false and is only true when the server explicitly reports
+   * `FIT_TRACE_GUEST_UPGRADE=1` after the migration/trigger and live Auth flow
+   * have been verified.
+   */
+  guestUpgradeEnabled?: boolean;
+  /**
+   * Set when the deployment has CAPTCHA enabled for anonymous sign-in.
+   * This browser client does not bundle a CAPTCHA widget yet, so it fails
+   * closed (hides guest entry) instead of sending a request that cannot pass.
+   * The transport still accepts an explicit CAPTCHA token for a future UI.
+   */
+  guestSignInCaptchaRequired?: boolean;
 }
 
 /** Resource paths for the four endpoints (see status semantics below). */

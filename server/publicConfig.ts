@@ -12,6 +12,25 @@
 export interface ServerPublicConfig {
   supabaseUrl: string;
   supabasePublishableKey: string;
+  /**
+   * Anonymous guest sign-in readiness. Defaults to false; only an explicit
+   * `FIT_TRACE_GUEST_SIGN_IN=1` enables it, and that must stay unset until the
+   * live guest profile has been verified.
+   */
+  guestSignInEnabled?: boolean;
+  /**
+   * Invited guest-upgrade readiness. Defaults to false; only an explicit
+   * `FIT_TRACE_GUEST_UPGRADE=1` enables it after the narrow Auth trigger and
+   * real email-confirmation flow have been verified live.
+   */
+  guestUpgradeEnabled?: boolean;
+  /**
+   * Explicitly declare that anonymous sign-in requires a CAPTCHA token. The
+   * current browser UI has no CAPTCHA widget, so it fails closed instead of
+   * pretending the request can pass. Operators must set this flag when
+   * Supabase CAPTCHA is enabled for anonymous sign-ups.
+   */
+  guestSignInCaptchaRequired?: boolean;
 }
 
 function isRejectedKey(key: string): boolean {
@@ -43,5 +62,13 @@ export function getPublicConfig(
     return null;
   }
   if (isRejectedKey(supabasePublishableKey)) return null;
-  return { supabaseUrl, supabasePublishableKey };
+  return {
+    supabaseUrl,
+    supabasePublishableKey,
+    // Guest capability is opt-in and default-false: an unset/typo value must
+    // never advertise anonymous sign-up readiness.
+    guestSignInEnabled: env.FIT_TRACE_GUEST_SIGN_IN === "1",
+    guestUpgradeEnabled: env.FIT_TRACE_GUEST_UPGRADE === "1",
+    guestSignInCaptchaRequired: env.FIT_TRACE_GUEST_CAPTCHA_REQUIRED === "1",
+  };
 }

@@ -113,4 +113,40 @@ describe("workoutRepository", () => {
     expect(adapter.keys(RECORD_KEY_PREFIX)).toEqual([]);
     expect(loadRecords(adapter)).toEqual([]);
   });
+
+  it("isolates owner namespaces and leaves legacy unowned keys hidden", () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, validRecord({ id: "legacy-a" }));
+    saveRecord(adapter, validRecord({ id: "shared", date: "2026-01-05" }), "owner-a");
+    saveRecord(adapter, validRecord({ id: "shared", date: "2026-02-05" }), "owner-b");
+
+    expect(loadRecords(adapter, "owner-a").map((record) => record.id)).toEqual(["shared"]);
+    expect(loadRecords(adapter, "owner-a")[0]?.date).toBe("2026-01-05");
+    expect(loadRecords(adapter, "owner-b")[0]?.date).toBe("2026-02-05");
+    // The legacy namespace never leaks into an owner-scoped view, and the
+    // owner-scoped keys are not part of the legacy listing.
+    expect(loadRecords(adapter).map((record) => record.id)).toEqual(["legacy-a"]);
+    expect(adapter.keys(recordKey("shared", "owner-a"))).toEqual([
+      recordKey("shared", "owner-a"),
+    ]);
+    expect(loadRecord(adapter, "shared", "owner-a")?.date).toBe("2026-01-05");
+    expect(loadRecord(adapter, "shared", "owner-b")?.date).toBe("2026-02-05");
+  });
+
+  it("clears only the selected owner namespace", () => {
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(adapter, validRecord({ id: "legacy" }));
+    saveRecord(adapter, validRecord({ id: "a" }), "owner-a");
+    saveRecord(adapter, validRecord({ id: "b" }), "owner-b");
+
+    clear(adapter, "owner-a");
+
+    expect(loadRecords(adapter, "owner-a")).toEqual([]);
+    expect(loadRecords(adapter, "owner-b").map((record) => record.id)).toEqual(["b"]);
+    expect(loadRecords(adapter).map((record) => record.id)).toEqual(["legacy"]);
+  });
+
+  it("rejects an empty owner id", () => {
+    expect(() => recordKey("wkt-1", "  ")).toThrow(TypeError);
+  });
 });

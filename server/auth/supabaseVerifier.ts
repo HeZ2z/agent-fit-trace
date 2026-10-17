@@ -88,9 +88,18 @@ export function createSupabaseVerifier(options: SupabaseVerifierOptions): TokenV
         typeof user === "object" && user !== null && "email" in user
           ? (user as { email: unknown }).email
           : undefined;
+      // Only the Auth server's verified user response may classify the
+      // principal. A missing or non-boolean `is_anonymous` stays undefined
+      // (fail closed for account-only capabilities); it is never inferred
+      // from an absent email, client data, or user metadata.
+      const isAnonymous =
+        typeof user === "object" && user !== null && "is_anonymous" in user
+          ? (user as { is_anonymous: unknown }).is_anonymous
+          : undefined;
       return {
         id,
         ...(typeof email === "string" && email !== "" ? { email } : {}),
+        ...(typeof isAnonymous === "boolean" ? { isAnonymous } : {}),
       };
     },
   };
