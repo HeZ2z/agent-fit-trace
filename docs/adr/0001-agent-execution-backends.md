@@ -1,10 +1,12 @@
 # ADR 0001: Agent execution backends, capability discovery, and cloud provider shape
 
-- **Status:** Accepted for slice A/B (contracts, registry seam, launcher selection, fail-closed cloud gate).
+- **Status:** Accepted. Durable hosted cloud coaching is implemented server-side;
+  Codex/OpenCode adapters and real-provider deployment QA are not.
 - **Date:** 2026-10-17
 - **Scope:** issue #7. This ADR records the shape that is implemented now and the
-  constraints any later adapter must satisfy. It is not a claim that Codex,
-  OpenCode, or hosted cloud coaching is shipped.
+  constraints any later adapter must satisfy. It is not a claim that Codex or
+  OpenCode local coaching is shipped, or that the hosted path has passed real
+  Supabase/OpenRouter QA.
 - **Related:** [`../coaching-api.md`](../coaching-api.md),
   [`../deployment.md`](../deployment.md), [`../local-launcher.md`](../local-launcher.md).
 
@@ -40,7 +42,7 @@ backend/runtime/location matrix:
 | `local-pi` | `pi` | `local` | Implemented, legacy default |
 | `local-codex` | `codex` | `local` | Declared, never advertised available |
 | `local-opencode` | `opencode` | `local` | Declared, never advertised available |
-| `cloud-default` | `hosted-sdk` | `cloud` | Declared, never advertised available |
+| `cloud-default` | `hosted-sdk` | `cloud` | Server route + worker implemented; App discovery remains off pending real QA |
 
 `hosted-sdk` names the hosted execution slot, not a vendor or model. Vendor,
 model, region, and worker configuration are server-side deployment decisions;
@@ -72,8 +74,10 @@ cancel routing.
 - `capabilityVersion` versions each backend's capability shape.
 
 Capability flags are conservative facts, not intentions. `productReplay` is
-false everywhere until a durable local journal exists: the service only has
-in-process replay, which must not be advertised as restart-durable. A local
+false everywhere in the local discovery payload until a durable local journal
+exists: the local service only has in-process replay, which must not be
+advertised as restart-durable. The separate cloud API has durable stored-event
+replay; it is not folded into the local launcher's discovery payload. A local
 backend's data destination is `cli-provider`, because the CLI sends prompts and
 snapshot-derived context to its configured model provider even though execution
 is local. `nativeContinuation` and `cancelConfirmation: "process-exit"` are
@@ -213,71 +217,99 @@ backend stays `adapter-not-implemented`.
 
 ### 7. Hosted cloud shape: OpenRouter over native `fetch`
 
-The configured cloud runtime is a bounded tool loop calling an
-OpenAI-compatible chat-completions endpoint with the built-in `fetch`. No
-provider SDK is added. The existing placeholders in
-`docs/deployment.md` are the configuration surface:
+The cloud runtime is a bounded tool loop calling the fixed official
+`https://openrouter.ai/api/v1/chat/completions` endpoint with the built-in
+`fetch`. No provider SDK is added. `FIT_TRACE_OPENROUTER_API_KEY` and
+`FIT_TRACE_OPENROUTER_MODEL` are required; a non-empty
+`FIT_TRACE_OPENROUTER_BASE_URL` must equal the official base or the provider is
+unconfigured. `FIT_TRACE_CLOUD_ENABLED=1` is the global kill switch.
 
-```dotenv
-FIT_TRACE_OPENROUTER_BASE_URL=
-FIT_TRACE_OPENROUTER_API_KEY=
-FIT_TRACE_OPENROUTER_MODEL=
-```
-
-Proposed request shape (to be fixed by the adapter slice):
+Implemented request shape (non-streaming, one tool call at a time):
 
 ```http
-POST {FIT_TRACE_OPENROUTER_BASE_URL}/chat/completions
+POST https://openrouter.ai/api/v1/chat/completions
 Authorization: Bearer {FIT_TRACE_OPENROUTER_API_KEY}
 Content-Type: application/json
 
 {
   "model": "{FIT_TRACE_OPENROUTER_MODEL}",
   "messages": [{ "role": "system", "content": "..." }, { "role": "user", "content": "..." }],
-  "tools": [{ "type": "function", "function": { "name": "get_training_history", "parameters": { "...": "..." } } }],
+  "tools": [{ "type": "function", "function": { "name": "analyze_progress", "parameters": { "...": "..." } } }],
   "tool_choice": "auto",
-  "stream": true
+  "parallel_tool_calls": false,
+  "max_tokens": 512,
+  "stream": false
 }
 ```
 
 Constraints:
 
-- The base URL, key, model, region, and budgets are server-side worker secrets.
+- The key, model, endpoint, and budgets are server-only worker configuration.
   They are never sent to the browser, returned by discovery, or logged. A
   missing value fails closed.
-- Only the two read-only coached tools are offered. Every tool call is bound to
-  the run's pinned snapshot and validated server-side; unknown tools, shell,
-  file, network, SQL, and plan-confirmation calls are rejected.
-- The final assistant output must parse as a domain analysis result. Model text
-  is never wrapped as a trusted analysis.
-- Step, token, time, and event budgets are enforced by the worker, not by model
-  cooperation.
-- Streaming responses include usage in the final chunk; non-streaming responses
-  include usage directly. OpenRouter also exposes
+- Only `get_training_history` and `analyze_progress` are offered. Every tool call
+  is bound to the run's pinned, database-derived snapshot and validated
+  server-side; unknown tools, shell, file, network, SQL, and plan-confirmation
+  calls are rejected. Model text becomes a `text_delta` only. An
+  `analysis_result` can come only from the deterministic tool result and is
+  re-validated before it is stored.
+- Step, total/per-step token, request-byte, response-byte, and wall-clock
+  budgets are enforced by the worker. Multibyte input is bounded by UTF-8
+  bytes, not by a chars/4 estimate. Local token estimates are stopping bounds,
+  not billing truth.
+- Provider responses are read through a metered stream with a hard byte cap;
+  `Content-Length` alone is not trusted. There is no automatic provider retry.
+- Non-streaming responses may carry `usage`; OpenRouter also exposes
   `GET {base}/generation?id=<generation-id>` for request/usage metadata. A
-   generation id observed in a response is the reconciliation handle.
-- **No cancellation endpoint is documented.** The OpenAPI document exposes
-  `GET /generation` and `GET /generation/content`, not a cancel/abort/delete
-  operation. Aborting the HTTP read stops local consumption, not necessarily
-  provider billing. Until a provider proves termination, a cloud run must not
-  claim `cancelled`; it stays `cancelling`/unconfirmed, keeps its quota
-  reservation, and never auto-retries.
-- No provider idempotency key is documented. A crash before acceptance
-  evidence is `execution-unconfirmed`: do not resubmit, do not release the
+  generation id is the reconciliation handle.
+- Missing provider usage leaves accounting explicitly unknown. It is never
+  settled as a fabricated zero charge. Only provider-returned usage is settled,
+  at most once, under the current unexpired lease generation.
+- **No cancellation endpoint is documented.** Aborting the HTTP read stops
+  local consumption, not necessarily provider billing. Until termination is
+  proven, a cancelled cloud run stays `cancelling` or becomes `unconfirmed`,
+  keeps its quota reservation, and is never auto-retried.
+- No provider idempotency key is documented. A crash after the pre-fetch
+  marker is `execution-unconfirmed`: do not resubmit, do not release the
   reservation, and surface a reconciliation state. A recorded generation id
   permits post-hoc usage/cost lookup but is not proof of task cancellation.
-- Cloud capacity release uses provider-side termination evidence, mapped to the
-  shared "execution confirmed stopped" condition; local capacity release keeps
-  the existing `processExitConfirmed` meaning.
+
+**Durable persistence and quotas.** `supabase/migrations/20261017000200_coaching_cloud.sql`
+adds ownership/RLS tables for sessions, snapshots, runs, dense events, quota,
+usage ledger, and the outbox. Request-path RPCs use the caller's token and
+`auth.uid()`; only the worker RPCs require `auth.role() = 'service_role'`.
+Snapshot RPCs derive records from the caller's own `public.workouts` rows
+instead of accepting caller-supplied records, and clamp TTLs and per-account
+counts. Submission is one atomic RPC: it hashes the canonical request, resolves
+an existing idempotency record before requiring a live snapshot, returns
+`409 IDEMPOTENCY_CONFLICT` for a changed request, and serializes reservation
+against a 20-concurrent global/per-account cap. A run retains its own snapshot
+copy so a dispatched worker never depends on snapshot TTL.
+
+**Worker lifecycle.** `server/cloud/outboxWorker.ts` claims one outbox job per
+tick (sequential batch claims would let later leases expire), writes a
+pre-fetch marker, and calls a database authorization RPC immediately before
+every provider request. That RPC rechecks the lease generation, expiry,
+cancellation, formal-account status, and quota. Every event, settlement, and
+terminal write is generation-fenced. Expired leases with a fetch marker become
+`unconfirmed` and are never redispatched; expired pre-fetch leases return to
+`queued`/`cancelling`. A terminal event is written once. `unconfirmed` is a run
+status; the shared terminal event uses `failed` with an explicit reason because
+the shared event contract has no `unconfirmed` terminal status.
 
 ### 8. What this slice does not implement
 
 - No Codex or OpenCode process adapter, probe, or CLI QA.
-- No hosted worker, provider call, quota ledger, or cloud persistence.
-- No App backend selector or resume v2; the existing launcher-gated Coach UI is
-  unchanged.
-- No hosted deployment. `local-pi` remains the only executable backend, and
-  discovery reports the others as unavailable with reasons.
+- No App cloud selector or cloud resume UI; the existing launcher-gated Coach UI
+  is unchanged. Cloud routes are server-side and are not advertised as
+  available by the local launcher's discovery.
+- No hosted deployment and no real Supabase migration application or
+  OpenRouter call in this checkpoint. The durable schema, fake-repository
+  tests, and opt-in integration tests exist, but production behavior after a
+  real migration/worker/provider run is unverified.
+- No provider cancellation proof. OpenRouter may continue billing after the
+  HTTP read aborts; the implementation therefore reports unconfirmed states
+  rather than claiming a clean stop.
 
 ## Evidence
 
@@ -305,21 +337,27 @@ statements below are documentation-only and are not runtime QA.
 - A request cannot drift from local pi to paid cloud by omitting a field.
 - Discovery can describe planned engines truthfully without pretending they
   work, and the registry refuses mismatched or duplicate wiring at startup.
-- Cloud eligibility is a single fail-closed function shared by discovery and
-  submission, with no client-controlled entitlement input.
-- The provider shape is implementable with the existing runtime and no new
-  dependency; cancellation and idempotency limits are stated before any paid
-  traffic exists.
+- Cloud eligibility is fail-closed at the per-request principal, the
+  authoritative `auth.users.is_anonymous` row, and the database quota RPC, with
+  no client-controlled entitlement input.
+- Persistence, idempotent replay, lease fencing, event replay, and quota
+  accounting are implemented without a new dependency. Cancellation and
+  exactly-once provider acceptance remain explicitly unproven.
 
 **Negative / open work**
 
 - Discovery is currently more informative than the product: only `local-pi`
-  can run, and the App does not yet render backend selection or reasons.
+  is exposed through the App, and the App does not yet render backend selection
+  or reasons.
 - Codex/OpenCode behavior, permissions, cancel proof, and native continuation
   still need real CLI spikes and QA before those backends are available.
 - Cloud cancellation and exactly-once acceptance remain unproven with
-  OpenRouter. The adapter must expose unconfirmed states honestly and must not
-  release budget on an unproven stop.
+  OpenRouter. The adapter exposes unconfirmed states and does not release budget
+  on an unproven stop. Real-provider QA must verify these states against live
+  behavior before the cloud path is advertised as complete.
+- The migration has not been applied to the long-running local Supabase stack;
+  that must be coordinated rather than resetting the stack. Opt-in integration
+  tests require a migrated isolated local stack.
 - The launcher's pi-missing path keeps its legacy fail-clear behavior so
   existing callers still receive `PI_UNAVAILABLE`; discovery separately reports
   `local-pi` unavailable. A later UX slice should align submission with

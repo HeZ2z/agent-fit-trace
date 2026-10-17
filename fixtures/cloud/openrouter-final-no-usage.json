@@ -1,0 +1,13 @@
+{
+  "id": "gen-cloud-nousage-1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Analysis complete from the deterministic tool result."
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}

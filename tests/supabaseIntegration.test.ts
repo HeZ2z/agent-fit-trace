@@ -425,3 +425,307 @@ test("concurrency: parallel identical creates yield one row + duplicates", async
   const listed = (await listPayloads(user.accessToken)).filter((entry) => entry.id === record.id);
   assert.equal(listed.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Durable cloud coaching: direct-RPC hardening (opt-in, isolated local users).
+// No reset: every test provisions throwaway users and relies on FK cascades.
+// ---------------------------------------------------------------------------
+
+async function rpcCloud(
+  token: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ status: number; json: unknown; text: string }> {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+    method: "POST",
+    headers: headers(token),
+    body: JSON.stringify(args),
+  });
+  return readOnce(response);
+}
+
+async function configureCloudQuota(user: TestUser): Promise<void> {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/coaching_quota`, {
+    method: "POST",
+    headers: {
+      ...headers(undefined, true),
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify({
+      owner_id: user.id,
+      configured: true,
+      concurrent_limit: 20,
+      reserved_count: 0,
+      tokens_used: 0,
+    }),
+  });
+  const once = await readOnce(response);
+  assert.ok(
+    once.status === 200 || once.status === 201 || once.status === 204,
+    `quota configure failed: ${once.status} ${once.text.slice(0, 200)}`,
+  );
+}
+
+async function cloudSession(token: string, id: string): Promise<string> {
+  const created = await rpcCloud(token, "coaching_create_session", {
+    p_id: id,
+    p_ttl_ms: 1_800_000,
+  });
+  assert.equal(created.status, 200, created.text.slice(0, 200));
+  return (created.json as { id: string }).id;
+}
+
+async function cloudSnapshot(token: string, id: string): Promise<{ snapshotId: string; source: string }> {
+  const created = await rpcCloud(token, "coaching_create_snapshot", {
+    p_snapshot_id: id,
+    p_source: "authenticated-store",
+    p_from: null,
+    p_to: null,
+    p_ttl_ms: 1_800_000,
+  });
+  assert.equal(created.status, 200, created.text.slice(0, 200));
+  const body = created.json as { snapshotId: string; source: string };
+  return { snapshotId: body.snapshotId, source: body.source };
+}
+
+function cloudSubmitArgs(
+  user: TestUser,
+  sessionId: string,
+  snapshotId: string,
+  idempotencyKey: string,
+  runId: string,
+  prompt = "Review my training.",
+): Record<string, unknown> {
+  return {
+    p_run_id: runId,
+    p_session_id: sessionId,
+    p_idempotency_key: idempotencyKey,
+    p_prompt: prompt,
+    p_backend_id: "cloud-default",
+    p_runtime_id: "hosted-sdk",
+    p_snapshot_id: snapshotId,
+    p_snapshot_source: "authenticated-store",
+    p_request: {
+      prompt,
+      backendId: "cloud-default",
+      runtimeId: "hosted-sdk",
+      snapshot: {
+        snapshotId,
+        source: "authenticated-store",
+        accountId: user.id,
+      },
+    },
+  };
+}
+
+test("cloud direct RPC: fabricated snapshot records are rejected; contents come from workouts", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) assert.fail("local Supabase stack is not running (`supabase start`).");
+
+  const user = await provisionUser("cloud-snapshot");
+  const records = [
+    seedRecord({ id: `w-cloud-a-${Date.now()}`, date: "2026-09-01" }),
+    seedRecord({ id: `w-cloud-b-${Date.now()}`, date: "2026-09-02" }),
+  ];
+  for (const record of records) {
+    const created = await readOnce(await rpcCreate(user.accessToken, record));
+    assert.equal(created.status, 200, created.text.slice(0, 160));
+  }
+
+  // The old record-bearing signature must not exist: direct callers cannot
+  // smuggle payloads even with a fully valid authenticated token.
+  const forged = await rpcCloud(user.accessToken, "coaching_create_snapshot", {
+    p_snapshot_id: `snap-forged-${Date.now()}`,
+    p_source: "authenticated-store",
+    p_from: null,
+    p_to: null,
+    p_ttl_ms: 1_800_000,
+    p_records: [{ id: "forged", date: "2026-09-03", schema_version: 1 }],
+    p_record_ids: ["forged"],
+    p_record_count: 1,
+  });
+  assert.ok(forged.status >= 400, `forged snapshot call unexpectedly succeeded: ${forged.status}`);
+
+  const valid = await rpcCloud(user.accessToken, "coaching_create_snapshot", {
+    p_snapshot_id: `snap-authoritative-${Date.now()}`,
+    p_source: "authenticated-store",
+    p_from: null,
+    p_to: null,
+    p_ttl_ms: 1_800_000,
+  });
+  assert.equal(valid.status, 200, valid.text.slice(0, 200));
+  const body = valid.json as { recordIds: string[]; recordCount: number; expiresAt: number };
+  assert.deepEqual([...body.recordIds].sort(), records.map((record) => record.id).sort());
+  assert.equal(body.recordCount, 2);
+  assert.ok(
+    body.expiresAt <= Date.now() + 24 * 60 * 60 * 1000 + 5_000,
+    "snapshot TTL must be hard-clamped to 24h",
+  );
+
+  const badSource = await rpcCloud(user.accessToken, "coaching_create_snapshot", {
+    p_snapshot_id: `snap-badsource-${Date.now()}`,
+    p_source: "forged-source",
+    p_from: null,
+    p_to: null,
+    p_ttl_ms: 1_800_000,
+  });
+  assert.ok(badSource.status >= 400, "caller-chosen snapshot source must be refused");
+});
+
+test("cloud direct RPC: malicious TTL is clamped for sessions and snapshots", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) assert.fail("local Supabase stack is not running (`supabase start`).");
+
+  const user = await provisionUser("cloud-ttl");
+  const session = await rpcCloud(user.accessToken, "coaching_create_session", {
+    p_id: `sess-ttl-${Date.now()}`,
+    p_ttl_ms: 2_147_483_647,
+  });
+  assert.equal(session.status, 200, session.text.slice(0, 160));
+  assert.ok(
+    (session.json as { expiresAt: number }).expiresAt <= Date.now() + 24 * 60 * 60 * 1000 + 5_000,
+  );
+
+  const snapshot = await rpcCloud(user.accessToken, "coaching_create_snapshot", {
+    p_snapshot_id: `snap-ttl-${Date.now()}`,
+    p_source: "authenticated-store",
+    p_from: null,
+    p_to: null,
+    p_ttl_ms: 2_147_483_647,
+  });
+  assert.equal(snapshot.status, 200, snapshot.text.slice(0, 160));
+  assert.ok(
+    (snapshot.json as { expiresAt: number }).expiresAt <= Date.now() + 24 * 60 * 60 * 1000 + 5_000,
+  );
+});
+
+test("cloud direct RPC: concurrent session creates cannot exceed the per-account cap", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) assert.fail("local Supabase stack is not running (`supabase start`).");
+
+  const user = await provisionUser("cloud-cap");
+  const results = await Promise.all(
+    Array.from({ length: 55 }, (_, index) =>
+      rpcCloud(user.accessToken, "coaching_create_session", {
+        p_id: `sess-cap-${index}`,
+        p_ttl_ms: 60_000,
+      }),
+    ),
+  );
+  const successes = results.filter((result) => result.status === 200);
+  assert.ok(successes.length <= 50, `per-account session cap exceeded: ${successes.length}`);
+  assert.ok(results.some((result) => result.status >= 400), "concurrent overflow must be rejected");
+
+  const listed = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/coaching_sessions?select=id`, {
+      headers: headers(user.accessToken),
+    }),
+  );
+  assert.equal(listed.status, 200, listed.text.slice(0, 160));
+  assert.ok((listed.json as unknown[]).length <= 50);
+});
+
+test("cloud direct RPC: concurrent identical submits create one run and replay", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) assert.fail("local Supabase stack is not running (`supabase start`).");
+
+  const user = await provisionUser("cloud-idem");
+  const record = seedRecord({ id: `w-cloud-idem-${Date.now()}`, date: "2026-09-10" });
+  assert.equal((await readOnce(await rpcCreate(user.accessToken, record))).status, 200);
+  await configureCloudQuota(user);
+  const sessionId = await cloudSession(user.accessToken, `sess-idem-${Date.now()}`);
+  const snapshot = await cloudSnapshot(user.accessToken, `snap-idem-${Date.now()}`);
+  const key = `idem-${Date.now()}`;
+  const results = await Promise.all(
+    Array.from({ length: 10 }, (_, index) =>
+      rpcCloud(
+        user.accessToken,
+        "coaching_submit_run",
+        cloudSubmitArgs(user, sessionId, snapshot.snapshotId, key, `run-idem-${Date.now()}-${index}`),
+      ),
+    ),
+  );
+  assert.equal(results.filter((result) => result.status === 200).length, 10);
+  const runIds = new Set(
+    results.map((result) => (result.json as { run: { id: string } }).run.id),
+  );
+  assert.equal(runIds.size, 1, "one idempotency key must map to one retained run");
+
+  const runs = await readOnce(
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/coaching_runs?select=id&session_id=eq.${encodeURIComponent(sessionId)}`,
+      { headers: headers(user.accessToken) },
+    ),
+  );
+  assert.equal(runs.status, 200, runs.text.slice(0, 160));
+  assert.equal((runs.json as unknown[]).length, 1);
+});
+
+test("cloud direct RPC: 21 concurrent unique submits stop at the 20 reservation cap", async (t) => {
+  if (!ENABLED) {
+    t.skip("skipped: set FIT_TRACE_SUPABASE_INTEGRATION=1 with local SUPABASE_URL + keys to run.");
+    return;
+  }
+  assert.equal(HARD_FAIL, null, HARD_FAIL ?? "misconfigured");
+  assert.equal(PROVISION_FAIL, null, PROVISION_FAIL ?? "missing service key");
+  if (!CAN_PROVISION) assert.fail(PROVISION_FAIL ?? "cannot provision");
+  if (!(await stackUp())) assert.fail("local Supabase stack is not running (`supabase start`).");
+
+  const user = await provisionUser("cloud-quota");
+  const record = seedRecord({ id: `w-cloud-quota-${Date.now()}`, date: "2026-09-11" });
+  assert.equal((await readOnce(await rpcCreate(user.accessToken, record))).status, 200);
+  await configureCloudQuota(user);
+  const sessionId = await cloudSession(user.accessToken, `sess-quota-${Date.now()}`);
+  const snapshot = await cloudSnapshot(user.accessToken, `snap-quota-${Date.now()}`);
+  const results = await Promise.all(
+    Array.from({ length: 21 }, (_, index) =>
+      rpcCloud(
+        user.accessToken,
+        "coaching_submit_run",
+        cloudSubmitArgs(
+          user,
+          sessionId,
+          snapshot.snapshotId,
+          `quota-key-${Date.now()}-${index}`,
+          `run-quota-${Date.now()}-${index}`,
+        ),
+      ),
+    ),
+  );
+  const successes = results.filter((result) => result.status === 200).length;
+  assert.ok(successes <= 20, `reservation cap exceeded: ${successes} successes`);
+  assert.ok(results.some((result) => result.status >= 400), "the 21st reservation must fail");
+
+  const quota = await readOnce(
+    await fetch(`${SUPABASE_URL}/rest/v1/coaching_quota?select=reserved_count`, {
+      headers: headers(user.accessToken),
+    }),
+  );
+  assert.equal(quota.status, 200, quota.text.slice(0, 160));
+  const reserved = (quota.json as { reserved_count: number }[])[0]?.reserved_count ?? 0;
+  assert.ok(reserved <= 20, `reserved_count exceeded cap: ${reserved}`);
+});

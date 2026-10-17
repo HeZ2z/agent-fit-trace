@@ -1,0 +1,23 @@
+{
+  "id": "gen-cloud-nousage-1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call-analysis-1",
+            "type": "function",
+            "function": {
+              "name": "analyze_progress",
+              "arguments": "{\"exercises\":[\"bench_press\"]}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ]
+}

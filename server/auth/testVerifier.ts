@@ -18,7 +18,11 @@ export function createTestVerifier(tokens: Record<string, AuthPrincipal>): Token
         (error as { code?: string }).code = "UNAUTHENTICATED";
         return Promise.reject(error);
       }
-      return Promise.resolve({ id: principal.id, ...(principal.email === undefined ? {} : { email: principal.email }) });
+      return Promise.resolve({
+        id: principal.id,
+        ...(principal.email === undefined ? {} : { email: principal.email }),
+        ...(principal.isAnonymous === undefined ? {} : { isAnonymous: principal.isAnonymous }),
+      });
     },
   };
 }

@@ -121,9 +121,23 @@ function parseSnapshot(raw: string): WorkoutRecord[] {
   return deepFreeze(validated);
 }
 
+/**
+ * Build a frozen executor over already-validated records (cloud worker path).
+ * Records are re-validated and deep-frozen once, so provider tool calls can
+ * never mutate the pinned snapshot between steps.
+ */
+export function createSnapshotDomainExecutor(records: unknown[]): SnapshotDomainExecutor {
+  const validated: WorkoutRecord[] = records.map((entry) => validateWorkoutRecord(entry).record);
+  return buildExecutor(deepFreeze(validated));
+}
+
 /** Load and validate one immutable snapshot, then serve bounded read-only calls. */
 export async function loadSnapshotDomainExecutor(snapshotFile: string): Promise<SnapshotDomainExecutor> {
   const records = parseSnapshot(await readFile(snapshotFile, "utf8"));
+  return buildExecutor(records);
+}
+
+function buildExecutor(records: readonly WorkoutRecord[]): SnapshotDomainExecutor {
   return {
     recordCount: records.length,
     getTrainingHistory(args: unknown): DomainHistoryPage {
@@ -139,7 +153,7 @@ export async function loadSnapshotDomainExecutor(snapshotFile: string): Promise<
       const exercise = optionalString(parsed.exercise, "exercise");
       const limit = optionalInteger(parsed.limit, "limit", 1, MAX_HISTORY_LIMIT) ?? null;
       const offset = optionalInteger(parsed.offset, "offset", 0, 100_000) ?? 0;
-      const scoped = filterRecords(records, {
+      const scoped = filterRecords([...records], {
         ...(from !== undefined ? { from } : {}),
         ...(to !== undefined ? { to } : {}),
         ...(exercise !== undefined ? { exercises: [exercise] } : {}),
@@ -169,7 +183,7 @@ export async function loadSnapshotDomainExecutor(snapshotFile: string): Promise<
           return entry;
         });
       }
-      const analysis = analyzeProgress(records, {
+      const analysis = analyzeProgress([...records], {
         ...(from !== undefined ? { from } : {}),
         ...(to !== undefined ? { to } : {}),
         ...(exercises !== undefined ? { exercises } : {}),

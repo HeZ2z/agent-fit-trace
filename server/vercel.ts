@@ -5,6 +5,10 @@ import { createAuthenticatedHandler, DEFAULT_MAX_BODY_BYTES } from "./authentica
 import { readSupabaseServerEnv } from "./db/env.ts";
 import { createSupabaseWorkoutStore } from "./db/supabaseWorkouts.ts";
 import { getPublicConfig } from "./publicConfig.ts";
+import { CLOUD_SAFE_DEFAULTS, readCloudRequestEnv } from "./cloud/config.ts";
+import { createCloudCoachingHandler } from "./cloud/httpHandler.ts";
+import { createSupabaseCoachingRequestRepository } from "./cloud/supabaseCoachingRepository.ts";
+import { storeFactorySource } from "./coaching/coachingService.ts";
 
 /**
  * Shared Vercel Function adapter.
@@ -150,6 +154,61 @@ export async function handleVercelApi(
     typeof authorization === "string" ? authorization : undefined,
   );
 
+  // Strip the `/api/v1` mount prefix so the shared handlers see bare routes.
+  const url = new URL(rawUrl, "http://fit-trace.invalid");
+  const route = `${url.pathname.replace(/^\/api\/v1(?=\/|$)/, "")}${url.search}`;
+
+  // Durable cloud coaching has its own authenticated handler. It uses the
+  // caller's own token for RPCs and never receives the service-role key.
+  if (url.pathname.startsWith("/api/v1/coaching/cloud/")) {
+    const cloudEnv = readCloudRequestEnv();
+    const cloudHandler = createCloudCoachingHandler({
+      verifier,
+      repositoryFor:
+        cloudEnv === null || accessToken === null || env === null
+          ? null
+          : (principal, token) =>
+              createSupabaseCoachingRequestRepository({
+                supabaseUrl: cloudEnv.supabase.supabaseUrl,
+                publishableKey: cloudEnv.supabase.publishableKey,
+                accessToken: token,
+              }),
+      source:
+        cloudEnv === null || accessToken === null || env === null
+          ? null
+          : storeFactorySource({
+              storeFor: (principal) =>
+                createSupabaseWorkoutStore(principal, {
+                  supabaseUrl: env.supabaseUrl,
+                  publishableKey: env.publishableKey,
+                  accessToken,
+                }),
+            }),
+      providerConfigured: cloudEnv?.provider != null,
+      providerLimits: {
+        maxSteps: cloudEnv?.provider?.maxSteps ?? CLOUD_SAFE_DEFAULTS.maxSteps,
+        maxTokens: cloudEnv?.provider?.maxTokens ?? CLOUD_SAFE_DEFAULTS.maxTokens,
+        timeoutMs: cloudEnv?.provider?.timeoutMs ?? CLOUD_SAFE_DEFAULTS.timeoutMs,
+      },
+      sse: {
+        pollMs: CLOUD_SAFE_DEFAULTS.ssePollMs,
+        maxDurationMs: CLOUD_SAFE_DEFAULTS.sseMaxDurationMs,
+        pageLimit: CLOUD_SAFE_DEFAULTS.ssePageLimit,
+      },
+    });
+    const accept = request.headers.accept;
+    const result = await cloudHandler({
+      method: request.method ?? "GET",
+      pathname: url.pathname.replace(/^\/api\/v1(?=\/|$)/, ""),
+      searchParams: url.searchParams,
+      body,
+      authorization: typeof authorization === "string" ? authorization : undefined,
+      accept: typeof accept === "string" ? accept : Array.isArray(accept) ? accept[0] : undefined,
+    });
+    send(response, result.status, result.body, result.headers);
+    return;
+  }
+
   const handler = createAuthenticatedHandler({
     verifier,
     // Per-request store bound to the caller's own token so PostgREST RLS
@@ -170,9 +229,6 @@ export async function handleVercelApi(
     publicConfig,
   });
 
-  // Strip the `/api/v1` mount prefix so the shared handler sees bare routes.
-  const url = new URL(rawUrl, "http://fit-trace.invalid");
-  const route = `${url.pathname.replace(/^\/api\/v1(?=\/|$)/, "")}${url.search}`;
   const result = await handler(route, {
     method: request.method ?? "GET",
     body,
