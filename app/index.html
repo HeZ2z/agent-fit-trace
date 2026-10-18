@@ -1,9 +1,31 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-lang="en" data-theme="pixel">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
     <title>agent-fit-trace</title>
+    <script>
+      // Paint the saved skin before the stylesheet/bundle arrive, so a Glass
+      // preference never flashes Pixel first. The key and values mirror
+      // app/src/theme/theme.ts; keep them in sync.
+      try {
+        var savedTheme = window.localStorage.getItem("pi-fit-trace:theme:v1");
+        if (savedTheme === "pixel" || savedTheme === "glass") {
+          document.documentElement.setAttribute("data-theme", savedTheme);
+        }
+      } catch (error) {
+        // Blocked storage simply keeps the default Pixel attribute above.
+      }
+      try {
+        if (window.localStorage.getItem("pi-fit-trace:lang:v1") === "zh") {
+          document.documentElement.lang = "zh-CN";
+          document.documentElement.setAttribute("data-lang", "zh");
+        }
+      } catch (error) {
+        // Blocked storage keeps the default English attributes above.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

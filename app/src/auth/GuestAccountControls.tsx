@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext.tsx";
 import { saveReturnTarget } from "./returnTarget.ts";
 import { useCoach } from "../coaching/useCoach.ts";
+import { useI18n } from "../i18n/useI18n.ts";
 
 /**
  * Reusable guest account controls for the header and the account page.
@@ -33,6 +34,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
   const coach = useCoach();
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useI18n();
   const emailId = useId();
   const [email, setEmail] = useState("");
   const [requesting, setRequesting] = useState(false);
@@ -57,7 +59,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
       await beginGuestUpgrade(email);
       setEmail("");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not start the account upgrade.");
+      setError(caught instanceof Error ? caught.message : t("Could not start the account upgrade."));
     } finally {
       setRequesting(false);
     }
@@ -72,9 +74,9 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
       // Explicit user action only. The pending marker is preserved on failure,
       // and AuthContext serializes this through the one in-flight mutation.
       await beginGuestUpgrade(pending.email, { resend: true });
-      setCheckMessage(`Verification link sent again to ${pending.email}.`);
+      setCheckMessage(t("Verification link sent again to {email}.", { email: pending.email }));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not resend the verification link.");
+      setError(caught instanceof Error ? caught.message : t("Could not resend the verification link."));
     } finally {
       setResending(false);
     }
@@ -90,15 +92,15 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
       // guest component unmounts and the password notice takes over. A null
       // result means the identity/token changed underneath us.
       if (verified === null) {
-        setCheckMessage("This session changed. Reopen the tab that started the upgrade.");
+        setCheckMessage(t("This session changed. Reopen the tab that started the upgrade."));
       } else if (verified.isAnonymous === true) {
-        setCheckMessage("Not verified yet. Open the link from the email, then check again.");
+        setCheckMessage(t("Not verified yet. Open the link from the email, then check again."));
       } else if (verified.emailConfirmedAt === undefined) {
-        setCheckMessage("The email is not confirmed yet. Check again after opening the link.");
+        setCheckMessage(t("The email is not confirmed yet. Check again after opening the link."));
       }
     } catch (caught) {
       setError(
-        caught instanceof Error ? caught.message : "Could not check the verification link.",
+        caught instanceof Error ? caught.message : t("Could not check the verification link."),
       );
     } finally {
       setChecking(false);
@@ -126,29 +128,37 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
     // upgrade/switch forms exist only once, on /me, so they cannot diverge.
     // Sign-out keeps the same two-step loss warning and coach teardown.
     return (
-      <div className="account-area account-guest-compact" aria-label="Guest account">
-        <span className="account-badge account-guest-label">Guest</span>
+      <div
+        className="account-area account-guest-compact"
+        aria-label={t("Guest account")}
+      >
+        <span className="account-badge account-guest-label">{t("Guest")}</span>
         <Link className="account-link" to="/me">
-          Account details
+          {t("Account details")}
         </Link>
         {confirmingSignOut ? (
-          <div className="account-guest-warning" role="group" aria-label="Confirm guest sign out">
+          <div
+            className="account-guest-warning"
+            role="group"
+            aria-label={t("Confirm guest sign out")}
+          >
             <p>
-              Signing out removes this browser&rsquo;s guest session. These guest workouts may be
-              lost and cannot be guaranteed recoverable from another tab.
+              {t(
+                "Signing out removes this browser’s guest session. These guest workouts may be lost and cannot be guaranteed recoverable from another tab.",
+              )}
             </p>
             <div className="account-guest-actions">
               <button type="button" onClick={onSignOut}>
-                Sign out and lose guest access
+                {t("Sign out and lose guest access")}
               </button>
               <button type="button" onClick={() => setConfirmingSignOut(false)}>
-                Cancel
+                {t("Cancel")}
               </button>
             </div>
           </div>
         ) : (
           <button type="button" onClick={() => setConfirmingSignOut(true)}>
-            Sign out guest
+            {t("Sign out guest")}
           </button>
         )}
       </div>
@@ -156,22 +166,24 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
   }
 
   return (
-    <div className="account-area account-guest" aria-label="Guest account">
+    <div className="account-area account-guest" aria-label={t("Guest account")}>
       <p>
-        <span className="account-guest-label">Guest</span> · Your workouts are not linked to an
-        account.
+        <span className="account-guest-label">{t("Guest")}</span>{" "}
+        {t("· Your workouts are not linked to an account.")}
       </p>
       <p>
-        Guest data is tied to this browser. Signing out or clearing site data may lose it;
-        signing in to a different account does not transfer it.
+        {t(
+          "Guest data is tied to this browser. Signing out or clearing site data may lose it; signing in to a different account does not transfer it.",
+        )}
       </p>
 
       {pendingEmail ? (
         <>
           <p role="status" className="account-guest-pending">
-            Verification link sent to <strong>{pending?.email}</strong>. Open it in this tab, or
-            open it elsewhere and check verification here. The upgrade is not complete until
-            the verified user is re-fetched for the same guest.
+            {t("Verification link sent to")} <strong>{pending?.email}</strong>
+            {t(
+              ". Open it in this tab, or open it elsewhere and check verification here. The upgrade is not complete until the verified user is re-fetched for the same guest.",
+            )}
           </p>
           <div className="account-guest-actions">
             <button
@@ -179,14 +191,14 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
               onClick={() => void onCheckVerification()}
               disabled={checking || resending}
             >
-              {checking ? "Checking…" : "Check verification"}
+              {checking ? t("Checking…") : t("Check verification")}
             </button>
             <button
               type="button"
               onClick={() => void onResend()}
               disabled={resending || checking}
             >
-              {resending ? "Resending…" : "Resend verification link"}
+              {resending ? t("Resending…") : t("Resend verification link")}
             </button>
           </div>
           {checkMessage !== null ? <p role="status">{checkMessage}</p> : null}
@@ -194,8 +206,9 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
       ) : null}
       {pending?.verified ? (
         <p role="status" className="account-guest-pending">
-          Email verified for <strong>{pending.email}</strong>.{" "}
-          <Link to="/reset-password">Set a password</Link> to finish the account upgrade.
+          {t("Email verified for {email}.", { email: pending.email })}{" "}
+          <Link to="/reset-password">{t("Set a password")}</Link>
+          {t(" to finish the account upgrade.")}
         </p>
       ) : null}
 
@@ -207,14 +220,15 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
 
       {guestUpgradeEnabled && pending === null ? (
         <details className="guest-upgrade">
-          <summary>Upgrade to an account</summary>
+          <summary>{t("Upgrade to an account")}</summary>
           <p>
-            Invited emails only. This keeps the same guest identity and attaches its existing
-            workouts to the verified account — it does not merge a different account.
+            {t(
+              "Invited emails only. This keeps the same guest identity and attaches its existing workouts to the verified account — it does not merge a different account.",
+            )}
           </p>
           <form onSubmit={onUpgrade}>
             <div className="field">
-              <label htmlFor={emailId}>Invited email</label>
+              <label htmlFor={emailId}>{t("Invited email")}</label>
               <input
                 id={emailId}
                 type="email"
@@ -225,7 +239,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
               />
             </div>
             <button type="submit" disabled={requesting}>
-              {requesting ? "Sending link…" : "Send verification link"}
+              {requesting ? t("Sending link…") : t("Send verification link")}
             </button>
           </form>
         </details>
@@ -234,15 +248,16 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
       {confirmingSignOut ? (
         <>
           <p>
-            Signing out removes this browser&rsquo;s guest session. These guest workouts may be
-            lost and cannot be guaranteed recoverable from another tab.
+            {t(
+              "Signing out removes this browser’s guest session. These guest workouts may be lost and cannot be guaranteed recoverable from another tab.",
+            )}
           </p>
           <div className="account-guest-actions">
             <button type="button" onClick={onSignOut}>
-              Sign out and lose guest access
+              {t("Sign out and lose guest access")}
             </button>
             <button type="button" onClick={() => setConfirmingSignOut(false)}>
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
         </>
@@ -252,7 +267,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
             Sign in to an existing account
           </button>
           <button type="button" onClick={() => setConfirmingSignOut(true)}>
-            Sign out guest
+            {t("Sign out guest")}
           </button>
         </div>
       )}
@@ -266,6 +281,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
  */
 export function GuestUpgradePasswordNotice() {
   const { user, pendingGuestUpgrade } = useAuth();
+  const { t } = useI18n();
   if (
     user === null ||
     user.isAnonymous !== false ||
@@ -278,8 +294,9 @@ export function GuestUpgradePasswordNotice() {
   return (
     <div className="validation-warnings" role="status">
       <p>
-        Email verified for {pendingGuestUpgrade.email}.{" "}
-        <Link to="/reset-password">Set a password</Link> to finish the account upgrade.
+        {t("Email verified for {email}.", { email: pendingGuestUpgrade.email })}{" "}
+        <Link to="/reset-password">{t("Set a password")}</Link>
+        {t(" to finish the account upgrade.")}
       </p>
     </div>
   );

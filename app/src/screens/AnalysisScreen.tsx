@@ -8,8 +8,10 @@ import {
 } from "../components/ArtifactSourceSelector.tsx";
 import { useArtifactSource } from "../state/useArtifactSource.ts";
 import { useWorkouts } from "../state/useWorkouts.ts";
+import { useI18n } from "../i18n/useI18n.ts";
 
 export function AnalysisScreen() {
+  const { t } = useI18n();
   const { client, records, status: historyStatus, loadError, reload } = useWorkouts();
   const source = useArtifactSource("analysis", client);
   const [localAnalysis, setLocalAnalysis] = useState<AnalysisResult | null>(null);
@@ -59,18 +61,32 @@ export function AnalysisScreen() {
     source.selectionError === null;
 
   return (
-    <section>
-      <h1>Progress Analysis</h1>
-
-      <p>
-        <Link to="/me">Manage imports and exports</Link>
-      </p>
+    <section data-screen="analysis">
+      <div className="screen-head">
+        <div className="screen-head-main">
+          <h1>{t("Progress Analysis")}</h1>
+          <p className="screen-lede">
+            {t(
+              "Deterministic metrics, exercise trends and safety flags computed from the same records every time. No model call is involved.",
+            )}
+          </p>
+        </div>
+        <p className="screen-actions">
+          <Link className="btn-ghost" to="/me">
+            {t("Manage imports and exports")}
+          </Link>
+        </p>
+      </div>
 
       {historyStatus === "error" ? (
         <div role="alert" data-testid="history-error" className="validation-summary">
-          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <p>
+            {t("Could not load workout history: {message}", {
+              message: loadError?.message ?? t("Unknown error."),
+            })}
+          </p>
           <button type="button" onClick={reload}>
-            Retry
+            {t("Retry")}
           </button>
         </div>
       ) : (
@@ -84,18 +100,22 @@ export function AnalysisScreen() {
             </>
           ) : sourceBlocked ? null : historyStatus === "loading" ||
             (historyStatus === "ready" && analysisStatus === "loading") ? (
-            <p role="status">Loading analysis…</p>
+            <p role="status">{t("Loading analysis…")}</p>
           ) : analysisStatus === "error" ? (
             <div role="alert" data-testid="analysis-error" className="validation-summary">
-              <p>Could not load analysis: {analysisError?.message ?? "Unknown error."}</p>
+              <p>
+                {t("Could not load analysis: {message}", {
+                  message: analysisError?.message ?? t("Unknown error."),
+                })}
+              </p>
               <button type="button" onClick={() => setReloadToken((n) => n + 1)}>
-                Retry
+                {t("Retry")}
               </button>
             </div>
           ) : showEmpty || localAnalysis === null ? (
             <div className="empty-state">
-              <p>No workout history to analyse yet.</p>
-              <Link to="/workout/new">Log your first workout</Link>
+              <p>{t("No workout history to analyse yet.")}</p>
+              <Link to="/workout/new">{t("Log your first workout")}</Link>
             </div>
           ) : (
             <AnalysisView analysis={localAnalysis} />

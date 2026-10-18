@@ -1,0 +1,552 @@
+/*
+ * pi-fit-trace — History, session detail, Log Workout and Analysis
+ *
+ * Content surfaces stay opaque paper; the blueprint grid lives behind them,
+ * never through them.
+ */
+
+/* ── History ───────────────────────────────────────────────────── */
+
+.history-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 12px 14px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+  transition:
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.history-row:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 var(--border);
+}
+
+.history-row a {
+  grid-column: 1;
+  color: var(--fg);
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.history-row a:hover {
+  color: var(--blue-deep);
+  text-decoration: underline;
+  text-decoration-thickness: var(--border-w-thin);
+  text-underline-offset: 3px;
+}
+
+.history-summary {
+  display: block;
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* ── Workout summary ───────────────────────────────────────────── */
+
+.summary-exercise {
+  padding: 14px 16px;
+}
+
+.summary-exercise ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.summary-exercise li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 7px 0;
+  border-top: var(--border-w-thin) solid var(--pale);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary-exercise li:first-child {
+  border-top: 0;
+}
+
+.summary-exercise li[data-safety] {
+  padding-left: 10px;
+}
+
+.metrics-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metrics-list li {
+  margin: 0;
+  padding: 12px 14px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Safety flags: severity is drawn as a border, never as colour alone. */
+.flag-list {
+  display: grid;
+  gap: 9px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flag-list li {
+  margin: 0;
+  padding: 11px 13px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.flag-list li[data-flag-severity="critical"] {
+  border-color: var(--accent);
+  box-shadow: 3px 3px 0 var(--accent);
+  background: var(--danger-soft);
+}
+
+.flag-list li[data-flag-severity="warning"] {
+  border-color: var(--warn);
+  box-shadow: 3px 3px 0 var(--warn);
+  background: var(--warn-soft);
+}
+
+/* ── Log Workout ───────────────────────────────────────────────── */
+
+[data-screen="log"] form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+[data-screen="log"] form > fieldset {
+  margin: 0;
+  padding: 16px 16px 14px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+}
+
+[data-screen="log"] form > fieldset > legend {
+  padding: 0 7px;
+  margin-left: -3px;
+  background: var(--bg);
+  color: var(--blue-deep);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Session details sit in a two-column grid; notes take the full row. */
+[data-screen="log"] form > fieldset:nth-of-type(2) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: start;
+}
+
+[data-screen="log"] form > fieldset:nth-of-type(2) > legend {
+  grid-column: 1 / -1;
+}
+
+[data-screen="log"] form > fieldset:nth-of-type(2) .field {
+  margin-bottom: 12px;
+}
+
+[data-screen="log"] form > fieldset:nth-of-type(2) .field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+[data-screen="log"] form > button[type="submit"] {
+  justify-self: stretch;
+}
+
+/* Nested exercise and set cards. */
+.exercise-editor {
+  margin: 0 0 12px;
+  padding: 12px 12px 10px;
+  border: var(--border-w-thin) solid var(--pale);
+  background: var(--info-soft);
+  box-shadow: none;
+}
+
+.exercise-editor > legend {
+  padding: 0 6px;
+  margin-left: -2px;
+  background: var(--info-soft);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.exercise-editor .field {
+  margin-bottom: 10px;
+}
+
+.exercise-editor > .field {
+  max-width: 520px;
+}
+
+.exercise-editor > button {
+  margin-right: 8px;
+}
+
+.set-editor {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 10px 8px;
+  border: var(--border-w-thin) solid var(--pale);
+  background: var(--bg);
+  box-shadow: none;
+}
+
+.set-editor > legend {
+  grid-column: 1 / -1;
+  padding: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.set-editor .field {
+  grid-row: 2;
+  margin-bottom: 0;
+}
+
+.set-editor .field label {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.set-editor > button {
+  grid-column: 4;
+  grid-row: 2;
+  width: auto;
+  min-width: 44px;
+  min-height: 46px;
+  padding: 0 10px;
+  align-self: end;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.set-editor > .safety-badge {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  justify-self: start;
+  margin-left: 0;
+}
+
+/* Pain entries are a warning surface, not an error. */
+.pain-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 10px 8px;
+  border: var(--border-w-thin) solid var(--warn);
+  background: var(--warn-soft);
+}
+
+.pain-editor .field {
+  grid-row: 1;
+  margin-bottom: 0;
+}
+
+.pain-editor > .safety-badge {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  justify-self: start;
+  margin-left: 0;
+}
+
+[data-screen="log"] form > fieldset:nth-of-type(3) > button {
+  margin-top: 4px;
+}
+
+/* ── Analysis ──────────────────────────────────────────────────── */
+
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-metrics li {
+  margin: 0;
+  padding: 12px 14px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* The first metric is the hero: one blue block per screen. */
+.analysis-metrics li:first-child {
+  grid-column: 1 / -1;
+  padding: 18px 20px;
+  border-color: var(--fg);
+  background: var(--border);
+  color: var(--bg);
+  box-shadow: var(--shadow-red-sm);
+  font-family: var(--display);
+  font-size: clamp(24px, 3vw, 32px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.analysis-trends {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-trends li {
+  margin: 0;
+  padding: 11px 13px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.analysis-flags {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-flags > li {
+  margin: 0;
+  padding: 12px 14px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.analysis-flags > li[data-flag-severity="critical"] {
+  border-color: var(--accent);
+  box-shadow: 4px 4px 0 var(--accent);
+  background: var(--danger-soft);
+}
+
+.analysis-flags > li[data-flag-severity="warning"] {
+  border-color: var(--warn);
+  box-shadow: 4px 4px 0 var(--warn);
+  background: var(--warn-soft);
+}
+
+.analysis-flags > li[data-flag-severity="info"] {
+  background: var(--info-soft);
+}
+
+.flag-evidence {
+  display: grid;
+  gap: 2px;
+  margin: 9px 0 0;
+  padding: 8px 0 0;
+  border-top: var(--border-w-thin) solid var(--pale);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.flag-evidence li {
+  margin: 0;
+}
+
+/* ── wide and narrow layouts ──────────────────────────────────── */
+
+@media (min-width: 1180px) {
+  .history-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .analysis-trends {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analysis-metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .analysis-metrics li:first-child {
+    grid-column: span 2;
+  }
+
+  [data-screen="log"] form {
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.8fr);
+    grid-template-areas:
+      "exercises session"
+      "exercises pain"
+      "exercises submit";
+    align-items: start;
+  }
+
+  /* DOM order matches the visual order: exercises (left), then session,
+     pain and save (right column), so Tab never jumps columns. */
+  [data-screen="log"] form > fieldset:nth-of-type(1) {
+    grid-area: exercises;
+  }
+
+  [data-screen="log"] form > fieldset:nth-of-type(2) {
+    grid-area: session;
+  }
+
+  [data-screen="log"] form > fieldset:nth-of-type(3) {
+    grid-area: pain;
+  }
+
+  [data-screen="log"] form > button[type="submit"] {
+    grid-area: submit;
+  }
+
+  [data-screen="log"] form > fieldset:nth-of-type(2) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 600px) and (max-width: 1179px) {
+  [data-screen="log"] form > fieldset:nth-of-type(2) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .history-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .history-summary {
+    grid-column: 1;
+    grid-row: 2;
+    text-align: left;
+  }
+
+  .metrics-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metrics-list li:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .set-editor {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .set-editor .field label {
+    font-size: 8px;
+    letter-spacing: 0;
+    line-height: 1.2;
+  }
+
+  .set-editor > button {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    justify-self: start;
+    min-height: 40px;
+    padding: 0 10px;
+    margin-top: 2px;
+  }
+
+  .set-editor > .safety-badge {
+    grid-row: 3;
+  }
+
+  .pain-editor {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .pain-editor > button {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: start;
+  }
+
+  .exercise-editor {
+    padding: 10px 10px 8px;
+  }
+}

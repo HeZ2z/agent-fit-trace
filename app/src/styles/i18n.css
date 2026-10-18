@@ -1,0 +1,101 @@
+/*
+ * pi-fit-trace — Chinese interface typography
+ *
+ * Bricolage Grotesque and DM Sans carry no CJK glyphs, so Chinese swaps the
+ * stacks rather than letting the browser choose a fallback per glyph run. The
+ * Latin face stays first so numbers, kg, RPE and English exercise names keep
+ * their designed shapes. Chinese also needs more leading and less tracking than
+ * the Latin scale: it reads heavier at the same optical size, and a
+ * three-character section label at 0.1em tracking drifts apart.
+ */
+
+html[data-lang="zh"] {
+  --display:
+    "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --body:
+    "DM Sans", -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+
+html[data-lang="zh"] body {
+  line-height: 1.6;
+}
+
+html[data-lang="zh"] .app-main h1 {
+  font-size: clamp(27px, 3.6vw, 36px);
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+}
+
+html[data-lang="zh"] .app-main h2 {
+  font-size: 19px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+
+html[data-lang="zh"] .app-main h3 {
+  letter-spacing: 0;
+}
+
+/* Micro-caps labels lose their uppercase tracking in Chinese. */
+html[data-lang="zh"] label,
+html[data-lang="zh"] .field-label,
+html[data-lang="zh"] .side-status,
+html[data-lang="zh"] .brand-sub,
+html[data-lang="zh"] .mobile-brand-sub,
+html[data-lang="zh"] .mode-chip,
+html[data-lang="zh"] .theme-option-flag {
+  letter-spacing: 0.04em;
+}
+
+html[data-lang="zh"] .screen-lede,
+html[data-lang="zh"] .coach-lede,
+html[data-lang="zh"] .me-lede {
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+html[data-lang="zh"] .me-help,
+html[data-lang="zh"] .side-note,
+html[data-lang="zh"] .side-slug,
+html[data-lang="zh"] .coach-meta,
+html[data-lang="zh"] .analysis-period,
+html[data-lang="zh"] .analysis-source-count,
+html[data-lang="zh"] .plan-goal,
+html[data-lang="zh"] .plan-based-on {
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+html[data-lang="zh"] .nav-link {
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+html[data-lang="zh"] .summary-details dd,
+html[data-lang="zh"] .plan-detail,
+html[data-lang="zh"] .plan-reason,
+html[data-lang="zh"] .plan-status,
+html[data-lang="zh"] .coach-text,
+html[data-lang="zh"] .msg-text {
+  line-height: 1.7;
+}
+
+html[data-lang="zh"] .plan-action {
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 899px) {
+  html[data-lang="zh"] .nav-link {
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+}
+
+@media (min-width: 900px) and (max-width: 1023px) {
+  html[data-lang="zh"] .nav-link {
+    font-size: 10.5px;
+    letter-spacing: 0;
+  }
+}

@@ -11,6 +11,13 @@ import {
 } from "@pi-fit-trace/core";
 import type { ValidationIssue, ValidationWarning } from "@pi-fit-trace/core";
 import { useWorkouts } from "../state/useWorkouts.ts";
+import { useI18n } from "../i18n/useI18n.ts";
+import {
+  displayIssue,
+  displaySessionType,
+  displayValidationMessage,
+  displayWarning,
+} from "../i18n/domain.ts";
 
 interface SetDraft {
   key: number;
@@ -54,6 +61,7 @@ function isExtremeRpe(raw: string): boolean {
 export function WorkoutEditorScreen() {
   const navigate = useNavigate();
   const { saveWorkout, saveStatus } = useWorkouts();
+  const { language, t } = useI18n();
   const saving = saveStatus === "saving";
   const nextKey = useRef(1);
 
@@ -260,20 +268,30 @@ export function WorkoutEditorScreen() {
   }
 
   return (
-    <section>
-      <h1>Log Workout</h1>
+    <section data-screen="log">
+      <h1>{t("Log Workout")}</h1>
+      <p className="screen-lede">
+        {t(
+          "Record one session. Validation runs before anything is stored, and no existing record is ever overwritten.",
+        )}
+      </p>
 
       {saveError !== null && (
         <div role="alert" className="validation-summary" data-testid="save-error">
-          <p>Could not save this workout: {saveError}</p>
+          <p>
+            {t("Could not save this workout: {message}", {
+              message: displayValidationMessage(language, saveError),
+            })}
+          </p>
         </div>
       )}
 
       {issues.length > 0 && (
         <div role="alert" className="validation-summary" data-testid="validation-summary">
           <p>
-            {issues.length} validation {issues.length === 1 ? "issue" : "issues"} — please fix before
-            saving.
+            {issues.length === 1
+              ? t("{count} validation issue — please fix before saving.", { count: issues.length })
+              : t("{count} validation issues — please fix before saving.", { count: issues.length })}
           </p>
           <ul>
             {issues.map((issue, index) => (
@@ -283,7 +301,7 @@ export function WorkoutEditorScreen() {
                 data-issue-path={issue.path ?? ""}
               >
                 {issue.path ? `${issue.path}: ` : ""}
-                {issue.message}
+                {displayIssue(language, issue)}
               </li>
             ))}
           </ul>
@@ -291,10 +309,10 @@ export function WorkoutEditorScreen() {
       )}
 
       {warnings.length > 0 && !pendingIsStale && (
-        <ul role="status" aria-label="Warnings" className="validation-warnings">
+        <ul role="status" aria-label={t("Warnings")} className="validation-warnings">
           {warnings.map((warning, index) => (
             <li key={`${warning.code}-${index}`} data-warning-code={warning.code}>
-              {warning.message}
+              {displayWarning(language, warning)}
             </li>
           ))}
         </ul>
@@ -302,93 +320,30 @@ export function WorkoutEditorScreen() {
 
       {pendingIsStale && (
         <p role="status" className="validation-warnings" data-testid="warning-invalidated">
-          Form changed since the warning was shown. Submit again to re-validate.
+          {t("Form changed since the warning was shown. Submit again to re-validate.")}
         </p>
       )}
 
       {pendingSave !== null && !pendingIsStale && (
         <div className="validation-warnings" data-testid="warning-confirmation">
-          <p>This workout was accepted with warnings. Save it anyway?</p>
+          <p>{t("This workout was accepted with warnings. Save it anyway?")}</p>
           <button type="button" onClick={handleConfirmSave} disabled={saving}>
-            Save anyway
+            {t("Save anyway")}
           </button>
         </div>
       )}
 
       <form onSubmit={handleSubmit} noValidate>
         <fieldset>
-          <legend>Session</legend>
-
-          <div className="field">
-            <label htmlFor="workout-date">Date</label>
-            <input
-              id="workout-date"
-              type="date"
-              value={date}
-              onChange={(event) => setDate(event.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-session-type">Session type</label>
-            <select
-              id="workout-session-type"
-              value={sessionType}
-              onChange={(event) => setSessionType(event.target.value)}
-            >
-              {SESSION_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-duration-minutes">Duration (minutes)</label>
-            <input
-              id="workout-duration-minutes"
-              type="number"
-              min="1"
-              step="1"
-              value={durationMinutes}
-              onChange={(event) => setDurationMinutes(event.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-sleep-hours">Sleep (hours)</label>
-            <input
-              id="workout-sleep-hours"
-              type="number"
-              min="0"
-              max="24"
-              step="0.5"
-              value={sleepHours}
-              onChange={(event) => setSleepHours(event.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-notes">Notes</label>
-            <textarea
-              id="workout-notes"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-            />
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend>Exercises</legend>
+          <legend>{t("Exercises")}</legend>
 
           {exercises.map((exercise, exerciseIndex) => (
             <fieldset key={exercise.key} className="exercise-editor">
-              <legend>Exercise {exerciseIndex + 1}</legend>
+              <legend>{t("Exercise {index}", { index: exerciseIndex + 1 })}</legend>
 
               <div className="field">
                 <label htmlFor={`exercise-${exercise.key}-name`}>
-                  Exercise {exerciseIndex + 1} name
+                  {t("Exercise {index} name", { index: exerciseIndex + 1 })}
                 </label>
                 <input
                   id={`exercise-${exercise.key}-name`}
@@ -408,12 +363,18 @@ export function WorkoutEditorScreen() {
                     data-safety={extreme ? "extreme-rpe" : undefined}
                   >
                     <legend>
-                      Exercise {exerciseIndex + 1} set {setIndex + 1}
+                      {t("Exercise {exercise} set {set}", {
+                        exercise: exerciseIndex + 1,
+                        set: setIndex + 1,
+                      })}
                     </legend>
 
                     <div className="field">
                       <label htmlFor={`${base}-weight`}>
-                        Exercise {exerciseIndex + 1} set {setIndex + 1} weight (kg)
+                        {t("Exercise {exercise} set {set} weight (kg)", {
+                          exercise: exerciseIndex + 1,
+                          set: setIndex + 1,
+                        })}
                       </label>
                       <input
                         id={`${base}-weight`}
@@ -428,7 +389,10 @@ export function WorkoutEditorScreen() {
 
                     <div className="field">
                       <label htmlFor={`${base}-reps`}>
-                        Exercise {exerciseIndex + 1} set {setIndex + 1} reps
+                        {t("Exercise {exercise} set {set} reps", {
+                          exercise: exerciseIndex + 1,
+                          set: setIndex + 1,
+                        })}
                       </label>
                       <input
                         id={`${base}-reps`}
@@ -441,7 +405,10 @@ export function WorkoutEditorScreen() {
 
                     <div className="field">
                       <label htmlFor={`${base}-rpe`}>
-                        Exercise {exerciseIndex + 1} set {setIndex + 1} RPE
+                        {t("Exercise {exercise} set {set} RPE", {
+                          exercise: exerciseIndex + 1,
+                          set: setIndex + 1,
+                        })}
                       </label>
                       <input
                         id={`${base}-rpe`}
@@ -454,36 +421,101 @@ export function WorkoutEditorScreen() {
                       />
                     </div>
 
-                    {extreme && <span className="safety-badge">Extreme effort</span>}
+                    {extreme && <span className="safety-badge">{t("Extreme effort")}</span>}
 
                     <button type="button" onClick={() => removeSet(exercise.key, set.key)}>
-                      Remove set
+                      {t("Remove set")}
                     </button>
                   </fieldset>
                 );
               })}
 
               <button type="button" onClick={() => addSet(exercise.key)}>
-                Add set
+                {t("Add set")}
               </button>
               <button type="button" onClick={() => removeExercise(exercise.key)}>
-                Remove exercise
+                {t("Remove exercise")}
               </button>
             </fieldset>
           ))}
 
           <button type="button" onClick={addExercise}>
-            Add exercise
+            {t("Add exercise")}
           </button>
         </fieldset>
 
         <fieldset>
-          <legend>Pain</legend>
+          <legend>{t("Session")}</legend>
+
+          <div className="field">
+            <label htmlFor="workout-date">{t("Date")}</label>
+            <input
+              id="workout-date"
+              type="date"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-session-type">{t("Session type")}</label>
+            <select
+              id="workout-session-type"
+              value={sessionType}
+              onChange={(event) => setSessionType(event.target.value)}
+            >
+              {SESSION_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {displaySessionType(language, type)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-duration-minutes">{t("Duration (minutes)")}</label>
+            <input
+              id="workout-duration-minutes"
+              type="number"
+              min="1"
+              step="1"
+              value={durationMinutes}
+              onChange={(event) => setDurationMinutes(event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-sleep-hours">{t("Sleep (hours)")}</label>
+            <input
+              id="workout-sleep-hours"
+              type="number"
+              min="0"
+              max="24"
+              step="0.5"
+              value={sleepHours}
+              onChange={(event) => setSleepHours(event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-notes">{t("Notes")}</label>
+            <textarea
+              id="workout-notes"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+            />
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>{t("Pain")}</legend>
 
           {pain.map((entry, index) => (
             <div key={entry.key} className="pain-editor" data-safety="pain">
               <div className="field">
-                <label htmlFor={`pain-${entry.key}-area`}>Pain {index + 1} area</label>
+                <label htmlFor={`pain-${entry.key}-area`}>
+                  {t("Pain {index} area", { index: index + 1 })}
+                </label>
                 <input
                   id={`pain-${entry.key}-area`}
                   type="text"
@@ -493,7 +525,9 @@ export function WorkoutEditorScreen() {
               </div>
 
               <div className="field">
-                <label htmlFor={`pain-${entry.key}-level`}>Pain {index + 1} level</label>
+                <label htmlFor={`pain-${entry.key}-level`}>
+                  {t("Pain {index} level", { index: index + 1 })}
+                </label>
                 <input
                   id={`pain-${entry.key}-level`}
                   type="number"
@@ -505,20 +539,22 @@ export function WorkoutEditorScreen() {
                 />
               </div>
 
-              <span className="safety-badge">Pain reported</span>
+              <span className="safety-badge">{t("Pain reported")}</span>
 
               <button type="button" onClick={() => removePain(entry.key)}>
-                Remove pain
+                {t("Remove pain")}
               </button>
             </div>
           ))}
 
           <button type="button" onClick={addPain}>
-            Add pain
+            {t("Add pain")}
           </button>
         </fieldset>
 
-        <button type="submit" disabled={saving}>Save workout</button>
+        <button type="submit" disabled={saving}>
+          {t("Save workout")}
+        </button>
       </form>
     </section>
   );

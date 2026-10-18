@@ -232,6 +232,7 @@ export function detectFlags(records: WorkoutRecord[]): AnalysisFlag[] {
       message: `${extremeSets.length} set(s) reached RPE ${EXTREME_RPE} or higher.`,
       evidence: {
         record_ids: [...new Set(extremeSets.map((s) => s.recordId))],
+        set_count: extremeSets.length,
         max_rpe: Math.max(...extremeSets.map((s) => s.rpe as number)),
       },
     });

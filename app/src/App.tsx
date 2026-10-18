@@ -25,6 +25,7 @@ import {
   isPasswordSetupType,
   parseAuthCallbackHash,
 } from "./auth/supabaseAuth.ts";
+import { useI18n } from "./i18n/useI18n.ts";
 
 export interface AppProps {
   /** Optional client for tests; defaults to the mode-aware client. */
@@ -133,6 +134,7 @@ function RequireAuth({
   client?: FitTraceClient;
 }) {
   const { status, publicConfig, configError, authError, refresh } = useAuth();
+  const { t } = useI18n();
   if (isLegacyLoopbackAllowed(legacyLoopback)) {
     return <ProtectedContent client={client}>{children}</ProtectedContent>;
   }
@@ -142,28 +144,28 @@ function RequireAuth({
     if (authError !== null && authError.code === "AUTH_UNAVAILABLE") {
       return (
         <section aria-labelledby="auth-retry-heading">
-          <h1 id="auth-retry-heading">Sign-in is unavailable</h1>
+          <h1 id="auth-retry-heading">{t("Sign-in is unavailable")}</h1>
           <p role="alert">{authError.message}</p>
           <button type="button" onClick={() => void refresh()}>
-            Retry
+            {t("Retry")}
           </button>
         </section>
       );
     }
     return (
-      <section aria-label="Loading">
-        <p>Loading…</p>
+      <section aria-label={t("Loading")}>
+        <p>{t("Loading…")}</p>
       </section>
     );
   }
   if (publicConfig === null) {
     return (
       <section aria-labelledby="auth-unavailable-heading">
-        <h1 id="auth-unavailable-heading">Login is unavailable</h1>
+        <h1 id="auth-unavailable-heading">{t("Login is unavailable")}</h1>
         <p role="alert">
           {configError !== null
-            ? "The server did not provide its public configuration."
-            : "Authentication is not configured."}
+            ? t("The server did not provide its public configuration.")
+            : t("Authentication is not configured.")}
         </p>
       </section>
     );
@@ -297,13 +299,14 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
 
 export default function App({ client, legacyLoopback }: AppProps = {}) {
   const runtime = currentRuntimeMode();
+  const { t } = useI18n();
   if (runtime.error !== null) {
     // Fail closed before AuthProvider/protected providers mount: a production
     // build in local/default/unknown mode must show a configuration error,
     // never a quiet local fallback with unauthenticated data access.
     return (
       <main className="app-shell" aria-labelledby="runtime-config-heading">
-        <h1 id="runtime-config-heading">Configuration error</h1>
+        <h1 id="runtime-config-heading">{t("Configuration error")}</h1>
         <p role="alert">{runtime.error}</p>
       </main>
     );

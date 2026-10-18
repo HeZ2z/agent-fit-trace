@@ -1,0 +1,622 @@
+/*
+ * pi-fit-trace — Glass skin
+ *
+ * A second skin over the same tokens, not a second layout. Glass draws its
+ * content with hairlines, soft diffusion and rounded corners, and changes only
+ * what floats above the content: the side panel, the dock and the mobile app
+ * bar. The material itself is a tint *under* a blur plus paired specular rims,
+ * so legibility is a fixed value rather than whatever happens to scroll behind.
+ *
+ * A card whose text sits on frosted content loses the contrast that text
+ * needs, so every content surface below stays opaque paper.
+ */
+
+/* ── tokens ─────────────────────────────────────────────────────── */
+
+:root[data-theme="glass"] {
+  --border-w: 1px;
+  --border-w-thin: 1px;
+  --shell: oklch(98% 0.006 268);
+  --grid: transparent;
+  --soft: oklch(96.5% 0.013 268);
+  --pale: oklch(91.5% 0.013 268);
+  --hair: oklch(89.5% 0.016 268.5);
+  --soft-shadow:
+    0 1px 2px oklch(27% 0.11 265 / 0.05),
+    0 14px 30px -20px oklch(27% 0.11 265 / 0.35);
+
+  /* Structure is no longer drawn with offset shadows. */
+  --shadow-blue: none;
+  --shadow-blue-sm: none;
+  --shadow-red: none;
+  --shadow-red-sm: none;
+  --shadow-ink: none;
+
+  --radius-card: 8px;
+  --radius-control: 6px;
+
+  /* Floating chrome. */
+  --glass-r: 26px;
+  --glass-inset: 6px;
+  --glass-r-in: calc(var(--glass-r) - var(--glass-inset));
+  --float: 10px;
+  --glass-tint: oklch(100% 0 0 / 0.78);
+  --glass-tint-hi: oklch(100% 0 0 / 0.88);
+  --glass-edge: oklch(73% 0.035 268 / 0.42);
+  --glass-spec: oklch(100% 0 0 / 0.9);
+  --glass-shade: oklch(66% 0.04 268 / 0.2);
+  --glass-blur: blur(22px) saturate(180%) brightness(1.04);
+  --glass-shadow:
+    0 1px 2px oklch(27% 0.11 265 / 0.06),
+    0 12px 26px -14px oklch(27% 0.11 265 / 0.34);
+  /* Secondary copy on a translucent field needs one more step of ink. */
+  --glass-muted: oklch(40% 0.095 268);
+}
+
+/* ── ground and type scale ──────────────────────────────────────── */
+
+[data-theme="glass"] body,
+[data-theme="glass"] .workspace {
+  background: var(--shell);
+}
+
+[data-theme="glass"] .app-main h1 {
+  font-size: clamp(30px, 3.7vw, 42px);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+}
+
+[data-theme="glass"] .app-main h2 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+[data-theme="glass"] .app-main h2::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+[data-theme="glass"] label,
+[data-theme="glass"] .field-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+[data-theme="glass"] .screen-lede,
+[data-theme="glass"] .coach-lede,
+[data-theme="glass"] .me-lede {
+  line-height: 1.55;
+}
+
+/* ── content surfaces: opaque paper, hairline rules ────────────── */
+
+[data-theme="glass"] :is(
+  .history-row,
+  .summary-details,
+  .summary-exercise,
+  .metrics-list li,
+  .analysis-metrics li,
+  .analysis-trends li,
+  .analysis-flags > li,
+  .flag-list li,
+  .plan-adoption,
+  .plan-recommendation,
+  .plan-status,
+  .plan-safety-notes li,
+  .coach-text,
+  .coach-disclosure,
+  .coach-backend,
+  .me-section,
+  .me-panel,
+  .artifact-source,
+  .artifact-meta,
+  .artifact-history-row,
+  .validation-summary,
+  .validation-warnings,
+  .validation-hints,
+  .care-prompt,
+  .empty-state,
+  .auth-screen,
+  .plan-evidence li,
+  .guest-upgrade,
+  .account-guest-warning,
+  .account-guest-pending
+) {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: var(--radius-card);
+  box-shadow: var(--soft-shadow);
+}
+
+[data-theme="glass"] .history-row:hover {
+  transform: none;
+  border-color: oklch(78% 0.05 268);
+  box-shadow:
+    0 2px 4px oklch(27% 0.11 265 / 0.06),
+    0 20px 34px -22px oklch(27% 0.11 265 / 0.4);
+}
+
+[data-theme="glass"] .summary-details dt,
+[data-theme="glass"] .summary-details dd,
+[data-theme="glass"] .summary-exercise li,
+[data-theme="glass"] .flag-evidence,
+[data-theme="glass"] .plan-evidence {
+  border-color: var(--hair);
+}
+
+[data-theme="glass"] .analysis-metrics li:first-child {
+  border-color: transparent;
+  background: var(--border);
+  color: var(--bg);
+  border-radius: var(--radius-card);
+  box-shadow: var(--soft-shadow);
+  letter-spacing: -0.02em;
+}
+
+[data-theme="glass"] .plan-status {
+  background: var(--soft);
+}
+
+[data-theme="glass"] .plan-safety-notes li {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+[data-theme="glass"] .plan-evidence li {
+  border-radius: 4px;
+}
+
+[data-theme="glass"] .artifact-history-row,
+[data-theme="glass"] .me-panel,
+[data-theme="glass"] .coach-backend,
+[data-theme="glass"] .plan-status {
+  background: var(--soft);
+}
+
+[data-theme="glass"] .empty-state {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+/* Feedback keeps its semantic hue; only the drawing changes. */
+[data-theme="glass"] .validation-summary,
+[data-theme="glass"] .care-prompt {
+  border-color: var(--accent);
+  background: var(--danger-soft);
+}
+
+[data-theme="glass"] .validation-warnings,
+[data-theme="glass"] .validation-hints {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+[data-theme="glass"] .analysis-flags > li[data-flag-severity="critical"],
+[data-theme="glass"] .flag-list li[data-flag-severity="critical"] {
+  border-color: var(--accent);
+  background: var(--danger-soft);
+}
+
+[data-theme="glass"] .analysis-flags > li[data-flag-severity="warning"],
+[data-theme="glass"] .flag-list li[data-flag-severity="warning"] {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+[data-theme="glass"] .analysis-flags > li[data-flag-severity="info"] {
+  background: var(--info-soft);
+}
+
+[data-theme="glass"] .care-prompt h2 {
+  color: var(--accent-deep);
+}
+
+[data-theme="glass"] .coach-disclosure {
+  background: var(--soft);
+  border-left-width: 1px;
+}
+
+[data-theme="glass"] .safety-badge {
+  border-width: 1px;
+  border-radius: 4px;
+}
+
+/* Nested editor cards stay quiet: hairlines, no diffusion. */
+[data-theme="glass"] :is(.exercise-editor, .set-editor, .pain-editor) {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: var(--radius-control);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .pain-editor {
+  border-color: var(--warn);
+}
+
+/* ── controls: 1px rules, 6px corners, quiet fills ─────────────── */
+
+[data-theme="glass"] button {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: var(--radius-control);
+  color: var(--fg);
+  box-shadow: none;
+}
+
+[data-theme="glass"] button:hover:not(:disabled) {
+  border-color: oklch(80% 0.04 268);
+  background: var(--soft);
+  color: var(--fg);
+}
+
+[data-theme="glass"] button:disabled {
+  opacity: 1;
+  border-color: var(--pale);
+  background: var(--bg);
+  color: var(--muted);
+}
+
+[data-theme="glass"] button[type="submit"] {
+  border-color: var(--accent-deep);
+  background: var(--accent-deep);
+  color: var(--bg);
+  box-shadow: 0 1px 2px oklch(27% 0.11 265 / 0.16);
+}
+
+[data-theme="glass"] button[type="submit"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 3px 10px -3px oklch(57% 0.21 22.6 / 0.5);
+}
+
+[data-theme="glass"] button[type="submit"]:active:not(:disabled) {
+  transform: none;
+  box-shadow: inset 0 1px 4px oklch(0% 0 0 / 0.28);
+}
+
+[data-theme="glass"] button[type="submit"]:disabled {
+  border-color: var(--pale);
+  background: var(--pale);
+  color: var(--muted);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .btn-ghost {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--blue-deep);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .btn-ghost:hover {
+  border-color: oklch(80% 0.04 268);
+  background: var(--soft);
+  color: var(--blue-deep);
+}
+
+[data-theme="glass"] input,
+[data-theme="glass"] select,
+[data-theme="glass"] textarea {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+}
+
+[data-theme="glass"] input:hover,
+[data-theme="glass"] select:hover,
+[data-theme="glass"] textarea:hover {
+  border-color: oklch(80% 0.04 268);
+}
+
+[data-theme="glass"] input:focus,
+[data-theme="glass"] select:focus,
+[data-theme="glass"] textarea:focus {
+  border-color: var(--border);
+  box-shadow: 0 0 0 3px oklch(48.8% 0.2172 264.4 / 0.16);
+}
+
+[data-theme="glass"] input[type="file"]::file-selector-button {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--blue-deep);
+}
+
+[data-theme="glass"] input[type="file"]::file-selector-button:hover {
+  border-color: oklch(80% 0.04 268);
+  background: var(--soft);
+  color: var(--fg);
+}
+
+[data-theme="glass"] .mode-chip {
+  border-color: var(--hair);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+[data-theme="glass"] .account-badge {
+  background: var(--soft);
+  color: var(--blue-deep);
+  border-radius: 4px;
+}
+
+[data-theme="glass"] .account-link {
+  color: var(--blue-deep);
+  border-bottom-width: 1px;
+}
+
+/* ── appearance options ────────────────────────────────────────── */
+
+[data-theme="glass"] .theme-option {
+  border-width: 1px;
+  border-color: var(--hair);
+  border-radius: var(--radius-card);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .theme-option:hover:not(:disabled),
+[data-theme="glass"] .theme-option[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: oklch(80% 0.04 268);
+  background: var(--bg);
+  transform: none;
+  box-shadow: var(--soft-shadow);
+}
+
+[data-theme="glass"] .theme-option[aria-pressed="true"] {
+  border-color: var(--border);
+  background: var(--soft);
+}
+
+[data-theme="glass"] .theme-option[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--soft);
+  border-color: var(--border);
+}
+
+[data-theme="glass"] .theme-preview-lang {
+  border-width: 1px;
+  border-color: var(--hair);
+  background: var(--soft);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .theme-option-flag {
+  border-color: var(--border);
+  color: var(--blue-deep);
+}
+
+/* ── brand ─────────────────────────────────────────────────────── */
+
+[data-theme="glass"] .brand-mark {
+  border: 0;
+  border-radius: 10px;
+  box-shadow: none;
+  background: var(--accent);
+}
+
+[data-theme="glass"] .brand-name {
+  font-size: 22px;
+}
+
+[data-theme="glass"] .brand-sub {
+  letter-spacing: 0.09em;
+}
+
+[data-theme="glass"] :is(.brand-sub, .mobile-brand-sub, .side-note, .side-slug) {
+  color: var(--glass-muted);
+}
+
+[data-theme="glass"] .sidenav-foot {
+  border-top-color: var(--hair);
+}
+
+/* ── the one nav, quieted: soft fill + blue text ───────────────── */
+
+[data-theme="glass"] .nav-link {
+  border-color: transparent;
+  border-radius: var(--radius-control);
+}
+
+[data-theme="glass"] .nav-link:hover {
+  background: var(--soft);
+  border-color: transparent;
+  color: var(--fg);
+  transform: none;
+  box-shadow: none;
+}
+
+[data-theme="glass"] .nav-link.active {
+  border-color: transparent;
+  background: var(--soft);
+  color: var(--blue-deep);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .nav-link.active:hover {
+  background: oklch(93.7% 0.022 268);
+  border-color: transparent;
+  color: var(--blue-deep);
+  box-shadow: none;
+}
+
+[data-theme="glass"] .nav-link.active:focus-visible {
+  outline-color: var(--border);
+}
+
+/* ── liquid glass: one material, three placements ──────────────── */
+
+[data-theme="glass"] .sidenav {
+  background: var(--glass-tint);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  background-image: linear-gradient(
+    158deg,
+    oklch(100% 0 0 / 0.5),
+    oklch(100% 0 0 / 0.06) 46%,
+    oklch(100% 0 0 / 0) 72%
+  );
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--glass-r);
+  box-shadow:
+    var(--glass-shadow),
+    inset 0 1px 0 var(--glass-spec),
+    inset 0 -1px 0 var(--glass-shade);
+}
+
+@media (min-width: 1024px) {
+  [data-theme="glass"] .sidenav {
+    left: var(--float);
+    top: var(--float);
+    bottom: var(--float);
+    width: calc(var(--nav-w) - var(--float) * 2);
+    padding: 20px 14px 14px;
+  }
+
+  [data-theme="glass"] .nav-link {
+    border: 1px solid transparent;
+    border-radius: var(--glass-r-in);
+  }
+
+  [data-theme="glass"] .nav-link:hover {
+    background: var(--glass-tint-hi);
+    border-color: var(--glass-edge);
+    box-shadow: 0 1px 2px oklch(27% 0.11 265 / 0.1);
+  }
+
+  [data-theme="glass"] .nav-link.active {
+    background: oklch(100% 0 0 / 0.94);
+    border-color: var(--glass-edge);
+    color: var(--blue-deep);
+    box-shadow:
+      0 1px 2px oklch(27% 0.11 265 / 0.12),
+      inset 0 1px 0 var(--glass-spec);
+  }
+
+  [data-theme="glass"] .nav-link.active:hover {
+    background: oklch(100% 0 0);
+    color: var(--blue-deep);
+  }
+}
+
+/* The 900–1023 rail is flush to the edge: a floating 72px panel would
+   squeeze the labels. It keeps the material but not the capsule. */
+@media (min-width: 900px) and (max-width: 1023px) {
+  [data-theme="glass"] .sidenav {
+    border: 0;
+    border-right: 1px solid var(--glass-edge);
+    border-radius: 0;
+    padding: 14px 8px 12px;
+    gap: 12px;
+    box-shadow: inset -1px 0 0 var(--glass-spec);
+  }
+
+  [data-theme="glass"] .nav-link {
+    border: 1px solid transparent;
+    border-radius: var(--radius-control);
+  }
+}
+
+/* Tablet and phone: the dock floats over the content, which is where the
+   material can actually do its job — the page is visible moving underneath. */
+@media (max-width: 899px) {
+  :root[data-theme="glass"] {
+    /* floating dock = gap + 1px edge + 6px inset + 54px target + 6px + 1px */
+    --dock-h: calc(78px + max(10px, env(safe-area-inset-bottom)));
+  }
+
+  [data-theme="glass"] .sidenav {
+    top: auto;
+    left: var(--float);
+    right: var(--float);
+    bottom: max(var(--float), env(safe-area-inset-bottom));
+    width: auto;
+    height: auto;
+    padding: var(--glass-inset);
+  }
+
+  [data-theme="glass"] .nav-link {
+    border: 1px solid transparent;
+    border-radius: var(--glass-r-in);
+  }
+
+  [data-theme="glass"] .nav-link:hover {
+    background: var(--glass-tint-hi);
+    border-color: var(--glass-edge);
+  }
+
+  [data-theme="glass"] .nav-link.active {
+    background: oklch(100% 0 0 / 0.94);
+    border-color: var(--glass-edge);
+    color: var(--blue-deep);
+    box-shadow:
+      0 1px 2px oklch(27% 0.11 265 / 0.12),
+      inset 0 1px 0 var(--glass-spec);
+  }
+
+  [data-theme="glass"] .nav-link.active:hover {
+    background: oklch(100% 0 0);
+    border-color: var(--glass-edge);
+    color: var(--blue-deep);
+  }
+
+  [data-theme="glass"] .app-header {
+    background: var(--glass-tint);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    background-image: linear-gradient(
+      158deg,
+      oklch(100% 0 0 / 0.5),
+      oklch(100% 0 0 / 0.04) 52%,
+      oklch(100% 0 0 / 0) 80%
+    );
+    border-bottom: 1px solid var(--glass-edge);
+    box-shadow: inset 0 -1px 0 var(--glass-spec);
+  }
+
+  [data-theme="glass"] .app-main {
+    padding-bottom: calc(var(--dock-h) + 34px);
+  }
+}
+
+/* ── auth card ─────────────────────────────────────────────────── */
+
+[data-theme="glass"] .auth-screen {
+  border-radius: 10px;
+}
+
+[data-theme="glass"] .auth-screen form {
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-card);
+  background: var(--soft);
+}
+
+[data-theme="glass"] .auth-screen .validation-summary,
+[data-theme="glass"] .auth-screen .validation-warnings {
+  background: var(--bg);
+}
+
+/* ── honest fallbacks ──────────────────────────────────────────── */
+
+/* The OS already has a switch for this; honour it instead of guessing. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-theme="glass"] {
+    --glass-tint: oklch(99.4% 0.004 268);
+    --glass-tint-hi: oklch(100% 0 0);
+    --glass-blur: none;
+  }
+}
+
+/* Without backdrop-filter the tint must carry the contrast on its own. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-theme="glass"] {
+    --glass-tint: oklch(99.2% 0.005 268);
+    --glass-tint-hi: oklch(100% 0 0);
+  }
+}

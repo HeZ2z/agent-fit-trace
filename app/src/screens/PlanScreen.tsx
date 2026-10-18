@@ -9,6 +9,12 @@ import {
 } from "../components/ArtifactSourceSelector.tsx";
 import { useArtifactSource } from "../state/useArtifactSource.ts";
 import { useWorkouts } from "../state/useWorkouts.ts";
+import { useI18n } from "../i18n/useI18n.ts";
+import {
+  displayCarePrompt,
+  displayRecommendation,
+  displaySafetyNote,
+} from "../i18n/domain.ts";
 
 function formatEvidenceValue(value: unknown): string {
   if (Array.isArray(value)) return value.map((entry) => String(entry)).join(", ");
@@ -17,50 +23,61 @@ function formatEvidenceValue(value: unknown): string {
 }
 
 function PlanView({ plan }: { plan: PlanDraft }) {
+  const { language, t } = useI18n();
   const { based_on: basedOn } = plan;
 
   return (
     <>
-      {plan.goal !== null && <p className="plan-goal">{`Goal: ${plan.goal}`}</p>}
+      {plan.goal !== null && <p className="plan-goal">{t("Goal: {goal}", { goal: plan.goal })}</p>}
 
       <p className="plan-based-on">
-        {`Based on: ${basedOn.period.from ?? "n/a"} – ${basedOn.period.to ?? "n/a"}, ${basedOn.sessions} session(s), ${basedOn.source_records.length} source record(s)`}
+        {t("Based on: {from} – {to}, {sessions} session(s), {records} source record(s)", {
+          from: basedOn.period.from ?? t("n/a"),
+          to: basedOn.period.to ?? t("n/a"),
+          sessions: basedOn.sessions,
+          records: basedOn.source_records.length,
+        })}
       </p>
 
       <section>
-        <h2>Recommendations</h2>
+        <h2>{t("Recommendations")}</h2>
         {plan.recommendations.length === 0 ? (
-          <p>No recommendations.</p>
+          <p>{t("No recommendations.")}</p>
         ) : (
           <ul className="plan-recommendations">
-            {plan.recommendations.map((recommendation, index) => (
+            {plan.recommendations.map((recommendation, index) => {
+              const displayed = displayRecommendation(language, recommendation);
+              return (
               <li
                 key={`${recommendation.action}-${index}`}
                 className="plan-recommendation"
                 data-recommendation-action={recommendation.action}
               >
-                <p className="plan-action">{recommendation.action}</p>
-                <p className="plan-detail">{recommendation.detail}</p>
-                <p className="plan-reason">{`Reason: ${recommendation.reason}`}</p>
+                <p className="plan-action">{displayed.action}</p>
+                <p className="plan-detail">{displayed.detail}</p>
+                <p className="plan-reason">
+                  {t("Reason: {reason}", { reason: displayed.reason })}
+                </p>
                 <ul className="plan-evidence">
                   {Object.entries(recommendation.evidence).map(([key, value]) => (
                     <li key={key}>{`${key}: ${formatEvidenceValue(value)}`}</li>
                   ))}
                 </ul>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>
 
       <section>
-        <h2>Safety notes</h2>
+        <h2>{t("Safety notes")}</h2>
         {plan.safety_notes.length === 0 ? (
-          <p>No additional safety notes.</p>
+          <p>{t("No additional safety notes.")}</p>
         ) : (
           <ul className="plan-safety-notes">
             {plan.safety_notes.map((note) => (
-              <li key={note}>{note}</li>
+              <li key={note}>{displaySafetyNote(language, note)}</li>
             ))}
           </ul>
         )}
@@ -78,6 +95,7 @@ type AdoptionState = {
 };
 
 export function PlanScreen() {
+  const { language, t } = useI18n();
   const { client, records, status: historyStatus, loadError, reload } = useWorkouts();
   const source = useArtifactSource("plan", client);
   const [adoption, setAdoption] = useState<AdoptionState>({
@@ -249,7 +267,9 @@ export function PlanScreen() {
         return;
       }
       setAdoptionActionError(
-        `Could not adopt this plan snapshot: ${caught instanceof Error ? caught.message : String(caught)}`,
+        t("Could not adopt this plan snapshot: {error}", {
+          error: caught instanceof Error ? caught.message : String(caught),
+        }),
       );
     } finally {
       if (adoptionWriteRef.current === generation) {
@@ -289,7 +309,9 @@ export function PlanScreen() {
         return;
       }
       setAdoptionActionError(
-        `Could not revoke the adopted plan: ${caught instanceof Error ? caught.message : String(caught)}`,
+        t("Could not revoke the adopted plan: {error}", {
+          error: caught instanceof Error ? caught.message : String(caught),
+        }),
       );
     } finally {
       if (adoptionWriteRef.current === generation) {
@@ -300,18 +322,32 @@ export function PlanScreen() {
   }
 
   return (
-    <section>
-      <h1>Training Plan</h1>
-
-      <p>
-        <Link to="/me">Manage imports and exports</Link>
-      </p>
+    <section data-screen="plan">
+      <div className="screen-head">
+        <div className="screen-head-main">
+          <h1>{t("Training Plan")}</h1>
+          <p className="screen-lede">
+            {t(
+              "A rule-based next-session draft. Every recommendation cites the evidence that produced it, and nothing is adopted without explicit confirmation.",
+            )}
+          </p>
+        </div>
+        <p className="screen-actions">
+          <Link className="btn-ghost" to="/me">
+            {t("Manage imports and exports")}
+          </Link>
+        </p>
+      </div>
 
       {historyStatus === "error" ? (
         <div role="alert" data-testid="history-error" className="validation-summary">
-          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <p>
+            {t("Could not load workout history: {message}", {
+              message: loadError?.message ?? t("Unknown error."),
+            })}
+          </p>
           <button type="button" onClick={reload}>
-            Retry
+            {t("Retry")}
           </button>
         </div>
       ) : (
@@ -319,24 +355,31 @@ export function PlanScreen() {
           <ArtifactSourceSelector source={source} />
 
           <section className="plan-adoption" aria-labelledby="plan-adoption-heading">
-            <h2 id="plan-adoption-heading">Saved plan adoption</h2>
-            {currentAdoption.status === "loading" && <p role="status">Loading saved adoption…</p>}
+            <h2 id="plan-adoption-heading">{t("Saved plan adoption")}</h2>
+            {currentAdoption.status === "loading" && (
+              <p role="status">{t("Loading saved adoption…")}</p>
+            )}
             {currentAdoption.status === "error" && (
               <div role="alert" className="validation-summary" data-testid="plan-adoption-error">
                 <p>
-                  Could not load the saved plan adoption: {currentAdoption.error}. No adoption is
-                  claimed while this fails.
+                  {t(
+                    "Could not load the saved plan adoption: {error}. No adoption is claimed while this fails.",
+                    { error: currentAdoption.error ?? "" },
+                  )}
                 </p>
                 <button type="button" onClick={() => setAdoptionToken((token) => token + 1)}>
-                  Retry adoption
+                  {t("Retry adoption")}
                 </button>
               </div>
             )}
             {currentAdoption.status === "ready" && (
               <p data-testid="current-adoption">
                 {currentAdoption.adoption === null
-                  ? "Currently adopted plan snapshot: none."
-                  : `Currently adopted plan snapshot: ${currentAdoption.adoption.artifact_id} (confirmed ${currentAdoption.adoption.confirmed_at}).`}
+                  ? t("Currently adopted plan snapshot: none.")
+                  : t("Currently adopted plan snapshot: {id} (confirmed {at}).", {
+                      id: currentAdoption.adoption.artifact_id,
+                      at: currentAdoption.adoption.confirmed_at,
+                    })}
               </p>
             )}
             {currentAdoption.status === "ready" && currentAdoption.adoption !== null && (
@@ -346,17 +389,25 @@ export function PlanScreen() {
                   onClick={() => void revokeImportedPlan()}
                   disabled={adoptionSaving}
                 >
-                  Revoke saved adoption (metadata only)
+                  {t("Revoke saved adoption (metadata only)")}
                 </button>
               </div>
             )}
             {snapshot !== null && (
               <p data-testid="selected-snapshot-adoption">
                 {currentAdoption.status !== "ready"
-                  ? `Selected saved snapshot ${snapshot.id}: the saved adoption is ${currentAdoption.status}. Viewing this snapshot never changes it.`
+                  ? t(
+                      "Selected saved snapshot {id}: the saved adoption is {status}. Viewing this snapshot never changes it.",
+                      { id: snapshot.id, status: currentAdoption.status },
+                    )
                   : adoptedSnapshot
-                    ? `Selected saved snapshot ${snapshot.id} is the currently adopted plan.`
-                    : `Selected saved snapshot ${snapshot.id} is not adopted. Viewing a snapshot never adopts it; a new import does not inherit the previous adoption.`}
+                    ? t("Selected saved snapshot {id} is the currently adopted plan.", {
+                        id: snapshot.id,
+                      })
+                    : t(
+                        "Selected saved snapshot {id} is not adopted. Viewing a snapshot never adopts it; a new import does not inherit the previous adoption.",
+                        { id: snapshot.id },
+                      )}
               </p>
             )}
             {snapshot !== null && !adoptedSnapshot && (
@@ -366,20 +417,22 @@ export function PlanScreen() {
                   onClick={() => void confirmImportedPlan()}
                   disabled={adoptionSaving || currentAdoption.status !== "ready"}
                 >
-                  Confirm adopting this exact saved snapshot
+                  {t("Confirm adopting this exact saved snapshot")}
                 </button>
               </div>
             )}
             {snapshot !== null && adoptedSnapshot && (
               <p className="me-help">
-                Use Revoke above to clear the saved adoption; viewing any source never changes
-                it.
+                {t(
+                  "Use Revoke above to clear the saved adoption; viewing any source never changes it.",
+                )}
               </p>
             )}
             {snapshot !== null && (
               <p className="me-help">
-                Adoption binds this exact artifact id and content digest. It never changes
-                the snapshot&rsquo;s draft flags and never writes workout records.
+                {t(
+                  "Adoption binds this exact artifact id and content digest. It never changes the snapshot’s draft flags and never writes workout records.",
+                )}
               </p>
             )}
             {adoptionActionError !== null && (
@@ -393,61 +446,70 @@ export function PlanScreen() {
             <>
               <ArtifactSnapshotMeta artifact={snapshot} records={records} />
               <p data-testid="plan-snapshot-draft" className="plan-status">
-                {`Snapshot status: draft flags is_draft=${snapshot.payload.is_draft}, requires_confirmation=${snapshot.payload.requires_confirmation}. ${
-                  adoptedSnapshot
-                    ? "The saved adoption is separate and does not change these flags."
-                    : "Viewing this snapshot does not adopt it."
-                }`}
+                {t(
+                  "Snapshot status: draft flags is_draft={isDraft}, requires_confirmation={requiresConfirmation}. {note}",
+                  {
+                    isDraft: String(snapshot.payload.is_draft),
+                    requiresConfirmation: String(snapshot.payload.requires_confirmation),
+                    note: adoptedSnapshot
+                      ? t("The saved adoption is separate and does not change these flags.")
+                      : t("Viewing this snapshot does not adopt it."),
+                  },
+                )}
               </p>
               {snapshot.payload.professional_care_prompt !== null && (
                 <div role="alert" data-testid="care-prompt" className="care-prompt">
-                  <h2>Professional care</h2>
-                  <p>{snapshot.payload.professional_care_prompt}</p>
+                  <h2>{t("Professional care")}</h2>
+                  <p>{displayCarePrompt(language, snapshot.payload.professional_care_prompt)}</p>
                 </div>
               )}
               <PlanView plan={snapshot.payload} />
             </>
           ) : sourceBlocked ? null : historyStatus === "loading" ||
             (historyStatus === "ready" && planCallStatus === "loading") ? (
-            <p role="status">Loading plan…</p>
+            <p role="status">{t("Loading plan…")}</p>
           ) : planCallStatus === "error" ? (
             <div role="alert" data-testid="plan-error" className="validation-summary">
-              <p>Could not load plan: {planCallError?.message ?? "Unknown error."}</p>
+              <p>
+                {t("Could not load plan: {message}", {
+                  message: planCallError?.message ?? t("Unknown error."),
+                })}
+              </p>
               <button type="button" onClick={() => setReloadToken((n) => n + 1)}>
-                Retry
+                {t("Retry")}
               </button>
             </div>
           ) : showEmpty || plan === null ? (
             <div className="empty-state">
-              <p>No workout history to draft a plan from yet.</p>
-              <Link to="/workout/new">Log your first workout</Link>
+              <p>{t("No workout history to draft a plan from yet.")}</p>
+              <Link to="/workout/new">{t("Log your first workout")}</Link>
             </div>
           ) : (
             <>
               {plan.professional_care_prompt !== null && (
                 <div role="alert" data-testid="care-prompt" className="care-prompt">
-                  <h2>Professional care</h2>
-                  <p>{plan.professional_care_prompt}</p>
+                  <h2>{t("Professional care")}</h2>
+                  <p>{displayCarePrompt(language, plan.professional_care_prompt)}</p>
                 </div>
               )}
 
               <p data-testid="plan-status" className="plan-status">
                 {generatedConfirmed
-                  ? "Plan status: confirmed only in this view (not saved or adopted)"
-                  : "Plan status: draft (generated current plan, not saved or adopted)"}
+                  ? t("Plan status: confirmed only in this view (not saved or adopted)")
+                  : t("Plan status: draft (generated current plan, not saved or adopted)")}
               </p>
 
               <div className="plan-actions">
                 {generatedConfirmed ? (
                   <button type="button" onClick={() => setConfirmedFingerprint(null)}>
-                    Discard this-view confirmation
+                    {t("Discard this-view confirmation")}
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => planFingerprint !== null && setConfirmedFingerprint(planFingerprint)}
                   >
-                    Confirm plan for this view only
+                    {t("Confirm plan for this view only")}
                   </button>
                 )}
               </div>
