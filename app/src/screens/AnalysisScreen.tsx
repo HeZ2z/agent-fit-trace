@@ -59,12 +59,21 @@ export function AnalysisScreen() {
     source.selectionError === null;
 
   return (
-    <section>
-      <h1>Progress Analysis</h1>
-
-      <p>
-        <Link to="/me">Manage imports and exports</Link>
-      </p>
+    <section data-screen="analysis">
+      <div className="screen-head">
+        <div className="screen-head-main">
+          <h1>Progress Analysis</h1>
+          <p className="screen-lede">
+            Deterministic metrics, exercise trends and safety flags computed from the same
+            records every time. No model call is involved.
+          </p>
+        </div>
+        <p className="screen-actions">
+          <Link className="btn-ghost" to="/me">
+            Manage imports and exports
+          </Link>
+        </p>
+      </div>
 
       {historyStatus === "error" ? (
         <div role="alert" data-testid="history-error" className="validation-summary">

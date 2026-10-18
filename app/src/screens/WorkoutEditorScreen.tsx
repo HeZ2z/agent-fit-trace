@@ -260,8 +260,12 @@ export function WorkoutEditorScreen() {
   }
 
   return (
-    <section>
+    <section data-screen="log">
       <h1>Log Workout</h1>
+      <p className="screen-lede">
+        Record one session. Validation runs before anything is stored, and no existing record is
+        ever overwritten.
+      </p>
 
       {saveError !== null && (
         <div role="alert" className="validation-summary" data-testid="save-error">
