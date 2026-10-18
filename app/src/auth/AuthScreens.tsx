@@ -106,7 +106,7 @@ export function SignInScreen() {
     guestSignInEnabled !== true;
 
   return (
-    <section aria-labelledby="signin-heading">
+    <section className="auth-screen" aria-labelledby="signin-heading">
       <h1 id="signin-heading">Sign in</h1>
       <p>
         Accounts are invite-only. If you were invited, sign in with your email and password
@@ -224,7 +224,7 @@ export function ForgotPasswordScreen() {
 
   if (sent) {
     return (
-      <section aria-labelledby="forgot-sent-heading">
+      <section className="auth-screen" aria-labelledby="forgot-sent-heading">
         <h1 id="forgot-sent-heading">Check your email</h1>
         <p>
           If an account exists for {email}, a password-reset link is on its way. The link
@@ -238,7 +238,7 @@ export function ForgotPasswordScreen() {
   }
 
   return (
-    <section aria-labelledby="forgot-heading">
+    <section className="auth-screen" aria-labelledby="forgot-heading">
       <h1 id="forgot-heading">Reset your password</h1>
       <p>Enter your account email and we will send you a reset link.</p>
       {error !== null ? (
@@ -385,7 +385,7 @@ export function ResetPasswordScreen() {
   }
 
   return (
-    <section aria-labelledby="reset-heading">
+    <section className="auth-screen" aria-labelledby="reset-heading">
       <h1 id="reset-heading">
         {upgradePending ? "Finish your account setup" : "Choose a new password"}
       </h1>
@@ -506,7 +506,7 @@ export function AuthCallbackScreen() {
   }, []);
 
   return (
-    <section aria-labelledby="callback-heading">
+    <section className="auth-screen" aria-labelledby="callback-heading">
       <h1 id="callback-heading">Finishing sign-in…</h1>
       {pending ? <p>Verifying your link.</p> : null}
       {error !== null ? (

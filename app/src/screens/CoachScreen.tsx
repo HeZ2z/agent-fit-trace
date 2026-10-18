@@ -57,12 +57,16 @@ export function CoachScreen() {
   }
 
   return (
-    <section>
-      <h1>Coach</h1>
-      <p className="coach-lede">
-        Read-only analysis of your stored workouts. The coach reads a backend-issued snapshot of this
-        account and the selected range — your records are never rewritten by a run.
-      </p>
+    <section data-screen="coach">
+      <div className="screen-head">
+        <div className="screen-head-main">
+          <h1>Coach</h1>
+          <p className="coach-lede">
+            Read-only analysis of your stored workouts. The coach reads a backend-issued snapshot of
+            this account and the selected range — your records are never rewritten by a run.
+          </p>
+        </div>
+      </div>
 
       {coach.mode === "browser" && coach.isGuest && (
         <div
@@ -138,7 +142,7 @@ export function CoachScreen() {
 
       {disclosedBackend !== null && disclosedLocation !== null && (
         <p
-          className="coach-meta"
+          className="coach-disclosure"
           data-testid={
             disclosedLocation === "cloud" ? "coach-cloud-disclosure" : "coach-local-disclosure"
           }

@@ -300,12 +300,21 @@ export function PlanScreen() {
   }
 
   return (
-    <section>
-      <h1>Training Plan</h1>
-
-      <p>
-        <Link to="/me">Manage imports and exports</Link>
-      </p>
+    <section data-screen="plan">
+      <div className="screen-head">
+        <div className="screen-head-main">
+          <h1>Training Plan</h1>
+          <p className="screen-lede">
+            A rule-based next-session draft. Every recommendation cites the evidence that
+            produced it, and nothing is adopted without explicit confirmation.
+          </p>
+        </div>
+        <p className="screen-actions">
+          <Link className="btn-ghost" to="/me">
+            Manage imports and exports
+          </Link>
+        </p>
+      </div>
 
       {historyStatus === "error" ? (
         <div role="alert" data-testid="history-error" className="validation-summary">

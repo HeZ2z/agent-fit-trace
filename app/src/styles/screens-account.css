@@ -1,0 +1,389 @@
+/*
+ * pi-fit-trace — Plan, Coach, Me and the auth screens
+ *
+ * The draft plan is presented as a working document (recommendations with
+ * evidence chips), the coach as a read-only disclosure plus composer, and Me
+ * as a two-column cabinet of account and data operations.
+ */
+
+/* ── Plan ──────────────────────────────────────────────────────── */
+
+.plan-status {
+  display: block;
+  margin: 0 0 12px;
+  padding: 11px 14px;
+  border: var(--border-w-thin) solid var(--border);
+  background: var(--soft);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.plan-adoption {
+  padding: 16px;
+}
+
+.plan-adoption > p {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.plan-recommendations {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-recommendation {
+  margin: 0;
+  padding: 14px 16px;
+}
+
+.plan-action {
+  margin: 0 0 5px;
+  color: var(--blue-deep);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.plan-detail {
+  margin: 0 0 6px;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.plan-reason {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.plan-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding: 9px 0 0;
+  border-top: var(--border-w-thin) solid var(--pale);
+  list-style: none;
+}
+
+.plan-evidence li {
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--pale);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plan-safety-notes {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-safety-notes li {
+  margin: 0;
+  padding: 10px 12px;
+  border: var(--border-w-thin) solid var(--warn);
+  background: var(--warn-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── Coach ─────────────────────────────────────────────────────── */
+
+[data-screen="coach"] form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+  max-width: var(--content-narrow);
+  margin: 16px 0 20px;
+  padding: 14px 16px 16px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow-blue-sm);
+}
+
+[data-screen="coach"] form .field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+[data-screen="coach"] form button[type="submit"] {
+  grid-column: 1 / -1;
+}
+
+[data-screen="coach"] form button[type="button"] {
+  justify-self: start;
+}
+
+[data-screen="coach"] form .field textarea {
+  min-height: 88px;
+}
+
+[data-screen="coach"] form .plan-actions {
+  margin: 4px 0 0;
+}
+
+.coach-backend {
+  max-width: var(--content-narrow);
+  padding: 12px 14px;
+  border: var(--border-w-thin) solid var(--border);
+  background: var(--info-soft);
+}
+
+.coach-backend .coach-meta {
+  margin-bottom: 0;
+}
+
+.coach-meta {
+  max-width: 88ch;
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.coach-disclosure {
+  max-width: var(--content-narrow);
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: var(--border-w) solid var(--border);
+  border-left: 6px solid var(--blue-deep);
+  background: var(--soft);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.coach-text {
+  max-width: var(--content-narrow);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.coach-tools {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+  max-width: var(--content-narrow);
+}
+
+.coach-tools li {
+  margin: 0;
+  padding: 8px 10px;
+  border: var(--border-w-thin) solid var(--pale);
+  background: var(--info-soft);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+[data-screen="coach"] > section {
+  max-width: var(--content-narrow);
+}
+
+/* ── Me ────────────────────────────────────────────────────────── */
+
+[data-screen="me"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+[data-screen="me"] > h1,
+[data-screen="me"] > .me-lede,
+[data-screen="me"] > p {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+[data-screen="me"] > h1 {
+  margin-bottom: 2px;
+}
+
+[data-screen="me"] > .me-section {
+  margin: 0;
+}
+
+.me-section {
+  min-width: 0;
+  padding: 16px;
+}
+
+.me-section h2 {
+  margin-bottom: 10px;
+  font-size: 20px;
+}
+
+.me-section > .field {
+  margin-top: 12px;
+}
+
+.me-section > button {
+  margin-top: 8px;
+}
+
+.me-section .account-area.account-guest {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  margin: 12px 0;
+  padding: 12px;
+  border: var(--border-w-thin) solid var(--warn);
+  background: var(--warn-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.account-area.account-guest > p {
+  margin: 0;
+  max-width: 74ch;
+}
+
+.account-area.account-guest .account-guest-actions {
+  width: 100%;
+}
+
+.guest-upgrade {
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: var(--border-w-thin) solid var(--border);
+  background: var(--bg);
+}
+
+.guest-upgrade summary {
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.guest-upgrade summary:hover {
+  color: var(--fg);
+}
+
+.guest-upgrade p {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.guest-upgrade .field {
+  margin-top: 10px;
+}
+
+/* ── Auth screens ──────────────────────────────────────────────── */
+
+.auth-screen {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: clamp(20px, 3vw, 30px);
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  box-shadow: 6px 6px 0 var(--border);
+}
+
+.auth-screen > h1 {
+  margin-bottom: 12px;
+  font-size: clamp(28px, 3.4vw, 38px);
+}
+
+.auth-screen > p {
+  max-width: 62ch;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.auth-screen > p:last-child {
+  margin-bottom: 0;
+}
+
+.auth-screen form {
+  margin: 16px 0 10px;
+  padding: 16px;
+  border: var(--border-w-thin) solid var(--pale);
+  background: var(--info-soft);
+}
+
+.auth-screen form .field {
+  margin-bottom: 12px;
+}
+
+.auth-screen .validation-summary,
+.auth-screen .validation-warnings {
+  margin-bottom: 14px;
+}
+
+.auth-screen .signin-guest {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: var(--border-w) solid var(--pale);
+}
+
+.auth-screen .signin-guest h2 {
+  margin-top: 0;
+}
+
+.auth-screen .signin-guest > button {
+  margin-top: 4px;
+}
+
+/* ── wide layouts ─────────────────────────────────────────────── */
+
+@media (min-width: 1180px) {
+  [data-screen="me"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+}
+
+@media (max-width: 600px) {
+  .auth-screen {
+    box-shadow: 4px 4px 0 var(--border);
+  }
+
+  [data-screen="coach"] form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .plan-recommendation,
+  .plan-adoption,
+  .me-section {
+    padding: 14px;
+  }
+
+  .coach-disclosure {
+    border-left-width: var(--border-w);
+  }
+}

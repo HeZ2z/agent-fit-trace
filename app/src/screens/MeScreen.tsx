@@ -595,7 +595,7 @@ export function MeScreen() {
     : "Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.";
 
   return (
-    <section>
+    <section data-screen="me">
       <h1>Me</h1>
       <p className="me-lede">
         One place to export and restore workout data and to save imported analysis or
