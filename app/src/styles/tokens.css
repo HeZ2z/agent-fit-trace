@@ -64,6 +64,7 @@
   /* Structure. */
   --border-w: 3px;
   --border-w-thin: 2px;
+  --focus-w: 3px;
   --shadow-blue: 4px 4px 0 var(--border);
   --shadow-blue-sm: 3px 3px 0 var(--border);
   --shadow-ink: 3px 3px 0 var(--fg);
@@ -198,7 +199,7 @@ svg {
 
 /* A single, high-contrast focus ring for every interactive element. */
 :focus-visible {
-  outline: var(--border-w) solid var(--accent);
+  outline: var(--focus-w) solid var(--accent);
   outline-offset: 3px;
 }
 
