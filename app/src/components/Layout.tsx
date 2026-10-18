@@ -7,6 +7,7 @@ import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { useCoach } from "../coaching/useCoach.ts";
 import { BrandMark, PixelIcon } from "./PixelIcon.tsx";
 import type { PixelIconName } from "./PixelIcon.tsx";
+import { useI18n } from "../i18n/useI18n.ts";
 
 interface NavItem {
   to: string;
@@ -32,6 +33,7 @@ function navLinks(): NavItem[] {
 
 function AccountArea() {
   const { status, user, signOutSession } = useAuth();
+  const { t } = useI18n();
   const coach = useCoach();
   const navigate = useNavigate();
   if (status !== "signed-in" || user === null) return null;
@@ -46,10 +48,10 @@ function AccountArea() {
 
   return (
     <div className="account-area" aria-label="Account">
-      <span className="account-badge">Account</span>
+      <span className="account-badge">{t("Account")}</span>
       <span className="history-summary">{user.email ?? user.id}</span>{" "}
       <Link className="account-link" to="/me">
-        Account details
+        {t("Account details")}
       </Link>
       <button
         type="button"
@@ -63,7 +65,7 @@ function AccountArea() {
           navigate("/login", { replace: true });
         }}
       >
-        Sign out
+        {t("Sign out")}
       </button>
     </div>
   );
@@ -71,6 +73,7 @@ function AccountArea() {
 
 /** Brand block shared by the side panel (verbose) and the mobile bar (compact). */
 function Brand({ compact = false }: { compact?: boolean }) {
+  const { t } = useI18n();
   return (
     <>
       <span className="brand-mark">
@@ -78,7 +81,9 @@ function Brand({ compact = false }: { compact?: boolean }) {
       </span>
       <span className={compact ? "mobile-brand-copy" : "brand-copy"}>
         <span className={compact ? "mobile-brand-name" : "brand-name"}>FIT TRACE</span>
-        <span className={compact ? "mobile-brand-sub" : "brand-sub"}>Agent · training log</span>
+        <span className={compact ? "mobile-brand-sub" : "brand-sub"}>
+          {t("Agent · training log")}
+        </span>
       </span>
     </>
   );
@@ -86,26 +91,28 @@ function Brand({ compact = false }: { compact?: boolean }) {
 
 function ModeBadge() {
   const httpMode = isHttpModeActive();
+  const { t } = useI18n();
   return (
     <span className="mode-chip" data-mode={httpMode ? "http" : "local"}>
       <span className="mode-chip-dot" aria-hidden="true" />
-      {httpMode ? "Cloud" : "Local"}
+      {httpMode ? t("Cloud") : t("Local")}
     </span>
   );
 }
 
 function SideFoot() {
   const httpMode = isHttpModeActive();
+  const { t } = useI18n();
   return (
     <div className="sidenav-foot">
       <span className="side-status">
         <span className="side-status-dot" aria-hidden="true" />
-        {httpMode ? "Cloud mode · account data" : "Local mode · browser storage"}
+        {httpMode ? t("Cloud mode · account data") : t("Local mode · browser storage")}
       </span>
       <p className="side-note">
         {httpMode
-          ? "Records, snapshots and coaching runs belong to the signed-in account."
-          : "Records and snapshots stay in this browser; export them from Me."}
+          ? t("Records, snapshots and coaching runs belong to the signed-in account.")
+          : t("Records and snapshots stay in this browser; export them from Me.")}
       </p>
       <p className="side-slug">agent-fit-trace</p>
     </div>
@@ -113,14 +120,15 @@ function SideFoot() {
 }
 
 export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean }) {
+  const { t } = useI18n();
   return (
     <CoachingProvider>
       <div className="app-shell">
-        <aside className="sidenav" aria-label="Workspace">
+        <aside className="sidenav" aria-label={t("Workspace")}>
           <div className="brand">
             <Brand />
           </div>
-          <nav className="app-nav" aria-label="Primary">
+          <nav className="app-nav" aria-label={t("Primary")}>
             <ul className="nav-list">
               {navLinks().map((link) => (
                 <li key={link.to}>
@@ -130,7 +138,7 @@ export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean })
                     className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
                   >
                     <PixelIcon name={link.icon} size={22} />
-                    <span className="nav-label">{link.label}</span>
+                    <span className="nav-label">{t(link.label)}</span>
                   </NavLink>
                 </li>
               ))}
@@ -152,9 +160,9 @@ export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean })
             <div className="workspace-notices">
               <div className="validation-warnings" role="status">
                 <p>
-                  Development bypass: no account login. Data uses the fixed
-                  dev-loopback-bypass namespace in this browser and is not isolated by
-                  identity.
+                  {t(
+                    "Development bypass: no account login. Data uses the fixed dev-loopback-bypass namespace in this browser and is not isolated by identity.",
+                  )}
                 </p>
               </div>
             </div>
@@ -177,12 +185,13 @@ export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean })
  */
 function AuthOutageNotice() {
   const { status, authError, refresh } = useAuth();
+  const { t } = useI18n();
   const [retrying, setRetrying] = useState(false);
   if (status !== "signed-in" || authError?.code !== "AUTH_UNAVAILABLE") return null;
   return (
     <div className="workspace-notices">
       <div className="auth-outage-notice" role="alert">
-        <span>Authentication is temporarily unavailable. You stay signed in.</span>{" "}
+        <span>{t("Authentication is temporarily unavailable. You stay signed in.")}</span>{" "}
         <button
           type="button"
           disabled={retrying}
@@ -191,7 +200,7 @@ function AuthOutageNotice() {
             void refresh().finally(() => setRetrying(false));
           }}
         >
-          {retrying ? "Retrying…" : "Retry"}
+          {retrying ? t("Retrying…") : t("Retry")}
         </button>
       </div>
     </div>

@@ -14,6 +14,7 @@ import {
   saveRecoveryToken,
   updatePassword,
 } from "./supabaseAuth.ts";
+import { useI18n } from "../i18n/useI18n.ts";
 
 /**
  * Invite-only login UI. There is intentionally no sign-up form: registration
@@ -33,6 +34,7 @@ export function SignInScreen() {
     publicConfig,
     configError,
   } = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState("");
@@ -74,7 +76,7 @@ export function SignInScreen() {
       await signIn(email.trim(), password);
       returnAfterSignIn();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Sign-in failed.");
+      setError(caught instanceof Error ? caught.message : t("Sign-in failed."));
     } finally {
       setPending(false);
     }
@@ -87,7 +89,7 @@ export function SignInScreen() {
       await signInAsGuest();
       returnAfterSignIn();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Guest sign-in failed.");
+      setError(caught instanceof Error ? caught.message : t("Guest sign-in failed."));
     } finally {
       setGuestPending(false);
     }
@@ -107,15 +109,15 @@ export function SignInScreen() {
 
   return (
     <section className="auth-screen" aria-labelledby="signin-heading">
-      <h1 id="signin-heading">Sign in</h1>
+      <h1 id="signin-heading">{t("Sign in")}</h1>
       <p>
-        Accounts are invite-only. If you were invited, sign in with your email and password
-        below; there is no public registration. Workout tracking is available as a guest when
-        the deployment enables guest access.
+        {t(
+          "Accounts are invite-only. If you were invited, sign in with your email and password below; there is no public registration. Workout tracking is available as a guest when the deployment enables guest access.",
+        )}
       </p>
       {configError !== null ? (
         <div className="validation-summary" role="alert">
-          <p>Login is unavailable: the server did not provide its public configuration.</p>
+          <p>{t("Login is unavailable: the server did not provide its public configuration.")}</p>
         </div>
       ) : null}
       {(error ?? authError?.message) !== null && (error ?? authError?.message) !== undefined ? (
@@ -126,14 +128,15 @@ export function SignInScreen() {
       {signedInAsGuest ? (
         <div className="validation-warnings" role="note">
           <p>
-            Signing in to an account replaces this browser session. Guest workouts are not
-            merged or transferred.
+            {t(
+              "Signing in to an account replaces this browser session. Guest workouts are not merged or transferred.",
+            )}
           </p>
         </div>
       ) : null}
       <form onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor="signin-email">Email</label>
+          <label htmlFor="signin-email">{t("Email")}</label>
           <input
             id="signin-email"
             type="email"
@@ -144,7 +147,7 @@ export function SignInScreen() {
           />
         </div>
         <div className="field">
-          <label htmlFor="signin-password">Password</label>
+          <label htmlFor="signin-password">{t("Password")}</label>
           <input
             id="signin-password"
             type="password"
@@ -155,35 +158,39 @@ export function SignInScreen() {
           />
         </div>
         <button type="submit" disabled={pending || publicConfig === null}>
-          {pending ? "Signing in…" : "Sign in"}
+          {pending ? t("Signing in…") : t("Sign in")}
         </button>
       </form>
       <p>
-        <Link to="/forgot-password">Forgot your password?</Link>
+        <Link to="/forgot-password">{t("Forgot your password?")}</Link>
       </p>
       <section className="signin-guest" aria-labelledby="guest-signin-heading">
-        <h2 id="guest-signin-heading">Guest access</h2>
+        <h2 id="guest-signin-heading">{t("Guest access")}</h2>
         <p>
-          Guest data is tied to this browser and cannot be merged into an account later.
+          {t("Guest data is tied to this browser and cannot be merged into an account later.")}
         </p>
         {guestSignInCaptchaRequired ? (
           <p>
-            Guest sign-in requires CAPTCHA on this deployment. This app does not yet include a
-            CAPTCHA widget, so guest entry is disabled rather than sending a request that cannot
-            pass.
+            {t(
+              "Guest sign-in requires CAPTCHA on this deployment. This app does not yet include a CAPTCHA widget, so guest entry is disabled rather than sending a request that cannot pass.",
+            )}
           </p>
         ) : guestSignInEnabled !== true ? (
           <p>
             {configError !== null
-              ? "Guest sign-in is unavailable because login configuration failed to load."
-              : "Guest sign-in is not enabled on this deployment."}
+              ? t("Guest sign-in is unavailable because login configuration failed to load.")
+              : t("Guest sign-in is not enabled on this deployment.")}
           </p>
         ) : null}
         {signedInAsAccount ? (
-          <p>Sign out before starting a guest session; an account is never replaced by guest data.</p>
+          <p>
+            {t(
+              "Sign out before starting a guest session; an account is never replaced by guest data.",
+            )}
+          </p>
         ) : null}
         <button type="button" onClick={onGuest} disabled={guestDisabled}>
-          Continue as guest
+          {t("Continue as guest")}
         </button>
       </section>
     </section>
@@ -192,6 +199,7 @@ export function SignInScreen() {
 
 export function ForgotPasswordScreen() {
   const { publicConfig } = useAuth();
+  const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [pending, setPending] = useState(false);
   const [sent, setSent] = useState(false);
@@ -200,7 +208,7 @@ export function ForgotPasswordScreen() {
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (publicConfig === null) {
-      setError("Login is unavailable: the server did not provide its public configuration.");
+      setError(t("Login is unavailable: the server did not provide its public configuration."));
       return;
     }
     setPending(true);
@@ -216,7 +224,7 @@ export function ForgotPasswordScreen() {
       );
       setSent(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not send the reset email.");
+      setError(caught instanceof Error ? caught.message : t("Could not send the reset email."));
     } finally {
       setPending(false);
     }
@@ -225,13 +233,15 @@ export function ForgotPasswordScreen() {
   if (sent) {
     return (
       <section className="auth-screen" aria-labelledby="forgot-sent-heading">
-        <h1 id="forgot-sent-heading">Check your email</h1>
+        <h1 id="forgot-sent-heading">{t("Check your email")}</h1>
         <p>
-          If an account exists for {email}, a password-reset link is on its way. The link
-          expires — use it promptly, then choose a new password.
+          {t(
+            "If an account exists for {email}, a password-reset link is on its way. The link expires — use it promptly, then choose a new password.",
+            { email },
+          )}
         </p>
         <p>
-          <Link to="/login">Back to sign in</Link>
+          <Link to="/login">{t("Back to sign in")}</Link>
         </p>
       </section>
     );
@@ -239,8 +249,8 @@ export function ForgotPasswordScreen() {
 
   return (
     <section className="auth-screen" aria-labelledby="forgot-heading">
-      <h1 id="forgot-heading">Reset your password</h1>
-      <p>Enter your account email and we will send you a reset link.</p>
+      <h1 id="forgot-heading">{t("Reset your password")}</h1>
+      <p>{t("Enter your account email and we will send you a reset link.")}</p>
       {error !== null ? (
         <div className="validation-summary" role="alert">
           <p>{error}</p>
@@ -248,7 +258,7 @@ export function ForgotPasswordScreen() {
       ) : null}
       <form onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor="forgot-email">Email</label>
+          <label htmlFor="forgot-email">{t("Email")}</label>
           <input
             id="forgot-email"
             type="email"
@@ -259,11 +269,11 @@ export function ForgotPasswordScreen() {
           />
         </div>
         <button type="submit" disabled={pending || publicConfig === null}>
-          {pending ? "Sending…" : "Send reset link"}
+          {pending ? t("Sending…") : t("Send reset link")}
         </button>
       </form>
       <p>
-        <Link to="/login">Back to sign in</Link>
+        <Link to="/login">{t("Back to sign in")}</Link>
       </p>
     </section>
   );
@@ -292,6 +302,7 @@ function resolveResetToken(): string | null {
 
 export function ResetPasswordScreen() {
   const { publicConfig, configError, session, pendingGuestUpgrade, finishGuestUpgrade } = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
@@ -320,8 +331,8 @@ export function ResetPasswordScreen() {
     if (publicConfig === null) {
       setError(
         configError !== null
-          ? "Login is unavailable: the server did not provide its public configuration."
-          : "Still loading configuration. Wait a moment and try again.",
+          ? t("Login is unavailable: the server did not provide its public configuration.")
+          : t("Still loading configuration. Wait a moment and try again."),
       );
       return;
     }
@@ -330,7 +341,9 @@ export function ResetPasswordScreen() {
     if (upgradePending) {
       if (!upgradeSessionMatches || session === null || pendingGuestUpgrade === null) {
         setError(
-          "Open this page in the tab where the email was verified. Your current session was not changed.",
+          t(
+            "Open this page in the tab where the email was verified. Your current session was not changed.",
+          ),
         );
         return;
       }
@@ -340,7 +353,7 @@ export function ResetPasswordScreen() {
       accessToken = resolveResetToken();
     }
     if (accessToken === null) {
-      setError("This reset link is invalid or expired. Request a new one.");
+      setError(t("This reset link is invalid or expired. Request a new one."));
       return;
     }
     setPending(true);
@@ -361,7 +374,9 @@ export function ResetPasswordScreen() {
         const finished = await finishGuestUpgrade(upgradeUserId);
         if (!finished) {
           setError(
-            "The password was saved, but this session changed before the upgrade could be confirmed. The pending upgrade was kept; reopen this tab to finish.",
+            t(
+              "The password was saved, but this session changed before the upgrade could be confirmed. The pending upgrade was kept; reopen this tab to finish.",
+            ),
           );
           return;
         }
@@ -376,9 +391,7 @@ export function ResetPasswordScreen() {
         navigate("/login", { replace: true });
       }
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not update the password.",
-      );
+      setError(caught instanceof Error ? caught.message : t("Could not update the password."));
     } finally {
       setPending(false);
     }
@@ -387,21 +400,21 @@ export function ResetPasswordScreen() {
   return (
     <section className="auth-screen" aria-labelledby="reset-heading">
       <h1 id="reset-heading">
-        {upgradePending ? "Finish your account setup" : "Choose a new password"}
+        {upgradePending ? t("Finish your account setup") : t("Choose a new password")}
       </h1>
       {upgradePending ? (
         <p>
-          Your email is verified and this guest session now has an account. Set a password to
-          finish. Your existing workout history stays attached to this same user; nothing is
-          merged into another account.
+          {t(
+            "Your email is verified and this guest session now has an account. Set a password to finish. Your existing workout history stays attached to this same user; nothing is merged into another account.",
+          )}
         </p>
       ) : (
-        <p>Invited users set their first password here as well as password resets.</p>
+        <p>{t("Invited users set their first password here as well as password resets.")}</p>
       )}
-      {configPending ? <p>Loading configuration…</p> : null}
+      {configPending ? <p>{t("Loading configuration…")}</p> : null}
       {configFailed ? (
         <div className="validation-summary" role="alert">
-          <p>Login is unavailable: the server did not provide its public configuration.</p>
+          <p>{t("Login is unavailable: the server did not provide its public configuration.")}</p>
           <p>
             <button type="button" onClick={() => window.location.reload()}>
               Reload
@@ -413,8 +426,9 @@ export function ResetPasswordScreen() {
       {upgradePending && !upgradeSessionMatches ? (
         <div className="validation-summary" role="alert">
           <p>
-            This verified upgrade belongs to the tab that started it. Open this page in that
-            tab; your current session was not changed.
+            {t(
+              "This verified upgrade belongs to the tab that started it. Open this page in that tab; your current session was not changed.",
+            )}
           </p>
         </div>
       ) : null}
@@ -425,7 +439,7 @@ export function ResetPasswordScreen() {
       ) : null}
       <form onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor="reset-password">New password</label>
+          <label htmlFor="reset-password">{t("New password")}</label>
           <input
             id="reset-password"
             type="password"
@@ -437,7 +451,11 @@ export function ResetPasswordScreen() {
           />
         </div>
         <button type="submit" disabled={pending || publicConfig === null}>
-          {pending ? "Updating…" : upgradePending ? "Set password" : "Update password"}
+          {pending
+            ? t("Updating…")
+            : upgradePending
+              ? t("Set password")
+              : t("Update password")}
         </button>
       </form>
     </section>
@@ -454,6 +472,7 @@ export function ResetPasswordScreen() {
  */
 export function AuthCallbackScreen() {
   const { completeGuestUpgrade } = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
@@ -468,7 +487,7 @@ export function AuthCallbackScreen() {
     consumedRef.current = true;
     const hashSession = parseAuthCallbackHash(window.location.hash);
     if (hashSession === null) {
-      setError("This link is invalid or expired. Request a new one or sign in.");
+      setError(t("This link is invalid or expired. Request a new one or sign in."));
       setPending(false);
       return;
     }
@@ -489,7 +508,9 @@ export function AuthCallbackScreen() {
           setError(
             caught instanceof Error
               ? caught.message
-              : "This verification link could not be applied. Your current session was not changed.",
+              : t(
+                  "This verification link could not be applied. Your current session was not changed.",
+                ),
           );
         },
       );
@@ -507,13 +528,13 @@ export function AuthCallbackScreen() {
 
   return (
     <section className="auth-screen" aria-labelledby="callback-heading">
-      <h1 id="callback-heading">Finishing sign-in…</h1>
-      {pending ? <p>Verifying your link.</p> : null}
+      <h1 id="callback-heading">{t("Finishing sign-in…")}</h1>
+      {pending ? <p>{t("Verifying your link.")}</p> : null}
       {error !== null ? (
         <div className="validation-summary" role="alert">
           <p>{error}</p>
           <p>
-            <Link to="/login">Back to sign in</Link>
+            <Link to="/login">{t("Back to sign in")}</Link>
           </p>
         </div>
       ) : null}
