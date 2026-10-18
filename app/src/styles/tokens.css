@@ -1,0 +1,231 @@
+/*
+ * pi-fit-trace — design tokens and base layer
+ *
+ * A technical blueprint drawn with ink and blue rules, hard offset shadows,
+ * square corners and pure white surfaces; red is reserved for the single
+ * primary action and for destructive/urgent punctuation. Typography pairs a
+ * characterful display face (Bricolage Grotesque) with a quiet, dense body
+ * face (DM Sans). Both are self-hosted (SIL OFL 1.1, see assets/fonts).
+ *
+ * The visual language is adapted from the FORGE Fit Trace prototype; it is a
+ * style reference only. Product copy, information architecture and behaviour
+ * stay pi-fit-trace's own.
+ */
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("../assets/fonts/bricolage-grotesque.woff2") format("woff2");
+  font-weight: 700 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Sans";
+  src: url("../assets/fonts/dm-sans.woff2") format("woff2");
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Surfaces — pure paper, no grey cards. */
+  --bg: oklch(100% 0 0);
+  --surface: oklch(100% 0 0);
+  --shell: oklch(97.2% 0.012 268);
+  --soft: oklch(94.1% 0.0281 270.4);
+  --pale: oklch(88% 0.0585 271.3);
+  --hair: oklch(89.5% 0.016 268.5);
+  --grid: oklch(48.8% 0.2172 264.4 / 0.06);
+
+  /* Ink and structure. */
+  --fg: oklch(27% 0.1121 265.3);
+  --muted: oklch(49.9% 0.104 268.5);
+  --border: oklch(48.8% 0.2172 264.4);
+  --blue-deep: oklch(43% 0.2 264.4);
+  /* Red punctuation: primary action, destructive action, urgent marker. */
+  --accent: oklch(57% 0.2068 22.6);
+  --accent-deep: oklch(51% 0.19 22.6);
+
+  /* Safety states. Warning needs a hue that never reads as the red action
+     colour, so this one token is derived outside the reference palette. */
+  --warn: oklch(58% 0.13 65);
+  --warn-deep: oklch(48% 0.12 65);
+  --warn-soft: oklch(97% 0.025 80);
+  --danger-soft: oklch(97.5% 0.012 22);
+  --info-soft: oklch(97.2% 0.012 268);
+
+  /* Type. Numbers stay in the body face with tabular figures; no separate
+     mono family is introduced. */
+  --display: "Bricolage Grotesque", "DM Sans", system-ui, sans-serif;
+  --body: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --numeric: tabular-nums;
+
+  /* Structure. */
+  --border-w: 3px;
+  --border-w-thin: 2px;
+  --shadow-blue: 4px 4px 0 var(--border);
+  --shadow-blue-sm: 3px 3px 0 var(--border);
+  --shadow-ink: 3px 3px 0 var(--fg);
+  --shadow-red: 5px 5px 0 var(--accent);
+  --shadow-red-sm: 3px 3px 0 var(--accent);
+
+  /* Layout. */
+  --nav-w: 248px;
+  --content-max: 1180px;
+  --content-narrow: 860px;
+  --page-pad: clamp(22px, 4vw, 56px);
+  --dock-h: calc(64px + max(10px, env(safe-area-inset-bottom)));
+
+  /* Spacing scale. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  color-scheme: light;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: var(--shell);
+  color: var(--fg);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--fg);
+  font-family: var(--display);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style-position: outside;
+}
+
+a {
+  color: var(--border);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--fg);
+}
+
+button {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  border-radius: 0;
+  font: inherit;
+  color: inherit;
+}
+
+fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  padding: 0;
+}
+
+code {
+  padding: 1px 5px;
+  background: var(--soft);
+  color: var(--fg);
+  font-family: var(--body);
+  font-size: 0.92em;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  font-family: var(--body);
+}
+
+img,
+svg {
+  display: block;
+}
+
+/* A single, high-contrast focus ring for every interactive element. */
+:focus-visible {
+  outline: var(--border-w) solid var(--accent);
+  outline-offset: 3px;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
