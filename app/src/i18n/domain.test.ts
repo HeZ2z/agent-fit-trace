@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AnalysisFlag, Recommendation } from "@pi-fit-trace/core";
+import { generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
+import type { AnalysisFlag, Recommendation, WorkoutRecord } from "@pi-fit-trace/core";
 import {
   displayCarePrompt,
   displayFlagMessage,
@@ -100,10 +101,10 @@ describe("deterministic domain display layer", () => {
         flag({
           code: "EXTREME_RPE",
           severity: "critical",
-          evidence: { record_ids: ["a"], max_rpe: 9.5 },
+          evidence: { record_ids: ["a"], set_count: 2, max_rpe: 9.5 },
         }),
       ),
-    ).toBe("有训练组达到 RPE 9.5 或更高。");
+    ).toBe("2 组达到 RPE 9.5 或更高。");
 
     expect(
       displayFlagMessage(
@@ -135,7 +136,7 @@ describe("deterministic domain display layer", () => {
   });
 
   it("falls back to the English flag message when evidence is missing", () => {
-    const english = flag({ code: "EXTREME_RPE", evidence: {} });
+    const english = flag({ code: "EXTREME_RPE", evidence: { max_rpe: 9.5 } });
     expect(displayFlagMessage("zh", english)).toBe(english.message);
 
     const unknown = flag({ code: "NEW_FLAG", message: "Something new." });
@@ -154,6 +155,9 @@ describe("deterministic domain display layer", () => {
         "zh",
         recommendation({
           action: "progressive_overload",
+          detail: "Add a small increase (~2.5% load or one rep per set) to Back squat.",
+          reason:
+            "Estimated 1RM for Back squat rose 7.5% across 4 sessions at an average RPE of 6.77.",
           evidence: { exercise: "Back squat", delta_pct: 7.5, avg_rpe: 6.77 },
         }),
       ),
@@ -166,7 +170,12 @@ describe("deterministic domain display layer", () => {
     expect(
       displayRecommendation(
         "zh",
-        recommendation({ action: "cap_intensity", evidence: { max_rpe: 9.5 } }),
+        recommendation({
+          action: "cap_intensity",
+          detail: "Keep working sets at or below RPE 7 next session.",
+          reason: "The recorded maximum RPE was 9.5, indicating maximal effort.",
+          evidence: { max_rpe: 9.5 },
+        }),
       ),
     ).toMatchObject({
       action: "限制强度",
@@ -176,7 +185,12 @@ describe("deterministic domain display layer", () => {
     expect(
       displayRecommendation(
         "zh",
-        recommendation({ action: "import_history", evidence: { sessions: 0 } }),
+        recommendation({
+          action: "import_history",
+          detail: "Import at least one workout record before generating a plan.",
+          reason: "No training history is available, so no evidence-based plan can be produced.",
+          evidence: { sessions: 0 },
+        }),
       ),
     ).toMatchObject({ action: "导入历史" });
   });
@@ -188,6 +202,93 @@ describe("deterministic domain display layer", () => {
       detail: custom.detail,
       reason: custom.reason,
     });
+  });
+
+  it("preserves imported instructions that reuse a built-in action code", () => {
+    const imported = recommendation({
+      action: "cap_intensity",
+      detail: "Keep RPE at or below 5 next session.",
+      reason: "The imported coach asked for a deload.",
+      evidence: { max_rpe: 9.5 },
+    });
+    expect(displayRecommendation("zh", imported)).toEqual({
+      action: "cap_intensity",
+      detail: "Keep RPE at or below 5 next session.",
+      reason: "The imported coach asked for a deload.",
+    });
+  });
+
+  it("rebuilds every recommendation produced by the local generator", () => {
+    const record = (overrides: Record<string, unknown>): WorkoutRecord =>
+      validateWorkoutRecord({
+        schema_version: 1,
+        session_type: "strength",
+        exercises: [{ name: "Squat", sets: [{ weight: 100, reps: 5, rpe: 7 }] }],
+        ...overrides,
+      }).record;
+
+    const painExtreme = record({
+      id: "pain",
+      date: "2026-01-01",
+      pain: [{ area: "lower back", level: 3 }],
+      exercises: [{ name: "Squat", sets: [{ weight: 100, reps: 1, rpe: 10 }] }],
+    });
+    const volumeA = record({
+      id: "volume-a",
+      date: "2026-01-03",
+      exercises: [{ name: "Squat", sets: [{ weight: 50, reps: 5, rpe: 6 }] }],
+    });
+    const volumeB = record({
+      id: "volume-b",
+      date: "2026-01-05",
+      duration_minutes: 40,
+      sleep_hours: 8,
+      exercises: [{ name: "Squat", sets: [{ weight: 120, reps: 5, rpe: 6 }] }],
+    });
+    const flatA = record({
+      id: "flat-a",
+      date: "2026-01-07",
+      duration_minutes: 40,
+      sleep_hours: 8,
+      exercises: [{ name: "Bench press", sets: [{ weight: 80, reps: 5, rpe: 6 }] }],
+    });
+    const flatB = record({
+      id: "flat-b",
+      date: "2026-01-09",
+      duration_minutes: 40,
+      sleep_hours: 8,
+      exercises: [{ name: "Bench press", sets: [{ weight: 80, reps: 5, rpe: 6 }] }],
+    });
+
+    const plans = [
+      generateNextPlan([]),
+      generateNextPlan([painExtreme]),
+      generateNextPlan([volumeA, volumeB]),
+      generateNextPlan([flatA, flatB]),
+      generateNextPlan([flatA, flatB], { days_available: 3, equipment: ["barbell"] }),
+    ];
+
+    const seen = new Set<string>();
+    for (const plan of plans) {
+      for (const entry of plan.recommendations) {
+        const displayed = displayRecommendation("zh", entry);
+        expect(displayed.action, entry.action).not.toBe(entry.action);
+        expect(displayed.detail).not.toBe(entry.detail);
+        expect(displayed.reason).not.toBe(entry.reason);
+        seen.add(entry.action);
+      }
+    }
+    expect([...seen].sort()).toEqual(
+      [
+        "cap_intensity",
+        "equipment",
+        "hold_volume",
+        "import_history",
+        "maintain",
+        "reduce_or_pause_loading",
+        "schedule",
+      ].sort(),
+    );
   });
 
   it("rebuilds safety notes, user constraints and care prompts", () => {

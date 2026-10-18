@@ -8,7 +8,7 @@
 
 interface FlagMessages {
   painReported: (sessions: number) => string;
-  extremeRpe: (maxRpe: number) => string;
+  extremeRpe: (setCount: number, maxRpe: number) => string;
   volumeSpike: (changePct: number) => string;
   volumeDrop: (changePct: number) => string;
   missingRecoveryData: string;
@@ -77,7 +77,7 @@ export const domainZh: DomainZh = {
   },
   flags: {
     painReported: (sessions) => `已记录疼痛：${sessions} 次训练中出现疼痛。`,
-    extremeRpe: (maxRpe) => `有训练组达到 RPE ${maxRpe} 或更高。`,
+    extremeRpe: (setCount, maxRpe) => `${setCount} 组达到 RPE ${maxRpe} 或更高。`,
     volumeSpike: (changePct) => `最近一次训练容量比近期平均值高 ${changePct}%。`,
     volumeDrop: (changePct) => `最近一次训练容量比近期平均值低 ${changePct}%。`,
     missingRecoveryData: "本周期未记录恢复数据（sleep_hours）。",

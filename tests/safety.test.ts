@@ -31,6 +31,7 @@ test("flags extreme RPE as critical", async () => {
   assert.ok(extreme);
   assert.equal(extreme.severity, "critical");
   assert.equal(extreme.evidence.max_rpe, 10);
+  assert.equal(extreme.evidence.set_count, 1);
 });
 
 test("flags missing recovery data when no sleep_hours are recorded", async () => {

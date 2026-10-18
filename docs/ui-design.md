@@ -199,6 +199,10 @@ second data model. The boundary is the design:
   or validation message from its source string. Unknown codes, missing
   evidence and user-authored notes fall back to the original English string —
   a translation never invents numbers.
+- **Imported copy stays authored.** A recommendation is only rebuilt when its
+  English `detail`/`reason` exactly match the local generator's template for
+  that action and evidence. An imported plan may reuse an action code with a
+  different instruction; such text is preserved verbatim.
 - **UI copy is looked up by its exact English source** in a per-area Chinese
   table. A missing entry falls back to English instead of showing a raw key.
 - **Switching never rewrites data.** Changing language does not touch the

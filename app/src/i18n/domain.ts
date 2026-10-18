@@ -72,7 +72,10 @@ export function displayFlagMessage(language: AppLanguage, flag: AnalysisFlag): s
     }
     case "EXTREME_RPE": {
       const maxRpe = numeric(evidence.max_rpe);
-      return maxRpe === null ? flag.message : domainZh.flags.extremeRpe(maxRpe);
+      const setCount = numeric(evidence.set_count);
+      return maxRpe === null || setCount === null
+        ? flag.message
+        : domainZh.flags.extremeRpe(setCount, maxRpe);
     }
     case "VOLUME_SPIKE": {
       const change = numeric(evidence.change_pct);
@@ -102,6 +105,106 @@ export interface DisplayRecommendation {
   reason: string;
 }
 
+/**
+ * True only when the payload copy is exactly what the local generator produces
+ * for this action and evidence. Imported plans are user/artifact content: an
+ * unknown or edited sentence must stay as authored rather than being replaced
+ * by the built-in instruction. If the generator copy changes, this guard stops
+ * matching and the display falls back to English (a safe, visible failure).
+ */
+function matchesGeneratedRecommendation(recommendation: Recommendation): boolean {
+  const { action, detail, reason } = recommendation;
+  const evidence: Evidence = recommendation.evidence;
+
+  switch (action) {
+    case "import_history":
+      return (
+        detail === "Import at least one workout record before generating a plan." &&
+        reason === "No training history is available, so no evidence-based plan can be produced."
+      );
+    case "reduce_or_pause_loading":
+      return (
+        detail ===
+          "Do not progress load next session; keep intensity at or below the most recent session, or rest." &&
+        reason === "A pain report was recorded, which overrides any progression logic."
+      );
+    case "cap_intensity": {
+      const maxRpe = numeric(evidence.max_rpe);
+      return (
+        maxRpe !== null &&
+        detail === `Keep working sets at or below RPE ${EXTREME_RPE - 2} next session.` &&
+        reason === `The recorded maximum RPE was ${String(maxRpe)}, indicating maximal effort.`
+      );
+    }
+    case "hold_volume": {
+      const change = numeric(evidence.change_pct);
+      return (
+        change !== null &&
+        detail ===
+          "Repeat last session's volume rather than adding more; progress only if recovery is good." &&
+        reason === `Latest volume was ${String(change)}% above the recent average.`
+      );
+    }
+    case "rebuild_volume": {
+      const change = numeric(evidence.change_pct);
+      return (
+        change !== null &&
+        detail ===
+          "Rebuild volume gradually (about 10-20% of the gap per session) rather than jumping back." &&
+        reason === `Latest volume was ${String(change)}% below the recent average.`
+      );
+    }
+    case "progressive_overload": {
+      const exercise = text(evidence.exercise);
+      const deltaPct = numeric(evidence.delta_pct);
+      const avgRpe = numeric(evidence.avg_rpe);
+      const expectedRpe = avgRpe === null ? "not recorded" : String(avgRpe);
+      const detailMatch =
+        exercise !== null &&
+        detail === `Add a small increase (~2.5% load or one rep per set) to ${exercise}.`;
+      const reasonMatch =
+        exercise !== null &&
+        deltaPct !== null &&
+        new RegExp(
+          `^Estimated 1RM for ${escapeRegExp(exercise)} rose ${escapeRegExp(String(deltaPct))}% across \\d+ sessions at an average RPE of ${escapeRegExp(expectedRpe)}\\.$`,
+        ).test(reason);
+      return detailMatch && reasonMatch;
+    }
+    case "maintain": {
+      const avgRpe = numeric(evidence.avg_rpe);
+      const expectedRpe = avgRpe === null ? "not recorded" : String(avgRpe);
+      return (
+        detail ===
+          "Repeat the recent session structure and only progress if it feels controlled." &&
+        (reason === "No exercise had enough weighted history to establish a trend." ||
+          reason === `No exercise showed a rising trend (average RPE ${expectedRpe}).`)
+      );
+    }
+    case "schedule": {
+      const days = numeric(evidence.days_available);
+      return (
+        days !== null &&
+        detail === `Fit the plan into ${String(days)} available day(s).` &&
+        reason === "The caller supplied a weekly availability constraint."
+      );
+    }
+    case "equipment": {
+      const equipment = list(evidence.equipment);
+      return (
+        equipment !== null &&
+        detail === `Restrict exercise selection to: ${equipment.join(", ")}.` &&
+        reason === "The caller supplied an equipment constraint."
+      );
+    }
+    default:
+      return false;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Rebuild recommendation copy from the action code and evidence. */
 export function displayRecommendation(
   language: AppLanguage,
@@ -113,6 +216,7 @@ export function displayRecommendation(
     reason: recommendation.reason,
   };
   if (language !== "zh") return english;
+  if (!matchesGeneratedRecommendation(recommendation)) return english;
   const evidence: Evidence = recommendation.evidence;
   const actionLabel = (code: string): string => domainZh.actions[code] ?? code;
 
