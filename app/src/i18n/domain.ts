@@ -71,11 +71,12 @@ export function displayFlagMessage(language: AppLanguage, flag: AnalysisFlag): s
       return records === null ? flag.message : domainZh.flags.painReported(records.length);
     }
     case "EXTREME_RPE": {
-      const maxRpe = numeric(evidence.max_rpe);
       const setCount = numeric(evidence.set_count);
-      return maxRpe === null || setCount === null
+      // The count covers sets at the threshold, not sets that reached
+      // `max_rpe`; saying the latter would overstate maximal effort.
+      return setCount === null
         ? flag.message
-        : domainZh.flags.extremeRpe(setCount, maxRpe);
+        : domainZh.flags.extremeRpe(setCount, EXTREME_RPE);
     }
     case "VOLUME_SPIKE": {
       const change = numeric(evidence.change_pct);

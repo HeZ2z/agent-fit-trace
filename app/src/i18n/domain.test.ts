@@ -104,7 +104,7 @@ describe("deterministic domain display layer", () => {
           evidence: { record_ids: ["a"], set_count: 2, max_rpe: 9.5 },
         }),
       ),
-    ).toBe("2 组达到 RPE 9.5 或更高。");
+    ).toBe("2 组达到 RPE 9 或更高。");
 
     expect(
       displayFlagMessage(
