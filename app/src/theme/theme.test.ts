@@ -4,6 +4,7 @@ import {
   THEME_STORAGE_KEY,
   applyTheme,
   getStoredTheme,
+  getTheme,
   isThemeName,
   setTheme,
   subscribeTheme,
@@ -11,7 +12,11 @@ import {
 
 describe("theme preference", () => {
   beforeEach(() => {
+    // A success clears the in-memory fallback; remove the written value after
+    // so the default-preference assertions still see empty storage.
     window.localStorage.clear();
+    setTheme("pixel");
+    window.localStorage.removeItem(THEME_STORAGE_KEY);
     document.documentElement.removeAttribute("data-theme");
   });
 
@@ -69,7 +74,24 @@ describe("theme preference", () => {
       setItem.mockRestore();
     }
     expect(document.documentElement.getAttribute("data-theme")).toBe("glass");
+    expect(getTheme()).toBe("glass");
     expect(getStoredTheme()).toBe("pixel");
+  });
+
+  it("lets a later successful write clear the in-memory fallback", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota", "QuotaExceededError");
+    });
+    try {
+      setTheme("glass");
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(getTheme()).toBe("glass");
+
+    setTheme("pixel");
+    expect(getTheme()).toBe("pixel");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("pixel");
   });
 
   it("falls back to Pixel when storage cannot be read", () => {

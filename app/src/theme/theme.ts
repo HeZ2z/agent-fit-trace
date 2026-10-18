@@ -41,6 +41,18 @@ export function getStoredTheme(): ThemeName {
   }
 }
 
+/**
+ * A preference that could not be persisted still applies for the rest of this
+ * page load. It wins over storage until a later write succeeds, so the
+ * Appearance control cannot snap back to the old skin after a rejected write.
+ */
+let memoryFallback: ThemeName | null = null;
+
+/** The effective preference for this page load. */
+export function getTheme(): ThemeName {
+  return memoryFallback ?? getStoredTheme();
+}
+
 /** Apply a theme to the document root; the stylesheet keys off `data-theme`. */
 export function applyTheme(theme: ThemeName): void {
   if (typeof document === "undefined") return;
@@ -62,10 +74,19 @@ export function subscribeTheme(listener: () => void): () => void {
  * applies the skin for this page load; only durability across reloads is lost.
  */
 export function setTheme(theme: ThemeName): void {
-  try {
-    themeStorage()?.setItem(THEME_STORAGE_KEY, theme);
-  } catch {
-    // Keep the in-page choice; a later reload falls back to the default.
+  const storage = themeStorage();
+  if (storage === null) {
+    memoryFallback = theme;
+  } else {
+    try {
+      storage.setItem(THEME_STORAGE_KEY, theme);
+      // Storage is authoritative again; a previous failed write no longer
+      // needs to shadow it.
+      memoryFallback = null;
+    } catch {
+      // Keep the in-page choice; a later reload falls back to the default.
+      memoryFallback = theme;
+    }
   }
   applyTheme(theme);
   for (const listener of listeners) listener();

@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { DEFAULT_THEME, getStoredTheme, setTheme, subscribeTheme } from "./theme.ts";
+import { DEFAULT_THEME, getTheme, setTheme, subscribeTheme } from "./theme.ts";
 import { applyTheme } from "./theme.ts";
 import type { ThemeName } from "./theme.ts";
 
@@ -12,7 +12,7 @@ import type { ThemeName } from "./theme.ts";
  * environments that do not run the pre-paint bootstrap (tests, embedded use).
  */
 export function useTheme(): { theme: ThemeName; setTheme: (theme: ThemeName) => void } {
-  const theme = useSyncExternalStore(subscribeTheme, getStoredTheme, () => DEFAULT_THEME);
+  const theme = useSyncExternalStore(subscribeTheme, getTheme, () => DEFAULT_THEME);
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
