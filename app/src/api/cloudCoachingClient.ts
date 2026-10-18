@@ -217,7 +217,11 @@ export class CloudCoachingClient {
 
   constructor({
     baseUrl = "/api/v1",
-    fetchImpl = fetch,
+    // Never store the bare `fetch` and invoke it as `this.fetchImpl(...)`:
+    // browsers may reject a native Window method with a foreign receiver
+    // (`Illegal invocation`) before any request is made. The arrow wrapper
+    // pins the receiver to `globalThis`, matching HttpFitTraceClient.
+    fetchImpl = (input, init) => globalThis.fetch(input, init),
     getAccessToken,
     tail,
   }: CloudCoachingClientOptions = {}) {
