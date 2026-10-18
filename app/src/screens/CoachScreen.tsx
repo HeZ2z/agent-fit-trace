@@ -8,8 +8,10 @@ import { AnalysisView } from "../components/AnalysisView.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useCoach } from "../coaching/useCoach.ts";
 import { isCloudBackend } from "../coaching/coachBackend.ts";
+import { useI18n } from "../i18n/useI18n.ts";
 
 export function CoachScreen() {
+  const { t } = useI18n();
   const { records, status: historyStatus, loadError, reload } = useWorkouts();
   const coach = useCoach();
   const [question, setQuestion] = useState("");
@@ -60,10 +62,11 @@ export function CoachScreen() {
     <section data-screen="coach">
       <div className="screen-head">
         <div className="screen-head-main">
-          <h1>Coach</h1>
+          <h1>{t("Coach")}</h1>
           <p className="coach-lede">
-            Read-only analysis of your stored workouts. The coach reads a backend-issued snapshot of
-            this account and the selected range — your records are never rewritten by a run.
+            {t(
+              "Read-only analysis of your stored workouts. The coach reads a backend-issued snapshot of this account and the selected range — your records are never rewritten by a run.",
+            )}
           </p>
         </div>
       </div>
@@ -74,18 +77,17 @@ export function CoachScreen() {
           data-testid="coach-guest-local"
           className="validation-warnings"
         >
-          Guests can use their own local coach only: install pi, then run{" "}
-          <code>agent-fit-trace start</code> from this machine. Cloud coaching requires a formal
-          account.
+          {t("Guests can use their own local coach only: install pi, then run")}{" "}
+          <code>agent-fit-trace start</code>{t(" from this machine. Cloud coaching requires a formal account.")}
         </div>
       )}
 
       {coach.mode !== "inactive" && (
         <div className="field coach-backend">
-          <label htmlFor="coach-backend">Coach backend</label>
+          <label htmlFor="coach-backend">{t("Coach backend")}</label>
           {coach.backends.length === 0 ? (
             <p className="coach-meta" data-testid="coach-no-backends">
-              No coach backend is available in this session.
+              {t("No coach backend is available in this session.")}
             </p>
           ) : (
             <select
@@ -99,25 +101,29 @@ export function CoachScreen() {
             >
               {coach.selectedBackend === null && (
                 <option value="" disabled>
-                  Select a backend
+                  {t("Select a backend")}
                 </option>
               )}
               {coach.backends.map((option) => (
                 <option key={option.id} value={option.id} disabled={!option.available}>
                   {option.available
                     ? option.label
-                    : `${option.label} — unavailable${
-                        option.unavailableReason === undefined
-                          ? ""
-                          : `: ${option.unavailableReason.message}`
-                      }`}
+                    : option.unavailableReason === undefined
+                      ? t("{label} — unavailable", { label: option.label })
+                      : t("{label} — unavailable: {reason}", {
+                          label: option.label,
+                          reason: option.unavailableReason.message,
+                        })}
                 </option>
               ))}
             </select>
           )}
           {coach.activeBackend !== null && (
             <p className="coach-meta" data-testid="coach-active-backend">
-              {`This run is pinned to ${disclosedLabel ?? coach.activeBackend}. Replay, cancel, and restore keep using that backend even if the selection changes.`}
+              {t(
+                "This run is pinned to {backend}. Replay, cancel, and restore keep using that backend even if the selection changes.",
+                { backend: disclosedLabel ?? coach.activeBackend },
+              )}
             </p>
           )}
         </div>
@@ -134,7 +140,7 @@ export function CoachScreen() {
               data-testid="coach-retry-backend-discovery"
               onClick={coach.retryBackendDiscovery}
             >
-              Retry availability
+              {t("Retry availability")}
             </button>
           )}
         </>
@@ -148,8 +154,13 @@ export function CoachScreen() {
           }
         >
           {disclosedLocation === "cloud"
-            ? "Cloud coach: the run executes in the hosted cloud and spends cloud coaching credits. Your question and the selected workout snapshot are sent to the configured cloud provider."
-            : `Local coach (${disclosedLabel ?? disclosedBackend}): the run executes on this machine through that local CLI. Your question and snapshot go to the model provider configured for it; workout storage stays local.`}
+            ? t(
+                "Cloud coach: the run executes in the hosted cloud and spends cloud coaching credits. Your question and the selected workout snapshot are sent to the configured cloud provider.",
+              )
+            : t(
+                "Local coach ({backend}): the run executes on this machine through that local CLI. Your question and snapshot go to the model provider configured for it; workout storage stays local.",
+                { backend: disclosedLabel ?? disclosedBackend },
+              )}
         </p>
       )}
 
@@ -161,49 +172,54 @@ export function CoachScreen() {
 
       {piUnavailable && (
         <div role="alert" data-testid="coach-pi-unavailable" className="validation-warnings">
-          pi is not installed on this machine, so the local pi coach cannot run. Select an available
-          cloud or other local backend, install pi, or keep using workout logging and history.
+          {t(
+            "pi is not installed on this machine, so the local pi coach cannot run. Select an available cloud or other local backend, install pi, or keep using workout logging and history.",
+          )}
         </div>
       )}
 
       {historyStatus === "error" ? (
         <div role="alert" data-testid="history-error" className="validation-summary">
-          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <p>
+            {t("Could not load workout history: {error}", {
+              error: loadError?.message ?? t("Unknown error."),
+            })}
+          </p>
           <button type="button" onClick={reload}>
-            Retry
+            {t("Retry")}
           </button>
         </div>
       ) : historyStatus === "loading" ? (
-        <p role="status">Loading workout history…</p>
+        <p role="status">{t("Loading workout history…")}</p>
       ) : historyEmpty && coach.snapshot === null ? (
         <div className="empty-state">
-          <p>No workout history to analyse yet.</p>
-          <Link to="/workout/new">Log your first workout</Link>
+          <p>{t("No workout history to analyse yet.")}</p>
+          <Link to="/workout/new">{t("Log your first workout")}</Link>
         </div>
       ) : (
         <>
           <p data-testid="coach-history-count" className="coach-meta">
-            {`${records.length} workout(s) in history.`}
+            {t("{count} workout(s) in history.", { count: records.length })}
           </p>
 
           <form onSubmit={handleSubmit}>
             <div className="field">
-              <label htmlFor="coach-question">Analysis question</label>
+              <label htmlFor="coach-question">{t("Analysis question")}</label>
               <textarea
                 id="coach-question"
                 value={question}
                 onChange={(event) => setQuestion(event.currentTarget.value)}
-                placeholder="How is my squat progressing?"
+                placeholder={t("How is my squat progressing?")}
                 disabled={coach.isRunning || piUnavailable}
               />
               {!coach.canAsk && !piUnavailable && (
                 <p className="coach-meta" data-testid="coach-backend-required">
-                  Select an available coach backend to ask.
+                  {t("Select an available coach backend to ask.")}
                 </p>
               )}
             </div>
             <div className="field">
-              <label htmlFor="coach-from">From (optional)</label>
+              <label htmlFor="coach-from">{t("From (optional)")}</label>
               <input
                 id="coach-from"
                 type="date"
@@ -213,7 +229,7 @@ export function CoachScreen() {
               />
             </div>
             <div className="field">
-              <label htmlFor="coach-to">To (optional)</label>
+              <label htmlFor="coach-to">{t("To (optional)")}</label>
               <input
                 id="coach-to"
                 type="date"
@@ -232,59 +248,70 @@ export function CoachScreen() {
               }
             >
               {coach.phase === "preparing" || coach.phase === "streaming" || coach.phase === "cancelling"
-                ? "Coach is working…"
-                : "Ask coach"}
+                ? t("Coach is working…")
+                : t("Ask coach")}
             </button>{" "}
             {coach.canCancel && (
               <button type="button" onClick={() => void coach.cancel()}>
-                {coach.phase === "cancelling" ? "Cancelling…" : "Cancel"}
+                {coach.phase === "cancelling" ? t("Cancelling…") : t("Cancel")}
               </button>
             )}
           </form>
 
           {snapshot !== null && (
             <p data-testid="coach-source" className="coach-meta">
-              {`Snapshot ${snapshot.snapshotId}: ${snapshot.source} · ${String(
-                snapshot.recordCount,
-              )} record(s)${
-                snapshot.from !== undefined || snapshot.to !== undefined
-                  ? ` · ${snapshot.from ?? "…"} – ${snapshot.to ?? "…"}`
-                  : ""
-              }`}
+              {t("Snapshot {id}: {source} · {count} record(s){range}", {
+                id: snapshot.snapshotId,
+                source: snapshot.source,
+                count: snapshot.recordCount,
+                range:
+                  snapshot.from !== undefined || snapshot.to !== undefined
+                    ? ` · ${snapshot.from ?? "…"} – ${snapshot.to ?? "…"}`
+                    : "",
+              })}
             </p>
           )}
 
           {rangeEmpty && (
             <div className="empty-state" data-testid="coach-range-empty">
-              <p>No workouts in the selected range. Record a workout for this period first.</p>
-              <Link to="/workout/new">Log a workout</Link>
+              <p>{t("No workouts in the selected range. Record a workout for this period first.")}</p>
+              <Link to="/workout/new">{t("Log a workout")}</Link>
             </div>
           )}
 
           {snapshotStale && snapshot !== null && (
             <div className="validation-warnings" role="note" data-testid="coach-stale">
-              Workout history changed since snapshot {snapshot.snapshotId} (
-              {`${String(snapshot.recordCount)} records then`}). Results below reflect the earlier
-              snapshot, not the current history.
+              {t(
+                "Workout history changed since snapshot {id} ({count} records then). Results below reflect the earlier snapshot, not the current history.",
+                { id: snapshot.snapshotId, count: snapshot.recordCount },
+              )}
             </div>
           )}
 
           {(coach.phase === "streaming" || coach.phase === "preparing") && (
-            <p role="status">Coach is working…</p>
+            <p role="status">{t("Coach is working…")}</p>
           )}
-          {coach.phase === "cancelling" && <p role="status">Cancelling coach run…</p>}
+          {coach.phase === "cancelling" && <p role="status">{t("Cancelling coach run…")}</p>}
 
           {coach.tools.length > 0 && (
-            <section aria-label="Coach activity">
-              <h2>Activity</h2>
+            <section aria-label={t("Coach activity")}>
+              <h2>{t("Activity")}</h2>
               <ul className="coach-tools">
                 {coach.tools.map((activity) => (
                   <li key={activity.callId}>
                     {activity.phase === "started"
-                      ? `Running ${activity.tool}…`
+                      ? t("Running {tool}…", { tool: activity.tool })
                       : activity.phase === "ok"
-                        ? `Finished ${activity.tool}${activity.summary ? `: ${activity.summary}` : ""}`
-                        : `Tool ${activity.tool} failed: ${activity.error ?? "unknown error"}`}
+                        ? activity.summary
+                          ? t("Finished {tool}: {summary}", {
+                              tool: activity.tool,
+                              summary: activity.summary,
+                            })
+                          : t("Finished {tool}", { tool: activity.tool })
+                        : t("Tool {tool} failed: {error}", {
+                            tool: activity.tool,
+                            error: activity.error ?? t("unknown error"),
+                          })}
                   </li>
                 ))}
               </ul>
@@ -292,8 +319,8 @@ export function CoachScreen() {
           )}
 
           {coach.text !== "" && (
-            <section aria-label="Coach answer">
-              <h2>Answer</h2>
+            <section aria-label={t("Coach answer")}>
+              <h2>{t("Answer")}</h2>
               <pre className="coach-text" data-testid="coach-text">
                 {coach.text}
               </pre>
@@ -302,21 +329,24 @@ export function CoachScreen() {
 
           {coach.runError !== null && (
             <div role="alert" data-testid="coach-run-error" className="validation-warnings">
-              {`Coach tool reported ${coach.runError.code}: ${coach.runError.message}`}
+              {t("Coach tool reported {code}: {message}", {
+                code: coach.runError.code,
+                message: coach.runError.message,
+              })}
             </div>
           )}
 
           {coach.analyses.map((analysis, index) => (
-            <section key={index} aria-label={index === 0 ? "Coach analysis" : `Coach analysis ${String(index + 1)}`}>
+            <section key={index} aria-label={index === 0 ? t("Coach analysis") : t("Coach analysis {number}", { number: index + 1 })}>
               <AnalysisView analysis={analysis} />
             </section>
           ))}
 
           {coach.phase === "cancelled" && (
             <div role="status" data-testid="coach-cancelled" className="validation-warnings">
-              <p>Coach run cancelled. Partial output above is frozen.</p>
+              <p>{t("Coach run cancelled. Partial output above is frozen.")}</p>
               <button type="button" onClick={coach.newAnalysis}>
-                New analysis
+                {t("New analysis")}
               </button>
             </div>
           )}
@@ -324,12 +354,13 @@ export function CoachScreen() {
           {coach.phase === "unconfirmed" && (
             <div role="alert" data-testid="coach-cancel-unconfirmed" className="validation-warnings">
               <p>
-                Cancellation unconfirmed — the submit may already have been accepted by the server, so
-                no run is claimed cancelled yet.
+                {t(
+                  "Cancellation unconfirmed — the submit may already have been accepted by the server, so no run is claimed cancelled yet.",
+                )}
               </p>
-              <p>Resolve it with the same request key, then cancel; a fresh analysis would abandon it.</p>
+              <p>{t("Resolve it with the same request key, then cancel; a fresh analysis would abandon it.")}</p>
               <button type="button" onClick={() => void coach.retrySubmit()}>
-                Resolve cancellation
+                {t("Resolve cancellation")}
               </button>
             </div>
           )}
@@ -340,28 +371,28 @@ export function CoachScreen() {
               <div className="plan-actions">
                 {coach.canRetrySubmit && (
                   <button type="button" onClick={() => void coach.retrySubmit()}>
-                    Retry
+                    {t("Retry")}
                   </button>
                 )}
                 {coach.canReconnect && (
                   <button type="button" onClick={coach.reconnect}>
-                    Reconnect
+                    {t("Reconnect")}
                   </button>
                 )}
                 {coach.canRetryRestore && (
                   <button type="button" onClick={coach.retryRestore}>
-                    Retry restore
+                    {t("Retry restore")}
                   </button>
                 )}
                 {coach.canReloadFromStart && (
                   <button type="button" onClick={coach.reloadFromStart}>
-                    Reload from earliest events
+                    {t("Reload from earliest events")}
                   </button>
                 )}
                 {!coach.isRunning &&
                   (coach.phase === "done" || coach.phase === "failed" || coach.phase === "cancelled") && (
                     <button type="button" onClick={coach.newAnalysis}>
-                      New analysis
+                      {t("New analysis")}
                     </button>
                   )}
               </div>
@@ -371,7 +402,7 @@ export function CoachScreen() {
           {(coach.phase === "done" || coach.phase === "failed") && !coach.isRunning && coach.error === null && (
             <div className="plan-actions">
               <button type="button" onClick={coach.newAnalysis}>
-                New analysis
+                {t("New analysis")}
               </button>
             </div>
           )}

@@ -34,6 +34,7 @@ import { useWorkouts } from "../state/useWorkouts.ts";
 import { useTheme } from "../theme/useTheme.ts";
 import type { ThemeName } from "../theme/theme.ts";
 import { useI18n } from "../i18n/useI18n.ts";
+import { displayValidationMessage, displayWarning } from "../i18n/domain.ts";
 import type { AppLanguage } from "../i18n/i18n.ts";
 
 /** Deduplicate only exact repeats; preview and server warnings both survive. */
@@ -55,16 +56,17 @@ function shortRecordId(id: string): string {
 }
 
 function Warnings({ warnings }: { warnings: readonly ValidationWarning[] }) {
+  const { language, t } = useI18n();
   if (warnings.length === 0) return null;
   return (
     <div className="validation-hints" data-testid="import-warnings">
-      <p>Warnings (records are still imported in normalized form):</p>
+      <p>{t("Warnings (records are still imported in normalized form):")}</p>
       <ul>
         {warnings.map((warning, index) => (
           <li key={`${warning.code}-${warning.path ?? ""}-${index}`}>
             {warning.path !== undefined && <code>{warning.path}</code>}
             {warning.path !== undefined ? ": " : ""}
-            {warning.message}
+            {displayWarning(language, warning)}
           </li>
         ))}
       </ul>
@@ -94,6 +96,7 @@ type ArtifactSave =
   | { state: "error"; kind: ImportedArtifactKind; message: string; owner: string };
 
 function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
+  const { language, t } = useI18n();
   const { client } = useWorkouts();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -153,7 +156,7 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
     capturedClient === clientRef.current &&
     capturedOwner === ownerRef.current;
 
-  const title = kind === "analysis" ? "Import progress analysis" : "Import a training plan";
+  const title = kind === "analysis" ? t("Import progress analysis") : t("Import a training plan");
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const input = event.currentTarget;
@@ -235,7 +238,7 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
         owner: capturedOwner,
         // The write may have committed before the transport failed. The user
         // retries the same file; identical content is an idempotent duplicate.
-        message: `${caught instanceof Error ? caught.message : String(caught)} The snapshot may already be saved; retrying this same file is safe.`,
+        message: `${caught instanceof Error ? caught.message : String(caught)} ${t("The snapshot may already be saved; retrying this same file is safe.")}`,
       });
     } finally {
       if (token === saveTokenRef.current) {
@@ -265,9 +268,10 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
     } catch (caught) {
       if (!isCurrent()) return;
       setViewError(
-        `Could not open the saved ${artifact.kind} snapshot: ${
-          caught instanceof Error ? caught.message : String(caught)
-        }. It is still saved.`,
+        t("Could not open the saved {kind} snapshot: {error}. It is still saved.", {
+          kind: t(kind),
+          error: caught instanceof Error ? caught.message : String(caught),
+        }),
       );
     } finally {
       if (token === viewTokenRef.current) {
@@ -281,13 +285,14 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
     <section className="me-section" aria-labelledby={`me-${kind}-import`}>
       <h2 id={`me-${kind}-import`}>{title}</h2>
       <p className="me-help">
-        Accepts <code>{kind}.json</code> or a saved v1 {kind} snapshot envelope. The
-        whole file is validated before you can save it. Snapshots are immutable; saving
-        uses content identity, so an identical re-import is a duplicate and never
-        overwrites or renames the original.
+        {t("Accepts")} <code>{kind}.json</code>{" "}
+        {t(
+          "or a saved v1 {kind} snapshot envelope. The whole file is validated before you can save it. Snapshots are immutable; saving uses content identity, so an identical re-import is a duplicate and never overwrites or renames the original.",
+          { kind: t(kind) },
+        )}
       </p>
       <div className="field">
-        <label htmlFor={`me-${kind}-file`}>Choose {kind} file</label>
+        <label htmlFor={`me-${kind}-file`}>{t("Choose {kind} file", { kind: t(kind) })}</label>
         <input
           id={`me-${kind}-file`}
           type="file"
@@ -299,7 +304,12 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
 
       {readError !== null && (
         <div role="alert" className="validation-summary" data-testid={`me-${kind}-read-error`}>
-          <p>Could not read the {kind} file: {readError}</p>
+          <p>
+            {t("Could not read the {kind} file: {error}", {
+              kind: t(kind),
+              error: displayValidationMessage(language, readError),
+            })}
+          </p>
         </div>
       )}
 
@@ -308,29 +318,40 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
           <p>
             <strong>{preview.filename}</strong>{" "}
             {preview.kind === "analysis" && "period" in preview.input.payload
-              ? `covers ${preview.input.payload.period.from ?? "n/a"} – ${preview.input.payload.period.to ?? "n/a"}.`
+              ? t("covers {from} – {to}.", {
+                  from: preview.input.payload.period.from ?? t("n/a"),
+                  to: preview.input.payload.period.to ?? t("n/a"),
+                })
               : "recommendations" in preview.input.payload
-                ? `has ${preview.input.payload.recommendations.length} recommendation(s) and remains a draft.`
+                ? t("has {count} recommendation(s) and remains a draft.", {
+                    count: preview.input.payload.recommendations.length,
+                  })
                 : "."}
           </p>
           <Warnings warnings={preview.warnings} />
           <p className="me-help">
-            Saving creates an immutable account snapshot. It does not change what is
-            selected for viewing and never adopts a plan.
+            {t(
+              "Saving creates an immutable account snapshot. It does not change what is selected for viewing and never adopts a plan.",
+            )}
           </p>
           <button
             type="button"
             onClick={() => void saveSnapshot()}
             disabled={saving || reading}
           >
-            {saving ? "Saving…" : `Save ${kind} snapshot`}
+            {saving ? t("Saving…") : t("Save {kind} snapshot", { kind: t(kind) })}
           </button>
         </div>
       )}
 
       {save?.state === "error" && (
         <div role="alert" className="validation-summary" data-testid={`me-${kind}-save-error`}>
-          <p>Could not confirm the {save.kind} snapshot save: {save.message}</p>
+          <p>
+            {t("Could not confirm the {kind} snapshot save: {error}", {
+              kind: t(save.kind),
+              error: save.message,
+            })}
+          </p>
         </div>
       )}
 
@@ -338,12 +359,16 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
         <div className="me-panel" data-testid={`me-${kind}-saved`} aria-live="polite">
           <p>
             {save.result.duplicate
-              ? "This snapshot was already saved (duplicate). The original filename and creation time are unchanged."
-              : "Snapshot saved."}
-            {kind === "plan" ? " The imported plan remains a draft and was not adopted." : ""}
+              ? t("This snapshot was already saved (duplicate). The original filename and creation time are unchanged.")
+              : t("Snapshot saved.")}
+            {kind === "plan" ? t(" The imported plan remains a draft and was not adopted.") : ""}
           </p>
           <p className="me-meta">
-            {`ID ${save.result.artifact.id} · stored file ${save.result.artifact.source_filename ?? "(none)"} · imported ${save.result.artifact.created_at}`}
+            {t("ID {id} · stored file {file} · imported {createdAt}", {
+              id: save.result.artifact.id,
+              file: save.result.artifact.source_filename ?? t("(none)"),
+              createdAt: save.result.artifact.created_at,
+            })}
           </p>
           <Warnings warnings={save.warnings} />
           <button
@@ -351,9 +376,9 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
             onClick={() => void viewSnapshot()}
             disabled={viewing}
           >
-            {viewing ? "Opening…" : `View saved ${kind} snapshot`}
+            {viewing ? t("Opening…") : t("View saved {kind} snapshot", { kind: t(kind) })}
           </button>
-          <p className="me-help">Viewing selects this snapshot explicitly. Saving itself did not.</p>
+          <p className="me-help">{t("Viewing selects this snapshot explicitly. Saving itself did not.")}</p>
         </div>
       )}
 
@@ -630,37 +655,43 @@ export function MeScreen() {
   );
   const storageSubject =
     user === null
-      ? "the current session"
+      ? t("the current session")
       : user.isAnonymous === true
-        ? "this guest identity"
-        : "the signed-in account";
+        ? t("this guest identity")
+        : t("the signed-in account");
   const scope = httpMode
-    ? `Storage scope: HTTP mode. Snapshots and selections belong to ${storageSubject} on the server.${import.meta.env.DEV ? " The development in-memory API clears on restart." : ""}`
-    : "Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.";
+    ? t("Storage scope: HTTP mode. Snapshots and selections belong to {subject} on the server.{devNote}", {
+        subject: storageSubject,
+        devNote: import.meta.env.DEV
+          ? t(" The development in-memory API clears on restart.")
+          : "",
+      })
+    : t("Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.");
 
   return (
     <section data-screen="me">
-      <h1>Me</h1>
+      <h1>{t("Me")}</h1>
       <p className="me-lede">
-        One place to export and restore workout data and to save imported analysis or
-        plan snapshots. Training history is never overwritten.
+        {t(
+          "One place to export and restore workout data and to save imported analysis or plan snapshots. Training history is never overwritten.",
+        )}
       </p>
 
       <section className="me-section" aria-labelledby="me-account">
-        <h2 id="me-account">Account and storage</h2>
+        <h2 id="me-account">{t("Account and storage")}</h2>
         {user !== null ? (
           <p data-testid="me-account-identity">
-            {`Signed in as ${user.email ?? user.id}`}
-            {user.isAnonymous === true ? " (guest identity)" : ""}
+            {t("Signed in as {identity}", { identity: user.email ?? user.id })}
+            {user.isAnonymous === true ? t(" (guest identity)") : ""}
           </p>
         ) : (
-          <p data-testid="me-account-identity">Local session (no signed-in account).</p>
+          <p data-testid="me-account-identity">{t("Local session (no signed-in account).")}</p>
         )}
         {user?.isAnonymous === true && (
           <p className="me-help">
-            This guest keeps data under its guest identity. Another device can recover it
-            only after the same guest is upgraded to a permanent account; signing in as a
-            different account never merges it.
+            {t(
+              "This guest keeps data under its guest identity. Another device can recover it only after the same guest is upgraded to a permanent account; signing in as a different account never merges it.",
+            )}
           </p>
         )}
         <GuestUpgradePasswordNotice />
@@ -669,37 +700,48 @@ export function MeScreen() {
       </section>
 
       <section className="me-section" aria-labelledby="me-export">
-        <h2 id="me-export">Export workouts</h2>
+        <h2 id="me-export">{t("Export workouts")}</h2>
         <p className="me-help">
-          Downloads every restorable record as <code>workout.json</code> in the v1
-          backup format. Histories that exceed the restore limits are split into numbered
-          files, each within 1 MiB and 1000 records, so every downloaded file can be
-          restored. A record that cannot be represented in a restorable file is left out
-          and reported explicitly instead of blocking the rest of the backup.
+          {t("Downloads every restorable record as")} <code>workout.json</code>
+          {t(
+            " in the v1 backup format. Histories that exceed the restore limits are split into numbered files, each within 1 MiB and 1000 records, so every downloaded file can be restored. A record that cannot be represented in a restorable file is left out and reported explicitly instead of blocking the rest of the backup.",
+          )}
         </p>
         <button type="button" onClick={exportWorkouts} disabled={records.length === 0}>
-          Export workouts (JSON)
+          {t("Export workouts (JSON)")}
         </button>
         {exportError !== null && (
           <div role="alert" className="validation-summary" data-testid="me-export-error">
-            <p>Could not export workouts: {exportError}</p>
+            <p>{t("Could not export workouts: {error}", { error: exportError })}</p>
           </div>
         )}
         {exportResult !== null && (
           <p role="status" className="me-help" data-testid="me-export-result">
             {exportResult.files === 0
-              ? `No backup files were downloaded; ${exportResult.excluded.length} record(s) could not be exported.`
+              ? t("No backup files were downloaded; {count} record(s) could not be exported.", {
+                  count: exportResult.excluded.length,
+                })
               : exportResult.files === 1
-                ? `Downloaded 1 backup file with ${exportResult.records} record(s).`
-                : `Downloaded ${exportResult.files} backup files with ${exportResult.records} record(s) total. Restore each file separately; the numbered filenames keep them in order.`}
+                ? t("Downloaded 1 backup file with {count} record(s).", {
+                    count: exportResult.records,
+                  })
+                : t(
+                    "Downloaded {files} backup files with {records} record(s) total. Restore each file separately; the numbered filenames keep them in order.",
+                    { files: exportResult.files, records: exportResult.records },
+                  )}
           </p>
         )}
         {exportResult !== null && exportResult.excluded.length > 0 && (
           <div role="alert" className="validation-summary" data-testid="me-export-excluded">
             <p>
               {exportResult.excluded.length === 1
-                ? "1 workout record was left out of this backup because it cannot be represented in a restorable file:"
-                : `${exportResult.excluded.length} workout records were left out of this backup because they cannot be represented in restorable files:`}
+                ? t(
+                    "1 workout record was left out of this backup because it cannot be represented in a restorable file:",
+                  )
+                : t(
+                    "{count} workout records were left out of this backup because they cannot be represented in restorable files:",
+                    { count: exportResult.excluded.length },
+                  )}
             </p>
             <ul>
               {exportResult.excluded.map((entry, index) => (
@@ -709,23 +751,24 @@ export function MeScreen() {
               ))}
             </ul>
             <p>
-              The rest of your history was exported. The listed records remain in your
-              history and are not lost, but this backup is incomplete.
+              {t(
+                "The rest of your history was exported. The listed records remain in your history and are not lost, but this backup is incomplete.",
+              )}
             </p>
           </div>
         )}
       </section>
 
       <section className="me-section" aria-labelledby="me-import-workouts">
-        <h2 id="me-import-workouts">Import workouts</h2>
+        <h2 id="me-import-workouts">{t("Import workouts")}</h2>
         <p className="me-help">
-          Accepts a <code>{`{ schema_version: 1, records }`}</code> backup. Every record
-          must keep its original id. The file is validated in full first; confirmation
-          appends records one at a time. The import is not atomic: some records may be
-          saved before a failure, and existing records are never overwritten.
+          {t("Accepts a")} <code>{`{ schema_version: 1, records }`}</code>{" "}
+          {t(
+            "backup. Every record must keep its original id. The file is validated in full first; confirmation appends records one at a time. The import is not atomic: some records may be saved before a failure, and existing records are never overwritten.",
+          )}
         </p>
         <div className="field">
-          <label htmlFor="me-workout-file">Choose workout backup file</label>
+          <label htmlFor="me-workout-file">{t("Choose workout backup file")}</label>
           <input
             id="me-workout-file"
             type="file"
@@ -738,46 +781,59 @@ export function MeScreen() {
         {historyStatus !== "ready" && (
           <p role="status" data-testid="me-workout-history-status" className="me-help">
             {historyStatus === "loading"
-              ? "Loading workout history before import…"
-              : "Workout history could not be loaded; import stays disabled until it is ready."}
+              ? t("Loading workout history before import…")
+              : t("Workout history could not be loaded; import stays disabled until it is ready.")}
           </p>
         )}
 
         {workoutFileError !== null && (
           <div role="alert" className="validation-summary" data-testid="me-workout-file-error">
-            <p>Could not read the workout backup: {workoutFileError}</p>
+            <p>
+              {t("Could not read the workout backup: {error}", {
+                error: displayValidationMessage(language, workoutFileError),
+              })}
+            </p>
           </div>
         )}
 
         {workoutPreview !== null && (
           <div className="me-panel" data-testid="me-workout-preview">
             <p>
-              {`${workoutPreview.totalEntries} unique record(s), ${workoutPreview.totalIndexes} file index(es).`}
+              {t("{records} unique record(s), {indexes} file index(es).", {
+                records: workoutPreview.totalEntries,
+                indexes: workoutPreview.totalIndexes,
+              })}
             </p>
             {workoutPreview.totalEntries === 0 ? (
               <p role="status" data-testid="me-workout-noop">
-                This backup has no workout records; there is nothing to import.
+                {t("This backup has no workout records; there is nothing to import.")}
               </p>
             ) : (
               <>
                 <ul>
-                  <li>{`New: ${workoutPreview.newIds.length}`}</li>
-                  <li>{`Already present with identical content: ${workoutPreview.duplicateIds.length}`}</li>
-                  <li>{`Conflicts: ${workoutPreview.conflictIds.length}`}</li>
+                  <li>{t("New: {count}", { count: workoutPreview.newIds.length })}</li>
+                  <li>
+                    {t("Already present with identical content: {count}", {
+                      count: workoutPreview.duplicateIds.length,
+                    })}
+                  </li>
+                  <li>{t("Conflicts: {count}", { count: workoutPreview.conflictIds.length })}</li>
                 </ul>
                 {workoutPreview.conflictIds.length > 0 && (
                   <div role="alert" className="validation-summary">
                     <p>
-                      These ids already exist with different content and block the whole
-                      import: {workoutPreview.conflictIds.join(", ")}.
+                      {t(
+                        "These ids already exist with different content and block the whole import: {ids}.",
+                        { ids: workoutPreview.conflictIds.join(", ") },
+                      )}
                     </p>
                   </div>
                 )}
                 <Warnings warnings={workoutPreview.warnings} />
                 <p className="me-help">
-                  Confirming appends each new record to the current account. Identical ids
-                  are no-ops. A conflict or failure stops later records. Cancel stops only
-                  records that have not been submitted.
+                  {t(
+                    "Confirming appends each new record to the current account. Identical ids are no-ops. A conflict or failure stops later records. Cancel stops only records that have not been submitted.",
+                  )}
                 </p>
               </>
             )}
@@ -792,11 +848,11 @@ export function MeScreen() {
                   historyStatus !== "ready"
                 }
               >
-                {importing ? "Importing…" : "Confirm append to current account"}
+                {importing ? t("Importing…") : t("Confirm append to current account")}
               </button>
               {importing && (
                 <button type="button" onClick={() => (cancelRef.current = true)}>
-                  Stop after current record
+                  {t("Stop after current record")}
                 </button>
               )}
             </div>
@@ -805,31 +861,48 @@ export function MeScreen() {
 
         {workoutRunError !== null && (
           <div role="alert" className="validation-summary">
-            <p>Workout import stopped unexpectedly: {workoutRunError}</p>
+            <p>
+              {t("Workout import stopped unexpectedly: {error}", {
+                error: displayValidationMessage(language, workoutRunError),
+              })}
+            </p>
           </div>
         )}
 
         {workoutReceipt !== null && (
           <div className="me-panel" data-testid="me-workout-receipt" aria-live="polite">
-            <h3>Import receipt</h3>
+            <h3>{t("Import receipt")}</h3>
             <p>
-              {`Created ${workoutReceipt.counts.created} · duplicate ${workoutReceipt.counts.duplicate} · conflict ${workoutReceipt.counts.conflict} · failed ${workoutReceipt.counts.failed} · unknown ${workoutReceipt.counts.unknown} · not attempted ${workoutReceipt.counts.not_attempted}`}
+              {t(
+                "Created {created} · duplicate {duplicate} · conflict {conflict} · failed {failed} · unknown {unknown} · not attempted {notAttempted}",
+                {
+                  created: workoutReceipt.counts.created,
+                  duplicate: workoutReceipt.counts.duplicate,
+                  conflict: workoutReceipt.counts.conflict,
+                  failed: workoutReceipt.counts.failed,
+                  unknown: workoutReceipt.counts.unknown,
+                  notAttempted: workoutReceipt.counts.not_attempted,
+                },
+              )}
             </p>
-            {workoutReceipt.cancelled && <p>Stopped after the current record by request.</p>}
+            {workoutReceipt.cancelled && <p>{t("Stopped after the current record by request.")}</p>}
             <ul>
               {workoutReceipt.items.map((item) => (
                 <li key={item.index}>
                   <code>{`records[${item.index}]`}</code> {item.recordId}: {item.status}
-                  {item.readback === "present" ? " (confirmed present on readback)" : ""}
-                  {item.readback === "absent" ? " (not found on readback)" : ""}
-                  {item.readback === "unavailable" ? " (readback unavailable)" : ""}
-                  {item.error !== null ? ` — ${item.error}` : ""}
+                  {item.readback === "present" ? t(" (confirmed present on readback)") : ""}
+                  {item.readback === "absent" ? t(" (not found on readback)") : ""}
+                  {item.readback === "unavailable" ? t(" (readback unavailable)") : ""}
+                  {item.error !== null
+                    ? ` — ${displayValidationMessage(language, item.error)}`
+                    : ""}
                 </li>
               ))}
             </ul>
             <p className="me-help">
-              Re-select the same file to retry: identical ids are idempotent no-ops, and
-              no new ids are derived automatically.
+              {t(
+                "Re-select the same file to retry: identical ids are idempotent no-ops, and no new ids are derived automatically.",
+              )}
             </p>
           </div>
         )}
@@ -837,21 +910,22 @@ export function MeScreen() {
         {reloadAfterWriteFailed && (
           <div role="alert" className="validation-summary" data-testid="me-workout-reload-error">
             <p>
-              The write receipts above are known, but workout history could not be
-              refreshed. Reload the page to see the stored records.
+              {t(
+                "The write receipts above are known, but workout history could not be refreshed. Reload the page to see the stored records.",
+              )}
             </p>
           </div>
         )}
       </section>
 
       <section className="me-section" aria-labelledby="me-appearance">
-        <h2 id="me-appearance">Appearance</h2>
+        <h2 id="me-appearance">{t("Appearance")}</h2>
         <p className="me-help">
-          Pixel draws structure with 3px rules, offset shadows and a blueprint grid. Glass
-          keeps the same hierarchy with hairlines, soft shadows and a frosted chrome. The
-          choice is stored in this browser and never changes workout data.
+          {t(
+            "Pixel draws structure with 3px rules, offset shadows and a blueprint grid. Glass keeps the same hierarchy with hairlines, soft shadows and a frosted chrome. The choice is stored in this browser and never changes workout data.",
+          )}
         </p>
-        <div className="theme-options" role="group" aria-label="Appearance theme">
+        <div className="theme-options" role="group" aria-label={t("Appearance theme")}>
           {APPEARANCE_OPTIONS.map((option) => {
             const selected = theme === option.id;
             return (
@@ -872,10 +946,10 @@ export function MeScreen() {
                   <span className="theme-option-name">
                     {option.label}
                     <span className="theme-option-flag" aria-hidden="true">
-                      On
+                      {t("On")}
                     </span>
                   </span>
-                  <span className="theme-option-desc">{option.description}</span>
+                  <span className="theme-option-desc">{t(option.description)}</span>
                 </span>
               </button>
             );
@@ -928,8 +1002,9 @@ export function MeScreen() {
       <ImportArtifactSection kind="plan" />
 
       <p className="me-help">
-        Jump to <Link to="/analysis">Analysis</Link> or <Link to="/plan">Plan</Link> to
-        switch between current calculations and saved snapshots.
+        {t("Jump to")} <Link to="/analysis">{t("Analysis")}</Link> {t("or")}{" "}
+        <Link to="/plan">{t("Plan")}</Link>{" "}
+        {t("to switch between current calculations and saved snapshots.")}
       </p>
     </section>
   );
