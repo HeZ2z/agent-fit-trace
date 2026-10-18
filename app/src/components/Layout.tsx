@@ -2,23 +2,31 @@ import { useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.tsx";
 import { GuestAccountControls } from "../auth/GuestAccountControls.tsx";
-import { isCoachVisible } from "../api/runtimeMode.ts";
+import { isCoachVisible, isHttpModeActive } from "../api/runtimeMode.ts";
 import { CoachingProvider } from "../coaching/CoachingProvider.tsx";
 import { useCoach } from "../coaching/useCoach.ts";
+import { BrandMark, PixelIcon } from "./PixelIcon.tsx";
+import type { PixelIconName } from "./PixelIcon.tsx";
 
-const baseNavLinks = [
-  { to: "/", label: "History" },
-  { to: "/workout/new", label: "Log Workout" },
-  { to: "/analysis", label: "Analysis" },
-  { to: "/plan", label: "Plan" },
-  { to: "/me", label: "Me" },
+interface NavItem {
+  to: string;
+  label: string;
+  icon: PixelIconName;
+}
+
+const baseNavLinks: NavItem[] = [
+  { to: "/", label: "History", icon: "history" },
+  { to: "/workout/new", label: "Log Workout", icon: "log" },
+  { to: "/analysis", label: "Analysis", icon: "analysis" },
+  { to: "/plan", label: "Plan", icon: "plan" },
+  { to: "/me", label: "Me", icon: "me" },
 ];
 
-function navLinks() {
+function navLinks(): NavItem[] {
   // The Coach entry is visible where coaching can exist at all: the launcher's
   // local flag and authenticated HTTP deployments. Visible is not available —
   // the screen itself explains backend eligibility (guest/credits/provider).
-  if (isCoachVisible()) return [...baseNavLinks, { to: "/coach", label: "Coach" }];
+  if (isCoachVisible()) return [...baseNavLinks, { to: "/coach", label: "Coach", icon: "coach" }];
   return baseNavLinks;
 }
 
@@ -61,13 +69,58 @@ function AccountArea() {
   );
 }
 
+/** Brand block shared by the side panel (verbose) and the mobile bar (compact). */
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <>
+      <span className="brand-mark">
+        <BrandMark />
+      </span>
+      <span className={compact ? "mobile-brand-copy" : "brand-copy"}>
+        <span className={compact ? "mobile-brand-name" : "brand-name"}>FIT TRACE</span>
+        <span className={compact ? "mobile-brand-sub" : "brand-sub"}>Agent · training log</span>
+      </span>
+    </>
+  );
+}
+
+function ModeBadge() {
+  const httpMode = isHttpModeActive();
+  return (
+    <span className="mode-chip" data-mode={httpMode ? "http" : "local"}>
+      <span className="mode-chip-dot" aria-hidden="true" />
+      {httpMode ? "Cloud" : "Local"}
+    </span>
+  );
+}
+
+function SideFoot() {
+  const httpMode = isHttpModeActive();
+  return (
+    <div className="sidenav-foot">
+      <span className="side-status">
+        <span className="side-status-dot" aria-hidden="true" />
+        {httpMode ? "Cloud mode · account data" : "Local mode · browser storage"}
+      </span>
+      <p className="side-note">
+        {httpMode
+          ? "Records, snapshots and coaching runs belong to the signed-in account."
+          : "Records and snapshots stay in this browser; export them from Me."}
+      </p>
+      <p className="side-slug">agent-fit-trace</p>
+    </div>
+  );
+}
+
 export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean }) {
   return (
     <CoachingProvider>
       <div className="app-shell">
-        <header className="app-header">
-          <span className="app-title">agent-fit-trace</span>
-          <nav aria-label="Primary">
+        <aside className="sidenav" aria-label="Workspace">
+          <div className="brand">
+            <Brand />
+          </div>
+          <nav className="app-nav" aria-label="Primary">
             <ul className="nav-list">
               {navLinks().map((link) => (
                 <li key={link.to}>
@@ -76,27 +129,41 @@ export function Layout({ legacyLoopback = false }: { legacyLoopback?: boolean })
                     end={link.to === "/"}
                     className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
                   >
-                    {link.label}
+                    <PixelIcon name={link.icon} size={22} />
+                    <span className="nav-label">{link.label}</span>
                   </NavLink>
                 </li>
               ))}
             </ul>
           </nav>
-          <AccountArea />
-        </header>
-        {legacyLoopback ? (
-          <div className="validation-warnings" role="status">
-            <p>
-              Development bypass: no account login. Data uses the fixed
-              dev-loopback-bypass namespace in this browser and is not isolated by
-              identity.
-            </p>
-          </div>
-        ) : null}
-        <AuthOutageNotice />
-        <main className="app-main">
-          <Outlet />
-        </main>
+          <SideFoot />
+        </aside>
+        <div className="workspace">
+          <header className="app-header">
+            <div className="mobile-brand">
+              <Brand compact />
+            </div>
+            <div className="header-tools">
+              <ModeBadge />
+              <AccountArea />
+            </div>
+          </header>
+          {legacyLoopback ? (
+            <div className="workspace-notices">
+              <div className="validation-warnings" role="status">
+                <p>
+                  Development bypass: no account login. Data uses the fixed
+                  dev-loopback-bypass namespace in this browser and is not isolated by
+                  identity.
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <AuthOutageNotice />
+          <main className="app-main">
+            <Outlet />
+          </main>
+        </div>
       </div>
     </CoachingProvider>
   );
@@ -113,18 +180,20 @@ function AuthOutageNotice() {
   const [retrying, setRetrying] = useState(false);
   if (status !== "signed-in" || authError?.code !== "AUTH_UNAVAILABLE") return null;
   return (
-    <div className="auth-outage-notice" role="alert">
-      <span>Authentication is temporarily unavailable. You stay signed in.</span>{" "}
-      <button
-        type="button"
-        disabled={retrying}
-        onClick={() => {
-          setRetrying(true);
-          void refresh().finally(() => setRetrying(false));
-        }}
-      >
-        {retrying ? "Retrying…" : "Retry"}
-      </button>
+    <div className="workspace-notices">
+      <div className="auth-outage-notice" role="alert">
+        <span>Authentication is temporarily unavailable. You stay signed in.</span>{" "}
+        <button
+          type="button"
+          disabled={retrying}
+          onClick={() => {
+            setRetrying(true);
+            void refresh().finally(() => setRetrying(false));
+          }}
+        >
+          {retrying ? "Retrying…" : "Retry"}
+        </button>
+      </div>
     </div>
   );
 }
