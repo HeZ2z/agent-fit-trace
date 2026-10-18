@@ -260,3 +260,48 @@ describe("CloudCoachingClient non-SSE body bounds", () => {
     });
   });
 });
+
+describe("CloudCoachingClient default fetch receiver", () => {
+  it("calls the global fetch with globalThis, never the client object", async () => {
+    const original = globalThis.fetch;
+    const receivers: unknown[] = [];
+    const capabilities = {
+      enabled: true,
+      providerConfigured: true,
+      providerEnabled: true,
+      accountFormal: true,
+      quotaConfigured: true,
+      budgetConfigured: true,
+      concurrentLimit: 4,
+      reservedCount: 0,
+      tokensRemaining: 200_000,
+      tokensReserved: 0,
+      perRunTokenBudget: 20_000,
+      perStepTokenBudget: 4_096,
+      perRunRequestLimit: 8,
+      tools: ["get_training_history", "analyze_progress"],
+      maxSteps: 4,
+      maxTokens: 2_048,
+      timeoutMs: 60_000,
+    };
+    globalThis.fetch = function (this: unknown) {
+      receivers.push(this);
+      return Promise.resolve(
+        new Response(JSON.stringify({ data: capabilities }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    } as typeof fetch;
+    try {
+      const unbound = new CloudCoachingClient({ getAccessToken: () => "token-a" });
+      await expect(unbound.readCapabilities()).resolves.toMatchObject({
+        providerConfigured: true,
+      });
+      expect(receivers).toHaveLength(1);
+      expect(receivers[0]).toBe(globalThis);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
