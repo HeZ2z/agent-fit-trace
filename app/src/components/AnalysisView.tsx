@@ -1,4 +1,10 @@
 import type { AnalysisResult } from "@pi-fit-trace/core";
+import { useI18n } from "../i18n/useI18n.ts";
+import {
+  displayFlagMessage,
+  displaySeverity,
+  displayTrend,
+} from "../i18n/domain.ts";
 
 /**
  * Single shared renderer for a deterministic {@link AnalysisResult}.
@@ -14,38 +20,44 @@ export function formatEvidenceValue(value: unknown): string {
 }
 
 export function AnalysisView({ analysis }: { analysis: AnalysisResult }) {
+  const { language, t } = useI18n();
   const { metrics } = analysis;
 
   return (
     <>
       <p className="analysis-period">
-        {`Period: ${analysis.period.from ?? "n/a"} – ${analysis.period.to ?? "n/a"}`}
+        {t("Period: {from} – {to}", {
+          from: analysis.period.from ?? t("n/a"),
+          to: analysis.period.to ?? t("n/a"),
+        })}
       </p>
 
       <section>
-        <h2>Metrics</h2>
+        <h2>{t("Metrics")}</h2>
         <ul className="analysis-metrics">
-          <li>{`Sessions: ${metrics.sessions}`}</li>
-          <li>{`Sets: ${metrics.total_sets}`}</li>
-          <li>{`Reps: ${metrics.total_reps}`}</li>
-          <li>{`Volume: ${metrics.volume_kg} kg`}</li>
-          <li>{`Average RPE: ${metrics.avg_rpe === null ? "n/a" : metrics.avg_rpe}`}</li>
-          <li>{`Average rest: ${metrics.avg_rest_days} days`}</li>
-          <li>{`Max gap: ${metrics.max_gap_days} days`}</li>
+          <li>{t("Sessions: {count}", { count: metrics.sessions })}</li>
+          <li>{t("Sets: {count}", { count: metrics.total_sets })}</li>
+          <li>{t("Reps: {count}", { count: metrics.total_reps })}</li>
+          <li>{t("Volume: {volume} kg", { volume: metrics.volume_kg })}</li>
+          <li>
+            {t("Average RPE: {rpe}", {
+              rpe: metrics.avg_rpe === null ? t("n/a") : metrics.avg_rpe,
+            })}
+          </li>
+          <li>{t("Average rest: {days} days", { days: metrics.avg_rest_days })}</li>
+          <li>{t("Max gap: {days} days", { days: metrics.max_gap_days })}</li>
         </ul>
       </section>
 
       <section>
-        <h2>Trends</h2>
+        <h2>{t("Trends")}</h2>
         {analysis.trends.length === 0 ? (
-          <p>No exercise trends yet.</p>
+          <p>{t("No exercise trends yet.")}</p>
         ) : (
           <ul className="analysis-trends">
             {analysis.trends.map((trend) => (
               <li key={trend.exercise} data-trend-exercise={trend.exercise}>
-                {`${trend.exercise}: ${trend.first} → ${trend.last} (${trend.delta >= 0 ? "+" : ""}${
-                  trend.delta
-                } kg, ${trend.delta_pct}%, ${trend.direction})`}
+                {displayTrend(language, trend)}
               </li>
             ))}
           </ul>
@@ -53,9 +65,9 @@ export function AnalysisView({ analysis }: { analysis: AnalysisResult }) {
       </section>
 
       <section>
-        <h2>Flags</h2>
+        <h2>{t("Flags")}</h2>
         {analysis.flags.length === 0 ? (
-          <p>No safety flags.</p>
+          <p>{t("No safety flags.")}</p>
         ) : (
           <ul className="analysis-flags">
             {analysis.flags.map((flag) => (
@@ -64,7 +76,10 @@ export function AnalysisView({ analysis }: { analysis: AnalysisResult }) {
                 data-flag-code={flag.code}
                 data-flag-severity={flag.severity}
               >
-                {`${flag.code} (${flag.severity}): ${flag.message}`}
+                {`${flag.code} (${displaySeverity(language, flag.severity)}): ${displayFlagMessage(
+                  language,
+                  flag,
+                )}`}
                 <ul className="flag-evidence">
                   {Object.entries(flag.evidence).map(([key, value]) => (
                     <li key={key}>{`${key}: ${formatEvidenceValue(value)}`}</li>
@@ -77,7 +92,7 @@ export function AnalysisView({ analysis }: { analysis: AnalysisResult }) {
       </section>
 
       <p className="analysis-source-count">
-        {`Computed from ${analysis.source_records.length} record(s).`}
+        {t("Computed from {count} record(s).", { count: analysis.source_records.length })}
       </p>
     </>
   );
