@@ -2,22 +2,37 @@ import { Link } from "react-router-dom";
 import { summarizeMetrics } from "@pi-fit-trace/core";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
 import { useWorkouts } from "../state/useWorkouts.ts";
+import { useI18n } from "../i18n/useI18n.ts";
+import { displaySessionType } from "../i18n/domain.ts";
 
 function HistoryRow({ record }: { record: WorkoutRecord }) {
+  const { language, t } = useI18n();
   const metrics = summarizeMetrics([record]);
-  const avgRpe = metrics.avg_rpe === null ? "n/a" : metrics.avg_rpe;
-  const setLabel = metrics.total_sets === 1 ? "set" : "sets";
+  const avgRpe = metrics.avg_rpe === null ? t("n/a") : metrics.avg_rpe;
 
   return (
     <li className="history-row">
       <Link
         to={`/workout/${record.id}`}
-        aria-label={`View ${record.session_type} workout on ${record.date}`}
+        aria-label={t("View {type} workout on {date}", {
+          type: displaySessionType(language, record.session_type),
+          date: record.date,
+        })}
       >
-        {record.date} — {record.session_type}
+        {record.date} — {displaySessionType(language, record.session_type)}
       </Link>
       <span className="history-summary">
-        {`${metrics.total_sets} ${setLabel} · ${metrics.volume_kg} kg · avg RPE ${avgRpe}`}
+        {metrics.total_sets === 1
+          ? t("{count} set · {volume} kg · avg RPE {rpe}", {
+              count: metrics.total_sets,
+              volume: metrics.volume_kg,
+              rpe: avgRpe,
+            })
+          : t("{count} sets · {volume} kg · avg RPE {rpe}", {
+              count: metrics.total_sets,
+              volume: metrics.volume_kg,
+              rpe: avgRpe,
+            })}
       </span>
     </li>
   );
@@ -25,6 +40,7 @@ function HistoryRow({ record }: { record: WorkoutRecord }) {
 
 export function HistoryScreen() {
   const { records, status, loadError, reload } = useWorkouts();
+  const { t } = useI18n();
 
   // The client returns records in ascending date order; reverse explicitly so
   // the most recent workout appears first.
@@ -34,26 +50,31 @@ export function HistoryScreen() {
     <section data-screen="history">
       <div className="screen-head">
         <div className="screen-head-main">
-          <h1>Workout History</h1>
+          <h1>{t("Workout History")}</h1>
           <p className="screen-lede">
-            Append-only training records, newest first. Open a session for its metrics and
-            safety review.
+            {t(
+              "Append-only training records, newest first. Open a session for its metrics and safety review.",
+            )}
           </p>
         </div>
         <p className="screen-actions">
           <Link className="btn-ghost" to="/me">
-            Manage imports and exports
+            {t("Manage imports and exports")}
           </Link>
         </p>
       </div>
 
-      {status === "loading" && <p role="status">Loading workout history…</p>}
+      {status === "loading" && <p role="status">{t("Loading workout history…")}</p>}
 
       {status === "error" && (
         <div role="alert" className="validation-summary" data-testid="history-error">
-          <p>Could not load workout history: {loadError?.message ?? "Unknown error."}</p>
+          <p>
+            {t("Could not load workout history: {message}", {
+              message: loadError?.message ?? t("Unknown error."),
+            })}
+          </p>
           <button type="button" onClick={reload}>
-            Retry
+            {t("Retry")}
           </button>
         </div>
       )}
@@ -61,8 +82,8 @@ export function HistoryScreen() {
       {status === "ready" &&
         (records.length === 0 ? (
           <div className="empty-state">
-            <p>No workouts yet.</p>
-            <Link to="/workout/new">Log your first workout</Link>
+            <p>{t("No workouts yet.")}</p>
+            <Link to="/workout/new">{t("Log your first workout")}</Link>
           </div>
         ) : (
           <ul className="history-list">
