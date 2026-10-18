@@ -136,7 +136,8 @@
 }
 
 .nav-link.active:focus-visible {
-  outline-color: var(--bg);
+  /* The offset puts the ring on the white nav ground, not on the blue link. */
+  outline-color: var(--fg);
 }
 
 .sidenav-foot {

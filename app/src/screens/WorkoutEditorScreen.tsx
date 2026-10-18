@@ -321,69 +321,6 @@ export function WorkoutEditorScreen() {
 
       <form onSubmit={handleSubmit} noValidate>
         <fieldset>
-          <legend>Session</legend>
-
-          <div className="field">
-            <label htmlFor="workout-date">Date</label>
-            <input
-              id="workout-date"
-              type="date"
-              value={date}
-              onChange={(event) => setDate(event.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-session-type">Session type</label>
-            <select
-              id="workout-session-type"
-              value={sessionType}
-              onChange={(event) => setSessionType(event.target.value)}
-            >
-              {SESSION_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-duration-minutes">Duration (minutes)</label>
-            <input
-              id="workout-duration-minutes"
-              type="number"
-              min="1"
-              step="1"
-              value={durationMinutes}
-              onChange={(event) => setDurationMinutes(event.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-sleep-hours">Sleep (hours)</label>
-            <input
-              id="workout-sleep-hours"
-              type="number"
-              min="0"
-              max="24"
-              step="0.5"
-              value={sleepHours}
-              onChange={(event) => setSleepHours(event.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label htmlFor="workout-notes">Notes</label>
-            <textarea
-              id="workout-notes"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-            />
-          </div>
-        </fieldset>
-
-        <fieldset>
           <legend>Exercises</legend>
 
           {exercises.map((exercise, exerciseIndex) => (
@@ -479,6 +416,69 @@ export function WorkoutEditorScreen() {
           <button type="button" onClick={addExercise}>
             Add exercise
           </button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Session</legend>
+
+          <div className="field">
+            <label htmlFor="workout-date">Date</label>
+            <input
+              id="workout-date"
+              type="date"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-session-type">Session type</label>
+            <select
+              id="workout-session-type"
+              value={sessionType}
+              onChange={(event) => setSessionType(event.target.value)}
+            >
+              {SESSION_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-duration-minutes">Duration (minutes)</label>
+            <input
+              id="workout-duration-minutes"
+              type="number"
+              min="1"
+              step="1"
+              value={durationMinutes}
+              onChange={(event) => setDurationMinutes(event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-sleep-hours">Sleep (hours)</label>
+            <input
+              id="workout-sleep-hours"
+              type="number"
+              min="0"
+              max="24"
+              step="0.5"
+              value={sleepHours}
+              onChange={(event) => setSleepHours(event.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="workout-notes">Notes</label>
+            <textarea
+              id="workout-notes"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+            />
+          </div>
         </fieldset>
 
         <fieldset>

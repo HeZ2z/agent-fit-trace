@@ -185,22 +185,22 @@
 }
 
 /* Session details sit in a two-column grid; notes take the full row. */
-[data-screen="log"] form > fieldset:first-of-type {
+[data-screen="log"] form > fieldset:nth-of-type(2) {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   column-gap: 12px;
   align-items: start;
 }
 
-[data-screen="log"] form > fieldset:first-of-type > legend {
+[data-screen="log"] form > fieldset:nth-of-type(2) > legend {
   grid-column: 1 / -1;
 }
 
-[data-screen="log"] form > fieldset:first-of-type .field {
+[data-screen="log"] form > fieldset:nth-of-type(2) .field {
   margin-bottom: 12px;
 }
 
-[data-screen="log"] form > fieldset:first-of-type .field:has(textarea) {
+[data-screen="log"] form > fieldset:nth-of-type(2) .field:has(textarea) {
   grid-column: 1 / -1;
 }
 
@@ -463,12 +463,14 @@
     align-items: start;
   }
 
+  /* DOM order matches the visual order: exercises (left), then session,
+     pain and save (right column), so Tab never jumps columns. */
   [data-screen="log"] form > fieldset:nth-of-type(1) {
-    grid-area: session;
+    grid-area: exercises;
   }
 
   [data-screen="log"] form > fieldset:nth-of-type(2) {
-    grid-area: exercises;
+    grid-area: session;
   }
 
   [data-screen="log"] form > fieldset:nth-of-type(3) {
@@ -479,13 +481,13 @@
     grid-area: submit;
   }
 
-  [data-screen="log"] form > fieldset:first-of-type {
+  [data-screen="log"] form > fieldset:nth-of-type(2) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (min-width: 600px) and (max-width: 1179px) {
-  [data-screen="log"] form > fieldset:first-of-type {
+  [data-screen="log"] form > fieldset:nth-of-type(2) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
