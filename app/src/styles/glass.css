@@ -380,6 +380,13 @@
   border-color: var(--border);
 }
 
+[data-theme="glass"] .theme-preview-lang {
+  border-width: 1px;
+  border-color: var(--hair);
+  background: var(--soft);
+  box-shadow: none;
+}
+
 [data-theme="glass"] .theme-option-flag {
   border-color: var(--border);
   color: var(--blue-deep);

@@ -33,6 +33,8 @@ import {
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useTheme } from "../theme/useTheme.ts";
 import type { ThemeName } from "../theme/theme.ts";
+import { useI18n } from "../i18n/useI18n.ts";
+import type { AppLanguage } from "../i18n/i18n.ts";
 
 /** Deduplicate only exact repeats; preview and server warnings both survive. */
 function mergeWarnings(...lists: readonly ValidationWarning[][]): ValidationWarning[] {
@@ -364,6 +366,27 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
   );
 }
 
+const LANGUAGE_OPTIONS: readonly {
+  id: AppLanguage;
+  label: string;
+  preview: string;
+  description: string;
+}[] = [
+  {
+    id: "en",
+    label: "English",
+    preview: "EN",
+    description: "Source language. Data and exports stay in English.",
+  },
+  {
+    id: "zh",
+    label: "简体中文",
+    preview: "中",
+    description:
+      "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
+  },
+];
+
 const APPEARANCE_OPTIONS: readonly {
   id: ThemeName;
   label: string;
@@ -390,6 +413,7 @@ export function MeScreen() {
   const { client, records, status: historyStatus, reload } = useWorkouts();
   const { user } = useAuth();
   const { theme, setTheme } = useTheme();
+  const { language, setLanguage, t } = useI18n();
   const { exportWorkouts, error: exportError, result: exportResult } = useWorkoutExport(records);
   const owner = user?.id ?? "local";
   const [workoutFileText, setWorkoutFileText] = useState<string | null>(null);
@@ -852,6 +876,47 @@ export function MeScreen() {
                     </span>
                   </span>
                   <span className="theme-option-desc">{option.description}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="me-section" aria-labelledby="me-language">
+        <h2 id="me-language">{t("Language")}</h2>
+        <p className="me-help">
+          {t(
+            "Choose the interface language. Workout records, saved snapshots and exported JSON keep their original English; only the interface is translated.",
+          )}
+        </p>
+        <div className="theme-options" role="group" aria-label={t("Interface language")}>
+          {LANGUAGE_OPTIONS.map((option) => {
+            const selected = language === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="theme-option"
+                aria-pressed={selected}
+                aria-label={option.label}
+                data-testid={`language-option-${option.id}`}
+                onClick={() => setLanguage(option.id)}
+              >
+                <span
+                  className="theme-preview theme-preview-lang"
+                  aria-hidden="true"
+                >
+                  {option.preview}
+                </span>
+                <span className="theme-option-copy">
+                  <span className="theme-option-name">
+                    {option.label}
+                    <span className="theme-option-flag" aria-hidden="true">
+                      {t("On")}
+                    </span>
+                  </span>
+                  <span className="theme-option-desc">{t(option.description)}</span>
                 </span>
               </button>
             );

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="pixel">
+<html lang="en" data-lang="en" data-theme="pixel">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -16,6 +16,14 @@
         }
       } catch (error) {
         // Blocked storage simply keeps the default Pixel attribute above.
+      }
+      try {
+        if (window.localStorage.getItem("pi-fit-trace:lang:v1") === "zh") {
+          document.documentElement.lang = "zh-CN";
+          document.documentElement.setAttribute("data-lang", "zh");
+        }
+      } catch (error) {
+        // Blocked storage keeps the default English attributes above.
       }
     </script>
   </head>

@@ -457,6 +457,19 @@
   box-shadow: 0 8px 16px -12px oklch(27% 0.11 265 / 0.55);
 }
 
+.theme-preview-lang {
+  display: grid;
+  place-items: center;
+  border: var(--border-w-thin) solid var(--fg);
+  background: var(--soft);
+  color: var(--fg);
+  font-family: var(--display);
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
 .theme-option-copy {
   display: flex;
   flex-direction: column;
