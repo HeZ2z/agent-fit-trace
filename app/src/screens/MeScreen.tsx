@@ -31,6 +31,8 @@ import {
   GuestUpgradePasswordNotice,
 } from "../auth/GuestAccountControls.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
+import { useTheme } from "../theme/useTheme.ts";
+import type { ThemeName } from "../theme/theme.ts";
 
 /** Deduplicate only exact repeats; preview and server warnings both survive. */
 function mergeWarnings(...lists: readonly ValidationWarning[][]): ValidationWarning[] {
@@ -362,6 +364,23 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
   );
 }
 
+const APPEARANCE_OPTIONS: readonly {
+  id: ThemeName;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: "pixel",
+    label: "Pixel",
+    description: "3px rules · offset shadows · blueprint grid",
+  },
+  {
+    id: "glass",
+    label: "Glass",
+    description: "Hairlines · soft shadows · frosted chrome",
+  },
+];
+
 type WorkoutPreviewState = WorkoutImportPreview & {
   owner: string;
   client: FitTraceClient;
@@ -370,6 +389,7 @@ type WorkoutPreviewState = WorkoutImportPreview & {
 export function MeScreen() {
   const { client, records, status: historyStatus, reload } = useWorkouts();
   const { user } = useAuth();
+  const { theme, setTheme } = useTheme();
   const { exportWorkouts, error: exportError, result: exportResult } = useWorkoutExport(records);
   const owner = user?.id ?? "local";
   const [workoutFileText, setWorkoutFileText] = useState<string | null>(null);
@@ -798,6 +818,45 @@ export function MeScreen() {
             </p>
           </div>
         )}
+      </section>
+
+      <section className="me-section" aria-labelledby="me-appearance">
+        <h2 id="me-appearance">Appearance</h2>
+        <p className="me-help">
+          Pixel draws structure with 3px rules, offset shadows and a blueprint grid. Glass
+          keeps the same hierarchy with hairlines, soft shadows and a frosted chrome. The
+          choice is stored in this browser and never changes workout data.
+        </p>
+        <div className="theme-options" role="group" aria-label="Appearance theme">
+          {APPEARANCE_OPTIONS.map((option) => {
+            const selected = theme === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="theme-option"
+                aria-pressed={selected}
+                aria-label={option.label}
+                data-testid={`theme-option-${option.id}`}
+                onClick={() => setTheme(option.id)}
+              >
+                <span
+                  className={`theme-preview theme-preview-${option.id}`}
+                  aria-hidden="true"
+                />
+                <span className="theme-option-copy">
+                  <span className="theme-option-name">
+                    {option.label}
+                    <span className="theme-option-flag" aria-hidden="true">
+                      On
+                    </span>
+                  </span>
+                  <span className="theme-option-desc">{option.description}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       <ImportArtifactSection kind="analysis" />
