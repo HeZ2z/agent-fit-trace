@@ -14,6 +14,10 @@ happen to share the same six destinations (History, Log, Analysis, Plan, Coach,
 Me); the restyle keeps this app's own information architecture, validation
 states, auth gates and safety semantics.
 
+Two skins share one token set: **Pixel** (the default, hard 3px rules and
+offset shadows) and **Glass** (hairlines, soft diffusion and a frosted chrome).
+Both are adapted from the same reference; neither changes the DOM or behaviour.
+
 Both typefaces are self-hosted (SIL OFL 1.1, licenses in
 `app/src/assets/fonts/`):
 
@@ -98,7 +102,7 @@ it stays pure white.
 ## Component recipes
 
 Implementation: `app/src/styles/controls.css`, `shell.css`, `screens-data.css`,
-`screens-account.css`.
+`screens-account.css`, with the Glass overrides in `glass.css`.
 
 - **Primary action** — `button[type="submit"]`: red fill (`--accent-deep`),
   3px border, 4px ink offset shadow; hover brightens to `--accent`; active
@@ -130,6 +134,51 @@ Implementation: `app/src/styles/controls.css`, `shell.css`, `screens-data.css`,
 
 ![History at 390px](ui/mobile-history.jpg)
 
+## Themes
+
+One token set, two skins. The choice is a **display preference**, stored under
+its own browser key (`pi-fit-trace:theme:v1`) and never written into a workout
+record, snapshot, export or content digest. It survives data resets and
+account switches.
+
+- **Switch location:** exactly one place — **Me → Appearance**. The navigation
+  stays a pure destination list. Each option is a native button with
+  `aria-pressed`, a miniature structural preview and an `On` flag.
+- **No first-paint flash:** `app/index.html` applies the stored skin to
+  `<html data-theme>` before the stylesheet and bundle load; `main.tsx` applies
+  the same value on boot and the hook re-applies it on mount.
+- **Invalid or unreadable storage** falls back to Pixel. A failed write keeps
+  the in-page choice for that page load.
+
+| | **Pixel** (default) | **Glass** |
+| --- | --- | --- |
+| Rules | 3px ink/blue borders | 1px hairlines (`--hair`) |
+| Depth | 3–5px hard offset shadows | soft diffusion (`--soft-shadow`) |
+| Corners | square | 8px cards / 6px controls |
+| Ground | 30px blueprint grid | flat `oklch(98% 0.006 268)` |
+| Labels | 11px uppercase, 0.1em tracking | 11px sentence case, 0.01em |
+| Active nav | blue block, red offset shadow | white glass capsule with rim |
+| Brand mark | red square, ink border, offset shadow | red rounded square, no border |
+| Chrome | opaque panel / app bar | translucent tint + blur + two rims |
+
+**Glass is chrome-only.** The material appears only where something floats over
+scrolling content: the side panel, the mobile app bar and the bottom dock.
+Record cards, analysis panels, forms and imported snapshots stay opaque in both
+skins — a card whose text sits on frosted content loses the contrast its text
+needs. Every glass surface carries a tint *under* the blur, so legibility is a
+fixed value instead of whatever happens to scroll behind it.
+
+Honest fallbacks: `prefers-reduced-transparency: reduce` and browsers without
+`backdrop-filter` drop to a solid panel tint; nothing becomes unreadable. The
+focus ring keeps its own `--focus-w` token (3px) so thinning Glass borders
+never weakens keyboard focus.
+
+![Glass at 1440px](ui/glass-desktop-history.jpg)
+
+![Glass on mobile, content passing under the frosted app bar and dock](ui/glass-mobile-scrolled.jpg)
+
+![Me → Appearance, with Glass selected](ui/glass-appearance.jpg)
+
 ## Accessibility and test constraints
 
 The restyle deliberately kept the semantics the test suite pins:
@@ -148,9 +197,8 @@ The restyle deliberately kept the semantics the test suite pins:
 
 ## Known gaps / intentionally not ported
 
-- **No Pixel/Glass theme switcher.** The reference's second skin is not
-  implemented; this app ships one skin. A switcher would be a product feature
-  with its own persisted preference and tests.
+- **No third skin.** The reference's earlier flat *Clean* skin was not ported;
+  Pixel and Glass are the only choices.
 - **No interface-language layer.** The app remains English-only.
 - **Light mode only.** There is no dark theme token set.
 - **No charts.** The app's deterministic analysis renders metrics, trends and
