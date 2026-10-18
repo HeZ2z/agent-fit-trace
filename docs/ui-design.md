@@ -17,6 +17,7 @@ states, auth gates and safety semantics.
 Two skins share one token set: **Pixel** (the default, hard 3px rules and
 offset shadows) and **Glass** (hairlines, soft diffusion and a frosted chrome).
 Both are adapted from the same reference; neither changes the DOM or behaviour.
+The interface is English-source with a Simplified Chinese display layer.
 
 Both typefaces are self-hosted (SIL OFL 1.1, licenses in
 `app/src/assets/fonts/`):
@@ -179,6 +180,55 @@ never weakens keyboard focus.
 
 ![Me → Appearance, with Glass selected](ui/glass-appearance.jpg)
 
+## Interface language
+
+English is the source language; Simplified Chinese is a **display layer**, not a
+second data model. The boundary is the design:
+
+- **Translated at render time:** chrome, labels, empty/loading/error states,
+  buttons, helper copy, navigation, auth and account screens, validation
+  messages, import warnings, safety-flag messages, plan recommendations and
+  plan safety notes.
+- **Canonical English, never translated in storage:** workout records and
+  notes, exercise names as typed, saved snapshot payloads, plan `detail` /
+  `reason` / `safety_notes` strings inside the payload, adopted digests and
+  exported JSON. A content digest must never depend on who is reading it.
+- **Rebuilt, not looked up.** Deterministic content is reconstructed from its
+  stable code plus evidence at render time: an analysis flag from
+  `code + evidence`, a recommendation from `action + evidence`, a safety note
+  or validation message from its source string. Unknown codes, missing
+  evidence and user-authored notes fall back to the original English string —
+  a translation never invents numbers.
+- **UI copy is looked up by its exact English source** in a per-area Chinese
+  table. A missing entry falls back to English instead of showing a raw key.
+- **Switching never rewrites data.** Changing language does not touch the
+  workout store, snapshots, adoption or export payloads, so it cannot
+  invalidate a saved plan confirmation.
+
+The switch lives once in **Me → Language** (English / 简体中文), persists under
+its own browser key (`pi-fit-trace:lang:v1`), and is applied to
+`<html lang>` + `data-lang` before first paint. A failed preference write keeps
+the in-page choice, exactly like the skin preference.
+
+**Chinese typography.** Bricolage Grotesque and DM Sans carry no CJK glyphs, so
+Chinese swaps the stacks rather than letting the browser choose a fallback per
+glyph run; the Latin face stays first so numbers, `kg`, `RPE` and English
+exercise names keep their designed shapes. Chinese also needs more leading and
+less tracking: the page title drops to `clamp(27px, 3.6vw, 36px)` with 1.2
+leading, body copy moves to 1.6–1.75 leading, and the micro-caps labels lose
+their 0.1em tracking.
+
+**Not translated:** coach/model answers (they are generated content, not a
+deterministic message), backend/provider labels and transport error text;
+these stay as produced. An error string captured into local state keeps the
+language it was produced in (all render-time copy is reactive).
+
+![Chinese interface, Pixel skin](ui/zh-desktop-history.jpg)
+
+![Chinese interface, Glass skin](ui/zh-glass-history.jpg)
+
+![Me → Language, with Simplified Chinese selected](ui/zh-me.jpg)
+
 ## Accessibility and test constraints
 
 The restyle deliberately kept the semantics the test suite pins:
@@ -199,7 +249,13 @@ The restyle deliberately kept the semantics the test suite pins:
 
 - **No third skin.** The reference's earlier flat *Clean* skin was not ported;
   Pixel and Glass are the only choices.
-- **No interface-language layer.** The app remains English-only.
+- **Two languages only.** English is the source and Simplified Chinese is the
+  display layer; there is no third language table yet.
+- **Coach answers stay as generated.** Model output is content, not a
+  deterministic message, so it is not translated.
+- **Captured errors are not reactive.** An error message stored in component
+  state keeps the language in which it was produced; render-time copy updates
+  immediately.
 - **Light mode only.** There is no dark theme token set.
 - **No charts.** The app's deterministic analysis renders metrics, trends and
   flags; a bar chart is out of scope for a visual restyle.
