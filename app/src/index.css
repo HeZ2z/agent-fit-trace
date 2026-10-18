@@ -6,6 +6,7 @@
  *   controls    buttons, forms, surfaces, feedback and other shared recipes
  *   shell       side panel / icon rail / bottom dock and the workspace frame
  *   screens-*   screen-specific composition
+ *   glass       the Glass skin over the same tokens (content stays opaque)
  */
 
 @import "./styles/tokens.css";
@@ -13,3 +14,4 @@
 @import "./styles/shell.css";
 @import "./styles/screens-data.css";
 @import "./styles/screens-account.css";
+@import "./styles/glass.css";
