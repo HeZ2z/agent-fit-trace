@@ -3,8 +3,10 @@ import { StatusBar } from "expo-status-bar";
 import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { AuthProvider } from "@/auth";
 import { WorkoutDataProvider } from "@/data/provider";
 import { I18nProvider } from "@/i18n";
+import { PreferencesProvider } from "@/preferences";
 import { SkinProvider, useSkin } from "@/theme/skin";
 
 function RootShell() {
@@ -29,7 +31,13 @@ export default function RootLayout() {
       <I18nProvider>
         <SkinProvider>
           <WorkoutDataProvider>
-            <RootShell />
+            {/* Auth sits inside the existing providers so account changes never remount local data, language, or skin. */}
+            <AuthProvider>
+              {/* Preferences sit inside auth + skin + language: one place reconciles account metadata with the local stores. */}
+              <PreferencesProvider>
+                <RootShell />
+              </PreferencesProvider>
+            </AuthProvider>
           </WorkoutDataProvider>
         </SkinProvider>
       </I18nProvider>

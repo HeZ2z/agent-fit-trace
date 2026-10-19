@@ -92,11 +92,6 @@ export const messages: Record<string, string> = {
   "Ask about training, review the evidence, and shape the next block with a coach.":
     "向教练询问训练问题、回顾证据，并一起规划下一个训练周期。",
   "Cloud coach requires sign-in": "云端教练需要登录",
-  "Hosted coaching is a signed-in feature. Accounts and networking arrive in a later commit, so this screen makes no network calls.":
-    "托管教练是登录后可用的功能。账号与网络连接将在后续版本提供，因此此页面不会发起任何网络请求。",
-  "Cloud coach is next": "云端教练即将上线",
-  "This screen will start a hosted cloud pi session once accounts and networking land. The local CLI coach stays on desktop; mobile never runs a local agent.":
-    "账号与网络接通后，此界面将启动托管的云端 pi 会话。本地 CLI 教练仍只在桌面端运行，移动端不会启动本地代理。",
 
   /* ── Me ──────────────────────────────────────────────────────── */
   ME: "我的",
@@ -111,18 +106,94 @@ export const messages: Record<string, string> = {
   "Use Glass skin": "使用 Glass 外观",
   "English language": "英语",
   "Chinese language": "中文",
-  "Sign-in and cloud sync are placeholders in this commit.":
-    "登录与云端同步在本版本中仍为占位功能。",
+  "Local-only on this device. Sign in to sync and use the cloud coach.":
+    "当前仅在本机使用。登录后可同步并使用云端教练。",
+  "Restoring your account…": "正在恢复账号…",
+  "Account sign-in is not configured in this build. Your workouts stay on this device.":
+    "此版本未配置账号登录。训练记录仍保存在本机。",
+  "Signed in": "已登录",
+
+  /* ── Account preferences ─────────────────────────────────────── */
+  "Saving preferences to your account…": "正在将偏好保存到你的账号…",
+  "Preferences are saved to your account.": "偏好已保存到你的账号。",
+  "Preferences could not be saved to your account. Your choices still apply on this device.":
+    "偏好无法保存到你的账号。你的选择仍会在此设备上生效。",
 
   /* ── Auth ────────────────────────────────────────────────────── */
   ACCOUNT: "账号",
-  "A secure session will unlock sync and the cloud coach.":
-    "安全会话将解锁同步与云端教练。",
-  "Auth placeholder": "登录占位",
-  "No credentials are collected and no network calls are made in this commit. The secure sign-in flow lands next.":
-    "本版本不收集任何凭据，也不发起网络请求。安全登录流程将在下一步实现。",
+  "Sign in to your account.": "登录你的账号。",
+  "Accounts are invite-only. Sign in with the email and password from your invitation; there is no sign-up in the app.":
+    "账号仅限受邀注册。请使用邀请邮件中的邮箱和密码登录；应用内不提供注册。",
+  "Sign-in is not configured in this build. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to enable accounts.":
+    "此版本未配置登录。请设置 EXPO_PUBLIC_SUPABASE_URL 与 EXPO_PUBLIC_SUPABASE_ANON_KEY 以启用账号。",
+  "Enter a valid email address.": "请输入有效的邮箱地址。",
+  "Enter your password.": "请输入密码。",
+  "Invalid email or password.": "邮箱或密码不正确。",
+  "Confirm your email before signing in.": "请先确认你的邮箱再登录。",
+  "The sign-in service is unavailable. Check your connection and try again.":
+    "登录服务暂不可用。请检查网络连接后重试。",
+  "Too many attempts. Wait a moment and try again.": "尝试次数过多。请稍等片刻后重试。",
+  "Your session expired. Sign in again.": "会话已过期。请重新登录。",
+  "Sign-in failed. Try again.": "登录失败，请重试。",
   Back: "返回",
   "Go back": "返回",
+
+  /* ── Cloud sync ──────────────────────────────────────────────── */
+  SYNC: "同步",
+  "Cloud sync": "云端同步",
+  "Optional and manual. Nothing is uploaded until you start a sync; your device stays the source of truth.":
+    "可选且手动。在你开始同步之前不会上传任何内容；你的设备始终是数据的权威来源。",
+  "Sync status": "同步状态",
+  Idle: "空闲",
+  "Syncing…": "正在同步…",
+  Done: "完成",
+  Error: "错误",
+  "Sync now": "立即同步",
+  "This run": "本次同步",
+  "Pushed: {count}": "已上传：{count}",
+  "Pulled: {count}": "已拉取：{count}",
+  "Identical: {count}": "相同：{count}",
+  Conflicts: "冲突",
+  "Same workout id, different content. Nothing is overwritten and nothing is deleted.":
+    "相同的训练 id、不同的内容。系统不会覆盖任何一方，也不会删除任何记录。",
+  "Acknowledging a conflict removes it from this result only. Nothing is deleted and nothing is uploaded.":
+    "确认冲突只会将其从本次结果中移除。不会删除任何内容，也不会自动上传。",
+  "Workout records are immutable, so the same conflict appears again on the next manual sync; keeping the cloud copy does not delete your device copy.":
+    "训练记录不可变，因此同一冲突会在下次手动同步时再次出现；保留云端副本不会删除你设备上的副本。",
+  "Device copy: {date} · {type}": "设备副本：{date} · {type}",
+  "Cloud copy: {date} · {type}": "云端副本：{date} · {type}",
+  "Keep cloud": "保留云端",
+  "Keep local only": "仅保留本地",
+  "Export local": "导出本地",
+  "Keep cloud for {id}": "保留 {id} 的云端版本",
+  "Keep local only for {id}": "仅保留 {id} 的本地版本",
+  "Export local for {id}": "导出 {id} 的本地记录",
+  "Export local record": "导出本地记录",
+  "Device-only copy of this workout": "此训练的设备本地副本",
+  "Could not open the share sheet. The conflict is still listed here.":
+    "无法打开分享面板。此冲突仍保留在列表中。",
+  "No conflicts. Local and cloud records agree where they overlap.":
+    "没有冲突。本地与云端重叠的记录内容一致。",
+  "Conflict acknowledged for this run only. Nothing was deleted or uploaded; it will appear again on the next manual sync.":
+    "此冲突仅在本次同步中确认。未删除或上传任何内容；它会在下次手动同步时再次出现。",
+  "You appear to be offline. Nothing was uploaded; local workouts stay on this device. Try again when you reconnect.":
+    "似乎已离线。未上传任何内容；本地训练仍保存在此设备上。重新联网后再试。",
+  "Your session is no longer valid. Sign in again to sync.":
+    "你的会话已失效。请重新登录后再同步。",
+  "The cloud rejected a write because the same id already exists with different content. No cloud record was overwritten.":
+    "云端拒绝了写入，因为相同的 id 已存在且内容不同。没有覆盖任何云端记录。",
+  "Sync could not finish. Nothing was overwritten; try again when the service is available.":
+    "同步未能完成。没有覆盖任何内容；请在服务可用时重试。",
+  "Cloud sync is not configured in this build. Set EXPO_PUBLIC_FIT_TRACE_API_URL to the API base URL to enable it.":
+    "此版本未配置云端同步。请将 EXPO_PUBLIC_FIT_TRACE_API_URL 设置为 API 基础地址以启用。",
+  "Sign in to use cloud sync.": "登录后即可使用云端同步。",
+  "Cloud sync is optional and manual. The cloud coach is available while signed in. You can sign out at any time.":
+    "云端同步为可选的手动功能。登录后可使用云端教练。你可以随时退出登录。",
+  "Manual sync available. Nothing uploads until you start it.":
+    "可手动同步。在你开始之前不会上传任何内容。",
+  "Cloud sync is not configured in this build. Your workouts stay on this device.":
+    "此版本未配置云端同步。训练记录仍保存在此设备上。",
+  "Open sync": "打开同步",
 
   /*
    * Proper names. The identity values are intentional: language endonyms are
