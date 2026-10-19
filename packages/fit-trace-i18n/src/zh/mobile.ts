@@ -68,11 +68,24 @@ export const messages: Record<string, string> = {
   /* ── Plan ────────────────────────────────────────────────────── */
   PLAN: "计划",
   "Draft plans": "计划草稿",
-  "Plans are drafted from your evidence and need explicit confirmation before they take effect.":
-    "计划根据你的证据生成草稿，必须经过明确确认才会生效。",
-  "No plan in progress": "暂无进行中的计划",
-  "Once there is enough history, a drafted plan will appear here for review. Nothing is applied automatically.":
-    "当历史足够充分时，计划草稿会显示在这里供你审阅。任何内容都不会被自动采用。",
+  "A local draft built from your on-device history. Nothing is applied automatically — explicit confirmation is required before a plan takes effect, and plan application arrives in a later update.":
+    "根据本机历史生成的本地草稿。任何内容都不会自动生效——计划生效前必须明确确认，计划应用功能将在后续版本提供。",
+  "Loading your draft plan…": "正在加载计划草稿…",
+  "Could not load your workout history for the plan: {message}":
+    "无法加载用于生成计划的训练历史：{message}",
+  "No sessions to draft from": "暂无可生成计划的训练课",
+  "Log a session first, then come back to see a draft plan built from your local history.":
+    "先记录一场训练，再回来查看根据本地历史生成的计划草稿。",
+  "Draft only": "仅为草稿",
+  "This plan was generated on your device and is not saved or applied. Nothing changes in your workout log until you explicitly confirm a plan; adoption, saved snapshots, and accounts arrive in a later update.":
+    "此计划在你的设备上生成，未保存也未应用。在你明确确认计划之前，训练日志不会有任何改变；采用、已保存快照与账号功能将在后续版本提供。",
+  "Draft summary": "草稿摘要",
+  "Sessions used: {count}": "使用的训练课：{count}",
+  "Confidence: low (short history)": "置信度：低（历史较短）",
+  "Confidence: standard": "置信度：标准",
+  Recommendations: "建议",
+  "Applying this plan comes later: accounts, saved snapshots, and adoption are not part of this local draft.":
+    "应用此计划将在后续版本提供：账号、已保存快照与采用均不属于这份本地草稿。",
 
   /* ── Coach ───────────────────────────────────────────────────── */
   COACH: "教练",
