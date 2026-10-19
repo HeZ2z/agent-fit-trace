@@ -4,6 +4,7 @@ import { messages as screensAnalysisPlan } from "./screens-analysis-plan.ts";
 import { messages as screensCoachMe } from "./screens-coach-me.ts";
 import { messages as domain } from "./domain.ts";
 import { messages as mobile } from "./mobile.ts";
+import { messages as mobileCoach } from "./mobile-coach.ts";
 
 /**
  * The Chinese display-layer dictionary, keyed by the exact English source
@@ -17,4 +18,5 @@ export const ZH_MESSAGES: Record<string, string> = {
   ...screensCoachMe,
   ...domain,
   ...mobile,
+  ...mobileCoach,
 };

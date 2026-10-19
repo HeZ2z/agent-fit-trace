@@ -6,6 +6,7 @@ import { messages as screensAnalysisPlan } from "@pi-fit-trace/i18n/zh/screens-a
 import { messages as screensCoachMe } from "@pi-fit-trace/i18n/zh/screens-coach-me";
 import { messages as screensHistory } from "@pi-fit-trace/i18n/zh/screens-history";
 import { messages as mobile } from "@pi-fit-trace/i18n/zh/mobile";
+import { messages as mobileCoach } from "@pi-fit-trace/i18n/zh/mobile-coach";
 
 const SLICES: readonly { name: string; messages: Record<string, string> }[] = [
   { name: "chrome", messages: chrome },
@@ -14,6 +15,7 @@ const SLICES: readonly { name: string; messages: Record<string, string> }[] = [
   { name: "screens-coach-me", messages: screensCoachMe },
   { name: "domain", messages: domain },
   { name: "mobile", messages: mobile },
+  { name: "mobile-coach", messages: mobileCoach },
 ];
 
 describe("Chinese dictionary", () => {
