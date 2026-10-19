@@ -288,6 +288,80 @@ export function sessionRefreshDelayMs(
 }
 
 /**
+ * Retry schedule for a temporary scheduled-refresh failure.
+ *
+ * A network/429/5xx refresh failure must not strand a signed-in app: the
+ * provider keeps one retry timer alive until a refresh succeeds, the identity
+ * changes (sign-in/sign-out), the app returns to the foreground, or the
+ * provider unmounts. The delay backs off exponentially and is capped, so a
+ * long outage cannot become a tight retry loop while the app stays open.
+ */
+export const AUTH_REFRESH_RETRY_BASE_MS = 2_000;
+export const AUTH_REFRESH_RETRY_MAX_MS = 60_000;
+
+/** One scheduled retry: how many transient failures and when to try again. */
+export interface AuthRefreshRetry {
+  /** 1-based consecutive transient-refresh-failure count. */
+  readonly attempt: number;
+  /** Delay before the next refresh attempt (exponential, capped). */
+  readonly delayMs: number;
+}
+
+/** Exponential backoff for a 1-based retry attempt, capped at `maxMs`. */
+export function authRefreshRetryDelayMs(
+  attempt: number,
+  baseMs: number = AUTH_REFRESH_RETRY_BASE_MS,
+  maxMs: number = AUTH_REFRESH_RETRY_MAX_MS,
+): number {
+  const safeBase =
+    Number.isFinite(baseMs) && baseMs > 0
+      ? Math.max(1, Math.floor(baseMs))
+      : AUTH_REFRESH_RETRY_BASE_MS;
+  const safeMax =
+    Number.isFinite(maxMs) && maxMs > 0
+      ? Math.max(1, Math.floor(maxMs))
+      : AUTH_REFRESH_RETRY_MAX_MS;
+  const normalizedAttempt = Number.isFinite(attempt) ? Math.max(1, Math.floor(attempt)) : 1;
+  // Bound the exponent before multiplying so a huge attempt still caps cleanly.
+  const exponent = Math.min(normalizedAttempt - 1, 52);
+  return Math.min(safeMax, safeBase * 2 ** exponent);
+}
+
+/**
+ * Next retry after another transient refresh failure. `null` means the
+ * previous schedule was reset (success, sign-in, foreground), so the first
+ * retry starts from the base delay again.
+ */
+export function nextAuthRefreshRetry(previous: AuthRefreshRetry | null): AuthRefreshRetry {
+  const attempt = previous === null ? 1 : previous.attempt + 1;
+  return { attempt, delayMs: authRefreshRetryDelayMs(attempt) };
+}
+
+/**
+ * Delay before the next scheduled refresh, or `null` when no timer should run.
+ *
+ * A pending transient-failure retry wins and is still scheduled after the
+ * access token expires and `status` degrades to `error`; this is what lets the
+ * provider recover while the app stays open. Otherwise only a signed-in
+ * session schedules the normal proactive pre-expiry refresh.
+ */
+export function authRefreshTimerDelayMs(
+  status: AuthStatus,
+  session: SupabaseSession | null,
+  retry: AuthRefreshRetry | null,
+  now: number = Date.now(),
+  skewMs: number = AUTH_EXPIRY_SKEW_MS,
+): number | null {
+  if (session === null) return null;
+  // Only a live account schedules a timer: signed-in normally, or `error`
+  // when an expired session is waiting for a transient-failure retry.
+  if (status !== "signed-in" && status !== "error") return null;
+  if (retry !== null) return retry.delayMs;
+  if (status === "error") return null;
+  return sessionRefreshDelayMs(session, now, skewMs);
+}
+
+/**
  * Serialize a session for SecureStore. Classification fields are deliberately
  * dropped: a cached "account" flag must never authorize anything before the
  * Auth server verifies the session. Tokens are never logged or copied anywhere

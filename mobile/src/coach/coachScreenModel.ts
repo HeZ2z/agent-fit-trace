@@ -15,6 +15,7 @@
 
 import {
   isCancelledError,
+  isRetryableCoachError,
   coachErrorMessage,
   coachErrorMessageKey,
   planCoachCancel,
@@ -293,6 +294,57 @@ export function coachTurnCancelPlan(
     terminal: input.terminal,
     streamActive: input.streamActive,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Ambiguous submit retry
+// ---------------------------------------------------------------------------
+
+/**
+ * The exact submit input whose POST may already have reached the server.
+ *
+ * A retryable transport failure after the POST was dispatched is ambiguous:
+ * the server may have accepted the run and only the response was lost.
+ * Re-sending the same question with a NEW idempotency key could duplicate paid
+ * work or hit RUN_BUSY, so the screen keeps this record and reuses it only for
+ * an explicit same-prompt retry. A pre-dispatch failure or a definitive
+ * refusal releases it.
+ */
+export interface CoachAmbiguousSubmit<TInput> {
+  readonly input: TInput;
+  readonly prompt: string;
+}
+
+/**
+ * Retain the exact submit input after a failed POST.
+ *
+ * `dispatched` is the flag captured BEFORE the request; it must not be cleared
+ * by the catch block before this decision (doing so would always release the
+ * key). The input is retained only when the POST actually left the device and
+ * the failure is retryable; every other outcome is definitive enough to release
+ * the idempotency key.
+ */
+export function retainCoachAmbiguousSubmit<TInput>(failure: {
+  readonly dispatched: boolean;
+  readonly submitInput: TInput | null;
+  readonly prompt: string;
+  readonly error: unknown;
+}): CoachAmbiguousSubmit<TInput> | null {
+  if (!failure.dispatched || failure.submitInput === null) return null;
+  if (!isRetryableCoachError(failure.error)) return null;
+  return { input: failure.submitInput, prompt: failure.prompt };
+}
+
+/**
+ * Select the preserved submit only for an explicit same-prompt retry. Any
+ * other prompt starts a fresh submit (new session/snapshot/idempotency key).
+ */
+export function selectCoachAmbiguousSubmit<TInput>(
+  pending: CoachAmbiguousSubmit<TInput> | null,
+  prompt: string,
+): CoachAmbiguousSubmit<TInput> | null {
+  if (pending === null || pending.prompt !== prompt) return null;
+  return pending;
 }
 
 // ---------------------------------------------------------------------------

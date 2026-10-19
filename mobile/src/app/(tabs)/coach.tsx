@@ -37,8 +37,11 @@ import {
   requestCoachTurnCancel,
   resetCoachTurn,
   resolveCoachGate,
+  retainCoachAmbiguousSubmit,
+  selectCoachAmbiguousSubmit,
   startCoachTurn,
   validateCoachPrompt,
+  type CoachAmbiguousSubmit,
   type CoachErrorCopy,
   type CoachTurnState,
 } from "@/coach/coachScreenModel";
@@ -83,12 +86,6 @@ const copy = {
 
 type CoachSubmitInput = Parameters<MobileCloudCoachClient["submitRun"]>[0];
 
-interface PendingSubmit {
-  /** The exact input whose POST may already have reached the server. */
-  readonly input: CoachSubmitInput;
-  readonly prompt: string;
-}
-
 function newIdempotencyKey(): string {
   try {
     const keyed = globalThis.crypto as unknown as { randomUUID?: () => string };
@@ -127,7 +124,7 @@ export default function CoachScreen() {
   const sessionIdRef = useRef<string | null>(null);
   const submitDispatchedRef = useRef(false);
   /** A submit whose outcome was ambiguous; only an explicit same-prompt retry reuses it. */
-  const pendingSubmitRef = useRef<PendingSubmit | null>(null);
+  const pendingSubmitRef = useRef<CoachAmbiguousSubmit<CoachSubmitInput> | null>(null);
   const cancelInflightRef = useRef(false);
 
   const updateTurn = useCallback((next: CoachTurnState): void => {
@@ -219,8 +216,9 @@ export default function CoachScreen() {
 
   /**
    * One explicit attempt for one ask: reusable session -> fresh snapshot ->
-   * ONE idempotent submit -> stream. The only auto-retry is a stream page
-   * resume inside the client; the POST itself is never retried here.
+   * ONE idempotent submit -> stream. The POST itself is never retried
+   * automatically here; an ambiguous failure keeps the exact input for an
+   * explicit same-prompt retry.
    */
   const runTurn = useCallback(
     async (generation: number, question: string): Promise<void> => {
@@ -228,12 +226,13 @@ export default function CoachScreen() {
       let submitInput: CoachSubmitInput | null = null;
       try {
         const pending = pendingSubmitRef.current;
+        const retry = selectCoachAmbiguousSubmit(pending, question);
         let input: CoachSubmitInput;
 
-        if (pending !== null && pending.prompt === question) {
+        if (retry !== null) {
           // Explicit retry of an ambiguous POST: same key, session and
           // snapshot, exactly as the server's idempotency contract expects.
-          input = pending.input;
+          input = retry.input;
           submitInput = input;
           sessionIdRef.current = input.sessionId;
           updateTurn(rememberCoachSession(turnRef.current, input.sessionId));
@@ -326,8 +325,6 @@ export default function CoachScreen() {
         attachStream(generation, input.sessionId, runId, 0);
       } catch (cause) {
         if (generationRef.current !== generation) return;
-        dispatched = false;
-        submitDispatchedRef.current = false;
         const caught = coachErrorCopy(cause);
         if (caught !== null) setError(caught);
         if (turnRef.current.phase === "creating") {
@@ -335,19 +332,20 @@ export default function CoachScreen() {
         }
         updateTurn(failCoachTurn(turnRef.current));
 
-        // Hold the stable key ONLY for a retryable failure of a POST that was
-        // actually dispatched. An explicit same-prompt Send reuses it; any
-        // edit starts a fresh key. Definite refusals release it.
-        if (
-          dispatched &&
-          submitInput !== null &&
-          isCoachError(cause) &&
-          cause.retryable
-        ) {
-          pendingSubmitRef.current = { input: submitInput, prompt: question };
-        } else {
-          pendingSubmitRef.current = null;
-        }
+        // Hold the exact key/session/snapshot ONLY for a retryable failure of
+        // a POST that was actually dispatched (the server may have accepted
+        // the run and lost the response). `dispatched` must still be the
+        // pre-request value here: clearing it first would release every key.
+        // An explicit same-prompt Send reuses it; a fresh prompt or a
+        // definite refusal releases it.
+        const pending = retainCoachAmbiguousSubmit({
+          dispatched,
+          submitInput,
+          prompt: question,
+          error: cause,
+        });
+        pendingSubmitRef.current = pending;
+        submitDispatchedRef.current = pending !== null;
         if (isCoachError(cause) && cause.code === "not-found") {
           sessionIdRef.current = null;
         }
@@ -472,7 +470,9 @@ export default function CoachScreen() {
     setError(null);
     setNotice(null);
     setDraft("");
+    // A new conversation abandons the ambiguous retry: no same-prompt retry.
     pendingSubmitRef.current = null;
+    submitDispatchedRef.current = false;
   }, [updateChat, updateTurn]);
 
   // Sign-out / account switch / auth restore must never keep the previous

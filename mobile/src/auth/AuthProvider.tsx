@@ -13,11 +13,13 @@ import { AppState } from "react-native";
 import { readSupabaseAuthConfig } from "./authConfig";
 import {
   AuthError,
+  authRefreshTimerDelayMs,
   isSessionExpired,
   isTransientAuthError,
-  sessionRefreshDelayMs,
+  nextAuthRefreshRetry,
   toAuthError,
   validateSignInInput,
+  type AuthRefreshRetry,
   type AuthStatus,
   type SupabaseAuthConfig,
   type SupabaseAuthUser,
@@ -67,6 +69,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
   const [session, setSession] = useState<SupabaseSession | null>(null);
   const [error, setError] = useState<AuthError | null>(null);
+  // Transient scheduled-refresh failures keep one bounded-backoff retry timer
+  // alive until a refresh succeeds or the identity/foreground resets it.
+  const [refreshRetry, setRefreshRetry] = useState<AuthRefreshRetry | null>(null);
 
   const sessionRef = useRef<SupabaseSession | null>(null);
   // Bumped by every sign-in/sign-out/unmount so late async work cannot replace
@@ -104,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           applySession(stored);
           setStatus("signed-in");
           setError(null);
+          setRefreshRetry(null);
           return;
         }
         const refreshed = await refreshSessionRequest(config, stored.refreshToken);
@@ -111,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applySession(refreshed);
         setStatus("signed-in");
         setError(null);
+        setRefreshRetry(null);
         void writeStoredSession(refreshed);
       } catch (cause) {
         if (cancelled || generation !== generationRef.current) return;
@@ -160,6 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applySession(next);
         setStatus("signed-in");
         setError(null);
+        setRefreshRetry(null);
         await writeStoredSession(next);
       } catch (cause) {
         const nextError = toAuthError(cause);
@@ -179,6 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshInflightRef.current = null;
     applySession(null);
     setError(null);
+    setRefreshRetry(null);
     setStatus(config === null ? "unconfigured" : "signed-out");
     await writeStoredSession(null);
     if (current !== null && config !== null) {
@@ -210,6 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applySession(next);
         setStatus("signed-in");
         setError(null);
+        setRefreshRetry(null);
         void writeStoredSession(next);
         return true;
       } catch (cause) {
@@ -220,11 +230,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError(nextError);
         if (isTransientAuthError(nextError)) {
           // Keep a still-valid token; only an expired one degrades to `error`.
+          // Either way, schedule the next bounded-backoff retry so the app
+          // recovers by itself once connectivity returns.
           if (isSessionExpired(latest)) setStatus("error");
+          setRefreshRetry((previous) => nextAuthRefreshRetry(previous));
           return false;
         }
         generationRef.current += 1;
         applySession(null);
+        setRefreshRetry(null);
         setStatus("signed-out");
         void writeStoredSession(null);
         return false;
@@ -242,22 +256,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   // Refresh proactively before expiry so a later authenticated request never
-  // has to use a stale token.
+  // has to use a stale token. A temporary failure keeps ONE bounded-backoff
+  // retry timer scheduled, including after the token expires and `status`
+  // degrades to `error`, so the app recovers without backgrounding or
+  // re-login. A definitive failure still signs out in `refresh`.
   useEffect(() => {
-    if (status !== "signed-in" || session === null) return;
-    const delay = sessionRefreshDelayMs(session);
+    const delay = authRefreshTimerDelayMs(status, session, refreshRetry);
     if (delay === null) return;
     const timer = setTimeout(() => {
-      void refresh();
+      void refreshRef.current();
     }, delay);
     return () => clearTimeout(timer);
-  }, [refresh, session, status]);
+  }, [refreshRetry, session, status]);
 
   // Mobile timers are throttled/suspended in the background; re-check expiry
-  // when the app returns to the foreground.
+  // when the app returns to the foreground. A foreground event also resets the
+  // transient-failure backoff, so a recovered connection starts fresh.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState !== "active") return;
+      setRefreshRetry(null);
       const current = sessionRef.current;
       if (current !== null && isSessionExpired(current)) void refreshRef.current();
     });

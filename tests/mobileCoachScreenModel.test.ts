@@ -34,6 +34,8 @@ import {
   requestCoachTurnCancel,
   resetCoachTurn,
   resolveCoachGate,
+  retainCoachAmbiguousSubmit,
+  selectCoachAmbiguousSubmit,
   startCoachTurn,
   validateCoachPrompt,
 } from "../mobile/src/coach/coachScreenModel.ts";
@@ -315,6 +317,149 @@ test("phase: transitions never mutate the input state", () => {
     resetCoachTurn(state);
   }
   assert.deepEqual(inputs, snapshots);
+});
+
+// ---------------------------------------------------------------------------
+// Ambiguous submit retry
+// ---------------------------------------------------------------------------
+
+interface FakeSubmitInput {
+  readonly sessionId: string;
+  readonly prompt: string;
+  readonly idempotencyKey: string;
+  readonly snapshot: {
+    readonly snapshotId: string;
+    readonly source: string;
+    readonly accountId: string;
+  };
+}
+
+function submitInput(overrides: Partial<FakeSubmitInput> = {}): FakeSubmitInput {
+  return {
+    sessionId: "sess-1",
+    prompt: "How is my squat progressing?",
+    idempotencyKey: "idem-1",
+    snapshot: { snapshotId: "snap-1", source: "cloud", accountId: "acct-1" },
+    ...overrides,
+  };
+}
+
+test("retry: a retryable post-dispatch failure keeps the exact submit input", () => {
+  const input = submitInput();
+  const retryable = ["network", "timeout", "unavailable", "rate-limited", "busy", "server"] as const;
+
+  for (const code of retryable) {
+    const pending = retainCoachAmbiguousSubmit({
+      dispatched: true,
+      submitInput: input,
+      prompt: input.prompt,
+      error: new CoachError(code),
+    });
+    assert.ok(pending, `${code} must stay ambiguous`);
+    assert.equal(pending.input, input, "the exact input object is preserved");
+    assert.equal(pending.prompt, input.prompt);
+  }
+
+  const pending = retainCoachAmbiguousSubmit({
+    dispatched: true,
+    submitInput: input,
+    prompt: input.prompt,
+    error: new CoachError("network"),
+  });
+  assert.deepEqual(pending?.input, {
+    sessionId: "sess-1",
+    prompt: "How is my squat progressing?",
+    idempotencyKey: "idem-1",
+    snapshot: { snapshotId: "snap-1", source: "cloud", accountId: "acct-1" },
+  });
+});
+
+test("retry: pre-dispatch failures and definitive outcomes release the key", () => {
+  const input = submitInput();
+
+  const base = {
+    submitInput: input,
+    prompt: input.prompt,
+    error: new CoachError("network"),
+  };
+
+  assert.equal(
+    retainCoachAmbiguousSubmit({ ...base, dispatched: false }),
+    null,
+    "a setup failure before the POST cannot have created a run",
+  );
+  assert.equal(
+    retainCoachAmbiguousSubmit({ ...base, dispatched: true, submitInput: null }),
+    null,
+    "without the exact input there is nothing safe to retry",
+  );
+
+  for (const code of [
+    "validation",
+    "conflict",
+    "not-found",
+    "unauthenticated",
+    "quota",
+    "kill-switch",
+    "malformed",
+    "cancelled",
+  ] as const) {
+    assert.equal(
+      retainCoachAmbiguousSubmit({ ...base, dispatched: true, error: new CoachError(code) }),
+      null,
+      `${code} is a definitive refusal`,
+    );
+  }
+
+  assert.equal(
+    retainCoachAmbiguousSubmit({ ...base, dispatched: true, error: new TypeError("fetch failed") }),
+    null,
+    "only typed retryable coach failures are considered ambiguous",
+  );
+});
+
+test("retry: only an explicit same-prompt send reuses the ambiguous input", () => {
+  const input = submitInput();
+  const pending = retainCoachAmbiguousSubmit({
+    dispatched: true,
+    submitInput: input,
+    prompt: input.prompt,
+    error: new CoachError("network"),
+  });
+  assert.ok(pending);
+
+  assert.equal(selectCoachAmbiguousSubmit(pending, input.prompt), pending);
+  assert.equal(
+    selectCoachAmbiguousSubmit(pending, "  How is my squat progressing?  "),
+    null,
+    "the screen sends the trimmed prompt",
+  );
+  assert.equal(selectCoachAmbiguousSubmit(pending, "A different question"), null);
+  assert.equal(selectCoachAmbiguousSubmit(null, input.prompt), null);
+
+  // The same key/session/snapshot survive the transition into an explicit retry.
+  const retry = selectCoachAmbiguousSubmit(pending, input.prompt);
+  assert.ok(retry);
+  assert.equal(retry.input.idempotencyKey, "idem-1");
+  assert.equal(retry.input.sessionId, "sess-1");
+  assert.equal(retry.input.snapshot.snapshotId, "snap-1");
+  assert.equal(retry.input.snapshot.accountId, "acct-1");
+});
+
+test("retry: a fresh prompt starts a new submit, never the preserved key", () => {
+  const input = submitInput();
+  const pending = retainCoachAmbiguousSubmit({
+    dispatched: true,
+    submitInput: input,
+    prompt: input.prompt,
+    error: new CoachError("timeout"),
+  });
+  assert.ok(pending);
+
+  assert.equal(selectCoachAmbiguousSubmit(pending, "How is my bench progressing?"), null);
+  // Clearing (a fresh prompt, a terminal/definitive outcome, sign-out) is the
+  // absence of the record; the next submit mints its own key/session/snapshot.
+  assert.equal(selectCoachAmbiguousSubmit(null, input.prompt), null);
 });
 
 // ---------------------------------------------------------------------------

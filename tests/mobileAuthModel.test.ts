@@ -3,12 +3,17 @@ import { test } from "node:test";
 
 import {
   AUTH_EXPIRY_SKEW_MS,
+  AUTH_REFRESH_RETRY_BASE_MS,
+  AUTH_REFRESH_RETRY_MAX_MS,
   AuthError,
   authErrorMessage,
+  authRefreshRetryDelayMs,
+  authRefreshTimerDelayMs,
   isSessionExpired,
   isTransientAuthError,
   MOBILE_AUTH_SESSION_KEY,
   mapTokenErrorStatus,
+  nextAuthRefreshRetry,
   parseStoredSession,
   parseVerifiedUser,
   resolveAuthConfig,
@@ -107,6 +112,67 @@ test("access-token expiry applies the 60s refresh skew", () => {
   assert.equal(sessionRefreshDelayMs(session({ expiresAt: NOW }), NOW), 0);
   assert.equal(sessionRefreshDelayMs(session({ expiresAt: 0 }), NOW), null);
   assert.equal(sessionRefreshDelayMs(null, NOW), null);
+});
+
+test("temporary refresh failures back off exponentially with a bounded delay", () => {
+  assert.equal(authRefreshRetryDelayMs(1), AUTH_REFRESH_RETRY_BASE_MS);
+  assert.equal(authRefreshRetryDelayMs(2), AUTH_REFRESH_RETRY_BASE_MS * 2);
+  assert.equal(authRefreshRetryDelayMs(3), AUTH_REFRESH_RETRY_BASE_MS * 4);
+  assert.equal(authRefreshRetryDelayMs(5), AUTH_REFRESH_RETRY_BASE_MS * 16);
+  // The delay stops growing at the cap (attempt 6 would otherwise be 64s).
+  assert.equal(authRefreshRetryDelayMs(6), AUTH_REFRESH_RETRY_MAX_MS);
+  assert.equal(authRefreshRetryDelayMs(1_000), AUTH_REFRESH_RETRY_MAX_MS);
+  assert.equal(authRefreshRetryDelayMs(2, 1_000, 5_000), 2_000);
+  assert.equal(authRefreshRetryDelayMs(10, 1_000, 5_000), 5_000);
+
+  // Invalid/small attempts start at the base instead of yielding 0 or NaN.
+  assert.equal(authRefreshRetryDelayMs(0), AUTH_REFRESH_RETRY_BASE_MS);
+  assert.equal(authRefreshRetryDelayMs(-3), AUTH_REFRESH_RETRY_BASE_MS);
+  assert.equal(authRefreshRetryDelayMs(Number.NaN), AUTH_REFRESH_RETRY_BASE_MS);
+});
+
+test("refresh retry state advances and resets to the base delay", () => {
+  const first = nextAuthRefreshRetry(null);
+  assert.deepEqual(first, { attempt: 1, delayMs: AUTH_REFRESH_RETRY_BASE_MS });
+
+  const second = nextAuthRefreshRetry(first);
+  assert.deepEqual(second, { attempt: 2, delayMs: AUTH_REFRESH_RETRY_BASE_MS * 2 });
+
+  let retry = first;
+  for (let i = 0; i < 20; i += 1) retry = nextAuthRefreshRetry(retry);
+  assert.equal(retry.attempt, 21);
+  assert.equal(retry.delayMs, AUTH_REFRESH_RETRY_MAX_MS);
+
+  // Success/sign-in/foreground reset the schedule (`null`), so the next
+  // transient failure starts at the base delay again rather than at the cap.
+  const reset = nextAuthRefreshRetry(null);
+  assert.equal(reset.attempt, 1);
+  assert.equal(reset.delayMs, AUTH_REFRESH_RETRY_BASE_MS);
+});
+
+test("refresh timer keeps a retry scheduled while signed-in or degraded to error", () => {
+  const active = session({ expiresAt: NOW + 120_000 });
+  const retry = nextAuthRefreshRetry(null);
+
+  // Normal proactive timer: only a signed-in session schedules it.
+  assert.equal(authRefreshTimerDelayMs("signed-in", active, null, NOW), 60_000);
+  assert.equal(authRefreshTimerDelayMs("loading", active, null, NOW), null);
+  assert.equal(authRefreshTimerDelayMs("signed-out", active, null, NOW), null);
+  assert.equal(authRefreshTimerDelayMs("unconfigured", active, null, NOW), null);
+  assert.equal(authRefreshTimerDelayMs("signed-in", null, retry, NOW), null);
+  assert.equal(authRefreshTimerDelayMs("loading", active, retry, NOW), null);
+  assert.equal(authRefreshTimerDelayMs("signed-out", active, retry, NOW), null);
+
+  // A transient failure wins over the normal expiry delay while the token is
+  // still valid...
+  assert.equal(authRefreshTimerDelayMs("signed-in", active, retry, NOW), retry.delayMs);
+  // ...and stays scheduled after the expired token demotes status to `error`
+  // (the exact case where no proactive timer would otherwise exist).
+  assert.equal(
+    authRefreshTimerDelayMs("error", session({ expiresAt: NOW - 1 }), retry, NOW),
+    retry.delayMs,
+  );
+  assert.equal(authRefreshTimerDelayMs("error", active, null, NOW), null);
 });
 
 test("sessionFromTokenResponse parses grants and never trusts token-side classification", () => {
