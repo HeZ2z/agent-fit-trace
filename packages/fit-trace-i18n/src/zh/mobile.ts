@@ -58,8 +58,12 @@ export const messages: Record<string, string> = {
   "Turn logged sessions into trends, stalls, and the evidence behind the next step.":
     "把已记录的训练转化为趋势、停滞信号，以及支撑下一步决策的证据。",
   "No evidence to analyse": "暂无可分析的证据",
-  "Analysis runs on your local history. Log a few sessions first, then come back once the store is connected.":
-    "分析基于你的本地历史。请先记录几场训练，待存储接通后再回来查看。",
+  "Your local history is empty. Log a session first, then come back to turn it into evidence.":
+    "你的本地历史还是空的。先记录一场训练，再回来把它变成证据。",
+  "Analysis summary": "分析摘要",
+  "Active weeks: {count}": "活跃周数：{count}",
+  "Time span: {days} days": "时间跨度：{days} 天",
+  "Current trend": "当前趋势",
 
   /* ── Plan ────────────────────────────────────────────────────── */
   PLAN: "计划",
