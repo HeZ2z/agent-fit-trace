@@ -111,7 +111,7 @@ export const messages: Record<string, string> = {
   "Use Glass skin": "使用 Glass 外观",
   "English language": "英语",
   "Chinese language": "中文",
-  "Local-only on this device. Sync and the cloud coach arrive in a later update.":
+  "Local-only on this device. Sign in to sync and use the cloud coach.":
     "当前仅在本机使用。同步与云端教练将在后续版本提供。",
   "Restoring your account…": "正在恢复账号…",
   "Account sign-in is not configured in this build. Your workouts stay on this device.":
@@ -194,7 +194,7 @@ export const messages: Record<string, string> = {
   "Cloud sync is not configured in this build. Set EXPO_PUBLIC_FIT_TRACE_API_URL to the API base URL to enable it.":
     "此版本未配置云端同步。请将 EXPO_PUBLIC_FIT_TRACE_API_URL 设置为 API 基础地址以启用。",
   "Sign in to use cloud sync.": "登录后即可使用云端同步。",
-  "Cloud sync is optional and manual. The cloud coach is not enabled yet. You can sign out at any time.":
+  "Cloud sync is optional and manual. The cloud coach is available while signed in. You can sign out at any time.":
     "云端同步为可选的手动功能。云端教练尚未启用。你可以随时退出登录。",
   "Manual sync available. Nothing uploads until you start it.":
     "可手动同步。在你开始之前不会上传任何内容。",

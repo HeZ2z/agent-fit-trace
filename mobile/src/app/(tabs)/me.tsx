@@ -31,12 +31,12 @@ const copy = {
   signedIn: "Signed in",
   accountFallback: "Account",
   signedInBody:
-    "Cloud sync is optional and manual. The cloud coach is not enabled yet. You can sign out at any time.",
+    "Cloud sync is optional and manual. The cloud coach is available while signed in. You can sign out at any time.",
   prefsSyncing: "Saving preferences to your account…",
   prefsSynced: "Preferences are saved to your account.",
   prefsSyncError:
     "Preferences could not be saved to your account. Your choices still apply on this device.",
-  guestNote: "Local-only on this device. Sync and the cloud coach arrive in a later update.",
+  guestNote: "Local-only on this device. Sign in to sync and use the cloud coach.",
   syncKicker: "SYNC",
   syncTitle: "Cloud sync",
   syncReady: "Manual sync available. Nothing uploads until you start it.",
