@@ -57,9 +57,9 @@ export const messages: Record<string, string> = {
   "Cloud coach requires sign-in": "云端教练需要登录",
   "Hosted coaching is a signed-in feature. Accounts and networking arrive in a later commit, so this screen makes no network calls.":
     "托管教练是登录后可用的功能。账号与网络连接将在后续版本提供，因此此页面不会发起任何网络请求。",
-  "Local coach placeholder": "本地教练占位",
-  "The conversation surface will connect to the local coach through the desktop app. Until then, this card reserves the space.":
-    "对话界面将通过桌面应用连接本地教练。在此之前，此卡片仅作占位。",
+  "Cloud coach is next": "云端教练即将上线",
+  "This screen will start a hosted cloud pi session once accounts and networking land. The local CLI coach stays on desktop; mobile never runs a local agent.":
+    "账号与网络接通后，此界面将启动托管的云端 pi 会话。本地 CLI 教练仍只在桌面端运行，移动端不会启动本地代理。",
 
   /* ── Me ──────────────────────────────────────────────────────── */
   ME: "我的",

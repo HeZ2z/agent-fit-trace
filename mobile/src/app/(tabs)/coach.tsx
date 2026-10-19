@@ -8,9 +8,9 @@ const copy = {
   bannerTitle: "Cloud coach requires sign-in",
   bannerMessage:
     "Hosted coaching is a signed-in feature. Accounts and networking arrive in a later commit, so this screen makes no network calls.",
-  localTitle: "Local coach placeholder",
-  localMessage:
-    "The conversation surface will connect to the local coach through the desktop app. Until then, this card reserves the space.",
+  nextTitle: "Cloud coach is next",
+  nextMessage:
+    "This screen will start a hosted cloud pi session once accounts and networking land. The local CLI coach stays on desktop; mobile never runs a local agent.",
 };
 
 export default function CoachScreen() {
@@ -28,8 +28,8 @@ export default function CoachScreen() {
         tone="info"
       />
       <Card testID="coach-placeholder-card">
-        <Title>{t(copy.localTitle)}</Title>
-        <Body>{t(copy.localMessage)}</Body>
+        <Title>{t(copy.nextTitle)}</Title>
+        <Body>{t(copy.nextMessage)}</Body>
       </Card>
     </Screen>
   );
