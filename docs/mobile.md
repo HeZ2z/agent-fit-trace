@@ -481,6 +481,19 @@ tree. These are model and bundle checks, not live service checks.
 - **EAS builds are manual.** Builds require an authenticated Expo account and
   are not triggered per commit.
 
+### PR3 device screenshots (Expo Go, build env configured)
+
+| Guest Me (Chinese) | Sign-in form (Chinese) | Coach gate (Chinese) |
+| --- | --- | --- |
+| ![Guest Me](ui/mobile-pr3-me-guest-zh.jpg) | ![Sign-in form](ui/mobile-pr3-signin-zh.jpg) | ![Coach gate](ui/mobile-pr3-coach-gate-zh.jpg) |
+
+Captured on the same Android 14 device in Expo Go with
+`EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` and
+`EXPO_PUBLIC_FIT_TRACE_API_URL` set from the preview environment. They verify the
+guest Me screen, the real invite-only sign-in form, and the hosted-coach gate.
+Signed-in sync and coach conversations still need an invited test account and a
+standalone build for the full flow.
+
 ### Device screenshots
 
 The PR1 shell on the preview build, before the data, account, sync and coach
