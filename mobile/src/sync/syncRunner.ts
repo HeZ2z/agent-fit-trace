@@ -69,8 +69,9 @@ export interface RunWorkoutSyncOptions {
   /**
    * Live identity for the screen that started the run. It is compared with
    * {@link RunWorkoutSyncOptions.account} before every write; a sign-out,
-   * account switch, token change, or screen unmount stops the run with an
-   * `auth` failure instead of writing under stale or foreign credentials.
+   * account switch, or screen unmount stops the run with an `auth` failure
+   * instead of writing under stale or foreign credentials. A token rotation for
+   * the same user does not stop the run; the run keeps its pinned token.
    */
   getCurrentAccount: () => SyncRunAccount | Promise<SyncRunAccount>;
 }
@@ -91,14 +92,15 @@ function hasAccountId(id: string | null | undefined): id is string {
   return typeof id === "string" && id.trim() !== "";
 }
 
-/** True only when the live identity is still exactly the pinned identity. */
+/**
+ * True while the live identity is still the account that started the run.
+ *
+ * The access token is deliberately excluded: a successful refresh rotates it
+ * for the same user and must not abort the run. The pinned token stays bound to
+ * the client for the rest of the run.
+ */
 function sameAccount(pinned: SyncRunAccount, current: SyncRunAccount): boolean {
-  return (
-    hasAccountId(pinned.userId) &&
-    current.userId === pinned.userId &&
-    hasAccessToken(pinned.accessToken) &&
-    current.accessToken === pinned.accessToken
-  );
+  return hasAccountId(pinned.userId) && current.userId === pinned.userId;
 }
 
 /**

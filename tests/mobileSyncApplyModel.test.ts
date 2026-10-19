@@ -613,36 +613,56 @@ test("runner aborts before reading when the pinned account id is missing", async
   }
 });
 
-test("runner stops before the next write when the account or token changes", async () => {
-  const changes: SyncRunAccount[] = [
-    { userId: ACCOUNT_B.userId, accessToken: ACCOUNT_A.accessToken },
-    { userId: ACCOUNT_A.userId, accessToken: "rotated-token" },
-  ];
+test("runner stops before the next write when the account changes", async () => {
+  const first = record("a-first");
+  const second = record("b-second");
+  const repository = createRepository([first, second]);
+  const client = createClient([]);
+  let checks = 0;
 
-  for (const changed of changes) {
-    const first = record("a-first");
-    const second = record("b-second");
-    const repository = createRepository([first, second]);
-    const client = createClient([]);
-    let checks = 0;
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => {
+      checks += 1;
+      return checks === 1 ? ACCOUNT_A : ACCOUNT_B;
+    },
+  });
 
-    const result = await runWorkoutSync({
-      repository,
-      client,
-      account: ACCOUNT_A,
-      getCurrentAccount: () => {
-        checks += 1;
-        return checks === 1 ? ACCOUNT_A : changed;
-      },
-    });
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure, "auth");
+  assert.equal(result.abortReason, null);
+  assert.deepEqual(client.calls.creates, ["a-first"], "only the write before the change lands");
+  assert.deepEqual(repository.calls.saves, []);
+  assert.equal(client.stored.has(second.id), false, "the second upload never starts");
+});
 
-    assert.equal(result.status, "failed", `${changed.userId}/${changed.accessToken}`);
-    assert.equal(result.failure, "auth");
-    assert.equal(result.abortReason, null);
-    assert.deepEqual(client.calls.creates, ["a-first"], "only the write before the change lands");
-    assert.deepEqual(repository.calls.saves, []);
-    assert.equal(client.stored.has(second.id), false, "the second upload never starts");
-  }
+test("a token refresh for the same account does not stop the run", async () => {
+  const first = record("a-first");
+  const second = record("b-second");
+  const repository = createRepository([first, second]);
+  const client = createClient([]);
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => ({
+      userId: ACCOUNT_A.userId,
+      accessToken: "rotated-token",
+    }),
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.failure, null);
+  assert.deepEqual(result.counts, {
+    pushed: 2,
+    pulled: 0,
+    identical: 0,
+    conflicts: 0,
+  });
+  assert.deepEqual(client.calls.creates, ["a-first", "b-second"]);
 });
 
 test("runner stops before a local insert when the account is no longer current", async () => {
