@@ -120,6 +120,12 @@ export const messages: Record<string, string> = {
   "Sync and the cloud coach are not enabled yet. You can sign out at any time.":
     "同步与云端教练尚未启用。你可以随时退出登录。",
 
+  /* ── Account preferences ─────────────────────────────────────── */
+  "Saving preferences to your account…": "正在将偏好保存到你的账号…",
+  "Preferences are saved to your account.": "偏好已保存到你的账号。",
+  "Preferences could not be saved to your account. Your choices still apply on this device.":
+    "偏好无法保存到你的账号。你的选择仍会在此设备上生效。",
+
   /* ── Auth ────────────────────────────────────────────────────── */
   ACCOUNT: "账号",
   "Sign in to your account.": "登录你的账号。",

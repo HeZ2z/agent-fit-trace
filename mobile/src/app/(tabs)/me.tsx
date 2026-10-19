@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 
 import { authErrorMessage, useAuth } from "@/auth";
 import { useI18n } from "@/i18n";
+import { usePreferences } from "@/preferences";
 import { SPACING, TYPOGRAPHY } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
@@ -28,6 +29,10 @@ const copy = {
   signedIn: "Signed in",
   accountFallback: "Account",
   signedInBody: "Sync and the cloud coach are not enabled yet. You can sign out at any time.",
+  prefsSyncing: "Saving preferences to your account…",
+  prefsSynced: "Preferences are saved to your account.",
+  prefsSyncError:
+    "Preferences could not be saved to your account. Your choices still apply on this device.",
   guestNote: "Local-only on this device. Sync and the cloud coach arrive in a later update.",
   restoring: "Restoring your account…",
   unconfigured:
@@ -57,11 +62,18 @@ export default function MeScreen() {
   const { language, setLanguage, t } = useI18n();
   const { skin, tokens, setSkin } = useSkin();
   const { status, user, error, signOut } = useAuth();
+  const { status: preferencesStatus } = usePreferences();
   const { palette } = tokens;
   const isPixel = skin === "pixel";
   const signedIn = status === "signed-in";
   const languageBody =
     language === "zh" ? copy.languageChineseBody : copy.languageEnglishBody;
+  const preferencesSyncMessage =
+    preferencesStatus === "error"
+      ? copy.prefsSyncError
+      : preferencesStatus === "synced"
+        ? copy.prefsSynced
+        : copy.prefsSyncing;
 
   return (
     <Screen testID="screen-me">
@@ -94,6 +106,11 @@ export default function MeScreen() {
                   {user?.email ?? t(copy.accountFallback)}
                 </Body>
                 <Body>{t(copy.signedInBody)}</Body>
+                <Body
+                  testID="prefs-sync-status"
+                  tone={preferencesStatus === "error" ? "warn" : "muted"}>
+                  {t(preferencesSyncMessage)}
+                </Body>
                 <Button
                   accessibilityLabel={t(copy.signOut)}
                   fullWidth
