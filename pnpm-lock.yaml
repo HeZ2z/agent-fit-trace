@@ -94,6 +94,9 @@ importers:
       '@pi-fit-trace/core':
         specifier: workspace:*
         version: link:../packages/fit-trace-core
+      '@pi-fit-trace/ui-tokens':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-ui-tokens
       '@react-native-async-storage/async-storage':
         specifier: 2.2.0
         version: 2.2.0(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))
@@ -208,6 +211,8 @@ importers:
         version: link:../fit-trace-core
 
   packages/fit-trace-core: {}
+
+  packages/fit-trace-ui-tokens: {}
 
 packages:
 
