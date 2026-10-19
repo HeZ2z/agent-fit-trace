@@ -31,9 +31,26 @@ export const messages: Record<string, string> = {
   "Log a session": "记录一场训练",
   "Capture sets, reps, load, and how the session felt while it is still fresh.":
     "趁记忆还新鲜，记录组数、次数、负重以及这堂课的感受。",
-  "Session logging is next": "训练记录功能即将上线",
-  "The logging form is not wired yet. It will write to the local SQLite store in a later commit, so nothing is saved here.":
-    "记录表单尚未接入，将在后续版本写入本地 SQLite 存储；此处不会保存任何内容。",
+  Date: "日期",
+  "Date format: YYYY-MM-DD": "日期格式：YYYY-MM-DD",
+  Exercises: "动作",
+  "Set {set}": "第 {set} 组",
+  Reps: "次数",
+  "Weight (kg)": "重量（kg）",
+  Optional: "可选",
+  RPE: "RPE",
+  "1–10, optional": "1–10，可选",
+  "Notes (optional)": "备注（可选）",
+  "Pain (optional)": "疼痛（可选）",
+  "Pain area": "疼痛部位",
+  "Pain level (0–10)": "疼痛程度（0–10）",
+  Saved: "已保存",
+  "Workout saved. It will appear in History.": "训练已保存，切换到历史页面即可看到。",
+  "This workout was already saved; no duplicate was written.":
+    "这场训练之前已经保存过，没有重复写入。",
+  "Opening the local store…": "正在打开本地存储…",
+  "The local store could not be opened: {message}": "无法打开本地存储：{message}",
+  "The local store is not ready yet. Try again in a moment.": "本地存储尚未就绪，请稍后再试。",
 
   /* ── Analysis ────────────────────────────────────────────────── */
   ANALYSIS: "分析",
