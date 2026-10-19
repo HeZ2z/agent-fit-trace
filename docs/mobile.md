@@ -219,8 +219,11 @@ public store release; there is no iOS build configuration or verification yet.
 
 ## Verification status and known gaps
 
-The current tree passes `pnpm mobile:typecheck`; it is not part of root CI. No
-runtime, device or EAS build verification is claimed.
+The current tree passes `pnpm mobile:typecheck` and `expo export --platform
+android`; mobile typecheck is not part of root CI. The shell was verified once on
+a physical Android device through an EAS preview APK (vivo V2199A, Android 14):
+it rendered both skins and both interface languages. Data, auth, sync and coach
+behavior are not implemented, so they have no runtime verification.
 
 - **No real data layer.** SQLite is declared but there is no schema, store,
   migration, import/export path or mobile persistence test.
@@ -230,23 +233,38 @@ runtime, device or EAS build verification is claimed.
   conflict handling are design only.
 - **No fonts and no iOS.** Native typography falls back to system fonts; there
   is no iPhone build or test target.
-- **Device verification pending.** A headless Android emulator is available in
-  the development environment, but memory constraints have prevented a full
-  interactive smoke test. Screenshots are still to be added; this document
-  intentionally contains none.
+- **One device smoke test only.** The preview APK was installed and the shell
+  was checked on a single Android 14 device (Pixel and Glass, English and
+  Simplified Chinese). Other Android versions, small screens, rotation and the
+  runtime SQLite/auth paths remain unverified. A headless emulator is also
+  available in the development environment.
 - **No mobile test runner or CI coverage.** PR1 has a typecheck script but no
   test script, and root `pnpm typecheck` does not include the mobile workspace.
 - **Token drift is manual.** The sRGB palette has no automated check against the
   web oklch tokens; a CSS color change must update both sides.
-- **EAS project not linked.** Profiles exist, but builds require project setup
-  and an authenticated EAS account.
+- **EAS project linked, credentials are operator-owned.** The project is
+  `@hez2z/fit-trace` (`e40bba07-1ada-4a84-ae02-aaaa162fa2e4`); builds require an
+  authenticated Expo account and EAS only builds on demand, not per commit.
+
+### Device screenshots
+
+The PR1 shell on the preview build, in the two skins and both interface
+languages:
+
+| Pixel, Chinese (History) | Pixel, Chinese (Me) | Glass, English (Me) |
+| --- | --- | --- |
+| ![Pixel history in Chinese](ui/mobile-pr1-history-zh.jpg) | ![Pixel Me in Chinese](ui/mobile-pr1-me-pixel-zh.jpg) | ![Glass Me in English](ui/mobile-pr1-me-glass-en.jpg) |
+
+Captured from the `preview` profile APK (`eas build -p android --profile
+preview`). The tab icons are text placeholders; bundled fonts and the sign-in
+interaction are still planned.
 
 ## Next steps
 
 This is the intended sequencing, not a commitment to a release date:
 
-1. Verify the shell on an Android device or a less constrained emulator, add
-   screenshots, and add the mobile typecheck to CI.
+1. Keep the device smoke test current as data screens land, and add the mobile
+   typecheck to CI.
 2. Implement the SQLite workout store with validation before write and
    import/export parity, tested apart from the UI.
 3. Add authentication, account preferences and optional workout sync with
