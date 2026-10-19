@@ -6,6 +6,7 @@ import {
   WORKOUTS_DB_NAME,
   classifyWorkoutWrite,
   fromWorkoutRow,
+  sortWorkoutsNewestFirst,
   pendingWorkoutMigrations,
   prepareWorkoutId,
   toWorkoutRow,
@@ -109,7 +110,8 @@ export class WorkoutRepository {
   /** Every stored workout, newest first. Stored rows are re-validated. */
   async listWorkouts(): Promise<WorkoutRecord[]> {
     const rows = await this.database.getAllAsync<WorkoutRow>(SELECT_WORKOUTS_NEWEST_FIRST_SQL);
-    return rows.map(fromWorkoutRow);
+    // SQL ordering is lexical; re-sort by instant so offset timestamps stay correct.
+    return sortWorkoutsNewestFirst(rows.map(fromWorkoutRow));
   }
 
   /** One workout by id, or `null` when it is not stored. */

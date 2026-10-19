@@ -150,6 +150,19 @@ test("newest-first ordering matches date DESC, id DESC", () => {
   );
 });
 
+test("newest-first ordering compares instants, not offset text", () => {
+  const input = [
+    record({ id: "offset", date: "2026-09-02T00:30:00+02:00" }),
+    record({ id: "utc", date: "2026-09-01T23:30:00Z" }),
+  ];
+
+  assert.deepEqual(
+    sortWorkoutsNewestFirst(input).map((entry) => entry.id),
+    ["utc", "offset"],
+    "the later instant wins even when its text sorts lower",
+  );
+});
+
 test("schema version and migration list stay consistent", () => {
   assert.equal(WORKOUTS_DB_NAME, "fit-trace.db");
   assert.equal(WORKOUTS_DB_SCHEMA_VERSION, latestWorkoutSchemaVersion());

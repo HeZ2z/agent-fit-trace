@@ -1,7 +1,7 @@
 import { SESSION_TYPES } from "@pi-fit-trace/core";
 import type { ValidationIssue, ValidationWarning, WorkoutRecord } from "@pi-fit-trace/core";
 import { displaySessionType, displayValidationMessage } from "@pi-fit-trace/i18n/domain";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from "react-native";
 
 import {
@@ -94,6 +94,7 @@ export default function LogScreen() {
   const { status: dataStatus, repository, error: openError, reload } = useWorkoutData();
 
   const [form, setForm] = useState<LogFormDraft>(() => createLogDraft(todayLocalDate()));
+  const formRef = useRef<LogFormDraft>(form);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [warnings, setWarnings] = useState<ValidationWarning[]>([]);
   const [pending, setPending] = useState<WorkoutRecord | null>(null);
@@ -118,7 +119,11 @@ export default function LogScreen() {
    */
   const updateForm = useCallback(
     (updater: (current: LogFormDraft) => LogFormDraft) => {
-      setForm(updater);
+      setForm((current) => {
+        const next = updater(current);
+        formRef.current = next;
+        return next;
+      });
       setIssues([]);
       setWarnings([]);
       setPending(null);
@@ -137,11 +142,17 @@ export default function LogScreen() {
 
       setSaving(true);
       setSaveError(null);
+      const submittedForm = formRef.current;
       try {
         const result = await repository.saveWorkout(toSaveInput(record));
         setSuccess(result.created ? "created" : "duplicate");
-        // Stay on this screen with a cleared form; History refreshes on focus.
-        setForm(createLogDraft(todayLocalDate()));
+        // Only clear the form if it still matches what was submitted; edits made
+        // during the save must not be erased.
+        if (formRef.current === submittedForm) {
+          const cleared = createLogDraft(todayLocalDate());
+          formRef.current = cleared;
+          setForm(cleared);
+        }
         setIssues([]);
         setWarnings([]);
         setPending(null);

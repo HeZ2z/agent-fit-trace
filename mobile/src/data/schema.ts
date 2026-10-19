@@ -218,12 +218,22 @@ function compareDescending(a: string, b: string): number {
   return a < b ? 1 : -1;
 }
 
+/** The instant a workout date denotes; malformed values sort as oldest. */
+function workoutInstant(date: string): number {
+  const parsed = Date.parse(date);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 /**
- * SQL `ORDER BY date DESC, id DESC`: newest workout date first, id descending
- * as a deterministic tie-break. ISO 8601 strings sort lexicographically, so
- * this mirrors the newest-first index without a second date column.
+ * Newest workout first by the instant the date denotes, not by its text: the
+ * validator accepts ISO timestamps, and the same instant can be written with
+ * different offsets. The date text then the id provide deterministic
+ * tie-breaks for equal instants.
  */
 export function compareWorkoutsNewestFirst(a: WorkoutRecord, b: WorkoutRecord): number {
+  const timeA = workoutInstant(a.date);
+  const timeB = workoutInstant(b.date);
+  if (timeA !== timeB) return timeA > timeB ? -1 : 1;
   const byDate = compareDescending(a.date, b.date);
   return byDate !== 0 ? byDate : compareDescending(a.id, b.id);
 }
