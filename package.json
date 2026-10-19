@@ -17,7 +17,10 @@
     "coach:local": "node packages/fit-trace-cli/src/cli.ts start",
     "build": "pnpm build:server && pnpm --filter @pi-fit-trace/app build",
     "build:server": "pnpm --filter @pi-fit-trace/app exec vite build --config vite.server.config.ts",
-    "typecheck": "tsc --noEmit && pnpm --filter app typecheck"
+    "typecheck": "tsc --noEmit && pnpm --filter app typecheck",
+    "mobile:start": "pnpm --filter @pi-fit-trace/mobile start",
+    "mobile:typecheck": "pnpm --filter @pi-fit-trace/mobile typecheck",
+    "mobile:export:android": "pnpm --filter @pi-fit-trace/mobile export:android"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
