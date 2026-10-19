@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { messages as chrome } from "./chrome.ts";
-import { messages as domain } from "./domain.ts";
-import { messages as screensAnalysisPlan } from "./screens-analysis-plan.ts";
-import { messages as screensCoachMe } from "./screens-coach-me.ts";
-import { messages as screensHistory } from "./screens-history.ts";
-import { ZH_MESSAGES } from "./index.ts";
+import { ZH_MESSAGES } from "@pi-fit-trace/i18n";
+import { messages as chrome } from "@pi-fit-trace/i18n/zh/chrome";
+import { messages as domain } from "@pi-fit-trace/i18n/zh/domain";
+import { messages as screensAnalysisPlan } from "@pi-fit-trace/i18n/zh/screens-analysis-plan";
+import { messages as screensCoachMe } from "@pi-fit-trace/i18n/zh/screens-coach-me";
+import { messages as screensHistory } from "@pi-fit-trace/i18n/zh/screens-history";
+import { messages as mobile } from "@pi-fit-trace/i18n/zh/mobile";
 
 const SLICES: readonly { name: string; messages: Record<string, string> }[] = [
   { name: "chrome", messages: chrome },
@@ -12,6 +13,7 @@ const SLICES: readonly { name: string; messages: Record<string, string> }[] = [
   { name: "screens-analysis-plan", messages: screensAnalysisPlan },
   { name: "screens-coach-me", messages: screensCoachMe },
   { name: "domain", messages: domain },
+  { name: "mobile", messages: mobile },
 ];
 
 describe("Chinese dictionary", () => {

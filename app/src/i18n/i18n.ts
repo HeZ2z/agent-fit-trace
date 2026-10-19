@@ -1,30 +1,31 @@
 /**
- * Interface language: a display layer over canonical English data.
+ * The web app's interface-language store.
  *
- * English is the source language. Every message is requested by its exact
- * English string; a Chinese entry maps that source to a translation and a
- * missing entry degrades to English instead of showing a raw key. Stored
- * records, snapshots, exports and generated payloads stay canonical English —
- * translation happens only while rendering, so a content digest never depends
- * on who is reading it.
+ * The pure display layer (dictionary, formatting, translation) lives in
+ * `@pi-fit-trace/i18n`. This module keeps only the browser-specific store:
+ * localStorage persistence, the in-memory fallback and the
+ * `<html lang>`/`data-lang` hooks, then re-exports the unchanged public API.
  *
  * The matching pre-paint bootstrap lives in `app/index.html`; keep the storage
  * key and accepted values in sync with this module.
  */
 
-import { ZH_MESSAGES } from "./zh/index.ts";
+import {
+  DEFAULT_LANGUAGE,
+  LANGUAGE_STORAGE_KEY,
+  isLanguage,
+} from "@pi-fit-trace/i18n";
+import type { AppLanguage } from "@pi-fit-trace/i18n";
 
-export type AppLanguage = "en" | "zh";
-
-export const LANGUAGE_STORAGE_KEY = "pi-fit-trace:lang:v1";
-export const DEFAULT_LANGUAGE: AppLanguage = "en";
-export const LANGUAGES: readonly AppLanguage[] = ["en", "zh"];
-
-export type MessageParams = Record<string, string | number>;
-
-export function isLanguage(value: unknown): value is AppLanguage {
-  return value === "en" || value === "zh";
-}
+export {
+  DEFAULT_LANGUAGE,
+  LANGUAGE_STORAGE_KEY,
+  LANGUAGES,
+  formatMessage,
+  isLanguage,
+  translate,
+} from "@pi-fit-trace/i18n";
+export type { AppLanguage, MessageParams } from "@pi-fit-trace/i18n";
 
 function languageStorage(): Storage | null {
   try {
@@ -91,28 +92,4 @@ export function setLanguage(language: AppLanguage): void {
   }
   applyLanguage(language);
   for (const listener of listeners) listener();
-}
-
-const PLACEHOLDER = /\{([a-zA-Z0-9_]+)\}/g;
-
-/** Replace `{name}` placeholders; unknown placeholders are left untouched. */
-export function formatMessage(template: string, params?: MessageParams): string {
-  if (params === undefined) return template;
-  return template.replace(PLACEHOLDER, (match, key: string) =>
-    Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : match,
-  );
-}
-
-/**
- * Translate one source string. English is returned as-is (after interpolation);
- * Chinese falls back to the English source for unmapped entries.
- */
-export function translate(
-  language: AppLanguage,
-  source: string,
-  params?: MessageParams,
-): string {
-  if (language === "en") return formatMessage(source, params);
-  const template = ZH_MESSAGES[source] ?? source;
-  return formatMessage(template, params);
 }
