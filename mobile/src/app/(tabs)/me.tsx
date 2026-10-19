@@ -1,6 +1,7 @@
 import { useRouter } from "expo-router";
 import { StyleSheet, Text, View } from "react-native";
 
+import { useI18n } from "@/i18n";
 import { SPACING, TYPOGRAPHY } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
@@ -28,27 +29,33 @@ const copy = {
   skinPixelLabel: "Use Pixel skin",
   skinGlassLabel: "Use Glass skin",
   languageTitle: "Language",
-  languageBody: "English is active for now.",
+  languageLede:
+    "Choose the interface language. Workout records, saved snapshots and exported JSON keep their original English; only the interface is translated.",
   languageEnglish: "English",
-  languageChinese: "Chinese",
+  languageChinese: "简体中文",
   languageEnglishLabel: "English language",
-  languageChineseLabel: "Chinese language, coming next commit",
-  languageChineseNote: "Chinese support is coming next commit.",
+  languageChineseLabel: "Chinese language",
+  languageEnglishBody: "Source language. Data and exports stay in English.",
+  languageChineseBody:
+    "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
   signInNote: "Sign-in and cloud sync are placeholders in this commit.",
   signIn: "Sign in",
 };
 
 export default function MeScreen() {
   const router = useRouter();
+  const { language, setLanguage, t } = useI18n();
   const { skin, tokens, setSkin } = useSkin();
   const { palette } = tokens;
   const isPixel = skin === "pixel";
+  const languageBody =
+    language === "zh" ? copy.languageChineseBody : copy.languageEnglishBody;
 
   return (
     <Screen testID="screen-me">
-      <Kicker>{copy.kicker}</Kicker>
-      <Display>{copy.title}</Display>
-      <Body>{copy.lede}</Body>
+      <Kicker>{t(copy.kicker)}</Kicker>
+      <Display>{t(copy.title)}</Display>
+      <Body>{t(copy.lede)}</Body>
 
       <Card testID="profile-card">
         <View style={styles.profileRow}>
@@ -67,27 +74,27 @@ export default function MeScreen() {
             <Text style={[styles.avatarLabel, { color: palette.fg }]}>FT</Text>
           </View>
           <View style={styles.profileCopy}>
-            <Kicker>{copy.profileKicker}</Kicker>
-            <Title>{copy.profileName}</Title>
-            <Body>{copy.profileBody}</Body>
+            <Kicker>{t(copy.profileKicker)}</Kicker>
+            <Title>{t(copy.profileName)}</Title>
+            <Body>{t(copy.profileBody)}</Body>
           </View>
         </View>
       </Card>
 
       <View style={styles.section}>
-        <Title>{copy.appearanceTitle}</Title>
-        <Body>{copy.appearanceBody}</Body>
+        <Title>{t(copy.appearanceTitle)}</Title>
+        <Body>{t(copy.appearanceBody)}</Body>
         <View style={styles.choiceRow}>
           <Chip
-            accessibilityLabel={copy.skinPixelLabel}
-            label={copy.skinPixel}
+            accessibilityLabel={t(copy.skinPixelLabel)}
+            label={t(copy.skinPixel)}
             onPress={() => setSkin("pixel")}
             selected={skin === "pixel"}
             testID="skin-pixel"
           />
           <Chip
-            accessibilityLabel={copy.skinGlassLabel}
-            label={copy.skinGlass}
+            accessibilityLabel={t(copy.skinGlassLabel)}
+            label={t(copy.skinGlass)}
             onPress={() => setSkin("glass")}
             selected={skin === "glass"}
             testID="skin-glass"
@@ -96,32 +103,33 @@ export default function MeScreen() {
       </View>
 
       <View style={styles.section}>
-        <Title>{copy.languageTitle}</Title>
-        <Body>{copy.languageBody}</Body>
+        <Title>{t(copy.languageTitle)}</Title>
+        <Body>{t(copy.languageLede)}</Body>
         <View style={styles.choiceRow}>
           <Chip
-            accessibilityLabel={copy.languageEnglishLabel}
-            label={copy.languageEnglish}
-            onPress={() => undefined}
-            selected
+            accessibilityLabel={t(copy.languageEnglishLabel)}
+            label={t(copy.languageEnglish)}
+            onPress={() => setLanguage("en")}
+            selected={language === "en"}
             testID="language-english"
           />
           <Chip
-            accessibilityLabel={copy.languageChineseLabel}
-            disabled
-            label={copy.languageChinese}
+            accessibilityLabel={t(copy.languageChineseLabel)}
+            label={t(copy.languageChinese)}
+            onPress={() => setLanguage("zh")}
+            selected={language === "zh"}
             testID="language-chinese"
           />
         </View>
-        <Body>{copy.languageChineseNote}</Body>
+        <Body>{t(languageBody)}</Body>
       </View>
 
       <View style={styles.section}>
-        <Body>{copy.signInNote}</Body>
+        <Body>{t(copy.signInNote)}</Body>
         <Button
-          accessibilityLabel="Sign in"
+          accessibilityLabel={t(copy.signIn)}
           fullWidth
-          label={copy.signIn}
+          label={t(copy.signIn)}
           onPress={() => router.push("/auth/sign-in")}
           testID="sign-in-button"
           variant="secondary"

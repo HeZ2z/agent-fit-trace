@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { Body, Display, EmptyState, Kicker, Screen } from "@/ui";
 
 const copy = {
@@ -10,12 +11,14 @@ const copy = {
 };
 
 export default function LogScreen() {
+  const { t } = useI18n();
+
   return (
     <Screen testID="screen-log">
-      <Kicker>{copy.kicker}</Kicker>
-      <Display>{copy.title}</Display>
-      <Body>{copy.lede}</Body>
-      <EmptyState message={copy.emptyMessage} testID="empty-log" title={copy.emptyTitle} />
+      <Kicker>{t(copy.kicker)}</Kicker>
+      <Display>{t(copy.title)}</Display>
+      <Body>{t(copy.lede)}</Body>
+      <EmptyState message={t(copy.emptyMessage)} testID="empty-log" title={t(copy.emptyTitle)} />
     </Screen>
   );
 }

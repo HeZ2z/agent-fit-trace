@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { I18nProvider } from "@/i18n";
 import { SkinProvider, useSkin } from "@/theme/skin";
 
 function RootShell() {
@@ -23,9 +24,12 @@ function RootShell() {
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
-      <SkinProvider>
-        <RootShell />
-      </SkinProvider>
+      {/* Language outside skin: a language change re-renders every screen and the dock. */}
+      <I18nProvider>
+        <SkinProvider>
+          <RootShell />
+        </SkinProvider>
+      </I18nProvider>
     </SafeAreaProvider>
   );
 }

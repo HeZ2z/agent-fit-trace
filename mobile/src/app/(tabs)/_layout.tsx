@@ -7,6 +7,7 @@ import {
   View,
 } from "react-native";
 
+import { useI18n } from "@/i18n";
 import { SPACING, TYPOGRAPHY } from "@/theme";
 import { useSkin } from "@/theme/skin";
 
@@ -21,6 +22,7 @@ const TAB_ITEMS = [
 
 export default function TabsLayout() {
   const { tokens } = useSkin();
+  const { t } = useI18n();
 
   return (
     <Tabs
@@ -30,7 +32,7 @@ export default function TabsLayout() {
       }}
       tabBar={(props) => <AppTabBar {...props} />}>
       {TAB_ITEMS.map((item) => (
-        <Tabs.Screen key={item.name} name={item.name} options={{ title: item.label }} />
+        <Tabs.Screen key={item.name} name={item.name} options={{ title: t(item.label) }} />
       ))}
     </Tabs>
   );
@@ -42,6 +44,7 @@ export default function TabsLayout() {
  */
 function AppTabBar({ state, emitter, navigateToTab, insets }: BottomTabBarProps) {
   const { skin, tokens } = useSkin();
+  const { t } = useI18n();
   const { palette } = tokens;
   const isPixel = skin === "pixel";
   const glassRadius = tokens.radiusCard * 2;
@@ -107,7 +110,7 @@ function AppTabBar({ state, emitter, navigateToTab, insets }: BottomTabBarProps)
           return (
             <Pressable
               key={route.key}
-              accessibilityLabel={`${item.label} tab`}
+              accessibilityLabel={t("{label} tab", { label: t(item.label) })}
               accessibilityRole="tab"
               accessibilityState={{ selected: focused }}
               onLongPress={onLongPress}
@@ -151,7 +154,7 @@ function AppTabBar({ state, emitter, navigateToTab, insets }: BottomTabBarProps)
                     fontWeight: focused ? "800" : "600",
                   },
                 ]}>
-                {item.label}
+                {t(item.label)}
               </Text>
             </Pressable>
           );

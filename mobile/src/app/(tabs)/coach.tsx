@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { Banner, Body, Card, Display, Kicker, Screen, Title } from "@/ui";
 
 const copy = {
@@ -13,20 +14,22 @@ const copy = {
 };
 
 export default function CoachScreen() {
+  const { t } = useI18n();
+
   return (
     <Screen testID="screen-coach">
-      <Kicker>{copy.kicker}</Kicker>
-      <Display>{copy.title}</Display>
-      <Body>{copy.lede}</Body>
+      <Kicker>{t(copy.kicker)}</Kicker>
+      <Display>{t(copy.title)}</Display>
+      <Body>{t(copy.lede)}</Body>
       <Banner
-        message={copy.bannerMessage}
+        message={t(copy.bannerMessage)}
         testID="coach-cloud-banner"
-        title={copy.bannerTitle}
+        title={t(copy.bannerTitle)}
         tone="info"
       />
       <Card testID="coach-placeholder-card">
-        <Title>{copy.localTitle}</Title>
-        <Body>{copy.localMessage}</Body>
+        <Title>{t(copy.localTitle)}</Title>
+        <Body>{t(copy.localMessage)}</Body>
       </Card>
     </Screen>
   );

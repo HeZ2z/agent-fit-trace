@@ -97,6 +97,9 @@ importers:
       '@pi-fit-trace/core':
         specifier: workspace:*
         version: link:../packages/fit-trace-core
+      '@pi-fit-trace/i18n':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-i18n
       '@pi-fit-trace/ui-tokens':
         specifier: workspace:*
         version: link:../packages/fit-trace-ui-tokens

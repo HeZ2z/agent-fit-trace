@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { Body, Display, EmptyState, Kicker, Screen } from "@/ui";
 
 const copy = {
@@ -10,15 +11,17 @@ const copy = {
 };
 
 export default function HistoryScreen() {
+  const { t } = useI18n();
+
   return (
     <Screen testID="screen-history">
-      <Kicker>{copy.kicker}</Kicker>
-      <Display>{copy.title}</Display>
-      <Body>{copy.lede}</Body>
+      <Kicker>{t(copy.kicker)}</Kicker>
+      <Display>{t(copy.title)}</Display>
+      <Body>{t(copy.lede)}</Body>
       <EmptyState
-        message={copy.emptyMessage}
+        message={t(copy.emptyMessage)}
         testID="empty-history"
-        title={copy.emptyTitle}
+        title={t(copy.emptyTitle)}
       />
     </Screen>
   );

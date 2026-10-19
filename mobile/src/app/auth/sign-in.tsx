@@ -1,5 +1,6 @@
 import { useRouter } from "expo-router";
 
+import { useI18n } from "@/i18n";
 import { Body, Button, Card, Display, Kicker, Screen, Title } from "@/ui";
 
 const copy = {
@@ -15,6 +16,7 @@ const copy = {
 
 export default function SignInScreen() {
   const router = useRouter();
+  const { t } = useI18n();
 
   const goBack = () => {
     if (router.canGoBack()) {
@@ -26,16 +28,16 @@ export default function SignInScreen() {
 
   return (
     <Screen bottomInset testID="screen-auth-sign-in">
-      <Kicker>{copy.kicker}</Kicker>
-      <Display>{copy.title}</Display>
-      <Body>{copy.lede}</Body>
+      <Kicker>{t(copy.kicker)}</Kicker>
+      <Display>{t(copy.title)}</Display>
+      <Body>{t(copy.lede)}</Body>
       <Card testID="auth-placeholder-card">
-        <Title>{copy.cardTitle}</Title>
-        <Body>{copy.cardMessage}</Body>
+        <Title>{t(copy.cardTitle)}</Title>
+        <Body>{t(copy.cardMessage)}</Body>
       </Card>
       <Button
-        accessibilityLabel={copy.backLabel}
-        label={copy.back}
+        accessibilityLabel={t(copy.backLabel)}
+        label={t(copy.back)}
         onPress={goBack}
         testID="auth-back-button"
         variant="secondary"
