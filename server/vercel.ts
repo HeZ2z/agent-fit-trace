@@ -125,13 +125,18 @@ const CLOUD_SUBPATH_SEGMENTS = new Set(["events", "cancel"]);
  * subpaths are accepted; every other value is ignored (and the marker removed)
  * so a caller cannot inject arbitrary path segments. Unrelated query
  * parameters such as `fromSeq` are preserved when the platform forwards them.
+ *
+ * Vercel selects the Function by the rewrite destination but can hand the
+ * Function the original request path. The operation suffix may therefore
+ * already be present; appending blindly would produce `.../events/events`.
  */
 export function applyCloudSubpathRewrite(url: URL): boolean {
   const op = url.searchParams.get(CLOUD_SUBPATH_QUERY_KEY);
   if (op === null) return false;
   url.searchParams.delete(CLOUD_SUBPATH_QUERY_KEY);
   if (!CLOUD_SUBPATH_SEGMENTS.has(op)) return false;
-  url.pathname = `${url.pathname.replace(/\/+$/, "")}/${op}`;
+  const base = url.pathname.replace(/\/+$/, "");
+  url.pathname = base.endsWith(`/${op}`) ? base : `${base}/${op}`;
   return true;
 }
 
