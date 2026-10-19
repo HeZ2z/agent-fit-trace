@@ -26,9 +26,12 @@ export type { SyncConfig, SyncConfigProblem, SyncConfigStatus } from "./syncConf
  * different content). Records stay canonical English and are never rewritten
  * here — sync only reads the cloud and appends one local record at a time.
  *
- * `fetch` and the access-token provider are injectable. Credentials are
- * resolved per request, placed only in the `Authorization` header, and never
- * logged, stored in this module, or included in an error message.
+ * `fetch` and the access-token provider are injectable. A sync run binds one
+ * token through {@link WorkoutSyncClient.withAccessToken}, so every request in
+ * that run uses the credentials it started with even if the shared session
+ * changes; the mutable provider is only a fallback for callers that do not need
+ * that pinning. Credentials are placed only in the `Authorization` header and
+ * are never logged, stored in this module, or included in an error message.
  */
 
 /** Default maximum accepted response body; protects the device from a huge list. */
@@ -68,6 +71,12 @@ export interface WorkoutSyncClientOptions {
   config?: SyncConfig;
   fetchImpl?: SyncFetch;
   getAccessToken?: SyncAccessTokenProvider;
+  /**
+   * Fixed bearer token for one run; when set (even blank) every request uses
+   * it and `getAccessToken` is never consulted. Prefer
+   * {@link WorkoutSyncClient.withAccessToken} over constructing this by hand.
+   */
+  accessToken?: string;
   /** Optional UI flag for each dropped malformed remote record. */
   onMalformedRecord?: (notice: MalformedRemoteWorkout) => void;
   /** Response byte cap; defaults to {@link SYNC_MAX_RESPONSE_BYTES}. */
@@ -220,6 +229,8 @@ export class WorkoutSyncClient {
 
   private readonly fetchImpl: SyncFetch;
   private readonly getAccessToken: SyncAccessTokenProvider | undefined;
+  /** A token pinned for this client's lifetime, or `null` to use the provider. */
+  private readonly fixedAccessToken: string | null;
   private readonly onMalformedRecord: ((notice: MalformedRemoteWorkout) => void) | undefined;
   private readonly maxResponseBytes: number;
 
@@ -227,6 +238,9 @@ export class WorkoutSyncClient {
     this.config = options.config ?? readSyncConfig();
     this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
     this.getAccessToken = options.getAccessToken;
+    // `??` keeps an explicitly blank fixed token fail-closed instead of
+    // silently falling back to the mutable session provider.
+    this.fixedAccessToken = options.accessToken ?? null;
     this.onMalformedRecord = options.onMalformedRecord;
 
     const maxResponseBytes = options.maxResponseBytes ?? SYNC_MAX_RESPONSE_BYTES;
@@ -234,6 +248,24 @@ export class WorkoutSyncClient {
       throw new RangeError("maxResponseBytes must be a positive integer.");
     }
     this.maxResponseBytes = maxResponseBytes;
+  }
+
+  /**
+   * Bind this client to one access token for a single sync run.
+   *
+   * The returned client shares config, fetch and response handling but never
+   * reads the mutable session provider, so a sign-out/sign-in while a request
+   * is pending cannot switch the run to another account's token.
+   */
+  withAccessToken(accessToken: string): WorkoutSyncClient {
+    return new WorkoutSyncClient({
+      config: this.config,
+      fetchImpl: this.fetchImpl,
+      getAccessToken: this.getAccessToken,
+      accessToken,
+      onMalformedRecord: this.onMalformedRecord,
+      maxResponseBytes: this.maxResponseBytes,
+    });
   }
 
   /** The configured absolute API base, or a typed configuration error. */
@@ -255,11 +287,23 @@ export class WorkoutSyncClient {
   }
 
   /**
-   * Resolve the bearer token for one request. A missing/blank token fails
-   * closed as `UNAUTHENTICATED` before any network call; a provider failure is
-   * treated the same way rather than leaking the provider's cause.
+   * Resolve the bearer token for one request. A pinned token is used verbatim
+   * and never re-read from the session; a missing/blank token fails closed as
+   * `UNAUTHENTICATED` before any network call. A provider failure is treated
+   * the same way rather than leaking the provider's cause.
    */
   private async requireAccessToken(): Promise<string> {
+    if (this.fixedAccessToken !== null) {
+      if (this.fixedAccessToken.trim() === "") {
+        throw new ApiError({
+          code: API_ERROR_CODES.UNAUTHENTICATED,
+          message: "Sign in to sync workouts.",
+          status: HTTP_STATUS.unauthorized,
+        });
+      }
+      return this.fixedAccessToken;
+    }
+
     let token: unknown = null;
     if (this.getAccessToken !== undefined) {
       try {

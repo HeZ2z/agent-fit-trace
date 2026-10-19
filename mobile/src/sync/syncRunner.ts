@@ -13,9 +13,13 @@
  * cloud read so the UI can still show both originals; that read is not a
  * write retry.
  *
- * Tokens travel only inside the injected client's request path. This module
- * receives a token solely to fail closed when it is missing, never stores it,
- * and never logs it or any workout content.
+ * An access token alone is not enough to identify the run's owner: the app
+ * session can switch accounts while a request is pending. The caller pins the
+ * originating user id and access token, binds that token to the client, and
+ * supplies the live identity. The runner compares the two before every write
+ * and stops with an `auth` failure rather than writing to whoever is signed in
+ * now. Tokens travel only inside the injected client's request path; this
+ * module never stores, logs, or includes one in a result.
  */
 
 import { stableStringify } from "@pi-fit-trace/core";
@@ -54,13 +58,68 @@ export interface SyncRunRemoteClient {
 
 export interface RunWorkoutSyncOptions {
   repository: SyncRunRepository;
+  /**
+   * Remote client for this run. The caller binds it to
+   * `account.accessToken` (see `WorkoutSyncClient.withAccessToken`) so no
+   * request can resolve a newer session token mid-run.
+   */
   client: SyncRunRemoteClient;
-  /** Current access token; a blank/missing value aborts before any read. */
-  accessToken: string | null | undefined;
+  /** Account identity pinned when the user started this run. */
+  account: SyncRunAccount;
+  /**
+   * Live identity for the screen that started the run. It is compared with
+   * {@link RunWorkoutSyncOptions.account} before every write; a sign-out,
+   * account switch, token change, or screen unmount stops the run with an
+   * `auth` failure instead of writing under stale or foreign credentials.
+   */
+  getCurrentAccount: () => SyncRunAccount | Promise<SyncRunAccount>;
+}
+
+/** User id and access token pinned for one sync run. */
+export interface SyncRunAccount {
+  /** Signed-in user id; missing/blank fails closed before any read. */
+  readonly userId: string | null | undefined;
+  /** Access token; missing/blank fails closed before any read. */
+  readonly accessToken: string | null | undefined;
 }
 
 function hasAccessToken(token: string | null | undefined): token is string {
   return typeof token === "string" && token.trim() !== "";
+}
+
+function hasAccountId(id: string | null | undefined): id is string {
+  return typeof id === "string" && id.trim() !== "";
+}
+
+/** True only when the live identity is still exactly the pinned identity. */
+function sameAccount(pinned: SyncRunAccount, current: SyncRunAccount): boolean {
+  return (
+    hasAccountId(pinned.userId) &&
+    current.userId === pinned.userId &&
+    hasAccessToken(pinned.accessToken) &&
+    current.accessToken === pinned.accessToken
+  );
+}
+
+/**
+ * Stop the run if the account/token it started under is no longer current.
+ *
+ * Returns `null` when the next write may proceed, or the state with an `auth`
+ * failure when the live identity changed or could not be read. It is checked
+ * immediately before every write, so an in-flight request finishes under the
+ * pinned token while no later request is issued.
+ */
+async function stopIfAccountChanged(
+  options: RunWorkoutSyncOptions,
+  state: SyncRunAccumulator,
+): Promise<SyncRunAccumulator | null> {
+  let current: SyncRunAccount;
+  try {
+    current = await options.getCurrentAccount();
+  } catch {
+    return recordSyncFailure(state, "auth");
+  }
+  return sameAccount(options.account, current) ? null : recordSyncFailure(state, "auth");
 }
 
 /** Any network failure is a preflight abort; other read failures are too. */
@@ -128,7 +187,10 @@ async function collectPushConflicts(
 export async function runWorkoutSync(
   options: RunWorkoutSyncOptions,
 ): Promise<SyncRunResult> {
-  if (!hasAccessToken(options.accessToken)) {
+  if (
+    !hasAccountId(options.account.userId) ||
+    !hasAccessToken(options.account.accessToken)
+  ) {
     return abortSyncRun("auth", "unauthenticated");
   }
   if (options.client.config.status !== "configured") {
@@ -160,6 +222,8 @@ export async function runWorkoutSync(
   // Remote → device. The repository never overwrites; a CONFLICT here is a
   // concurrent local record and is surfaced with both originals.
   for (const record of plan.toInsertLocal) {
+    const stopped = await stopIfAccountChanged(options, state);
+    if (stopped !== null) return completeSyncRun(stopped);
     try {
       await options.repository.saveWorkout(record);
       state = recordPulledRecord(state);
@@ -191,9 +255,16 @@ export async function runWorkoutSync(
   }
 
   // Device → cloud. A 409 is collected for one pairing read after the loop so
-  // unrelated local-only records are still pushed once each.
+  // unrelated local-only records are still pushed once each. A later failure
+  // or an account change stops new uploads but still runs that pairing read, so
+  // conflicts already found are returned instead of disappearing with the run.
   const pushConflicts: WorkoutRecord[] = [];
   for (const record of plan.toPush) {
+    const stopped = await stopIfAccountChanged(options, state);
+    if (stopped !== null) {
+      state = stopped;
+      break;
+    }
     try {
       await options.client.createRemoteWorkout(record);
       state = recordPushedRecord(state);
@@ -203,7 +274,7 @@ export async function runWorkoutSync(
         continue;
       }
       state = recordSyncFailure(state, classifySyncFailure(error));
-      return completeSyncRun(state);
+      break;
     }
   }
 

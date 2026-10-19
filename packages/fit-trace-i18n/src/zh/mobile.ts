@@ -92,11 +92,6 @@ export const messages: Record<string, string> = {
   "Ask about training, review the evidence, and shape the next block with a coach.":
     "向教练询问训练问题、回顾证据，并一起规划下一个训练周期。",
   "Cloud coach requires sign-in": "云端教练需要登录",
-  "Hosted coaching is a signed-in feature. Accounts and networking arrive in a later commit, so this screen makes no network calls.":
-    "托管教练是登录后可用的功能。账号与网络连接将在后续版本提供，因此此页面不会发起任何网络请求。",
-  "Cloud coach is next": "云端教练即将上线",
-  "This screen will start a hosted cloud pi session once accounts and networking land. The local CLI coach stays on desktop; mobile never runs a local agent.":
-    "账号与网络接通后，此界面将启动托管的云端 pi 会话。本地 CLI 教练仍只在桌面端运行，移动端不会启动本地代理。",
 
   /* ── Me ──────────────────────────────────────────────────────── */
   ME: "我的",
@@ -112,13 +107,11 @@ export const messages: Record<string, string> = {
   "English language": "英语",
   "Chinese language": "中文",
   "Local-only on this device. Sign in to sync and use the cloud coach.":
-    "当前仅在本机使用。同步与云端教练将在后续版本提供。",
+    "当前仅在本机使用。登录后可同步并使用云端教练。",
   "Restoring your account…": "正在恢复账号…",
   "Account sign-in is not configured in this build. Your workouts stay on this device.":
     "此版本未配置账号登录。训练记录仍保存在本机。",
   "Signed in": "已登录",
-  "Sync and the cloud coach are not enabled yet. You can sign out at any time.":
-    "同步与云端教练尚未启用。你可以随时退出登录。",
 
   /* ── Account preferences ─────────────────────────────────────── */
   "Saving preferences to your account…": "正在将偏好保存到你的账号…",
@@ -195,7 +188,7 @@ export const messages: Record<string, string> = {
     "此版本未配置云端同步。请将 EXPO_PUBLIC_FIT_TRACE_API_URL 设置为 API 基础地址以启用。",
   "Sign in to use cloud sync.": "登录后即可使用云端同步。",
   "Cloud sync is optional and manual. The cloud coach is available while signed in. You can sign out at any time.":
-    "云端同步为可选的手动功能。云端教练尚未启用。你可以随时退出登录。",
+    "云端同步为可选的手动功能。登录后可使用云端教练。你可以随时退出登录。",
   "Manual sync available. Nothing uploads until you start it.":
     "可手动同步。在你开始之前不会上传任何内容。",
   "Cloud sync is not configured in this build. Your workouts stay on this device.":

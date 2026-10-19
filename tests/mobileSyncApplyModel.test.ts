@@ -21,6 +21,7 @@ import {
 import type { SyncConflict } from "../mobile/src/sync/syncModel.ts";
 import { planSync } from "../mobile/src/sync/syncModel.ts";
 import { runWorkoutSync } from "../mobile/src/sync/syncRunner.ts";
+import type { SyncRunAccount } from "../mobile/src/sync/syncRunner.ts";
 import type { SyncConfig } from "../mobile/src/sync/syncConfig.ts";
 
 /**
@@ -36,6 +37,22 @@ const CONFIGURED: SyncConfig = {
 };
 
 const ZERO_COUNTS = { pushed: 0, pulled: 0, identical: 0, conflicts: 0 } as const;
+
+/** The account and token pinned when the user started every ordinary run. */
+const ACCOUNT_A: SyncRunAccount = {
+  userId: "user-a",
+  accessToken: "test-access-token",
+};
+
+/** A second account, used to simulate a sign-out/sign-in mid-run. */
+const ACCOUNT_B: SyncRunAccount = {
+  userId: "user-b",
+  accessToken: "test-access-token-b",
+};
+
+function fixedAccount(): SyncRunAccount {
+  return ACCOUNT_A;
+}
 
 function record(id: string, overrides: Partial<WorkoutRecord> = {}): WorkoutRecord {
   return {
@@ -103,6 +120,8 @@ interface FakeClientOptions {
   listErrorOnce?: unknown;
   /** Throw on the first create call only; no retry is expected. */
   createErrorOnce?: unknown;
+  /** Throw when creating this id, after any earlier creates succeeded. */
+  createErrorForId?: { id: string; error: unknown };
   /**
    * Simulate another device writing the id between the plan and the push.
    * The returned record is stored cloud-side and the create answers 409.
@@ -132,6 +151,9 @@ function createClient(
       calls.creates.push(entry.id);
       if (options.createErrorOnce !== undefined && calls.creates.length === 1) {
         throw options.createErrorOnce;
+      }
+      if (options.createErrorForId?.id === entry.id) {
+        throw options.createErrorForId.error;
       }
       const raced = options.conflictOnCreate?.(entry);
       if (raced !== undefined) {
@@ -301,7 +323,8 @@ test("runner pulls remote-only, pushes local-only, and preserves both conflict o
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "done");
@@ -345,7 +368,8 @@ test("a CONFLICT while inserting locally becomes a conflict, not a failed run", 
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "done");
@@ -373,7 +397,8 @@ test("a 409 on push re-reads the cloud and pairs the remote original", async () 
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "done");
@@ -396,8 +421,14 @@ test("runner aborts before reading when no signed-in token is supplied", async (
   for (const accessToken of [null, undefined, "", "   "]) {
     const repository = createRepository([record("a")]);
     const client = createClient([]);
+    const account: SyncRunAccount = { userId: "user-a", accessToken };
 
-    const result = await runWorkoutSync({ repository, client, accessToken });
+    const result = await runWorkoutSync({
+      repository,
+      client,
+      account,
+      getCurrentAccount: () => account,
+    });
 
     assert.deepEqual(result, {
       status: "aborted",
@@ -421,7 +452,8 @@ test("runner aborts before reading when cloud sync is unconfigured", async () =>
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.deepEqual(result, {
@@ -442,7 +474,8 @@ test("runner aborts cleanly when the initial cloud read is offline", async () =>
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "aborted");
@@ -461,7 +494,8 @@ test("a network failure during push is not retried and reports what completed", 
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "failed");
@@ -486,7 +520,8 @@ test("classified auth failures from a read stay auth failures on an aborted run"
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "aborted");
@@ -503,7 +538,8 @@ test("an identical duplicate returned by the local save still counts as pulled",
   const result = await runWorkoutSync({
     repository,
     client,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "done");
@@ -535,7 +571,8 @@ test("pushes of duplicate cloud records count as pushed without a conflict", asy
   const result = await runWorkoutSync({
     repository,
     client: hiddenThenVisible,
-    accessToken: "test-access-token",
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
   });
 
   assert.equal(result.status, "done");
@@ -547,4 +584,142 @@ test("pushes of duplicate cloud records count as pushed without a conflict", asy
     conflicts: 0,
   });
   assert.deepEqual(client.calls.creates, ["already-cloud"]);
+});
+
+test("runner aborts before reading when the pinned account id is missing", async () => {
+  for (const userId of [null, undefined, "", "   "]) {
+    const repository = createRepository([record("a")]);
+    const client = createClient([]);
+    const account: SyncRunAccount = { userId, accessToken: "test-access-token" };
+
+    const result = await runWorkoutSync({
+      repository,
+      client,
+      account,
+      getCurrentAccount: () => account,
+    });
+
+    assert.deepEqual(result, {
+      status: "aborted",
+      failure: "auth",
+      abortReason: "unauthenticated",
+      counts: ZERO_COUNTS,
+      conflicts: [],
+    });
+    assert.equal(repository.calls.list, 0);
+    assert.equal(client.calls.list, 0);
+    assert.deepEqual(repository.calls.saves, []);
+    assert.deepEqual(client.calls.creates, []);
+  }
+});
+
+test("runner stops before the next write when the account or token changes", async () => {
+  const changes: SyncRunAccount[] = [
+    { userId: ACCOUNT_B.userId, accessToken: ACCOUNT_A.accessToken },
+    { userId: ACCOUNT_A.userId, accessToken: "rotated-token" },
+  ];
+
+  for (const changed of changes) {
+    const first = record("a-first");
+    const second = record("b-second");
+    const repository = createRepository([first, second]);
+    const client = createClient([]);
+    let checks = 0;
+
+    const result = await runWorkoutSync({
+      repository,
+      client,
+      account: ACCOUNT_A,
+      getCurrentAccount: () => {
+        checks += 1;
+        return checks === 1 ? ACCOUNT_A : changed;
+      },
+    });
+
+    assert.equal(result.status, "failed", `${changed.userId}/${changed.accessToken}`);
+    assert.equal(result.failure, "auth");
+    assert.equal(result.abortReason, null);
+    assert.deepEqual(client.calls.creates, ["a-first"], "only the write before the change lands");
+    assert.deepEqual(repository.calls.saves, []);
+    assert.equal(client.stored.has(second.id), false, "the second upload never starts");
+  }
+});
+
+test("runner stops before a local insert when the account is no longer current", async () => {
+  const remote = record("remote-only");
+  const repository = createRepository([]);
+  const client = createClient([remote]);
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => ACCOUNT_B,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure, "auth");
+  assert.deepEqual(repository.calls.saves, [], "no local write after the account change");
+  assert.equal(repository.stored.has(remote.id), false);
+  assert.deepEqual(client.calls.creates, []);
+});
+
+test("a later push failure still returns conflicts collected earlier", async () => {
+  const conflictLocal = record("a-conflict", { notes: "device version" });
+  const failedLocal = record("b-fail");
+  const notAttempted = record("c-not-attempted");
+  const cloud = record("a-conflict", { notes: "cloud version" });
+  const repository = createRepository([conflictLocal, failedLocal, notAttempted]);
+  const client = createClient([], {
+    conflictOnCreate: (entry) => (entry.id === conflictLocal.id ? cloud : undefined),
+    createErrorForId: { id: failedLocal.id, error: new NetworkError() },
+  });
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure, "offline");
+  assert.deepEqual(
+    client.calls.creates,
+    [conflictLocal.id, failedLocal.id],
+    "no upload starts after the failure",
+  );
+  assert.deepEqual(result.conflicts.map((entry) => entry.id), [conflictLocal.id]);
+  assert.equal(result.counts.conflicts, 1);
+  assert.equal(result.conflicts[0]?.local, conflictLocal);
+  assert.equal(result.conflicts[0]?.remote, cloud);
+  assert.equal(client.stored.has(notAttempted.id), false, "the later upload never starts");
+});
+
+test("an account change with a pending push conflict still returns that conflict", async () => {
+  const conflictLocal = record("a-conflict", { notes: "device version" });
+  const notAttempted = record("b-not-attempted");
+  const cloud = record("a-conflict", { notes: "cloud version" });
+  const repository = createRepository([conflictLocal, notAttempted]);
+  const client = createClient([], {
+    conflictOnCreate: (entry) => (entry.id === conflictLocal.id ? cloud : undefined),
+  });
+  let checks = 0;
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => {
+      checks += 1;
+      return checks === 1 ? ACCOUNT_A : ACCOUNT_B;
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure, "auth");
+  assert.deepEqual(client.calls.creates, [conflictLocal.id], "the next upload is stopped");
+  assert.deepEqual(result.conflicts.map((entry) => entry.id), [conflictLocal.id]);
+  assert.equal(result.counts.conflicts, 1);
+  assert.equal(client.stored.has(notAttempted.id), false, "the later upload never starts");
 });

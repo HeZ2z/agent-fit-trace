@@ -1,12 +1,13 @@
 import { displaySessionType } from "@pi-fit-trace/i18n/domain";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Share, StyleSheet, View } from "react-native";
 
 import { useAuth } from "@/auth";
 import { useWorkoutData } from "@/data/provider";
 import { useI18n } from "@/i18n";
 import {
+  abortSyncRun,
   acknowledgeSyncConflict,
   conflictExportJson,
   decideSyncConflict,
@@ -15,7 +16,7 @@ import {
 } from "@/sync/syncApplyModel";
 import { WorkoutSyncClient } from "@/sync/syncClient";
 import type { SyncConflict } from "@/sync/syncModel";
-import { runWorkoutSync } from "@/sync/syncRunner";
+import { runWorkoutSync, type SyncRunAccount } from "@/sync/syncRunner";
 import { SPACING } from "@/theme";
 import { Banner, Body, Button, Card, Display, Kicker, Screen, Title } from "@/ui";
 
@@ -25,7 +26,9 @@ import { Banner, Body, Button, Card, Display, Kicker, Screen, Title } from "@/ui
  * The screen owns only UI lifecycle (idle/syncing/done/error). All writes go
  * through `runWorkoutSync`; conflict acknowledgements only edit the current
  * result in memory. Nothing persists, so the next manual sync plans the same
- * unresolved local/cloud difference again.
+ * unresolved local/cloud difference again. Each run pins the signed-in account
+ * and token, and an account switch or unmount stops later writes and discards
+ * any late result.
  */
 
 const copy = {
@@ -112,7 +115,7 @@ function failedRunMessage(
 export default function SyncScreen() {
   const router = useRouter();
   const { language, t } = useI18n();
-  const { status: authStatus, getAccessToken } = useAuth();
+  const { status: authStatus, getAccessToken, user } = useAuth();
   const {
     status: dataStatus,
     repository,
@@ -129,6 +132,44 @@ export default function SyncScreen() {
   // this keeps the "no conflicts" claim truthful until the next run resets it.
   const [acknowledged, setAcknowledged] = useState(0);
 
+  // Every run captures the generation at its start. Account switches and
+  // unmounts bump it, so a late result or share-sheet return can never apply to
+  // a different identity or a screen that is gone.
+  const mountedRef = useRef(true);
+  const runGenerationRef = useRef(0);
+  // The live identity is read by the runner from the committed render, not from
+  // the render that started the run.
+  const activeUserIdRef = useRef<string | null>(user?.id ?? null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      runGenerationRef.current += 1;
+    };
+  }, []);
+
+  // A sign-out or account switch invalidates the in-memory result: it belongs
+  // to the account that ran the sync, never to whoever is signed in now. A
+  // token-only refresh keeps the same account and is caught by the runner's
+  // per-write token comparison instead.
+  useEffect(() => {
+    activeUserIdRef.current = user?.id ?? null;
+    runGenerationRef.current += 1;
+    setStatus("idle");
+    setResult(null);
+    setShareError(false);
+    setAcknowledged(0);
+  }, [authStatus, user?.id]);
+
+  // The runner calls this immediately before each write. After unmount, or once
+  // the live identity no longer matches the pinned one, it returns a null
+  // identity and the run stops before touching another account.
+  const getCurrentAccount = useCallback((): SyncRunAccount => {
+    if (!mountedRef.current) return { userId: null, accessToken: null };
+    return { userId: activeUserIdRef.current, accessToken: getAccessToken() };
+  }, [getAccessToken]);
+
   const signedIn = authStatus === "signed-in";
   const configured = client.config.status === "configured";
   const busy = status === "syncing";
@@ -144,6 +185,25 @@ export default function SyncScreen() {
 
   async function handleSync(): Promise<void> {
     if (!canRun || repository === null) return;
+    const accessToken = getAccessToken();
+    const userId = user?.id ?? null;
+    if (
+      accessToken === null ||
+      accessToken.trim() === "" ||
+      userId === null ||
+      userId.trim() === ""
+    ) {
+      setResult(abortSyncRun("auth", "unauthenticated"));
+      setStatus("error");
+      return;
+    }
+
+    // Pin the account for the whole run and bind the client to its token, so
+    // no request can silently switch to a newer sign-in.
+    const account: SyncRunAccount = { userId, accessToken };
+    const runClient = client.withAccessToken(accessToken);
+    const generation = runGenerationRef.current + 1;
+    runGenerationRef.current = generation;
     setStatus("syncing");
     setResult(null);
     setShareError(false);
@@ -151,12 +211,15 @@ export default function SyncScreen() {
     try {
       const next = await runWorkoutSync({
         repository,
-        client,
-        accessToken: getAccessToken(),
+        client: runClient,
+        account,
+        getCurrentAccount,
       });
+      if (!mountedRef.current || runGenerationRef.current !== generation) return;
       setResult(next);
       setStatus(next.status === "done" ? "done" : "error");
     } catch {
+      if (!mountedRef.current || runGenerationRef.current !== generation) return;
       // The runner reports expected failures as data; this is a last resort.
       setResult(null);
       setStatus("error");
@@ -172,6 +235,7 @@ export default function SyncScreen() {
   }
 
   async function shareConflict(conflict: SyncConflict): Promise<void> {
+    const generation = runGenerationRef.current;
     try {
       const shared = await Share.share({
         title: t(copy.exportTitle),
@@ -179,9 +243,11 @@ export default function SyncScreen() {
       });
       // A dismissed share did not give the user the JSON; keep the row.
       if (shared.action === Share.dismissedAction) return;
+      if (!mountedRef.current || runGenerationRef.current !== generation) return;
       setShareError(false);
       acknowledge(conflict);
     } catch {
+      if (!mountedRef.current || runGenerationRef.current !== generation) return;
       setShareError(true);
     }
   }
