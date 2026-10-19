@@ -108,6 +108,33 @@ async function readBody(
   });
 }
 
+/**
+ * Query marker used by the `vercel.json` rewrites for cloud run subpaths.
+ *
+ * Vercel's filesystem routing matches only one segment for bracket route
+ * segments, so `/coaching/cloud/runs/:id/events` and
+ * `/coaching/cloud/runs/:id/cancel` are rewritten to the nearest single-segment
+ * Function with this marker. `applyCloudSubpathRewrite` restores the logical
+ * path before routing so the shared handler sees the documented URL.
+ */
+const CLOUD_SUBPATH_QUERY_KEY = "__fit_trace_cloud_op";
+const CLOUD_SUBPATH_SEGMENTS = new Set(["events", "cancel"]);
+
+/**
+ * Restore a rewritten cloud run subpath in place. Only the two documented
+ * subpaths are accepted; every other value is ignored (and the marker removed)
+ * so a caller cannot inject arbitrary path segments. Unrelated query
+ * parameters such as `fromSeq` are preserved when the platform forwards them.
+ */
+export function applyCloudSubpathRewrite(url: URL): boolean {
+  const op = url.searchParams.get(CLOUD_SUBPATH_QUERY_KEY);
+  if (op === null) return false;
+  url.searchParams.delete(CLOUD_SUBPATH_QUERY_KEY);
+  if (!CLOUD_SUBPATH_SEGMENTS.has(op)) return false;
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/${op}`;
+  return true;
+}
+
 /** Route one Vercel request through the shared authenticated handler. */
 export async function handleVercelApi(
   request: VercelRequestLike,
@@ -159,6 +186,9 @@ export async function handleVercelApi(
 
   // Strip the `/api/v1` mount prefix so the shared handlers see bare routes.
   const url = new URL(rawUrl, "http://fit-trace.invalid");
+  // Vercel rewrites the two multi-segment cloud run subpaths to the nearest
+  // single-segment Function; restore the documented path before routing.
+  applyCloudSubpathRewrite(url);
   const route = `${url.pathname.replace(/^\/api\/v1(?=\/|$)/, "")}${url.search}`;
 
   // Durable cloud coaching has its own authenticated handler. It uses the

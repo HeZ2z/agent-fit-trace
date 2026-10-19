@@ -8,6 +8,14 @@
     "api/**/*.mjs": { "includeFiles": "build/server/**" }
   },
   "rewrites": [
+    {
+      "source": "/api/v1/coaching/cloud/runs/:id/events",
+      "destination": "/api/v1/coaching/cloud/runs/:id?__fit_trace_cloud_op=events"
+    },
+    {
+      "source": "/api/v1/coaching/cloud/runs/:id/cancel",
+      "destination": "/api/v1/coaching/cloud/runs/:id?__fit_trace_cloud_op=cancel"
+    },
     { "source": "/((?!api(?:/|$)|assets(?:/|$)).*)", "destination": "/index.html" }
   ],
   "headers": [
