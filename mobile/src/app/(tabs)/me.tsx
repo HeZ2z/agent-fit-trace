@@ -1,9 +1,11 @@
 import { useRouter } from "expo-router";
+import { useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { authErrorMessage, useAuth } from "@/auth";
 import { useI18n } from "@/i18n";
 import { usePreferences } from "@/preferences";
+import { readSyncConfig } from "@/sync/syncClient";
 import { SPACING, TYPOGRAPHY } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
@@ -28,12 +30,19 @@ const copy = {
   accountKicker: "ACCOUNT",
   signedIn: "Signed in",
   accountFallback: "Account",
-  signedInBody: "Sync and the cloud coach are not enabled yet. You can sign out at any time.",
+  signedInBody:
+    "Cloud sync is optional and manual. The cloud coach is not enabled yet. You can sign out at any time.",
   prefsSyncing: "Saving preferences to your account…",
   prefsSynced: "Preferences are saved to your account.",
   prefsSyncError:
     "Preferences could not be saved to your account. Your choices still apply on this device.",
   guestNote: "Local-only on this device. Sync and the cloud coach arrive in a later update.",
+  syncKicker: "SYNC",
+  syncTitle: "Cloud sync",
+  syncReady: "Manual sync available. Nothing uploads until you start it.",
+  syncUnconfigured:
+    "Cloud sync is not configured in this build. Your workouts stay on this device.",
+  syncOpen: "Open sync",
   restoring: "Restoring your account…",
   unconfigured:
     "Account sign-in is not configured in this build. Your workouts stay on this device.",
@@ -66,6 +75,9 @@ export default function MeScreen() {
   const { palette } = tokens;
   const isPixel = skin === "pixel";
   const signedIn = status === "signed-in";
+  // The build-level API configuration is static; a signed-in user still sees
+  // whether this build can reach the cloud before opening the manual screen.
+  const syncConfigured = useMemo(() => readSyncConfig().status === "configured", []);
   const languageBody =
     language === "zh" ? copy.languageChineseBody : copy.languageEnglishBody;
   const preferencesSyncMessage =
@@ -157,6 +169,24 @@ export default function MeScreen() {
           </View>
         </View>
       </Card>
+
+      {signedIn ? (
+        <Card testID="me-sync-section">
+          <Kicker>{t(copy.syncKicker)}</Kicker>
+          <Title>{t(copy.syncTitle)}</Title>
+          <Body testID="me-sync-status" tone={syncConfigured ? "muted" : "warn"}>
+            {t(syncConfigured ? copy.syncReady : copy.syncUnconfigured)}
+          </Body>
+          <Button
+            accessibilityLabel={t(copy.syncOpen)}
+            fullWidth
+            label={t(copy.syncOpen)}
+            onPress={() => router.push("/sync")}
+            testID="me-sync-open"
+            variant="secondary"
+          />
+        </Card>
+      ) : null}
 
       <View style={styles.section}>
         <Title>{t(copy.appearanceTitle)}</Title>

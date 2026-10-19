@@ -145,6 +145,63 @@ export const messages: Record<string, string> = {
   Back: "返回",
   "Go back": "返回",
 
+  /* ── Cloud sync ──────────────────────────────────────────────── */
+  SYNC: "同步",
+  "Cloud sync": "云端同步",
+  "Optional and manual. Nothing is uploaded until you start a sync; your device stays the source of truth.":
+    "可选且手动。在你开始同步之前不会上传任何内容；你的设备始终是数据的权威来源。",
+  "Sync status": "同步状态",
+  Idle: "空闲",
+  "Syncing…": "正在同步…",
+  Done: "完成",
+  Error: "错误",
+  "Sync now": "立即同步",
+  "This run": "本次同步",
+  "Pushed: {count}": "已上传：{count}",
+  "Pulled: {count}": "已拉取：{count}",
+  "Identical: {count}": "相同：{count}",
+  Conflicts: "冲突",
+  "Same workout id, different content. Nothing is overwritten and nothing is deleted.":
+    "相同的训练 id、不同的内容。系统不会覆盖任何一方，也不会删除任何记录。",
+  "Acknowledging a conflict removes it from this result only. Nothing is deleted and nothing is uploaded.":
+    "确认冲突只会将其从本次结果中移除。不会删除任何内容，也不会自动上传。",
+  "Workout records are immutable, so the same conflict appears again on the next manual sync; keeping the cloud copy does not delete your device copy.":
+    "训练记录不可变，因此同一冲突会在下次手动同步时再次出现；保留云端副本不会删除你设备上的副本。",
+  "Device copy: {date} · {type}": "设备副本：{date} · {type}",
+  "Cloud copy: {date} · {type}": "云端副本：{date} · {type}",
+  "Keep cloud": "保留云端",
+  "Keep local only": "仅保留本地",
+  "Export local": "导出本地",
+  "Keep cloud for {id}": "保留 {id} 的云端版本",
+  "Keep local only for {id}": "仅保留 {id} 的本地版本",
+  "Export local for {id}": "导出 {id} 的本地记录",
+  "Export local record": "导出本地记录",
+  "Device-only copy of this workout": "此训练的设备本地副本",
+  "Could not open the share sheet. The conflict is still listed here.":
+    "无法打开分享面板。此冲突仍保留在列表中。",
+  "No conflicts. Local and cloud records agree where they overlap.":
+    "没有冲突。本地与云端重叠的记录内容一致。",
+  "Conflict acknowledged for this run only. Nothing was deleted or uploaded; it will appear again on the next manual sync.":
+    "此冲突仅在本次同步中确认。未删除或上传任何内容；它会在下次手动同步时再次出现。",
+  "You appear to be offline. Nothing was uploaded; local workouts stay on this device. Try again when you reconnect.":
+    "似乎已离线。未上传任何内容；本地训练仍保存在此设备上。重新联网后再试。",
+  "Your session is no longer valid. Sign in again to sync.":
+    "你的会话已失效。请重新登录后再同步。",
+  "The cloud rejected a write because the same id already exists with different content. No cloud record was overwritten.":
+    "云端拒绝了写入，因为相同的 id 已存在且内容不同。没有覆盖任何云端记录。",
+  "Sync could not finish. Nothing was overwritten; try again when the service is available.":
+    "同步未能完成。没有覆盖任何内容；请在服务可用时重试。",
+  "Cloud sync is not configured in this build. Set EXPO_PUBLIC_FIT_TRACE_API_URL to the API base URL to enable it.":
+    "此版本未配置云端同步。请将 EXPO_PUBLIC_FIT_TRACE_API_URL 设置为 API 基础地址以启用。",
+  "Sign in to use cloud sync.": "登录后即可使用云端同步。",
+  "Cloud sync is optional and manual. The cloud coach is not enabled yet. You can sign out at any time.":
+    "云端同步为可选的手动功能。云端教练尚未启用。你可以随时退出登录。",
+  "Manual sync available. Nothing uploads until you start it.":
+    "可手动同步。在你开始之前不会上传任何内容。",
+  "Cloud sync is not configured in this build. Your workouts stay on this device.":
+    "此版本未配置云端同步。训练记录仍保存在此设备上。",
+  "Open sync": "打开同步",
+
   /*
    * Proper names. The identity values are intentional: language endonyms are
    * shown in their own language (the same as the web switcher), and the skin
