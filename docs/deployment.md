@@ -141,6 +141,7 @@ The outbox worker is a long-running process and must not be deployed as a
 Vercel Function. Run it in a container, VM, or equivalent process host:
 
 ```sh
+# Optional: FIT_TRACE_CLOUD_AGENT=builtin|pi-agent-core (default: builtin)
 FIT_TRACE_CLOUD_ENABLED=1 \
 SUPABASE_URL=https://<project>.supabase.co \
 SUPABASE_PUBLISHABLE_KEY=<publishable key> \
@@ -155,10 +156,21 @@ publishable key or looks like a publishable key. The worker process claims one
 job per tick and then sleeps; it never spawns child processes or serverless
 functions.
 
+`FIT_TRACE_CLOUD_AGENT` selects the worker's agent loop. `builtin` is the
+default and the unchanged native-`fetch` loop. `pi-agent-core` embeds pi's real
+agent loop in the worker (see
+[ADR 0002](adr/0002-cloud-pi-agent-runtime.md)); it is still the same bounded
+two-tool, snapshot-bound provider seam. The value is worker-only, is
+case-sensitive, and an unrecognised value makes the worker refuse to start
+rather than silently selecting a runtime. Leave it unset or blank to keep the
+builtin loop. ADR 0002 supersedes ADR 0001 §7's "no provider SDK" statement for
+this scoped worker runtime.
+
 Safe defaults (all bounded; values are clamped in `server/cloud/config.ts`):
 
 | Variable | Default | Bound |
 | --- | --- | --- |
+| `FIT_TRACE_CLOUD_AGENT` | `builtin` | `builtin` \| `pi-agent-core` (anything else fails startup) |
 | `FIT_TRACE_OPENROUTER_MAX_STEPS` | `4` | `1..8` |
 | `FIT_TRACE_OPENROUTER_MAX_TOKENS` | `2048` | `128..8192` |
 | `FIT_TRACE_OPENROUTER_MAX_TOKENS_PER_STEP` | `512` | `64..4096` |

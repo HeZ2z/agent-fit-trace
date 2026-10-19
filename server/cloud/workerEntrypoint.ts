@@ -6,16 +6,20 @@
  *   FIT_TRACE_CLOUD_ENABLED=1 \
  *   SUPABASE_URL=... SUPABASE_PUBLISHABLE_KEY=... SUPABASE_SERVICE_ROLE_KEY=... \
  *   FIT_TRACE_OPENROUTER_API_KEY=... FIT_TRACE_OPENROUTER_MODEL=... \
+ *   FIT_TRACE_CLOUD_AGENT=builtin|pi-agent-core \
  *   node server/cloud/workerEntrypoint.ts
  *
  * It never spawns a serverless function or a child process. If the kill
- * switch is off or any required secret is missing, it exits non-zero; it
- * never starts with an unconfigured provider.
+ * switch is off, any required secret is missing, or the agent runtime name is
+ * invalid, it exits non-zero; it never starts with an unconfigured provider.
  */
 import { pathToFileURL } from "node:url";
 import { readCloudWorkerEnv } from "./config.ts";
+import type { CloudWorkerEnv } from "./config.ts";
 import { createCloudOutboxWorker, runCloudWorkerLoop } from "./outboxWorker.ts";
+import type { CloudCoachingProvider } from "./openRouterProvider.ts";
 import { createOpenRouterProvider } from "./openRouterProvider.ts";
+import { createPiAgentProvider } from "./piAgentProvider.ts";
 import { createSupabaseCoachingWorkerRepository } from "./supabaseCoachingRepository.ts";
 
 export interface CloudWorkerRuntimeOptions {
@@ -26,6 +30,22 @@ export interface CloudWorkerRuntimeOptions {
 export interface CloudWorkerRuntime {
   stop(): void;
   done: Promise<void>;
+}
+
+/**
+ * Select the worker's agent loop. `builtin` remains the default and unchanged
+ * path; `pi-agent-core` embeds pi's real loop behind the same provider seam.
+ * Configuration validation already rejected unknown values, so this switch
+ * only chooses between two known implementations.
+ */
+export function createCloudWorkerProvider(
+  env: CloudWorkerEnv,
+  options: { fetchImpl?: typeof fetch } = {},
+): CloudCoachingProvider {
+  const fetchOption = options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl };
+  return env.agent === "pi-agent-core"
+    ? createPiAgentProvider({ config: env.provider, ...fetchOption })
+    : createOpenRouterProvider({ config: env.provider, ...fetchOption });
 }
 
 /** Start the bounded poll loop. One worker process, no child processes. */
@@ -42,7 +62,7 @@ export function startCloudWorkerRuntime(options: CloudWorkerRuntimeOptions = {})
     supabaseUrl: env.supabase.supabaseUrl,
     serviceRoleKey: env.serviceRoleKey,
   });
-  const provider = createOpenRouterProvider({ config: env.provider });
+  const provider = createCloudWorkerProvider(env);
   const worker = createCloudOutboxWorker({
     repository,
     provider,
@@ -76,7 +96,7 @@ if (invokedAsMain) {
   const runtime = startCloudWorkerRuntime();
   if (runtime === null) {
     console.error(
-      "cloud worker not started: set FIT_TRACE_CLOUD_ENABLED=1, Supabase URL/publishable/service keys, and FIT_TRACE_OPENROUTER_API_KEY/MODEL",
+      "cloud worker not started: set FIT_TRACE_CLOUD_ENABLED=1, Supabase URL/publishable/service keys, FIT_TRACE_OPENROUTER_API_KEY/MODEL, and FIT_TRACE_CLOUD_AGENT=builtin|pi-agent-core",
     );
     process.exitCode = 1;
   } else {
