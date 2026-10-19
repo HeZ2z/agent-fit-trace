@@ -9,60 +9,74 @@ semantics, transport, coaching and visual rules stay governed by
 [`docs/mvp-design.md`](mvp-design.md), [`docs/api-contract.md`](api-contract.md),
 [`docs/ui-design.md`](ui-design.md) and [`docs/deployment.md`](deployment.md).
 
-## Status at PR1
+## Status at PR3
 
-PR1 is the foundation slice: Expo scaffold, shared design tokens, the six-tab
-Pixel/Glass shell and the shared English/Chinese display layer. Persistence,
-authentication, sync and mobile coaching are later PRs.
-**Implemented** means present in the tree; **planned** means designed but not
-written.
+The tree now contains the PR1 shell, the PR2 local-first data layer and the PR3
+account, preference, sync and hosted-coach layer. **Implemented** means present
+in the tree; **planned** means designed but not written. Android is the only
+configured native target.
 
 | Area | Implemented now | Planned |
 | --- | --- | --- |
-| App | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict | Data-backed screen content |
-| Shell | Root stack, six-tab dock, shared UI primitives | Behavior beyond placeholders |
-| Tokens | `@pi-fit-trace/ui-tokens`, Pixel/Glass palettes and layout tokens | Font loading and full Glass polish |
-| Data/auth | SQLite dependency; auth placeholder route | Store/migrations; SecureStore sign-in, account preferences, workout sync |
-| Coach/language | Placeholder Coach tab; working English/Simplified Chinese switcher with system-language default | Cloud pi screen |
+| App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; six-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
+| Local data | SQLite workout store, migrations, validation on read and write; History, Log, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
+| Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
+| Account preferences | Skin and language mirrored to Supabase `user_metadata`; account wins on sign-in; write-through while signed in | — |
+| Sync | Manual workout pull/push, content-ID idempotency and three device-only conflict choices | Background sync; persistent conflict acknowledgement |
+| Hosted coach | Signed-in hosted coaching with session/snapshot/run flow, SSE, cancel and mapped errors | — |
+| Notifications | None; coaching and sync are foreground-only | Push notifications |
+| Platforms | Android-first; EAS preview APK and linked Expo project | iOS build and device verification |
+| Quality gates | Ten mobile `node:test` suites, mobile typecheck and Android export pass locally | Mobile typecheck/export in CI |
 
 ## Architecture and boundaries
 
 The client is local-first: the on-device database is the source of truth on that
-device; the network is optional and adds accounts, sync and cloud coaching. A
-guest can use the app without an account or connection.
+device; the network is optional and adds accounts, account preferences, manual
+sync and hosted coaching. A guest can use the app without an account or
+connection.
+
 Core owns domain logic, `api-contracts` record and transport shapes, and
 `ui-tokens` visual values; `@pi-fit-trace/i18n` owns the render-time dictionary.
-Presentation lives in `mobile/src/app` and `mobile/src/ui`; `mobile/src/i18n`
-provides the AsyncStorage/system-language adapter, while `mobile/src/data`
-(SQLite) and `mobile/src/auth` (identity) are planned. The app embeds no Node runtime, CLI
-launcher or pi process and never receives a service-role key; privileged work
-stays on the server and worker in [`docs/deployment.md`](deployment.md).
+Presentation lives in `mobile/src/app` and `mobile/src/ui`. The adapters are
+split by concern: `mobile/src/data` owns the SQLite store, `mobile/src/auth`
+owns identity, `mobile/src/preferences` reconciles account metadata,
+`mobile/src/sync` owns manual workout sync and `mobile/src/coach` owns hosted
+coaching. The app embeds no Node runtime, CLI launcher or local coach process
+and never receives a service-role key; privileged work stays on the server and
+worker in [`docs/deployment.md`](deployment.md).
 
 ### Repository layout
 
 | Path | State | Role |
 | --- | --- | --- |
-| `mobile/src/app/` | Implemented | Routes: root stack, six tabs, auth placeholder |
+| `mobile/src/app/` | Implemented | Routes: root stack, six tabs, invite-only sign-in, manual sync |
 | `mobile/src/theme/` | Implemented | Shared tokens; AsyncStorage-backed skin state |
 | `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, Banner, EmptyState, Screen, text |
-| `mobile/src/data/` | Planned | SQLite connection, workout store, import/export |
-| `mobile/src/auth/` | Planned | Session state, SecureStore, account preferences |
+| `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, log/analysis/plan models |
+| `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session and auth provider |
+| `mobile/src/preferences/` | Implemented | Account skin/language reconciliation provider |
+| `mobile/src/sync/` | Implemented | Sync config, client, pure plan, runner and conflict/apply model |
+| `mobile/src/coach/` | Implemented | Hosted coach config and client, SSE/reducer model and screen model |
 | `mobile/src/i18n/` | Implemented | Language store and provider over the shared dictionary |
 | `packages/fit-trace-ui-tokens/` | Implemented | Shared token contract for web and native |
 | `packages/fit-trace-i18n/` | Implemented | Shared render-time dictionary and domain helpers |
 
-The root layout wraps the router in `SafeAreaProvider`, `SkinProvider` and
-`I18nProvider` and paints the shell. `index.tsx` redirects to a six-tab shell; all tabs are
-placeholders except Me, which hosts skin, language and sign-in controls.
+The root layout nests `SafeAreaProvider`, `I18nProvider`, `SkinProvider`,
+`WorkoutDataProvider`, `AuthProvider` and `PreferencesProvider`, in that order.
+`index.tsx` opens History. The six tabs are History, Log, Analysis, Plan, Coach
+and Me; Me hosts account, appearance, language, sign-out and the manual sync
+entry. The sign-in and sync screens are stack routes outside the dock. There are
+no placeholder tabs left.
 
-## Data model and sync plan
+## Data model
 
 ### Local store
 
-`expo-sqlite` will hold workouts on the device. Reads and writes go through the
-local store first, so logging, history and analysis stay usable offline. Core
-validation runs before persistence, and records are canonical JSON with the same
-field names and values as the API and export shapes:
+`expo-sqlite` holds workouts in `fit-trace.db` inside the app sandbox. Reads and
+writes go through the local store first, so logging, history, analysis and the
+plan draft stay usable offline. Core validation runs before persistence, and
+records are canonical JSON with the same field names and values as the API and
+export shapes:
 
 ```json
 { "id": "wkt_2026-09-13_strength_1a2b3c4d", "schema_version": 1, "date": "2026-09-13",
@@ -74,39 +88,101 @@ The shape is defined in
 Exercise names, notes, dates and source strings stay canonical English; interface
 language never changes a stored record.
 
+The `workouts` table keeps the canonical record in a `payload` column and
+denormalized `id`, `schema_version`, `date`, `session_type` and `created_at`
+columns; the payload remains the source of truth. Migrations are ordered and
+transactional under `PRAGMA user_version`; setup requires WAL mode and closes
+the handle if setup fails. Stored rows are re-validated on every read, and a
+malformed row raises `CORRUPT_STORE` instead of being treated as absent or
+returned as data.
+
+Saves use `INSERT ... ON CONFLICT(id) DO NOTHING`. An identical re-save is a
+no-op; the same id with different content is `CONFLICT`; there is no update or
+replace path. The Log form validates through the shared core before writing and
+asks for explicit confirmation when valid input carries a warning, such as zero
+reps. History orders records newest first by the instant the date denotes, then
+by date text and id, so offset timestamps still sort correctly.
+
+### Workout IDs
+
 Workout IDs are content-derived through
 [`deriveWorkoutId`](../packages/fit-trace-api-contracts/src/deriveWorkoutId.ts):
 the hash covers canonical content and excludes store-assigned `id` and
 `schema_version`, so identical content produces the same ID and is a no-op.
+A caller-supplied non-empty ID is preserved, which keeps retries idempotent
+across the local store and the cloud.
 
-### Sync after sign-in
-
-Cloud sync is optional, follows explicit sign-in and never uploads on its own.
-The first slice is **workouts**; artifacts, adoption and coaching follow.
-
-Creates are idempotent by ID. The server returns a new record for an unseen ID,
-a duplicate as a no-op, and a conflict when the same ID exists with different
-content (see [`docs/api-contract.md`](api-contract.md)). The conflict is reported
-to the user, who may keep the cloud copy, keep the local copy out of sync, or
-export the local record; no path overwrites either side. A failed or postponed
-sync does not block local use and never rewrites records before conflict resolution.
-
-## Authentication and preferences
+## Account and session
 
 A mobile guest is an unauthenticated local user. Unlike the web guest flow, the
 app creates no Supabase anonymous account and there is no hidden identity to
-upgrade later. Guest workouts stay local until the user signs in and opts in.
+upgrade later. Guest workouts stay local until the user signs in and starts a
+manual sync.
 
-Sign-in behavior is planned under `mobile/src/auth/` and uses the existing
-Supabase-backed account system and bearer-token API. The current
-`app/auth/sign-in` route is a placeholder with no input or network. Session tokens
-will be stored with `expo-secure-store`, never in AsyncStorage, which is not a
-secret store. After the first sign-in the user chooses a skin (Pixel or Glass) and
-an interface language; both are written to the account so they follow the user
-across devices, and the Me screen can change them later. They are display settings
-that never enter a workout record, snapshot, export or content digest. Account-level
-preference storage does not exist yet; the mobile skin is device-local in
-AsyncStorage, and the web keeps both choices in browser storage.
+Sign-in is invite-only email and password, using the existing Supabase account
+system. The client talks to Supabase Auth over its REST endpoints with
+`fetch` (no SDK): a password grant, a refresh grant, `GET /auth/v1/user` and
+`POST /auth/v1/logout`. There is no sign-up form, no anonymous sign-in, and no
+password-reset or email-verification deep link. An unconfirmed account receives
+its own mapped message but cannot complete the flow in the app yet.
+
+After a successful password grant the app fetches `GET /auth/v1/user` and uses
+that response as the account identity; the token response's user object is not
+authoritative. The same endpoint is the only place the anonymous and
+email-confirmed classification is accepted, and those fields are deliberately
+not cached. Only a signed-in session reaches account-backed preferences, sync
+and coach features; guests still get local skin, language and workouts.
+
+The session is stored with `expo-secure-store` under the versioned key
+`pi-fit-trace.auth.v1.mobile`; the cached value carries the tokens, expiry and
+user id/email, and deliberately drops the classification fields. Tokens never
+go to AsyncStorage, the workout database, exported JSON or logs. A SecureStore
+read/write failure falls back to a module-scoped in-memory copy so the current
+app session keeps working; only persistence across a restart is lost.
+
+| Auth state | Meaning |
+| --- | --- |
+| `loading` | Public Supabase config exists; the stored session is being restored |
+| `signed-out` | No usable session, or the user signed out |
+| `signed-in` | A session is active; refresh is scheduled before expiry |
+| `unconfigured` | The build has no valid Supabase URL/publishable key; local use still works |
+| `error` | A transient restore/refresh failure prevented using the session; the stored session is kept for a later retry |
+
+The access token is refreshed shortly before expiry and re-checked when the app
+returns to the foreground, since background timers can be suspended. A network,
+rate-limit or 5xx failure is transient and does not delete the stored session;
+only a definitive invalid or expired session clears it. Sign-out clears local
+identity and the stored session first, then attempts the server logout as a
+best-effort step.
+
+## Account preferences
+
+Skin and interface language remain device settings that are rendered from
+AsyncStorage (`pi-fit-trace:skin:v1` and `pi-fit-trace:lang:v1`). When a user is
+signed in, the app mirrors the same two choices into Supabase `user_metadata`
+under the `skin` and `language` keys. Guests make no account calls and behave
+exactly as before.
+
+Reconciliation happens once per signed-in identity:
+
+1. Read the account metadata through `GET /auth/v1/user`, after reading the
+   persisted local values so a failed account read cannot install a default over
+   a real device choice.
+2. Account values win per field. A value the account already has is applied
+   locally.
+3. A field the account lacks is uploaded from the device. On a first sign-in
+   this uploads both local choices once; an account with one value only receives
+   the missing field.
+4. Later explicit local changes while signed in are written through to the
+   account. Writes are serialized, merge the preference fields into the whole
+   `user_metadata` object so unrelated keys survive, and are loop-safe: applying
+   an account value updates the baseline before the local store re-renders, so
+   it is never echoed back as a redundant write.
+
+Account failures are non-blocking: the local choices stay active, Me reports a
+soft account-sync status, and the app keeps working offline. Preferences are
+display settings that never enter a workout record, snapshot, export or content
+digest.
 
 ### Interface language
 
@@ -123,23 +199,133 @@ display helpers; the web keeps its localStorage/DOM adapter in
 translated at render time and falling back to English for unknown keys. Mobile
 starts in the device language (Chinese locale selects Chinese, otherwise English)
 and remembers an explicit choice under the shared `pi-fit-trace:lang:v1` key; the
-Me screen switches it. A dictionary integrity test checks every slice, including
-the mobile-only shell copy.
+Me screen switches it, and while signed in the choice is written through to
+account metadata. A dictionary integrity test checks every slice, including the
+mobile shell and mobile coach copy.
 
-### Coach
+## Optional sync
 
-The mobile coach will use the hosted cloud pi path, the same one available on
-the web, subject to the account, quota and operator configuration in
-[`docs/deployment.md`](deployment.md). The local CLI coach remains a PC/desktop
-feature: mobile does not spawn pi, run a local model or hold provider keys. The
-Coach tab is a placeholder and makes no network calls.
+Cloud sync is optional, follows explicit sign-in and a manual tap, and never
+uploads on its own. It is reached from Me → Open sync. The run is disabled unless
+the auth state is `signed-in`, `EXPO_PUBLIC_FIT_TRACE_API_URL` resolves to a
+configured API base, the local database is open and no sync is already running.
+There is no background sync, scheduled upload or device backup.
+
+Only **workouts** are synchronized. Imported artifacts, plan adoption, coaching
+data and account preferences are not part of this flow; preferences use the
+Auth metadata path above.
+
+The sync plan is computed from two already-loaded lists and never writes. It
+partitions records by content id:
+
+| Device | Cloud | Planned action |
+| --- | --- | --- |
+| Present | Absent | Push the local record |
+| Absent | Present | Insert the cloud record locally |
+| Present, identical canonical content | Present | No-op, counted as identical |
+| Present, different canonical content | Present | Conflict, never auto-resolved |
+
+Every list is ordered by id, and the plan is stable regardless of input order.
+
+The runner reads both sides in parallel before any write. Remote-only records are
+inserted through the local repository, which never overwrites; a concurrent
+same-id local record becomes a conflict. Local-only records are posted one at a
+time to `POST /workouts`: `201` creates, `200` is an identical duplicate, and
+`409` is a same-id content difference. There is no retry loop; a non-conflict
+write failure stops later writes and reports what completed, and a 409 triggers
+one extra cloud read so both originals can be shown. The client bounds response
+bodies, validates every remote record and drops malformed entries rather than
+failing the whole list.
+
+Conflicts preserve both originals. Each offers three device-only choices:
+
+- **Keep cloud** and **Keep local only** acknowledge the difference for this
+  result; neither changes a record.
+- **Export local** shares the canonical local record as JSON through the system
+  share sheet and acknowledges the row when the share completes.
+
+None of the three uploads the local record, deletes either copy or rewrites the
+cloud original. Stored records are immutable, so an acknowledged conflict
+appears again on the next manual sync. Acknowledgement is deliberately not
+persisted in this slice.
+
+A failed or postponed sync does not block local use. Failures are classified as
+offline, auth, conflict or other, and the screen reports the corresponding
+message. The runner never logs tokens or workout content.
+
+## Hosted coach
+
+Mobile coaching uses the hosted cloud coach only. The Coach tab requires a
+configured `EXPO_PUBLIC_FIT_TRACE_API_URL` and a signed-in session. It
+renders a configuration hint when the API URL is missing, waits during auth
+restore, and otherwise offers sign-in; it makes no coaching network call until
+the `ready` gate is reached.
+
+Each ask follows the same flow:
+
+1. Reuse the conversation's coaching session, creating one lazily with
+   `POST /coaching/cloud/sessions`.
+2. Materialize a fresh read-only snapshot of the signed-in account's workouts
+   with `POST /coaching/cloud/snapshots`. The server derives the contents; the
+   client sends only the filter.
+3. Submit exactly one run with `POST /coaching/cloud/runs`, carrying the
+   session, prompt, read-only snapshot handle and a stable idempotency key.
+4. Subscribe to `GET /coaching/cloud/runs/:id/events?fromSeq=` and fold the
+   dense event sequence into the visible transcript.
+
+An empty snapshot (`recordCount: 0`) shows the empty-history message and submits
+no run. A new conversation resets the transcript but keeps the reusable session;
+signing out or switching accounts clears the session, transcript and any
+in-flight stream. The transcript itself is in memory only.
+
+Event streaming uses `expo/fetch` rather than the React Native global `fetch`,
+because the streaming response body must be readable incrementally. Cloud event
+GETs are replay-only SSE pages. A page that ends without the terminal is a normal
+boundary: the client resumes the same run from the last consumed sequence with
+bounded backoff and never repeats the run POST. The shared 1 MiB frame and 4 MiB
+page budgets are enforced, gaps and foreign or malformed frames are rejected,
+and a terminal envelope freezes the fold. One subscription's tail budget is 30
+minutes.
+
+Cancel means:
+
+- Detaching or closing the local stream never cancels the server run.
+- For a known non-terminal run, the screen sends
+  `POST /coaching/cloud/runs/:id/cancel`, then reattaches from the last consumed
+  sequence to observe the server's terminal.
+- A cancel requested before any run exists (during session or snapshot setup) is
+  a local cancellation because no run can exist yet.
+- A cancel requested while a submit is in flight waits for that submit to
+  resolve; if the submit created a run, the screen cancels it.
+- For a run that exists, only a server terminal (`completed`, `failed` or
+  `cancelled`) ends the turn, or a definitive `not-found` releases it. A failed
+  cancel stops claiming cancellation while the run stays live. A cancellation
+  before any run exists is the one local cancelled outcome, because there is
+  nothing server-side to confirm.
+
+The mobile client never starts a local agent, CLI process or model and holds no
+provider key. The client checks only configuration and sign-in; account
+eligibility, quota, provider availability, the global kill switch and per-run
+token budgets are enforced server-side. Failures are mapped to fixed,
+localizable copy for unauthenticated, forbidden, quota exhausted, kill switch,
+busy, conflict, not found, expired cursor, validation, rate limit, unavailable,
+network, timeout, malformed, cancelled and server cases. Raw server messages are
+never rendered as copy.
+
+The stream is foreground-only. There is no persisted run or cursor, no
+background execution, no push notification and no automatic resume after an app
+restart. Backgrounding or losing connectivity can suspend delivery; the run may
+still continue in the cloud, but the app cannot reconnect or cancel it after a
+restart. Unmounting the Coach screen, including a tab remount, detaches the
+stream without cancelling the run.
 
 ## Navigation and design system
 
 Screens live as Expo Router files under `mobile/src/app/`, with reusable
 components under `mobile/src/ui/`. Six bottom tabs use a token-driven dock with a
 blurred Glass variant, following [`docs/ui-design.md`](ui-design.md); Me holds
-skin, language and sign-in controls.
+account, skin, language and sign-out controls plus the manual sync entry. Sign-in
+and sync are stack routes.
 
 `@pi-fit-trace/ui-tokens` is the token contract. `src/palette.ts` mirrors web
 oklch custom properties as sRGB values because React Native color props are not
@@ -151,9 +337,10 @@ One token set serves both skins. Pixel uses 3dp rules, square corners and hard
 offset shadows; Glass uses hairlines, 8dp cards, blurred chrome and soft
 elevation. Shared components cover Button, Card, Chip, Field, Banner, EmptyState
 and text. `SkinProvider` defaults to Pixel and persists the choice in
-AsyncStorage; account-level sync of that choice is still planned. No font assets
-are bundled, so the Bricolage/DM Sans names fall back to platform fonts. The web
-touch-first rules apply: 44dp targets, visible labels and no colour-only state.
+AsyncStorage; the signed-in choice is mirrored to account metadata by
+`PreferencesProvider`. No font assets are bundled, so the Bricolage/DM Sans names
+fall back to platform fonts. The web touch-first rules apply: 44dp targets,
+visible labels and no colour-only state.
 
 ## Local development
 
@@ -166,6 +353,8 @@ Install once from the repository root with `pnpm install`.
 | `cd mobile && npx expo start` | Same dev server when working inside `mobile/` |
 | `pnpm mobile:typecheck` | Run `tsc --noEmit` with the mobile strict config |
 | `pnpm mobile:export:android` | Export the Android JS bundle and assets, not an APK |
+| `pnpm test:extension` | Run the root `node:test` suite, including the mobile model suites |
+| `node --test tests/mobile*.test.ts` | Run only the mobile model suites |
 
 Open the dev server in an Android emulator or on a device running the
 development build. Generated `android/` and `ios/` directories are ignored; the
@@ -175,100 +364,147 @@ project uses the Expo managed workflow and does not commit native folders.
 
 The root `pnpm typecheck` covers the root project and web app, not the mobile
 workspace, so run `pnpm mobile:typecheck` explicitly. CI runs `pnpm test` and
-`pnpm typecheck`; native builds and EAS are not part of PR CI.
+`pnpm typecheck`; the pure mobile model suites are part of the `node:test` run,
+but mobile typecheck, Expo export and native builds are not CI steps.
+
+## Configuration and deployment
+
+The three public values are read at build time. Expo inlines `EXPO_PUBLIC_*`
+variables into the bundle; `expo-constants` `extra` is supported as a fallback
+for local config files and EAS `app.config.*`. A missing value is a first-class
+`unconfigured` state, not a crash: local use continues.
+
+| Variable | Used by | Value |
+| --- | --- | --- |
+| `EXPO_PUBLIC_SUPABASE_URL` | Account sign-in, session and account preferences | Supabase project URL |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Account sign-in, session and account preferences | Supabase publishable (anon) key |
+| `EXPO_PUBLIC_FIT_TRACE_API_URL` | Manual sync and hosted coach | Full API base including `/api/v1`, for example `https://agent-fit-trace.vercel.app/api/v1` |
+
+For development, create `mobile/.env.local` (ignored by
+`mobile/.gitignore`) with those values. The `preview` profile resolves its values
+from the EAS `preview` environment; store all three there, and rebuild after a
+change because the bundle is built with the values inlined. Never put a
+service-role or provider key in any `EXPO_PUBLIC_*` variable; the app may hold
+only the publishable Supabase key and the public API base.
+
+The API URL must be an absolute `http(s)` URL with no credentials, query or
+fragment; a trailing slash is removed. Set the full base including `/api/v1`,
+because the sync client appends resource paths such as `/workouts` directly. The
+coach client also accepts an origin and normalizes it to `/api/v1`, but one full
+base should serve both.
 
 ## Android build and release
 
 [`mobile/eas.json`](../mobile/eas.json) defines `development` (internal APK,
 development client), `preview` (internal APK for device testing) and `production`
 (AAB, remote auto-increment, release candidate). `appVersionSource` is `remote`;
-the Android package is `com.pifittrace.app` in [`mobile/app.json`](../mobile/app.json).
+the Android package is `com.pifittrace.app` in
+[`mobile/app.json`](../mobile/app.json). The Expo project is already linked in
+`app.json`, so no `eas init` step is needed.
 
-Build from `mobile/` with a linked EAS project:
+Build from `mobile/` with an authenticated Expo account:
 
 ```sh
+cd mobile
 npx eas build -p android --profile preview
 npx eas build -p android --profile production
 ```
 
-Native builds are manual and only for fixed versions, not every commit. Checks
-stay light (typecheck, tests, `expo export`); build time is not spent on artifacts
-with no native change. `app.json` links no EAS project ID, so linking is a
-prerequisite.
+The preview command produces the internal APK used for device testing; the
+production command produces the release AAB. Native builds are manual and only
+for fixed versions, not every commit. Checks stay light (typecheck, tests,
+`expo export`); build time is not spent on artifacts with no native change. EAS
+only builds on demand, not from CI.
 
-Android is the only supported target in PR1. iOS is deferred until before the
-public store release; there is no iOS build configuration or verification yet.
+Android is the only supported target. iOS is deferred until before the public
+store release; there is no iOS build configuration or verification yet.
 
 ## Security and privacy
 
-- **Session tokens** will go to SecureStore. They never go to AsyncStorage,
-  workout records or exported JSON.
-- **No privileged keys in the app.** The client may use the public Supabase URL
-  and publishable key. Service-role and provider keys stay server- or worker-only,
-  consistent with [`docs/deployment.md`](deployment.md).
-- **SQLite is plaintext for now.** The planned database lives inside the Android
-  app sandbox without application-level encryption: a deliberate PR1 tradeoff that
-  avoids key management before authentication and keeps migrations simple. It
-  relies on the OS sandbox and device lock, so a rooted device, an included backup
-  or an export can expose data. Encryption is deferred and should be revisited
-  before sync or additional health fields land.
-- **Guest data stays local** until the user signs in and opts into sync. Cloud
-  sync sends records the user chose to store, not an automatic device backup.
+- **Session tokens live in SecureStore.** They never go to AsyncStorage, workout
+  records, exported JSON or logs. The in-memory fallback exists only for the
+  current process and is not persisted.
+- **No privileged keys in the app.** The client may use the public Supabase URL,
+  the publishable key and the public API base. Service-role and provider keys
+  stay server- or worker-only, consistent with
+  [`docs/deployment.md`](deployment.md).
+- **SQLite is plaintext.** The database lives inside the Android app sandbox
+  without application-level encryption: a deliberate tradeoff that avoids key
+  management and keeps migrations simple. It relies on the OS sandbox and device
+  lock, so a rooted device, an included backup or an export can expose data.
+  Encryption is deferred; because manual sync now sends selected workout records
+  to the account, treat the device sandbox and the cloud account as the current
+  protection boundary, and revisit encryption before additional health data or
+  background sync.
+- **Guest data stays local** until the user signs in and explicitly starts a
+  sync. Cloud sync sends the workouts the user chose to store in the account; it
+  is not an automatic device backup.
+- **The hosted coach reads a server-derived snapshot** of the signed-in account's
+  workouts. The transcript is held in memory on the device and is not persisted.
 - **Health-adjacent product.** Training tracking and safety signals are not
   medical advice or diagnosis, and copy makes no treatment claims.
 
 ## Verification status and known gaps
 
-The current tree passes `pnpm mobile:typecheck` and `expo export --platform
-android`; mobile typecheck is not part of root CI. The shell was verified once on
-a physical Android device through an EAS preview APK (vivo V2199A, Android 14):
-it rendered both skins and both interface languages. Data, auth, sync and coach
-behavior are not implemented, so they have no runtime verification.
+The ten mobile model suites pass with 130 tests: store 11, log 12, analysis 8,
+plan 6, auth 9, preferences 9, sync 16, sync apply 18, coach model 18 and coach
+screen 23. The root web suite passes 530 tests. `pnpm typecheck`,
+`pnpm mobile:typecheck` and `expo export --platform android` pass in the current
+tree. These are model and bundle checks, not live service checks.
 
-- **No real data layer.** SQLite is declared but there is no schema, store,
-  migration, import/export path or mobile persistence test.
-- **No auth, sync or coach functionality.** The sign-in and Coach routes are
-  placeholders with no input or network; SecureStore is unused, AsyncStorage holds
-  only the device-local skin and language choice, and account preferences and
-  conflict handling are design only.
-- **No fonts and no iOS.** Native typography falls back to system fonts; there
-  is no iPhone build or test target.
-- **One device smoke test only.** The preview APK was installed and the shell
+- **PR3 is not verified against live services.** Sign-in, account preference
+  round-trips, manual sync and the hosted coach have not been exercised against a
+  live Supabase project or a real hosted API in automated tests. A real-provider
+  coaching run and device demo are still pending and are recorded separately.
+- **No local import/export parity.** The store has no import/export screen or file
+  path yet, and plan application/adoption is not implemented; Plan remains a
+  read-only draft.
+- **No iOS.** Native typography and layout are verified only on Android; there is
+  no iPhone build or test target.
+- **No bundled fonts.** Bricolage/DM Sans fall back to platform fonts.
+- **No push notifications or background sync.** Sync is manual and foreground;
+  the coach stream is foreground-only. There is no background delivery,
+  notification, persisted run/cursor or automatic resume after an app restart.
+- **Conflict acknowledgements are not persistent.** They apply to the current
+  result only, and the immutable local record makes the same conflict return on
+  the next manual sync.
+- **No email verification or reset deep links.** Email confirmation and password
+  recovery have no in-app or deep-link flow yet.
+- **Mobile CI is partial.** The pure mobile model suites run in root CI, but
+  mobile typecheck, Expo export and native builds are not CI steps.
+- **One PR1 device smoke test only.** The preview APK was installed and the shell
   was checked on a single Android 14 device (Pixel and Glass, English and
-  Simplified Chinese). Other Android versions, small screens, rotation and the
-  runtime SQLite/auth paths remain unverified. A headless emulator is also
-  available in the development environment.
-- **No mobile test runner or CI coverage.** PR1 has a typecheck script but no
-  test script, and root `pnpm typecheck` does not include the mobile workspace.
+  Simplified Chinese). The data, account, sync and coach screens have not had a
+  recorded device pass yet.
 - **Token drift is manual.** The sRGB palette has no automated check against the
   web oklch tokens; a CSS color change must update both sides.
-- **EAS project linked, credentials are operator-owned.** The project is
-  `@hez2z/fit-trace` (`e40bba07-1ada-4a84-ae02-aaaa162fa2e4`); builds require an
-  authenticated Expo account and EAS only builds on demand, not per commit.
+- **EAS builds are manual.** Builds require an authenticated Expo account and
+  are not triggered per commit.
 
 ### Device screenshots
 
-The PR1 shell on the preview build, in the two skins and both interface
-languages:
+The PR1 shell on the preview build, before the data, account, sync and coach
+screens, in the two skins and both interface languages:
 
 | Pixel, Chinese (History) | Pixel, Chinese (Me) | Glass, English (Me) |
 | --- | --- | --- |
 | ![Pixel history in Chinese](ui/mobile-pr1-history-zh.jpg) | ![Pixel Me in Chinese](ui/mobile-pr1-me-pixel-zh.jpg) | ![Glass Me in English](ui/mobile-pr1-me-glass-en.jpg) |
 
 Captured from the `preview` profile APK (`eas build -p android --profile
-preview`). The tab icons are text placeholders; bundled fonts and the sign-in
-interaction are still planned.
+preview`). Bundled fonts are still planned. A PR3 device demo is pending and is
+recorded separately.
 
 ## Next steps
 
 This is the intended sequencing, not a commitment to a release date:
 
-1. Keep the device smoke test current as data screens land, and add the mobile
-   typecheck to CI.
-2. Implement the SQLite workout store with validation before write and
-   import/export parity, tested apart from the UI.
-3. Add authentication, account preferences and optional workout sync with
-   content-ID idempotency and the three conflict choices; do not extend sync
-   before workouts are verified.
-4. Add the cloud coach screen and bundled fonts, then build and verify iOS
-   before the public store release.
+1. Keep the device smoke test current and verify the PR3 account, preference,
+   sync and hosted-coach flows on a device against live Supabase and hosted API
+   services; record that demo separately.
+2. Add mobile typecheck, Expo export and the preview build to CI while keeping
+   the pure model suites in the root `node:test` run.
+3. Add local store import/export parity and finish the plan application path.
+4. Add background sync, persistent conflict acknowledgement and push
+   notifications.
+5. Add iOS, bundled fonts, email verification/password-reset deep links and the
+   remaining Glass polish before the public store release.
