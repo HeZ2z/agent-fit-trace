@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { WorkoutDataProvider } from "@/data/provider";
 import { I18nProvider } from "@/i18n";
 import { SkinProvider, useSkin } from "@/theme/skin";
 
@@ -27,7 +28,9 @@ export default function RootLayout() {
       {/* Language outside skin: a language change re-renders every screen and the dock. */}
       <I18nProvider>
         <SkinProvider>
-          <RootShell />
+          <WorkoutDataProvider>
+            <RootShell />
+          </WorkoutDataProvider>
         </SkinProvider>
       </I18nProvider>
     </SafeAreaProvider>
