@@ -1,10 +1,12 @@
 import { useRouter } from "expo-router";
 import { StyleSheet, Text, View } from "react-native";
 
+import { authErrorMessage, useAuth } from "@/auth";
 import { useI18n } from "@/i18n";
 import { SPACING, TYPOGRAPHY } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
+  Banner,
   Body,
   Button,
   Card,
@@ -22,6 +24,16 @@ const copy = {
   profileKicker: "PROFILE",
   profileName: "Guest lifter",
   profileBody: "Sign in to sync sessions and unlock the cloud coach.",
+  accountKicker: "ACCOUNT",
+  signedIn: "Signed in",
+  accountFallback: "Account",
+  signedInBody: "Sync and the cloud coach are not enabled yet. You can sign out at any time.",
+  guestNote: "Local-only on this device. Sync and the cloud coach arrive in a later update.",
+  restoring: "Restoring your account…",
+  unconfigured:
+    "Account sign-in is not configured in this build. Your workouts stay on this device.",
+  signIn: "Sign in",
+  signOut: "Sign out",
   appearanceTitle: "Appearance",
   appearanceBody: "Choose the visual shell for this device.",
   skinPixel: "Pixel",
@@ -38,16 +50,16 @@ const copy = {
   languageEnglishBody: "Source language. Data and exports stay in English.",
   languageChineseBody:
     "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
-  signInNote: "Sign-in and cloud sync are placeholders in this commit.",
-  signIn: "Sign in",
 };
 
 export default function MeScreen() {
   const router = useRouter();
   const { language, setLanguage, t } = useI18n();
   const { skin, tokens, setSkin } = useSkin();
+  const { status, user, error, signOut } = useAuth();
   const { palette } = tokens;
   const isPixel = skin === "pixel";
+  const signedIn = status === "signed-in";
   const languageBody =
     language === "zh" ? copy.languageChineseBody : copy.languageEnglishBody;
 
@@ -74,9 +86,57 @@ export default function MeScreen() {
             <Text style={[styles.avatarLabel, { color: palette.fg }]}>FT</Text>
           </View>
           <View style={styles.profileCopy}>
-            <Kicker>{t(copy.profileKicker)}</Kicker>
-            <Title>{t(copy.profileName)}</Title>
-            <Body>{t(copy.profileBody)}</Body>
+            {signedIn ? (
+              <>
+                <Kicker>{t(copy.accountKicker)}</Kicker>
+                <Title>{t(copy.signedIn)}</Title>
+                <Body testID="me-account-email" tone="default" style={styles.email}>
+                  {user?.email ?? t(copy.accountFallback)}
+                </Body>
+                <Body>{t(copy.signedInBody)}</Body>
+                <Button
+                  accessibilityLabel={t(copy.signOut)}
+                  fullWidth
+                  label={t(copy.signOut)}
+                  onPress={() => {
+                    void signOut();
+                  }}
+                  testID="auth-sign-out"
+                  variant="secondary"
+                />
+              </>
+            ) : (
+              <>
+                <Kicker>{t(copy.profileKicker)}</Kicker>
+                <Title>{t(copy.profileName)}</Title>
+                <Body>{t(copy.profileBody)}</Body>
+                {status === "loading" ? <Body>{t(copy.restoring)}</Body> : null}
+                {status === "unconfigured" ? (
+                  <Banner
+                    message={t(copy.unconfigured)}
+                    testID="me-auth-unconfigured"
+                    tone="info"
+                  />
+                ) : null}
+                {error !== null ? (
+                  <Banner
+                    message={t(authErrorMessage(error.code))}
+                    testID="me-auth-error"
+                    tone="warn"
+                  />
+                ) : null}
+                <Body>{t(copy.guestNote)}</Body>
+                <Button
+                  accessibilityLabel={t(copy.signIn)}
+                  disabled={status === "loading"}
+                  fullWidth
+                  label={t(copy.signIn)}
+                  onPress={() => router.push("/auth/sign-in")}
+                  testID="me-sign-in"
+                  variant="secondary"
+                />
+              </>
+            )}
           </View>
         </View>
       </Card>
@@ -123,18 +183,6 @@ export default function MeScreen() {
         </View>
         <Body>{t(languageBody)}</Body>
       </View>
-
-      <View style={styles.section}>
-        <Body>{t(copy.signInNote)}</Body>
-        <Button
-          accessibilityLabel={t(copy.signIn)}
-          fullWidth
-          label={t(copy.signIn)}
-          onPress={() => router.push("/auth/sign-in")}
-          testID="sign-in-button"
-          variant="secondary"
-        />
-      </View>
     </Screen>
   );
 }
@@ -156,6 +204,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   profileCopy: { flex: 1, gap: SPACING[1] },
+  email: { fontWeight: "700" },
   section: { gap: SPACING[2] },
   choiceRow: { flexDirection: "row", flexWrap: "wrap", gap: SPACING[2] },
 });

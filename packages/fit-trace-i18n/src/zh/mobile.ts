@@ -111,16 +111,31 @@ export const messages: Record<string, string> = {
   "Use Glass skin": "使用 Glass 外观",
   "English language": "英语",
   "Chinese language": "中文",
-  "Sign-in and cloud sync are placeholders in this commit.":
-    "登录与云端同步在本版本中仍为占位功能。",
+  "Local-only on this device. Sync and the cloud coach arrive in a later update.":
+    "当前仅在本机使用。同步与云端教练将在后续版本提供。",
+  "Restoring your account…": "正在恢复账号…",
+  "Account sign-in is not configured in this build. Your workouts stay on this device.":
+    "此版本未配置账号登录。训练记录仍保存在本机。",
+  "Signed in": "已登录",
+  "Sync and the cloud coach are not enabled yet. You can sign out at any time.":
+    "同步与云端教练尚未启用。你可以随时退出登录。",
 
   /* ── Auth ────────────────────────────────────────────────────── */
   ACCOUNT: "账号",
-  "A secure session will unlock sync and the cloud coach.":
-    "安全会话将解锁同步与云端教练。",
-  "Auth placeholder": "登录占位",
-  "No credentials are collected and no network calls are made in this commit. The secure sign-in flow lands next.":
-    "本版本不收集任何凭据，也不发起网络请求。安全登录流程将在下一步实现。",
+  "Sign in to your account.": "登录你的账号。",
+  "Accounts are invite-only. Sign in with the email and password from your invitation; there is no sign-up in the app.":
+    "账号仅限受邀注册。请使用邀请邮件中的邮箱和密码登录；应用内不提供注册。",
+  "Sign-in is not configured in this build. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to enable accounts.":
+    "此版本未配置登录。请设置 EXPO_PUBLIC_SUPABASE_URL 与 EXPO_PUBLIC_SUPABASE_ANON_KEY 以启用账号。",
+  "Enter a valid email address.": "请输入有效的邮箱地址。",
+  "Enter your password.": "请输入密码。",
+  "Invalid email or password.": "邮箱或密码不正确。",
+  "Confirm your email before signing in.": "请先确认你的邮箱再登录。",
+  "The sign-in service is unavailable. Check your connection and try again.":
+    "登录服务暂不可用。请检查网络连接后重试。",
+  "Too many attempts. Wait a moment and try again.": "尝试次数过多。请稍等片刻后重试。",
+  "Your session expired. Sign in again.": "会话已过期。请重新登录。",
+  "Sign-in failed. Try again.": "登录失败，请重试。",
   Back: "返回",
   "Go back": "返回",
 
