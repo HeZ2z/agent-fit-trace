@@ -257,6 +257,21 @@ export function failCoachTurn(state: CoachTurnState): CoachTurnState {
   };
 }
 
+/**
+ * A DEFINITIVE structured `not-found` (the run/session is proven gone) releases
+ * an active turn without claiming a terminal. The user can ask again; the
+ * screen clears the stale session separately so a fresh one is created.
+ */
+export function releaseCoachTurn(state: CoachTurnState): CoachTurnState {
+  if (!isCoachTurnActive(state)) return state;
+  return {
+    phase: "idle",
+    sessionId: state.sessionId,
+    runId: null,
+    cancelRequested: false,
+  };
+}
+
 /** Return a finished turn to idle while keeping the reusable session. */
 export function resetCoachTurn(state: CoachTurnState): CoachTurnState {
   if (!canStartCoachTurn(state)) return state;

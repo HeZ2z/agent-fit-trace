@@ -33,6 +33,7 @@ import {
   isCoachTurnActive,
   markCoachRunStarted,
   rememberCoachSession,
+  releaseCoachTurn,
   requestCoachTurnCancel,
   resetCoachTurn,
   resolveCoachGate,
@@ -189,6 +190,12 @@ export default function CoachScreen() {
           if (chatRef.current.terminal !== null) return;
           const streamError = coachErrorCopy(cause);
           if (streamError !== null) setError(streamError);
+          // A DEFINITIVE structured not-found releases the turn (the run is
+          // gone); any other failure keeps the run id so Cancel stays possible.
+          if (isCoachError(cause) && cause.code === "not-found") {
+            sessionIdRef.current = null;
+            updateTurn(releaseCoachTurn(turnRef.current));
+          }
         },
       );
     },
@@ -304,6 +311,12 @@ export default function CoachScreen() {
             if (generationRef.current !== generation) return;
             const cancelError = coachErrorCopy(cause);
             if (cancelError !== null) setError(cancelError);
+            if (isCoachError(cause) && cause.code === "not-found") {
+              // The just-created run is proven gone; there is nothing to tail.
+              sessionIdRef.current = null;
+              updateTurn(releaseCoachTurn(turnRef.current));
+              return;
+            }
             // The run is still live: do not keep showing "cancelling" after a
             // failed explicit cancel. The stream stays attached for its verdict.
             updateTurn(clearCoachTurnCancel(turnRef.current));
@@ -428,7 +441,12 @@ export default function CoachScreen() {
       if (generationRef.current !== generation) return;
       const cancelError = coachErrorCopy(cause);
       if (cancelError !== null) setError(cancelError);
-      if (turnRef.current.runId === runId && chatRef.current.terminal === null) {
+      if (isCoachError(cause) && cause.code === "not-found") {
+        // Proven gone: release rather than stranding a turn that can no
+        // longer produce a terminal.
+        sessionIdRef.current = null;
+        updateTurn(releaseCoachTurn(turnRef.current));
+      } else if (turnRef.current.runId === runId && chatRef.current.terminal === null) {
         updateTurn(clearCoachTurnCancel(turnRef.current));
       }
     } finally {

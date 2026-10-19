@@ -30,6 +30,7 @@ import {
   isCoachTurnActive,
   markCoachRunStarted,
   rememberCoachSession,
+  releaseCoachTurn,
   requestCoachTurnCancel,
   resetCoachTurn,
   resolveCoachGate,
@@ -257,6 +258,22 @@ test("phase: setup failure returns to idle; streaming failure keeps the live run
   assert.equal(failCoachTurn(streaming), streaming, "a streaming run id is never dropped");
 });
 
+test("phase: a definitive not-found releases an active turn without a terminal", () => {
+  const released = releaseCoachTurn(streamingTurn());
+  assert.deepEqual(released, {
+    phase: "idle",
+    sessionId: "sess-1",
+    runId: null,
+    cancelRequested: false,
+  });
+  assert.equal(canStartCoachTurn(released), true);
+
+  const requested = requestCoachTurnCancel(streamingTurn());
+  assert.equal(releaseCoachTurn(requested).cancelRequested, false);
+  assert.equal(releaseCoachTurn(INITIAL_COACH_TURN_STATE), INITIAL_COACH_TURN_STATE);
+  assert.equal(releaseCoachTurn(completeCoachTurn(streamingTurn(), "completed")).phase, "terminal");
+});
+
 test("phase: reset/new conversation keeps the reusable session", () => {
   const terminal = completeCoachTurn(streamingTurn(), "completed");
   const reset = resetCoachTurn(terminal);
@@ -294,6 +311,7 @@ test("phase: transitions never mutate the input state", () => {
     cancelCoachTurnBeforeRun(state);
     completeCoachTurn(state, "failed");
     failCoachTurn(state);
+    releaseCoachTurn(state);
     resetCoachTurn(state);
   }
   assert.deepEqual(inputs, snapshots);
