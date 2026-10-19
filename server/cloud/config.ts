@@ -18,6 +18,30 @@ import type { SupabaseServerEnv } from "../db/env.ts";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const OPENROUTER_CHAT_COMPLETIONS_URL = `${OPENROUTER_BASE_URL}/chat/completions`;
 
+/**
+ * Worker-only agent runtime selection (`FIT_TRACE_CLOUD_AGENT`).
+ *
+ * `builtin` is the legacy bounded native-`fetch` loop and stays the default.
+ * `pi-agent-core` embeds pi's real agent loop; see ADR 0002. The value is
+ * case-sensitive. An absent or blank value means the default; any other
+ * unrecognised value fails the worker closed instead of silently selecting a
+ * runtime. See `docs/adr/0002-cloud-pi-agent-runtime.md`.
+ */
+export const CLOUD_AGENT_KINDS = ["builtin", "pi-agent-core"] as const;
+
+export type CloudAgentKind = (typeof CLOUD_AGENT_KINDS)[number];
+
+export const DEFAULT_CLOUD_AGENT: CloudAgentKind = "builtin";
+
+/** Resolve the configured runtime. `null` means invalid configuration. */
+export function readCloudAgentKind(
+  env: Record<string, string | undefined> = process.env,
+): CloudAgentKind | null {
+  const raw = (env.FIT_TRACE_CLOUD_AGENT ?? "").trim();
+  if (raw === "") return DEFAULT_CLOUD_AGENT;
+  return (CLOUD_AGENT_KINDS as readonly string[]).includes(raw) ? (raw as CloudAgentKind) : null;
+}
+
 export const CLOUD_SAFE_DEFAULTS = {
   maxSteps: 4,
   maxTokens: 2048,
@@ -132,6 +156,8 @@ export interface CloudWorkerEnv {
   supabase: SupabaseServerEnv;
   serviceRoleKey: string;
   provider: OpenRouterConfig;
+  /** Agent loop used by the outbox worker. Defaults to the builtin loop. */
+  agent: CloudAgentKind;
   workerId: string;
   leaseMs: number;
   pollMs: number;
@@ -163,7 +189,9 @@ export function readCloudWorkerEnv(
   const supabase = readSupabaseServerEnv(env);
   const serviceRoleKey = readServiceRoleKey(env);
   const provider = readOpenRouterConfig(env);
-  if (supabase === null || serviceRoleKey === null || provider === null) return null;
+  // An unrecognised runtime name is a configuration error, not a fallback.
+  const agent = readCloudAgentKind(env);
+  if (supabase === null || serviceRoleKey === null || provider === null || agent === null) return null;
   const leaseMs = clampInt(
     env.FIT_TRACE_CLOUD_WORKER_LEASE_MS,
     CLOUD_SAFE_DEFAULTS.workerLeaseMs,
@@ -174,6 +202,7 @@ export function readCloudWorkerEnv(
     supabase,
     serviceRoleKey,
     provider,
+    agent,
     workerId: (env.FIT_TRACE_CLOUD_WORKER_ID ?? "").trim() || `worker-${process.pid}`,
     leaseMs,
     pollMs: clampInt(env.FIT_TRACE_CLOUD_WORKER_POLL_MS, CLOUD_SAFE_DEFAULTS.workerPollMs, 250, 30_000),

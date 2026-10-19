@@ -19,8 +19,11 @@
     "build:server": "pnpm --filter @pi-fit-trace/app exec vite build --config vite.server.config.ts",
     "typecheck": "tsc --noEmit && pnpm --filter app typecheck"
   },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1"
+  },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@pi-fit-trace/api-contracts": "workspace:*",
     "@pi-fit-trace/core": "workspace:*",
