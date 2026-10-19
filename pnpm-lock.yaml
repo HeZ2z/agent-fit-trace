@@ -42,6 +42,9 @@ importers:
       '@pi-fit-trace/core':
         specifier: workspace:*
         version: link:../packages/fit-trace-core
+      '@pi-fit-trace/i18n':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-i18n
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -211,6 +214,12 @@ importers:
         version: link:../fit-trace-core
 
   packages/fit-trace-core: {}
+
+  packages/fit-trace-i18n:
+    dependencies:
+      '@pi-fit-trace/core':
+        specifier: workspace:*
+        version: link:../fit-trace-core
 
   packages/fit-trace-ui-tokens: {}
 
