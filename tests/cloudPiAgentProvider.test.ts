@@ -169,6 +169,14 @@ function providerInput(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("condition was not met in time");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 const ZERO_USAGE = {
   input: 0,
   output: 0,
@@ -262,6 +270,78 @@ test("pi-agent: happy path runs the real loop, emits bounded events, and settles
     [...COACHED_TOOL_NAMES],
   );
   assert.match(captured?.initialState?.systemPrompt ?? "", /read-only training analyst/);
+});
+
+test("pi-agent: tool execution and the next request wait for the acceptance write", async () => {
+  const analysisCall = toolCallAndUsage("analyze_progress", "{}", "call-1", "gen-1", {
+    prompt_tokens: 100,
+    completion_tokens: 20,
+    total_tokens: 120,
+  });
+  const final = textAndUsage("Bench press is progressing steadily.", "gen-2", {
+    prompt_tokens: 150,
+    completion_tokens: 30,
+    total_tokens: 180,
+  });
+  const { fetchImpl, calls } = fakeFetch((_call, index) =>
+    sseResponse(index === 0 ? analysisCall : final),
+  );
+  const harness = providerInput();
+  let releaseAcceptance: (() => void) | undefined;
+  const acceptanceGate = new Promise<void>((resolve) => {
+    releaseAcceptance = resolve;
+  });
+  harness.input.onAccepted = async () => {
+    harness.timeline.push("accepted-start");
+    await acceptanceGate;
+    harness.timeline.push("accepted-end");
+  };
+
+  const provider = createPiAgentProvider({ config: CONFIG, fetchImpl });
+  const runPromise = provider.run(harness.input);
+  await waitUntil(() => harness.timeline.includes("accepted-start"));
+
+  // The durable acceptance write is held open: no tool may execute and no
+  // second paid provider request may start before it completes.
+  assert.equal(harness.events.some((event) => event.type === "tool_start"), false);
+  assert.equal(calls.length, 1);
+
+  releaseAcceptance?.();
+  const result = await runPromise;
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, 2);
+
+  const acceptedEnd = harness.timeline.indexOf("accepted-end");
+  const toolStart = harness.timeline.indexOf("event:tool_start");
+  assert.ok(acceptedEnd >= 0);
+  assert.ok(toolStart > acceptedEnd, "tool execution must start after the acceptance write resolves");
+});
+
+test("pi-agent: a failed acceptance write stops before tool execution and stays acceptance-unknown", async () => {
+  const analysisCall = toolCallAndUsage("analyze_progress", "{}", "call-1", "gen-1", {
+    prompt_tokens: 100,
+    completion_tokens: 20,
+    total_tokens: 120,
+  });
+  const { fetchImpl, calls } = fakeFetch(() => sseResponse(analysisCall));
+  const harness = providerInput();
+  harness.input.onAccepted = async () => {
+    harness.timeline.push("accepted-failed");
+    throw new Error("acceptance write failed");
+  };
+  const provider = createPiAgentProvider({ config: CONFIG, fetchImpl });
+
+  await assert.rejects(
+    provider.run(harness.input),
+    (error: unknown) =>
+      error instanceof ProviderAcceptanceUnknownError &&
+      error.accepted === true &&
+      error.dispatched === true &&
+      error.usage?.totalTokens === 120,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(harness.events.some((event) => event.type === "tool_start"), false);
+  assert.equal(harness.events.some((event) => event.type === "terminal"), false);
 });
 
 test("pi-agent: a denied pre-fetch step never reaches the wire", async () => {
