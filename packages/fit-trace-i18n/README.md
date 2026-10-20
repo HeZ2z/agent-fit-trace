@@ -17,13 +17,20 @@ Native app.
   catalog-backed exercise name is translated at render time by its canonical
   English name (`displayExerciseName`). User-authored/custom exercise names,
   notes, ids, dates and other user/artifact content pass through unchanged.
+- **Autocomplete search is shared.** `searchExerciseSuggestions` is the one
+  editor suggestion implementation for both apps: it merges the core catalog's
+  English name/alias search with the generated Chinese display/alias tables,
+  de-duplicates by canonical name, keeps a deterministic order, and labels each
+  result for the selected UI language. Selecting a result always writes the
+  canonical English name.
 - **Catalog exercise names are data, not interface copy.** Chinese names and
   aliases live in `zh/exercises.ts`, are keyed by canonical English name and
   are generated from `data/exercise-catalog/zh-names.v1.json`; they are never
   merged into `ZH_MESSAGES`.
 - **No environment access.** `translate` takes the language explicitly. This
   package has no localStorage, DOM, React or Node.js dependency, so both the
-  web app and the React Native app can use it. The web app keeps its
+  web app and the React Native app can use it; the catalog search only imports
+  browser-safe `@pi-fit-trace/core` helpers. The web app keeps its
   localStorage/`<html lang>`/`data-lang` store in `app/src/i18n/i18n.ts`; the
   storage key and accepted values are shared with `app/index.html`'s pre-paint
   bootstrap.
@@ -36,7 +43,9 @@ Native app.
 - `@pi-fit-trace/i18n` — `AppLanguage`, `DEFAULT_LANGUAGE`,
   `LANGUAGE_STORAGE_KEY`, `LANGUAGES`, `MessageParams`, `isLanguage`,
   `formatMessage`, `translate`, `ZH_MESSAGES`, and the catalog-backed exercise
-  display layer: `displayExerciseName`, `EXERCISE_DISPLAY_NAMES_ZH`,
+  display/autocomplete layer: `displayExerciseName`,
+  `searchExerciseSuggestions`, `MAX_EXERCISE_SUGGESTIONS`,
+  `ExerciseSuggestion`, `EXERCISE_DISPLAY_NAMES_ZH`,
   `EXERCISE_ALIASES_ZH`.
 - `@pi-fit-trace/i18n/domain` — Chinese rebuild helpers for deterministic,
   code-bearing domain content (`displayFlagMessage`, `displayRecommendation`,

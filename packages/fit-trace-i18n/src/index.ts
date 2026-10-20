@@ -16,7 +16,9 @@
  * Catalog-backed exercise names are the one workout-content exception: they are
  * translated at render time by canonical English name through
  * `displayExerciseName`, while custom names, notes, ids and dates still pass
- * through unchanged.
+ * through unchanged. The matching autocomplete search
+ * (`searchExerciseSuggestions`) is shared from the same catalog layer so the web
+ * and React Native apps do not each grow their own copy.
  */
 
 import { ZH_MESSAGES } from "./zh/index.ts";
@@ -62,5 +64,8 @@ export { ZH_MESSAGES };
 export {
   EXERCISE_ALIASES_ZH,
   EXERCISE_DISPLAY_NAMES_ZH,
+  MAX_EXERCISE_SUGGESTIONS,
   displayExerciseName,
+  searchExerciseSuggestions,
 } from "./exercises.ts";
+export type { ExerciseSuggestion } from "./exercises.ts";

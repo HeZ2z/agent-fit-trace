@@ -15,9 +15,7 @@
 
 import { useMemo, useState } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
-import {
-  searchExerciseSuggestions,
-} from "../i18n/exercises.ts";
+import { searchExerciseSuggestions } from "../i18n/exercises.ts";
 import type { ExerciseSuggestion } from "../i18n/exercises.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 

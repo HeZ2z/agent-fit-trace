@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { searchExerciseSuggestions as sharedSearchExerciseSuggestions } from "@pi-fit-trace/i18n";
 import {
   displayStoredExerciseName,
   searchExerciseSuggestions,
@@ -35,6 +36,10 @@ describe("app exercise display helper", () => {
 
 describe("app exercise autocomplete suggestions", () => {
   const BENCH_PRESS = "Barbell Bench Press - Medium Grip";
+
+  it("re-exports the shared i18n search instead of reimplementing it", () => {
+    expect(searchExerciseSuggestions).toBe(sharedSearchExerciseSuggestions);
+  });
 
   it("returns no suggestions for an empty query", () => {
     expect(searchExerciseSuggestions("", "en")).toEqual([]);

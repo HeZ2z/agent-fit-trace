@@ -5,20 +5,24 @@ import { test } from "node:test";
 import {
   EXERCISE_ALIASES_ZH,
   EXERCISE_DISPLAY_NAMES_ZH,
+  MAX_EXERCISE_SUGGESTIONS,
   ZH_MESSAGES,
   displayExerciseName,
+  searchExerciseSuggestions,
 } from "../packages/fit-trace-i18n/src/index.ts";
 import {
   displayRecommendation,
   displayTrend,
 } from "../packages/fit-trace-i18n/src/domain.ts";
+import { searchExercises } from "@pi-fit-trace/core";
 import type {
   ExerciseTrend,
   Recommendation,
 } from "@pi-fit-trace/core";
 
 /**
- * Integrity coverage for the render-time Chinese exercise-name layer.
+ * Integrity coverage for the render-time Chinese exercise-name layer and the
+ * shared autocomplete search.
  *
  * The runtime tables are generated from the frozen catalog JSON, so this test
  * reads the same data files with `node:fs` and asserts that the committed
@@ -238,4 +242,186 @@ test("rebuilt Chinese trend and recommendation copy uses the exercise display he
     detail: `对 ${customName} 小幅加重（约 2.5% 负荷或每组多 1 次）。`,
     reason: `据估计，${customName} 的 1RM 上升 7.5%，平均 RPE 为 6.77。`,
   });
+});
+
+/* ------------------------------------------------------------------------- */
+/* Shared suggestion search (web + mobile)                                   */
+/* ------------------------------------------------------------------------- */
+
+const BENCH_PRESS = "Barbell Bench Press - Medium Grip";
+const CJK = /[\u3400-\u9fff]/;
+
+function canonicalNames(suggestions: readonly { canonicalName: string }[]): string[] {
+  return suggestions.map((suggestion) => suggestion.canonicalName);
+}
+
+test("English suggestion labels are the canonical names and contain no Chinese", () => {
+  for (const query of ["bench", "press", "squat", "deadlift", "curl"]) {
+    const suggestions = searchExerciseSuggestions(query, "en");
+    assert.ok(suggestions.length > 0, query);
+    for (const suggestion of suggestions) {
+      assert.ok(CANONICAL_NAME_SET.has(suggestion.canonicalName), suggestion.canonicalName);
+      // The English UI shows exactly the stored spelling, never Chinese copy.
+      assert.equal(suggestion.label, suggestion.canonicalName);
+      assert.doesNotMatch(suggestion.label, CJK);
+      assert.equal(
+        suggestion.displayName,
+        EXERCISE_DISPLAY_NAMES_ZH[suggestion.canonicalName],
+      );
+    }
+  }
+});
+
+test("Chinese suggestion labels pair the display name with the canonical English name", () => {
+  const suggestions = searchExerciseSuggestions("卧推", "zh");
+  assert.ok(suggestions.length > 0);
+  for (const suggestion of suggestions) {
+    const displayName = EXERCISE_DISPLAY_NAMES_ZH[suggestion.canonicalName];
+    assert.equal(suggestion.displayName, displayName);
+    assert.equal(suggestion.label, `${displayName} · ${suggestion.canonicalName}`);
+    assert.match(suggestion.label, CJK);
+  }
+  assert.deepEqual(suggestions[0], {
+    canonicalName: BENCH_PRESS,
+    displayName: "杠铃卧推",
+    label: "杠铃卧推 · Barbell Bench Press - Medium Grip",
+  });
+});
+
+test("a query selects the same catalog entries in both UI languages", () => {
+  for (const query of ["bench", "bench press", "卧推", "深蹲", "rdl", "倒蹬", "press"]) {
+    const english = searchExerciseSuggestions(query, "en");
+    const chinese = searchExerciseSuggestions(query, "zh");
+    assert.ok(english.length > 0, query);
+    // Matching, ranking, de-duplication and the cap never depend on the label
+    // language; only the option copy does, and selection stays canonical.
+    assert.deepEqual(canonicalNames(chinese), canonicalNames(english), query);
+    for (const suggestion of english) {
+      assert.equal(suggestion.label, suggestion.canonicalName);
+    }
+  }
+});
+
+test("Chinese display names and alias spellings both match", () => {
+  // 卧推 is both an exact alias and a substring of the display name 杠铃卧推.
+  assert.equal(searchExerciseSuggestions("卧推", "zh")[0]?.canonicalName, BENCH_PRESS);
+  // An alias-only spelling: 倒蹬 is not part of the 腿举 display name.
+  assert.ok(!EXERCISE_DISPLAY_NAMES_ZH["Leg Press"].includes("倒蹬"));
+  const legPress = searchExerciseSuggestions("倒蹬", "zh");
+  assert.equal(legPress[0]?.canonicalName, "Leg Press");
+  assert.equal(legPress[0]?.label, "腿举 · Leg Press");
+  // Search is not language-gated: the English UI can find a Chinese spelling but
+  // still labels and writes the canonical English name.
+  assert.equal(searchExerciseSuggestions("倒蹬", "en")[0]?.canonicalName, "Leg Press");
+});
+
+test("every generated Chinese alias finds its own catalog entry exactly once", () => {
+  const limit = CANONICAL_NAMES.length;
+  let aliasCount = 0;
+  for (const [canonicalName, aliases] of Object.entries(EXERCISE_ALIASES_ZH)) {
+    for (const alias of aliases) {
+      aliasCount += 1;
+      const matches = canonicalNames(searchExerciseSuggestions(alias, "zh", limit));
+      assert.equal(
+        matches.filter((name) => name === canonicalName).length,
+        1,
+        `${alias} must find ${canonicalName} exactly once`,
+      );
+    }
+  }
+  assert.ok(aliasCount > 0, "the generated alias table must not be empty");
+});
+
+test("Chinese matches rank exact display names before prefix, alias, and substring hits", () => {
+  // Exact display name, then a display-name prefix, then a substring match.
+  assert.deepEqual(
+    canonicalNames(searchExerciseSuggestions("腿举", "zh", CANONICAL_NAMES.length)),
+    ["Leg Press", "Calf Press On The Leg Press Machine", "Narrow Stance Leg Press"],
+  );
+
+  const benchPress = canonicalNames(
+    searchExerciseSuggestions("卧推", "zh", CANONICAL_NAMES.length),
+  );
+  // 卧推 is an exact alias of the first entry but only a substring of the rest.
+  assert.equal(benchPress[0], BENCH_PRESS);
+  assert.equal(new Set(benchPress).size, benchPress.length);
+  assert.equal(benchPress.filter((name) => name === BENCH_PRESS).length, 1);
+  // Remaining substring matches are ordered by display name, so 上斜哑铃卧推
+  // sorts before 上斜杠铃卧推 regardless of the stored English names.
+  const inclineDumbbell = benchPress.indexOf("Incline Dumbbell Press");
+  const inclineBarbell = benchPress.indexOf("Barbell Incline Bench Press - Medium Grip");
+  assert.ok(inclineDumbbell >= 0 && inclineBarbell >= 0);
+  assert.ok(inclineDumbbell < inclineBarbell);
+});
+
+test("suggestions de-duplicate an entry matched by both search sources", () => {
+  // RDL is a canonical English alias in the core catalog and a generated Chinese
+  // alias, so the catalog search and the Chinese alias scan both match it.
+  assert.deepEqual(
+    searchExercises("rdl", 5).map((entry) => entry.name),
+    ["Romanian Deadlift"],
+  );
+  assert.ok(EXERCISE_ALIASES_ZH["Romanian Deadlift"].includes("RDL"));
+  assert.deepEqual(canonicalNames(searchExerciseSuggestions("rdl", "zh")), [
+    "Romanian Deadlift",
+  ]);
+});
+
+test("the default and explicit suggestion limits cap the result list", () => {
+  assert.equal(MAX_EXERCISE_SUGGESTIONS, 8);
+  const defaultLimited = searchExerciseSuggestions("press", "en");
+  assert.equal(defaultLimited.length, MAX_EXERCISE_SUGGESTIONS);
+  const uncapped = searchExerciseSuggestions("press", "en", CANONICAL_NAMES.length);
+  assert.ok(uncapped.length > MAX_EXERCISE_SUGGESTIONS);
+  // The default cap truncates the same deterministic ranking, never reranks it.
+  assert.deepEqual(uncapped.slice(0, MAX_EXERCISE_SUGGESTIONS), defaultLimited);
+
+  assert.equal(searchExerciseSuggestions("press", "en", 3).length, 3);
+  assert.equal(searchExerciseSuggestions("press", "en", 3.9).length, 3);
+  assert.deepEqual(searchExerciseSuggestions("press", "en", 0), []);
+  assert.deepEqual(searchExerciseSuggestions("press", "en", -2), []);
+});
+
+test("empty and unmatched queries return no suggestions", () => {
+  for (const query of ["", " ", "   ", "\t\n", "zzzz-not-an-exercise"]) {
+    assert.deepEqual(searchExerciseSuggestions(query, "en"), []);
+    assert.deepEqual(searchExerciseSuggestions(query, "zh"), []);
+  }
+});
+
+test("suggestion search is deterministic across repeated and interleaved calls", () => {
+  const cases = [
+    ["press", "en"],
+    ["卧推", "zh"],
+    ["rdl", "zh"],
+    ["深蹲", "en"],
+  ] as const;
+  const serialize = (): string[] =>
+    cases.map(([query, language]) =>
+      JSON.stringify(searchExerciseSuggestions(query, language)),
+    );
+  const first = serialize();
+  // Unrelated searches in between must not affect ranking or cached state.
+  for (const query of ["squat", "腿举", "curl"]) {
+    searchExerciseSuggestions(query, "zh");
+    searchExerciseSuggestions(query, "en");
+  }
+  assert.deepEqual(serialize(), first);
+  assert.ok(first.every((value) => (JSON.parse(value) as unknown[]).length > 0));
+});
+
+test("the shared search module only imports browser-safe modules", () => {
+  const source = readFileSync(
+    new URL("../packages/fit-trace-i18n/src/exercises.ts", import.meta.url),
+    "utf8",
+  );
+  const specifiers = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(specifiers.length > 0);
+  for (const specifier of specifiers) {
+    assert.ok(
+      specifier === "@pi-fit-trace/core" || specifier.startsWith("./"),
+      `environment dependency in the shared search: ${specifier}`,
+    );
+  }
+  assert.doesNotMatch(source, /\bMath\.random\b|\bDate\.now\b|\bprocess\.\w/);
 });
