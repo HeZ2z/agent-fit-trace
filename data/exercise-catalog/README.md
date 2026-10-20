@@ -1,10 +1,10 @@
 # Exercise catalog source data (v1)
 
 This directory is the curated source of truth for the v1 exercise catalog and
-its Chinese names. Both files are input to `scripts/build-exercise-catalog.mjs`;
-runtime code consumes the generated TypeScript in
-`packages/fit-trace-core/src/exercises/` and `packages/fit-trace-i18n/src/zh/`,
-never these JSON files directly.
+its Chinese names. Both JSON files are input to
+`scripts/build-exercise-catalog.mjs`; runtime code consumes the generated
+TypeScript in `packages/fit-trace-core/src/exercises/` and
+`packages/fit-trace-i18n/src/zh/`, never these JSON files directly.
 
 ## Files
 
@@ -15,6 +15,8 @@ never these JSON files directly.
 - `zh-names.v1.json` — Chinese display names and Chinese aliases, keyed by the
   canonical English name in catalog order. Validated by the generator and emitted
   into the render-time i18n package; never read at runtime.
+- `NOTICE` — third-party notice for the two Unlicense sources, including their
+  repository URLs and pinned commits.
 
 ## Scope
 
@@ -29,19 +31,21 @@ All metadata is derived from two Unlicense sources:
 
 | Source | Commit | Licence | Used for |
 | --- | --- | --- | --- |
-| [`gengyueworks/gym-exercise-guide`](https://github.com/gengyueworks/gym-exercise-guide) | `ed41bb3a262fee9dd8d7d0aa3437696dcef601ed` | Unlicense | Chinese names/aliases, Chinese taxonomy labels, seed cues/mistakes |
-| [`yuhonas/free-exercise-db`](https://github.com/yuhonas/free-exercise-db) | `f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5` | Unlicense | English names, muscles, equipment, level, mechanics, force |
+| [`gengyueworks/gym-exercise-guide`](https://github.com/gengyueworks/gym-exercise-guide) | `ed41bb3a262fee9dd8d7d0aa3437696dcef601ed` | Unlicense | Chinese names/aliases and Chinese taxonomy labels; basis for the content-review status flags (no cue/mistake text is committed) |
+| [`yuhonas/free-exercise-db`](https://github.com/yuhonas/free-exercise-db) | `f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5` | Unlicense | English names/aliases, muscles, equipment, level, mechanics, force |
 
-No images, videos, or other media are included. No share-alike or proprietary
-data is embedded. Unlicense does not require attribution, but the source commit,
-repository URL, and licence are recorded in `catalog.v1.json` and each entry
-keeps its `source` reference.
+The full third-party notice, including both source URLs and pinned commits, is
+committed at [`NOTICE`](NOTICE). No images, videos, or other media are included.
+No share-alike or proprietary data is embedded. Unlicense does not require
+attribution, but the source commit, repository URL, and licence are recorded in
+`catalog.v1.json` and each entry keeps its `source` reference.
 
 `muscles` and `equipment.items[]` are inherited/heuristic starting points, not
-training-science review. `content_status: "rewrite"` marks entries whose seed
-cues/mistakes are known to be misleading and must be rewritten before the
-catalog can be presented as authoritative. `content_status: "template"` still
-means the seed content is a draft.
+training-science review. `content_status: "rewrite"` marks entries whose
+upstream seed cues/mistakes are known to be misleading and must be rewritten
+before any cue content ships. `content_status: "template"` still means the
+upstream seed content is a draft. v1 commits only the status flag; it contains
+no cue or common-mistake text.
 
 ## Regeneration
 

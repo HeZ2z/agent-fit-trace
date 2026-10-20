@@ -5,9 +5,13 @@ Native app.
 
 ## Boundary
 
-- **Canonical data is English.** Workout records, snapshots, exports, generated
-  plans and coaching payloads are stored, hashed and transported as English.
-  Translation never rewrites a stored record.
+- **Canonical catalog/domain data is English.** Catalog names, the Chinese
+  display table keyed by them, dictionary keys, and generated analysis/plan
+  template copy use English as the canonical source. A workout record, snapshot,
+  export or plan payload keeps its exercise name as authored — the canonical
+  English name after a catalog suggestion selection, otherwise the alias,
+  custom name, or Chinese text the user typed. Translation never rewrites a
+  stored record.
 - **This package is render-time only.** It maps an exact English source string
   to a Simplified Chinese translation, or rebuilds display copy from a stable
   domain code plus its evidence. Missing dictionary entries and unknown codes
@@ -18,11 +22,12 @@ Native app.
   English name (`displayExerciseName` for a known canonical name,
   `displayStoredExerciseName` for a stored/typed name that may be an alias).
   This includes the workout editor's exercise-name input: in Chinese it shows
-  the Chinese display name (e.g. `杠铃卧推`), while the value passed to storage
-  stays the canonical English name (`Barbell Bench Press - Medium Grip`). The
-  input is a display surface only; user-authored/custom exercise names, notes,
-  ids, dates and other user/artifact content pass through unchanged, and English
-  UI shows the stored spelling exactly.
+  the Chinese display name (e.g. `杠铃卧推`), while selecting a suggestion
+  passes the canonical English name (`Barbell Bench Press - Medium Grip`) to
+  storage and free text is passed through exactly as typed. The input is a
+  display surface only; user-authored/custom exercise names, notes, ids, dates
+  and other user/artifact content pass through unchanged, and English UI shows
+  the stored spelling exactly.
 - **Autocomplete search is shared.** `searchExerciseSuggestions` is the one
   editor suggestion implementation for both apps: it merges the core catalog's
   English name/alias search with the generated Chinese display/alias tables,

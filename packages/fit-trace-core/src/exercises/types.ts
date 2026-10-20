@@ -1,9 +1,11 @@
 /**
  * Browser-safe vocabulary and shapes for the v1 exercise catalog.
  *
- * The catalog is a suggestion layer: it assists logging, analysis
- * normalization, and deterministic plan suggestions. It never gates data entry,
- * rewrites stored records, or makes the Agent an authority on exercise facts.
+ * The catalog is a suggestion layer: v1 assists logging (exercise-name
+ * autocomplete) and analysis normalization. Recent-exercise, equipment/muscle
+ * candidate, and deterministic plan-suggestion helpers are future work. The
+ * catalog never gates data entry, rewrites stored records, or makes the Agent
+ * an authority on exercise facts.
  *
  * These types mirror `data/exercise-catalog/catalog.v1.json`. The committed
  * `catalog.generated.ts` is machine-generated from that file and is checked
@@ -129,7 +131,7 @@ export const NAME_STATUSES = ["seed", "renamed"] as const;
 
 export type NameStatus = (typeof NAME_STATUSES)[number];
 
-/** Provenance for one vendored upstream data source. */
+/** Provenance for one pinned upstream data source. */
 export interface ExerciseCatalogSource {
   id: string;
   repo: string;
@@ -152,7 +154,10 @@ export interface ExerciseEquipment {
 /** One canonical catalog entry, keyed by an append-only ASCII snake_case id. */
 export interface ExerciseCatalogEntry {
   id: string;
-  /** Canonical English name; the only name stored in workout records. */
+  /**
+   * Canonical English catalog name. Selecting a suggestion writes this
+   * spelling into a workout record; free-text names are stored as authored.
+   */
   name: string;
   /** Additional English lookup names; append-only, case/space-insensitive. */
   aliases: readonly string[];

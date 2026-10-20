@@ -169,6 +169,47 @@ test("bundles the 194-entry v1 catalog with version and digest metadata", () => 
   assert.deepEqual(CATALOG_DATA, SOURCE_CATALOG);
 });
 
+test("pins the two upstream commits and the committed provenance model", () => {
+  assert.deepEqual(
+    CATALOG_DATA.sources.map((source) => ({
+      id: source.id,
+      repo: source.repo,
+      commit: source.commit,
+      license: source.license,
+    })),
+    [
+      {
+        id: "gengyueworks-gym-exercise-guide",
+        repo: "https://github.com/gengyueworks/gym-exercise-guide",
+        commit: "ed41bb3a262fee9dd8d7d0aa3437696dcef601ed",
+        license: "Unlicense",
+      },
+      {
+        id: "free-exercise-db",
+        repo: "https://github.com/yuhonas/free-exercise-db",
+        commit: "f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5",
+        license: "Unlicense",
+      },
+    ],
+  );
+
+  // Every entry names its row in both pinned sources; no per-entry URL or
+  // retrieval timestamp is committed. The pinned commits plus catalog version
+  // are the provenance coordinates.
+  for (const entry of CATALOG_DATA.entries) {
+    assert.notEqual(
+      entry.source.free_exercise_db,
+      "",
+      `${entry.id} is missing its free-exercise-db reference`,
+    );
+    assert.match(
+      entry.source.guide_page,
+      /^exercises\/[^/]+\/[^/]+\.md$/,
+      `${entry.id} has a malformed guide page reference`,
+    );
+  }
+});
+
 test("generated digest matches the committed source JSON", () => {
   const expected = sha256(canonicalJson(SOURCE_CATALOG));
   assert.equal(CATALOG_DIGEST, expected);

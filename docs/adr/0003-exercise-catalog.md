@@ -2,18 +2,20 @@
 
 - **Status:** Accepted. The v1 implementation is on the `feat/exercise-catalog`
   feature branch and awaits review and merge: the versioned 194-entry catalog
-  and alias resolver (shared core), render-time Chinese display names,
+  and alias resolver/search (shared core), render-time Chinese display names,
   Chinese localization of catalog exercise names inside rebuilt copy,
-  alias-normalized analysis trends, and the web and mobile
-  autocomplete/display layers (the mobile Log field consumes the same shared
-  suggestion search as the web editor).
+  alias-normalized analysis trends, and web/mobile exercise-name autocomplete
+  plus display.
   The frozen 194-entry scope, its IDs, and the 66 canonical-name decisions are
   implemented as-is; no storage, record-schema, or API change is part of it.
-  Content review remains open — the 49 priority cue/mistake rewrites, the
-  muscle/equipment review, and authoritative cue authoring are not done, so the
-  catalog is not yet authoritative. Upstream commits are pinned and provenance
-  is recorded in the committed data; a standalone third-party `NOTICE` file is
-  not yet added.
+  v1 carries no cue or common-mistake content and ships no logging helpers
+  beyond name autocomplete (no recent-exercise or equipment/muscle candidate
+  lists) and no planning helpers; those are future work (§7). Content review
+  remains open: the 49 `content_status: "rewrite"` entries, the
+  muscle/equipment review, and any cue authoring are not done, so the catalog
+  is not yet authoritative. Upstream commits are pinned and provenance is
+  recorded in the committed data and in
+  [`NOTICE`](../../data/exercise-catalog/NOTICE).
 - **Date:** 2026-10-20
 - **Scope:** the v1 exercise catalog and its integration as a suggestion layer.
   Media, workout-record schema changes, non-strength expansion, and
@@ -43,8 +45,12 @@
   append-only (see `docs/api-contract.md` §6 and
   `supabase/migrations/20261010000000_workouts.sql`). Historical records cannot
   be backfilled.
-- Canonical data is English; the render-time i18n layer explicitly does not
-  translate workout content such as exercise names (`packages/fit-trace-i18n/README.md`).
+- Canonical catalog/domain data is English, while a workout record keeps the
+  exercise name exactly as authored (canonical English, alias, custom text, or
+  Chinese). The render-time i18n layer originally did not translate workout
+  content such as exercise names
+  (`packages/fit-trace-i18n/README.md`); the v1 implementation amends that for
+  catalog-backed display only (§5).
 - The mobile sync client validates pulled records with the shared core and drops
   malformed entries rather than failing the whole list
   (`mobile/src/sync/syncClient.ts`).
@@ -73,35 +79,45 @@
   pages share a cue block with another page, all 873 pages share one of 35
   mistake blocks, and the "plyometric" block is wrongly applied to entries such
   as Box Squat, Mountain Climbers, Overhead Slam, and Medicine Ball Chest Pass.
-  Seed content is therefore input to authoring, not final content.
+  Seed content is therefore input to authoring, not final content. v1 embeds no
+  cue or common-mistake text at all; it commits only a per-entry
+  `content_status` review flag (§2).
 
 ### Product decision
 
-The catalog is a **suggestion layer**: it assists logging, improves analysis
-normalization, and supports deterministic plan suggestions. It does not gate data
-entry, rewrite stored records, or make the LLM an authority on exercise facts.
+The catalog is a **suggestion layer**. v1 assists exercise-name logging and
+improves analysis normalization. It is designed to support additional logging
+helpers (recent exercises, equipment/muscle candidates) and deterministic plan
+candidate/substitution suggestions later, but those helpers are not part of v1
+(§7). The catalog does not gate data entry, rewrite stored records, or make the
+LLM an authority on exercise facts.
 
 ## Decision
 
 ### 1. Suggestion-layer boundary
 
-The catalog is used in three places:
+v1 uses the catalog in two shipped places:
 
-1. **Logging:** autocomplete, recent exercises, and equipment/muscle candidates.
-   A user can ignore every suggestion and type a custom name.
+1. **Logging:** exercise-name autocomplete in the web Log editor and the mobile
+   Log field, backed by the shared catalog search. A user can ignore every
+   suggestion and type a custom name.
 2. **Analysis:** resolve a recorded name to one catalog entry when the match is
-   unambiguous; group/filter/label by that entry. An unmatched name stays raw.
-3. **Planning:** deterministic candidate and substitution suggestions based on
-   movement pattern, equipment, muscles, and pain constraints. Suggestions are
-   draft-only and never write records.
+   unambiguous; group/filter/label by that entry. An unmatched or ambiguous name
+   stays raw.
 
-It never does the following:
+Render-time Chinese display names are also shipped (§5). The following are
+planned but **not in v1**: recent-exercise lists, equipment/muscle candidate
+lists, and deterministic plan candidate/substitution suggestions based on
+movement pattern, equipment, muscles, and pain constraints (Phase 1, §7).
+
+The catalog never does the following:
 
 - no validation error for an unknown exercise name;
 - no forced catalog selection;
 - no rewriting or backfilling of historical records;
-- no LLM-authored exercise facts, cues, or substitutions; the Skill may explain
-  tool output but the rules live in the deterministic core.
+- no LLM-authored exercise facts. v1 carries no cues, common mistakes, or
+  substitutions; any later cue content is authored and reviewed outside the
+  Agent/LLM, while the deterministic core owns lookup and suggestion rules.
 
 ### 2. v1 scope and taxonomy
 
@@ -110,31 +126,49 @@ It never does the following:
 - **Patterns:** `squat`, `hinge`, `lunge`, `horizontal_push`, `vertical_push`,
   `horizontal_pull`, `vertical_pull`, `core`, `biceps`, `triceps`,
   `shoulders`, `legs`, plus `cardio` and `mobility` seed groups.
-- **Fields:** stable `id`, canonical English `name`, localized display data,
-  `aliases`, `primary_muscles`, `secondary_muscles`, `movement_pattern`,
-  `mechanics` (compound/isolation), `force` (push/pull/static), `difficulty`,
-  `equipment.category` + `equipment.items[]`, provenance, and review status.
+- **Fields:** stable `id`, canonical English `name`, append-only English
+  `aliases`, `pattern` (the committed field name; not `movement_pattern`),
+  `primary_muscles`, `secondary_muscles`, `equipment.category` +
+  `equipment.items[]`, `difficulty`, `mechanics` (compound/isolation or `null`),
+  `force` (push/pull/static or `null`), `content_status`, `name_status`, an
+  optional `variant_of`, and per-entry source references. Chinese display names
+  and Chinese aliases live in a separate generated i18n table keyed by canonical
+  English name; they are not catalog-entry fields.
 - **IDs:** ASCII snake_case, globally unique, never reused. Entries are
   deprecated, not deleted; aliases are append-only.
 - **Names:** 66 seed names are renamed to canonical names; the seed name remains
   a Chinese alias. The two dip versions stay separate with a `variant_of`
   relation (`chest_dip` / `triceps_dip`).
-- **Muscles:** v1 uses the 17 coarse labels inherited from free-exercise-db.
-  They are a starting taxonomy, not a training-science review; compound lifts
-  need coach review before the catalog is presented as authoritative.
-- **Content:** Chinese cues and common mistakes are seed templates. 49 entries
-  are flagged for priority rewrite. No entry's cues are final until reviewed.
+- **Muscles:** the committed vocabulary in `MUSCLE_IDS` has 19 coarse labels;
+  v1 entries reference 16 of them (`hip flexors`, `neck`, and `obliques` are not
+  used). It is a starting taxonomy inherited from free-exercise-db, not a
+  training-science review; compound lifts need coach review before the catalog
+  is presented as authoritative.
+- **Content:** v1 carries no cue, common-mistake, or substitution text. Each
+  entry records only a `content_status`: 145 `template` (seed content is a
+  draft) and 49 `rewrite` (the upstream seed content is known-misleading and
+  must be rewritten before use). Cue/mistake authoring is future work
+  (§7, §8).
 - **No media:** images and videos are out of scope; no source with acceptable
   media licensing is available for this repository.
 
 ### 3. Data source and licence boundary
 
 - v1 metadata is derived from the two Unlicense sources above. Only text and
-  structured metadata are used; images and videos are never copied.
+  structured metadata were used as input; images and videos are never copied.
+- The committed data is curated JSON (`data/exercise-catalog/catalog.v1.json`
+  and `zh-names.v1.json`), not a wholesale vendored copy of the upstream
+  repositories.
 - No wger, Everkinetic, workout-guide, LogPress media, ExerciseDB, ExRx, or
   MuscleWiki data is embedded.
-- Provenance is recorded per entry (`source`, `source_url`, `license`,
-  `retrieved_at`, upstream commit). A `NOTICE`/third-party notice is added even
+- Provenance matches the committed data: the catalog root `sources` array
+  records each upstream `repo`, pinned `commit` (full 40-character SHA), and
+  `license`; every entry records per-entry upstream references in
+  `source.free_exercise_db` and `source.guide_page`. There are no per-entry
+  `source_url` or `retrieved_at` fields; the pinned commit and catalog version
+  are the provenance coordinates.
+- A third-party notice is committed at
+  [`data/exercise-catalog/NOTICE`](../../data/exercise-catalog/NOTICE) even
   though Unlicense requires no attribution.
 - The repository currently has no root `LICENSE`; third-party data is therefore
   treated as an explicit product/legal decision, not an implicit one.
@@ -158,7 +192,8 @@ ambiguous or unknown name is left raw; no data is guessed.
 
 ### 5. i18n boundary
 
-The stored/transported contract remains canonical English. This ADR amends the
+Catalog data and catalog-backed suggestions are canonical English; a workout
+record keeps the exercise name exactly as authored. This ADR amends the
 render-time rule for catalog-backed exercise names:
 
 - catalog-backed names are translated at render time through the catalog entry
@@ -169,8 +204,10 @@ render-time rule for catalog-backed exercise names:
   stored exactly as authored;
 - custom/free-text names pass through unchanged;
 - notes, user-authored names, ids, and dates are never translated;
-- records, snapshots, exports, and plan payloads keep canonical English;
-  localized display text is never stored;
+- stored records, snapshots, exports, and plan payloads preserve what the user
+  selected or typed: canonical English after a catalog-backed selection,
+  otherwise an alias, custom name, or Chinese text as authored. Localized
+  display text is never written back as a rewrite of stored data;
 - plan and analysis strings that embed an exercise name use the same display
   helper.
 
@@ -182,12 +219,16 @@ surface.
 
 - v1 lives in `packages/fit-trace-core/src/exercises/`: browser-safe types,
   generated catalog data, pure lookup/alias resolution, and deterministic
-  suggestion helpers. It imports no pi, Node, or typebox APIs.
-- The catalog is generated from vendored source snapshots by a repository script;
-  the generated TypeScript is committed. The work never fetches data at runtime.
-- A `catalogVersion` plus a content digest is asserted by tests. The catalog and
-  its aliases are static, deterministic, and append-only; no clock or randomness
-  participates.
+  search/list helpers. It imports no pi, Node, or typebox APIs.
+- The source of truth is the committed curated JSON in `data/exercise-catalog/`,
+  with the two upstream source commits pinned in its root `sources`. A
+  repository script validates the JSON and emits the generated TypeScript
+  (catalog plus the i18n Chinese tables); no upstream snapshot is vendored. The
+  generated files and digests are committed, and the work never fetches data at
+  runtime.
+- A `CATALOG_VERSION` value plus a content digest is asserted by tests. The
+  catalog and its aliases are static, deterministic, and append-only; no clock
+  or randomness participates.
 - Data size is expected to stay small enough for the shared core. If content,
   translations, or media later exceed that budget, extraction to a dedicated
   workspace package is allowed without changing callers.
@@ -198,40 +239,55 @@ surface.
 
 ### 7. Behaviour changes and rollout
 
-- **Phase 0 (first):** catalog + resolver + analysis normalization + editor
-  autocomplete + Chinese display. No record schema, API, or database change.
-  Analysis therefore groups aliases into one canonical trend; this is a
-  deliberate, user-visible change and existing tests/docs must be updated.
-- **Phase 1:** deterministic plan candidate/substitution suggestions using
+- **Phase 0 (shipped in v1, this branch):** catalog data + resolver/search,
+  alias-normalized analysis identity (group/filter/label), render-time Chinese
+  display for catalog-backed names (including rebuilt analysis and plan copy),
+  and exercise-name autocomplete/display in the web Log editor and the mobile
+  Log field. No record schema, API, or database change; stored records keep the
+  exercise name as authored. Analysis therefore groups aliases into one
+  canonical trend; this is a deliberate, user-visible change and the affected
+  tests and docs were updated.
+- **Phase 1 (future, not in v1):** recent-exercise and equipment/muscle
+  candidate lists; deterministic plan candidate/substitution suggestions using
   equipment, movement pattern, muscles, and pain constraints; exercise detail
-  and per-exercise history. `PlanConstraints.equipment` becomes executable.
+  and per-exercise history; cue/common-mistake authoring and coaching review.
+  `PlanConstraints.equipment` becomes executable only when that lands.
 - **Phase 2 (conditional):** record-level `exercise_id` with schema v2, only if
   a real requirement appears. This needs a separate rollout decision covering
   old clients, mobile sync, and content-derived ids.
-- **Rollback:** remove the catalog code/data and the display helper; stored
-  records, ids, and wire contracts are unaffected. There is no migration to
-  reverse.
+- **Rollback:** remove the catalog code/data and the display/suggestion helpers;
+  stored records, ids, and wire contracts are unaffected. There is no migration
+  to reverse.
 
-### 8. Review gates before implementation
+### 8. Review gates for an authoritative catalog
 
-The following are prerequisites for implementation, not afterthoughts:
+These are conditions before the catalog is presented as authoritative. The
+Phase 0 implementation has shipped, so each gate is satisfied or explicitly
+still open:
 
-1. Freeze the 194 IDs and canonical names; the 66 rename mappings are accepted.
-2. Coach review of the 17 muscle labels on compound lifts, the 49 priority cue
-   rewrites, and equipment `items[]` spot checks.
-3. Pin the two upstream source commits and record provenance/notice.
-4. Add tests for catalog schema/uniqueness, alias ambiguity, taxonomy
-   referential integrity, digest stability, resolution determinism, old-record
-   compatibility, and Chinese display completeness.
-5. Update `docs/ui-design.md`, the i18n README, and analysis documentation where
-   the canonical-name behaviour changes.
+1. **Frozen scope — satisfied for v1.** The 194 IDs and canonical names are
+   frozen; the 66 rename mappings are accepted. Renames remain append-only.
+2. **Coach review — open.** Review the coarse muscle labels on compound lifts,
+   the equipment `items[]` mappings, and — before any cue/mistake content is
+   authored — the 49 `rewrite` entries. The catalog must not be presented as
+   authoritative and no cue content may ship until this gate completes.
+3. **Pinned provenance — satisfied for v1.** The two upstream commits (full
+   SHAs) are pinned in the catalog root `sources`, and the third-party notice is
+   committed at `data/exercise-catalog/NOTICE`.
+4. **Tests — satisfied for v1.** Tests cover catalog schema/uniqueness, alias
+   ambiguity, taxonomy referential integrity, digest stability, pinned source
+   commits, resolution determinism, old-record compatibility, and Chinese
+   display completeness.
+5. **Docs — satisfied for Phase 0.** `docs/ui-design.md`, the i18n README, and
+   analysis/display documentation record the canonical-name behaviour. Later
+   phases must update them again when logging or planning helpers ship.
 
 ## Evidence
 
 | Fact | Source |
 | --- | --- |
-| Usable source: 876 English exercises, Unlicense; images not licensed | <https://github.com/yuhonas/free-exercise-db> (commit `f00c92c7`); image licensing discussion in <https://github.com/yuhonas/free-exercise-db/issues/2> |
-| Usable source: 873 Chinese-localized pages, 100% English-name join, Unlicense | <https://github.com/gengyueworks/gym-exercise-guide> (commit `ed41bb3a`) |
+| Usable source: 876 English exercises, Unlicense; images not licensed | <https://github.com/yuhonas/free-exercise-db> (pinned commit `f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5`); image licensing discussion in <https://github.com/yuhonas/free-exercise-db/issues/2> |
+| Usable source: 873 Chinese-localized pages, 100% English-name join, Unlicense | <https://github.com/gengyueworks/gym-exercise-guide> (pinned commit `ed41bb3a262fee9dd8d7d0aa3437696dcef601ed`) |
 | wger code is AGPL-3.0; exercise data is a per-entry Creative Commons mix | <https://github.com/wger-project/wger#license> |
 | Everkinetic data and artwork are CC-BY-SA-4.0 | <https://github.com/everkinetic/data> |
 | workout-guide artwork is CC-BY-SA-4.0 even though the repository is MIT | <https://github.com/bryllim/workout-guide/blob/main/ATTRIBUTION.md> |
@@ -241,10 +297,12 @@ The following are prerequisites for implementation, not afterthoughts:
 | 训记 Chinese name list has no declared license | <https://github.com/Foveluy/Xunji-movements> |
 | FitKG-CN (CC-BY-4.0) and Wikidata (CC0) are terminology references only | <https://zenodo.org/records/14355004>, <https://www.wikidata.org/> |
 
-Implementation-facing audit facts from the working draft: 194 entries selected
-from the 619-entry strength/powerlifting pool; 66 names renamed; 49 entries
-flagged for cue rewrite; 79 entries have aliases; the source pages have complete
-sections but shared cue/mistake templates; no media is copied.
+Implementation-facing audit facts from the committed data: 194 entries (178
+strength entries across 12 patterns, 8 cardio seeds, 8 mobility seeds); 66
+entries renamed (`name_status: "renamed"`); 49 entries flagged
+`content_status: "rewrite"` and 145 `template`; 15 entries carry 22 English
+aliases and 78 entries carry Chinese alias lists; the catalog embeds no
+cue/mistake fields and no media.
 
 ## Alternatives considered
 
@@ -262,7 +320,7 @@ sections but shared cue/mistake templates; no media is copied.
   name/content quality and unresolved media provenance; review effort would be
   larger than the curated 194.
 - **Do nothing.** Rejected: exact-string trend grouping is already a correctness
-  problem, and equipment-aware planning has no data to act on.
+  problem, and later equipment-aware planning would have no data to act on.
 
 ## Consequences
 
@@ -270,21 +328,25 @@ sections but shared cue/mistake templates; no media is copied.
 
 - Alias normalization fixes a real analysis defect without changing records,
   schema, API, or storage.
-- Logging and planning gain deterministic, explainable exercise data with a clear
-  licensing path.
-- The catalog remains offline-friendly, deterministic, and shared by web,
-  mobile, pi, and the server.
+- Exercise-name logging gains deterministic, explainable suggestions from a
+  clearly licensed dataset; planning and the other logging helpers remain
+  unchanged until Phase 1.
+- The catalog remains offline-friendly, deterministic, and available through the
+  shared core to web, mobile, the pi extension, and the server.
 
 **Negative / open work**
 
-- Curation is real work: 66 name decisions, 49 cue rewrites, muscle reviews, and
-  equipment items still need human review before the catalog is authoritative.
-- No media in v1; exercise detail pages will be text-only until licensing or
-  commissioned assets are available.
+- Curation is real work: the 49 `rewrite` entries, the coarse muscle labels, and
+  the equipment `items[]` checks still need coach review before the catalog is
+  authoritative. The 66 canonical names are frozen.
+- No media in v1; any future exercise-detail surface will be text-only until
+  licensing or commissioned assets are available.
 - Catalog data increases the shared-core/mobile bundle size; the extraction
   threshold must be watched.
-- Analysis output changes (canonical names) are user-visible and require docs,
-  fixture, and test updates.
+- Analysis output changes (canonical labels) are user-visible and required docs,
+  fixture, and test updates, which are included in this branch.
+- v1 ships no cue/mistake content, no recent-exercise or equipment/muscle
+  candidate lists, and no plan helpers; those remain future work (§7).
 - Because this is a suggestion layer, custom names remain outside normalization;
   coverage depends on suggestion quality and alias growth, not enforcement.
 
@@ -295,5 +357,7 @@ sections but shared cue/mistake templates; no media is copied.
 - a server-side catalog API or dynamic catalog updates;
 - Olympic lifting, plyometrics, strongman, full mobility, and the remaining
   cardio catalogue beyond the v1 seeds;
-- exercise content beyond the seed quality bar;
-- training-plan enforcement (the catalog suggests; the plan remains a draft).
+- cue/common-mistake authoring and exercise content beyond the seed quality bar
+  (v1 ships no cue content);
+- training-plan enforcement; deterministic plan suggestions are future work
+  (§7).
