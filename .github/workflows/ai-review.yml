@@ -50,4 +50,6 @@ jobs:
           AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
           AI_REVIEW_BASE_URL: ${{ vars.AI_REVIEW_BASE_URL || 'https://api.deepseek.com' }}
           AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek-flash' }}
-        run: node scripts/ai-review.ts
+          AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT || 'none' }}
+          AI_REVIEW_JSON_MODE: ${{ vars.AI_REVIEW_JSON_MODE || '1' }}
+        run: node --experimental-strip-types scripts/ai-review.ts

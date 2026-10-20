@@ -452,6 +452,8 @@ export async function callModel(options: {
   model: string;
   messages: Array<{ role: "system" | "user"; content: string }>;
   maxTokens?: number;
+  reasoningEffort?: string;
+  jsonMode?: boolean;
 }): Promise<string> {
   const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
   let lastError: Error | null = null;
@@ -470,7 +472,15 @@ export async function callModel(options: {
           messages: options.messages,
           temperature: 0,
           max_tokens: options.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-          response_format: { type: "json_object" },
+          ...(options.jsonMode === false
+            ? {}
+            : { response_format: { type: "json_object" } }),
+          // DeepSeek supports reasoning_effort; "none" keeps review output
+          // reliable. Set AI_REVIEW_REASONING_EFFORT="" to omit the field for
+          // providers that reject it.
+          ...(options.reasoningEffort === undefined
+            ? {}
+            : { reasoning_effort: options.reasoningEffort }),
         }),
         signal: controller.signal,
       });
@@ -523,6 +533,8 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
   const model = env.AI_REVIEW_MODEL?.trim() || DEFAULT_MODEL;
   const maxDiffChars = positiveInteger(env.AI_REVIEW_MAX_DIFF_CHARS, DEFAULT_MAX_DIFF_CHARS);
   const maxTokens = positiveInteger(env.AI_REVIEW_MAX_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS);
+  const reasoningEffort = env.AI_REVIEW_REASONING_EFFORT?.trim() ?? "none";
+  const jsonMode = env.AI_REVIEW_JSON_MODE !== "0";
   const dryRun = env.AI_REVIEW_DRY_RUN === "1";
 
   const pr = await fetchPullRequest(repo, number, token);
@@ -559,6 +571,8 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
         baseUrl,
         model,
         maxTokens,
+        jsonMode,
+        reasoningEffort: reasoningEffort === "" ? undefined : reasoningEffort,
         messages: buildMessages(pr, candidate),
       });
       input = candidate;
@@ -569,8 +583,14 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
       break;
     } catch (cause) {
       lastError = cause;
-      if (cause instanceof ReviewBudgetError && index < budgets.length - 1) {
-        console.warn(`model exhausted its reasoning budget; retrying with a smaller diff`);
+      const budgetFailure = cause instanceof ReviewBudgetError;
+      const parseFailure = cause instanceof Error && cause.message.startsWith("model response");
+      if ((budgetFailure || parseFailure) && index < budgets.length - 1) {
+        console.warn(
+          budgetFailure
+            ? "model exhausted its reasoning budget; retrying with a smaller diff"
+            : "model response was not valid review JSON; retrying with a smaller diff",
+        );
         continue;
       }
       throw cause;

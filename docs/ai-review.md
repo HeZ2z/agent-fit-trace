@@ -39,25 +39,28 @@ gate a merge. The GitHub Actions check is informational.
 
 ## Setup
 
-The repository secret is already configured:
+The operator must configure the secret before enabling the workflow:
 
-| Name | Kind | Value |
+| Name | Kind | Purpose |
 | --- | --- | --- |
-| `AI_REVIEW_API_KEY` | secret | DeepSeek API key |
+| `AI_REVIEW_API_KEY` | secret | Provider API key (DeepSeek in this repository) |
 
 Optional repository variables can override the defaults:
 
 | Name | Default | Purpose |
 | --- | --- | --- |
 | `AI_REVIEW_BASE_URL` | `https://api.deepseek.com` | OpenAI-compatible base URL |
-| `AI_REVIEW_MODEL` | `deepseek-flash` | Model id; use `deepseek-v4-pro` for a stronger review |
+| `AI_REVIEW_MODEL` | `deepseek-flash` | Model id; `deepseek-v4-pro` is available on the same endpoint |
+| `AI_REVIEW_REASONING_EFFORT` | `none` | DeepSeek reasoning level; empty omits the field |
+| `AI_REVIEW_JSON_MODE` | `1` | Set `0` for providers that reject `response_format` |
 
 The defaults target the official DeepSeek endpoint. For another provider, set
 the base URL and model to an OpenAI-compatible endpoint and keep the key in
-`AI_REVIEW_API_KEY`.
+`AI_REVIEW_API_KEY`. Model ids are provider-specific: check `/models` or the
+provider documentation when changing endpoints.
 
-If the repository is moved or the workflow is copied elsewhere, create the
-secret and variables in the target repository. Never commit a key.
+The secret is intentionally out of band and never committed. Configure it in
+the target repository if the workflow is copied; never commit a key.
 
 ## Cost and context limits
 
@@ -70,13 +73,15 @@ The script budgets the model context before calling the provider:
   are excluded because they are noisy review subjects;
 - at most 20 findings; the posted comment is capped at 60,000 characters.
 
-The review uses up to 16,000 completion tokens (`AI_REVIEW_MAX_TOKENS`) because
-`deepseek-flash` is a reasoning model, and it retries transient 429/5xx
-responses twice. If the model exhausts that budget while reasoning about a
-large diff, the review retries with a smaller diff budget (half, then 20,000
-characters) so it can still post a partial review; the comment notes when
-diffs were truncated. A manual run normally costs one model call per PR
-revision, and up to three calls for a very large diff.
+The review disables reasoning (`reasoning_effort: none`) by default so the JSON
+answer fits the 16,000 completion-token budget (`AI_REVIEW_MAX_TOKENS`). Set
+`AI_REVIEW_REASONING_EFFORT=medium` (or another DeepSeek-supported level) for
+more deliberate reviews at a higher token cost. The script retries transient
+429/5xx responses twice. If the model exhausts its output budget or returns
+malformed JSON, it retries with a smaller diff budget (half, then 20,000
+characters) so it can post a partial review; the comment notes truncation. A
+manual run normally costs one model call per PR revision, and up to three calls
+for a very large diff.
 
 ## Local dry run
 
@@ -89,7 +94,7 @@ GITHUB_REPOSITORY=HeZ2z/agent-fit-trace \
 PR_NUMBER=123 \
 AI_REVIEW_API_KEY=... \
 AI_REVIEW_DRY_RUN=1 \
-node scripts/ai-review.ts
+node --experimental-strip-types scripts/ai-review.ts
 ```
 
 For a real local run, omit `AI_REVIEW_DRY_RUN` (the comment is posted/updated

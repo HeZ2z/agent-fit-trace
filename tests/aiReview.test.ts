@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 
 import {
   buildMessages,
@@ -7,6 +7,7 @@ import {
   formatReviewComment,
   isExcludedPath,
   parseReviewResponse,
+  runReview,
   selectReviewableFiles,
   type ChangedFile,
   type PullRequestInfo,
@@ -163,4 +164,72 @@ test("formatReviewComment caps oversized output", () => {
   const comment = formatReviewComment({ pr: PR, model: "deepseek-flash", review, input });
   assert.ok(comment.length <= 60_000 + 40);
   assert.match(comment, /review comment truncated/);
+});
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+test("runReview retries with a smaller diff when the model exhausts its budget", async () => {
+  const previousRepo = process.env.GITHUB_REPOSITORY;
+  process.env.GITHUB_REPOSITORY = "owner/repo";
+  let aiCalls = 0;
+  const fetchMock = mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "https://api.github.com/repos/owner/repo/pulls/1") {
+      return jsonResponse({
+        number: 1,
+        title: "Test",
+        body: null,
+        draft: false,
+        base: { sha: "a".repeat(40) },
+        head: { sha: "b".repeat(40) },
+      });
+    }
+    if (url.startsWith("https://api.github.com/repos/owner/repo/pulls/1/files?")) {
+      return jsonResponse([
+        { filename: "app/src/App.tsx", status: "modified", additions: 1, deletions: 1, changes: 2, patch: "+x" },
+      ]);
+    }
+    if (url === "https://api.test/chat/completions") {
+      aiCalls += 1;
+      if (aiCalls === 1) {
+        return jsonResponse({
+          choices: [{ message: { content: "", reasoning_content: "spent the budget" }, finish_reason: "length" }],
+          usage: { completion_tokens: 16_000 },
+        });
+      }
+      return jsonResponse({
+        choices: [{
+          message: { content: JSON.stringify({ summary: "No issues.", verdict: "no_blocking_findings", findings: [] }) },
+          finish_reason: "stop",
+        }],
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  });
+  const logMock = mock.method(console, "log", () => {});
+  const warnMock = mock.method(console, "warn", () => {});
+  try {
+    await runReview({
+      GITHUB_REPOSITORY: "owner/repo",
+      PR_NUMBER: "1",
+      GITHUB_TOKEN: "token",
+      AI_REVIEW_API_KEY: "key",
+      AI_REVIEW_BASE_URL: "https://api.test",
+      AI_REVIEW_MODEL: "deepseek-flash",
+      AI_REVIEW_DRY_RUN: "1",
+    });
+    assert.equal(aiCalls, 2);
+    assert.ok(warnMock.mock.calls.length >= 1);
+  } finally {
+    fetchMock.mock.restore();
+    logMock.mock.restore();
+    warnMock.mock.restore();
+    if (previousRepo === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = previousRepo;
+  }
 });
