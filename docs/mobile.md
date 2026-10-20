@@ -51,7 +51,7 @@ worker in [`docs/deployment.md`](deployment.md).
 | --- | --- | --- |
 | `mobile/src/app/` | Implemented | Routes: root stack, six tabs, invite-only sign-in, manual sync |
 | `mobile/src/theme/` | Implemented | Shared tokens; AsyncStorage-backed skin state |
-| `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, Banner, EmptyState, Screen, text |
+| `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, ExerciseNameField, Banner, EmptyState, Screen, text |
 | `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, log/analysis/plan models |
 | `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session and auth provider |
 | `mobile/src/preferences/` | Implemented | Account skin/language reconciliation provider |
@@ -196,6 +196,16 @@ the shared Chinese display table, including inside rebuilt Chinese analysis and
 plan copy, while stored payloads keep the canonical English name and custom
 names stay as authored.
 
+While logging on mobile, the exercise-name field suggests catalog entries through
+the shared `searchExerciseSuggestions` helper, so web and mobile use one search
+and label implementation. Options show the Chinese display name plus the
+canonical English name in Chinese, and the canonical English name alone in
+English; selecting one writes that canonical English name into the form, which
+is the stored spelling. The catalog remains a suggestion layer: an ignored or
+custom name is still saved exactly as typed, the form model still holds the name
+as a plain string, and the suggestions render inline and close after a selection
+or when the query is empty.
+
 The shared `@pi-fit-trace/i18n` package holds the pure dictionary and domain
 display helpers; the web keeps its localStorage/DOM adapter in
 [`app/src/i18n/`](../app/src/i18n/), and mobile keeps an AsyncStorage adapter in
@@ -339,9 +349,9 @@ widths, shadows and the type ramp, in dp rather than CSS units.
 
 One token set serves both skins. Pixel uses 3dp rules, square corners and hard
 offset shadows; Glass uses hairlines, 8dp cards, blurred chrome and soft
-elevation. Shared components cover Button, Card, Chip, Field, Banner, EmptyState
-and text. `SkinProvider` defaults to Pixel and persists the choice in
-AsyncStorage; the signed-in choice is mirrored to account metadata by
+elevation. Shared components cover Button, Card, Chip, Field, ExerciseNameField,
+Banner, EmptyState and text. `SkinProvider` defaults to Pixel and persists the
+choice in AsyncStorage; the signed-in choice is mirrored to account metadata by
 `PreferencesProvider`. No font assets are bundled, so the Bricolage/DM Sans names
 fall back to platform fonts. The web touch-first rules apply: 44dp targets,
 visible labels and no colour-only state.

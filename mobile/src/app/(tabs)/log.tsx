@@ -24,6 +24,7 @@ import {
   Card,
   Chip,
   Display,
+  ExerciseNameField,
   Field,
   Screen,
   Title,
@@ -39,6 +40,11 @@ import {
  * cleared and a success banner stays here — this screen does not navigate to
  * History; History refreshes on focus when the user switches tabs. Any edit
  * clears stale validation, warning, error and success feedback.
+ *
+ * Exercise names accept catalog suggestions from the shared i18n helper. A
+ * suggestion only fills the canonical English name into the same string field;
+ * free text stays valid and is saved exactly as authored, so the catalog never
+ * gates logging.
  */
 const copy = {
   kicker: "LOG",
@@ -359,9 +365,10 @@ export default function LogScreen() {
                 ) : null}
               </View>
 
-              <Field
+              <ExerciseNameField
                 label={t(copy.exerciseName, { index: exerciseIndex + 1 })}
                 onChangeText={(value) => updateExerciseName(exerciseIndex, value)}
+                suggestionsLabel={t(copy.exercises)}
                 testID={`log-exercise-${exerciseIndex}-name`}
                 value={exercise.name}
               />
