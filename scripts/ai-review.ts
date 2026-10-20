@@ -36,7 +36,7 @@ const MAX_COMMENT_CHARS = 60_000;
 const MAX_RETRIES = 2;
 const DEFAULT_MAX_OUTPUT_TOKENS = 16_000;
 const REQUEST_TIMEOUT_MS = 180_000;
-const MARKER_PREFIX = "<!-- ai-pr-review:sha=";
+const MARKER = "<!-- ai-pr-review -->";
 
 /** Files whose diffs are generated/noisy and should not consume the model context. */
 const EXCLUDED_PATH_PATTERNS: readonly RegExp[] = [
@@ -100,6 +100,7 @@ export interface PullRequestInfo {
   draft: boolean;
   baseSha: string;
   headSha: string;
+  headRepoFullName: string | null;
 }
 
 export type Severity = "P0" | "P1" | "P2" | "P3";
@@ -133,7 +134,7 @@ interface GitHubPullRequestResponse {
   body: string | null;
   draft: boolean;
   base: { sha: string };
-  head: { sha: string };
+  head: { sha: string; repo: { full_name: string } | null };
 }
 
 interface GitHubIssueComment {
@@ -157,6 +158,17 @@ function errorMessage(cause: unknown): string {
 
 /** The model consumed the output budget while reasoning; retrying with a smaller diff helps. */
 class ReviewBudgetError extends Error {}
+
+/** Budgets for the retry ladder, strictly decreasing so no retry is a no-op. */
+export function reviewBudgets(maxDiffChars: number): number[] {
+  const candidates = [maxDiffChars, Math.floor(maxDiffChars / 2), 20_000]
+    .filter((candidate) => candidate > 0 && candidate <= maxDiffChars);
+  const budgets: number[] = [];
+  for (const candidate of candidates) {
+    if (!budgets.includes(candidate)) budgets.push(candidate);
+  }
+  return budgets.sort((left, right) => right - left);
+}
 
 export function isExcludedPath(filename: string): boolean {
   return EXCLUDED_PATH_PATTERNS.some((pattern) => pattern.test(filename));
@@ -324,7 +336,6 @@ export function formatReviewComment(options: {
   input: ReviewInput;
 }): string {
   const { pr, model, review, input } = options;
-  const marker = `${MARKER_PREFIX}${pr.headSha} -->`;
   const verdictLabel: Record<ParsedReview["verdict"], string> = {
     no_blocking_findings: "No blocking findings",
     needs_attention: "Needs attention",
@@ -332,7 +343,7 @@ export function formatReviewComment(options: {
   };
   const findings = [...review.findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity));
   const lines = [
-    marker,
+    MARKER,
     `## AI review — ${model}`,
     "",
     `**Verdict:** ${verdictLabel[review.verdict]}`,
@@ -400,6 +411,7 @@ export async function fetchPullRequest(repo: string, number: number, token: stri
     draft: response.draft,
     baseSha: response.base.sha,
     headSha: response.head.sha,
+    headRepoFullName: response.head.repo?.full_name ?? null,
   };
 }
 
@@ -422,7 +434,7 @@ async function findExistingComment(repo: string, number: number, token: string, 
       `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
       token,
     );
-    const match = comments.find((comment) => comment.body.includes(marker));
+    const match = comments.find((comment) => comment.body.startsWith(marker));
     if (match !== undefined) return match.id;
     if (comments.length < 100) break;
   }
@@ -533,13 +545,23 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
   const model = env.AI_REVIEW_MODEL?.trim() || DEFAULT_MODEL;
   const maxDiffChars = positiveInteger(env.AI_REVIEW_MAX_DIFF_CHARS, DEFAULT_MAX_DIFF_CHARS);
   const maxTokens = positiveInteger(env.AI_REVIEW_MAX_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS);
-  const reasoningEffort = env.AI_REVIEW_REASONING_EFFORT?.trim() ?? "none";
+  const configuredReasoning = env.AI_REVIEW_REASONING_EFFORT?.trim();
+  const reasoningEffort = configuredReasoning === undefined || configuredReasoning === ""
+    ? "none"
+    : configuredReasoning === "omit"
+      ? undefined
+      : configuredReasoning;
   const jsonMode = env.AI_REVIEW_JSON_MODE !== "0";
   const dryRun = env.AI_REVIEW_DRY_RUN === "1";
 
   const pr = await fetchPullRequest(repo, number, token);
   if (pr.draft) {
     console.log(`PR #${number} is draft; skipping review`);
+    return;
+  }
+  const allowForks = env.AI_REVIEW_ALLOW_FORKS === "1";
+  if (pr.headRepoFullName !== null && pr.headRepoFullName !== repo && !allowForks) {
+    console.log(`PR #${number} is from a fork; skipping review (set AI_REVIEW_ALLOW_FORKS=1 to override)`);
     return;
   }
   const files = await fetchChangedFiles(repo, number, token);
@@ -550,11 +572,7 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
   // A large diff can make a reasoning model spend its whole completion budget
   // on reasoning. Retry with progressively smaller diff budgets instead of
   // failing without a comment.
-  const budgets = [...new Set([
-    maxDiffChars,
-    Math.max(20_000, Math.floor(maxDiffChars / 2)),
-    20_000,
-  ])];
+  const budgets = reviewBudgets(maxDiffChars);
   let input: ReviewInput | null = null;
   let review: ParsedReview | null = null;
   let lastError: unknown = null;
@@ -572,7 +590,7 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
         model,
         maxTokens,
         jsonMode,
-        reasoningEffort: reasoningEffort === "" ? undefined : reasoningEffort,
+        reasoningEffort,
         messages: buildMessages(pr, candidate),
       });
       input = candidate;
@@ -604,7 +622,7 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
     console.log(comment);
     return;
   }
-  await upsertReviewComment(repo, number, token, `${MARKER_PREFIX}${pr.headSha} -->`, comment);
+  await upsertReviewComment(repo, number, token, MARKER, comment);
   console.log(`AI review complete: verdict=${review.verdict}, findings=${review.findings.length}`);
 }
 

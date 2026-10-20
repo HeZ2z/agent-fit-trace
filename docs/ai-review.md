@@ -25,15 +25,16 @@ gate a merge. The GitHub Actions check is informational.
 
 - **Triggers:** PR `opened`, `synchronize`, `reopened`, and `ready_for_review`;
   plus `workflow_dispatch` with a PR number.
-- **Skipped:** draft PRs, and PRs from forks (fork workflows do not receive
-  repository secrets).
+- **Skipped:** draft PRs, and PRs from forks by default (fork workflows do not
+  receive repository secrets). Manual dispatch also skips forks unless
+  `AI_REVIEW_ALLOW_FORKS=1` is set for the run.
 - **Trusted code:** the workflow checks out the PR **base commit**, not the PR
   head, so a PR cannot change the reviewer script before it is reviewed. The
   script never executes PR code; it only reads the GitHub API and calls the
   model.
-- **Deduplication:** the comment starts with an invisible
-  `<!-- ai-pr-review:sha=<head-sha> -->` marker. A push creates a new comment;
-  a rerun for the same head SHA updates the existing comment.
+- **Deduplication:** the comment starts with an invisible `<!-- ai-pr-review -->`
+  marker. A rerun updates that PR's existing comment instead of adding another;
+  the rendered review records the head SHA it reviewed.
 - **Untrusted input:** PR title, body, and diff are wrapped as data and the
   system prompt tells the model not to follow instructions found inside them.
 
@@ -51,7 +52,7 @@ Optional repository variables can override the defaults:
 | --- | --- | --- |
 | `AI_REVIEW_BASE_URL` | `https://api.deepseek.com` | OpenAI-compatible base URL |
 | `AI_REVIEW_MODEL` | `deepseek-flash` | Model id; `deepseek-v4-pro` is available on the same endpoint |
-| `AI_REVIEW_REASONING_EFFORT` | `none` | DeepSeek reasoning level; empty omits the field |
+| `AI_REVIEW_REASONING_EFFORT` | `none` | DeepSeek reasoning level; set `omit` for providers that reject the field |
 | `AI_REVIEW_JSON_MODE` | `1` | Set `0` for providers that reject `response_format` |
 
 The defaults target the official DeepSeek endpoint. For another provider, set
@@ -76,12 +77,13 @@ The script budgets the model context before calling the provider:
 The review disables reasoning (`reasoning_effort: none`) by default so the JSON
 answer fits the 16,000 completion-token budget (`AI_REVIEW_MAX_TOKENS`). Set
 `AI_REVIEW_REASONING_EFFORT=medium` (or another DeepSeek-supported level) for
-more deliberate reviews at a higher token cost. The script retries transient
-429/5xx responses twice. If the model exhausts its output budget or returns
-malformed JSON, it retries with a smaller diff budget (half, then 20,000
-characters) so it can post a partial review; the comment notes truncation. A
-manual run normally costs one model call per PR revision, and up to three calls
-for a very large diff.
+more deliberate reviews at a higher token cost, or `omit` for providers that
+reject the parameter. The script retries transient 429/5xx responses twice. If
+the model exhausts its output budget or returns malformed JSON, it retries with
+a strictly smaller diff budget when one exists (for the default 60,000-char
+budget: 30,000, then 20,000) so it can post a partial review; the comment notes
+truncation. A manual run normally costs one model call per PR revision, and up
+to three calls for a very large diff.
 
 ## Local dry run
 

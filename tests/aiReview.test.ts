@@ -7,6 +7,7 @@ import {
   formatReviewComment,
   isExcludedPath,
   parseReviewResponse,
+  reviewBudgets,
   runReview,
   selectReviewableFiles,
   type ChangedFile,
@@ -20,6 +21,7 @@ const PR: PullRequestInfo = {
   draft: false,
   baseSha: "a".repeat(40),
   headSha: "b".repeat(40),
+  headRepoFullName: "owner/repo",
 };
 
 function file(
@@ -147,11 +149,18 @@ test("formatReviewComment includes a dedupe marker, verdict and severity order",
     ],
   }));
   const comment = formatReviewComment({ pr: PR, model: "deepseek-flash", review, input });
-  assert.ok(comment.startsWith(`<!-- ai-pr-review:sha=${PR.headSha} -->`));
+  assert.ok(comment.startsWith("<!-- ai-pr-review -->"));
   assert.match(comment, /Needs attention/);
   assert.ok(comment.indexOf("[P0]") < comment.indexOf("[P3]"));
   assert.match(comment, /not a required check/);
   assert.ok(!comment.includes("AI_REVIEW_API_KEY"));
+});
+
+test("reviewBudgets is strictly decreasing and never repeats a budget", () => {
+  assert.deepEqual(reviewBudgets(60_000), [60_000, 30_000, 20_000]);
+  assert.deepEqual(reviewBudgets(40_000), [40_000, 20_000]);
+  assert.deepEqual(reviewBudgets(20_000), [20_000, 10_000]);
+  assert.deepEqual(reviewBudgets(10_000), [10_000, 5_000]);
 });
 
 test("formatReviewComment caps oversized output", () => {
@@ -186,7 +195,7 @@ test("runReview retries with a smaller diff when the model exhausts its budget",
         body: null,
         draft: false,
         base: { sha: "a".repeat(40) },
-        head: { sha: "b".repeat(40) },
+        head: { sha: "b".repeat(40), repo: { full_name: "owner/repo" } },
       });
     }
     if (url.startsWith("https://api.github.com/repos/owner/repo/pulls/1/files?")) {
