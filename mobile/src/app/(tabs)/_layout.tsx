@@ -133,12 +133,7 @@ function AppTabBar({ state, emitter, navigateToTab, insets }: BottomTabBarProps)
                 pressed ? styles.pressed : null,
               ]}
               testID={`tab-${route.name}`}>
-              <TabIcon
-                focused={focused}
-                name={item.name}
-                skin={skin}
-                tokens={tokens}
-              />
+              <TabIcon focused={focused} name={item.name} tokens={tokens} />
               <Text
                 numberOfLines={1}
                 style={[

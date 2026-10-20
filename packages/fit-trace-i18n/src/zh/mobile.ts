@@ -20,6 +20,7 @@ export const messages: Record<string, string> = {
   "Every logged session becomes evidence. Review what you lifted, how it felt, and what changed over time.":
     "每一次记录的训练都会成为证据。回顾你举起的重量、训练感受，以及随时间发生的变化。",
   "No sessions yet": "还没有训练课",
+"Log your first session and it will appear here.": "记录第一场训练后，它会出现在这里。",
   "Your workout history will appear here once local logging is connected. This shell only reserves the route.":
     "记录第一场训练后，它会出现在这里。",
   "{sets} set · {reps} reps · {volume} kg": "{sets} 组 · {reps} 次 · {volume} kg",
