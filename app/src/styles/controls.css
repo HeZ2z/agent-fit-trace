@@ -330,6 +330,9 @@ input[type="file"]:disabled {
 }
 
 .exercise-suggestion {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
   margin: 0;
   padding: 8px 9px;
   color: var(--fg);
@@ -344,9 +347,19 @@ input[type="file"]:disabled {
   border-top: var(--border-w-thin) solid var(--pale);
 }
 
-.exercise-suggestion:hover,
-.exercise-suggestion-active {
+.exercise-suggestion:hover {
   background: var(--soft);
+}
+
+/* The active row needs a shape/contrast cue, not only a tinted fill: a solid
+   left bar plus the stronger pale step so keyboard focus never relies on color
+   perception alone. The 3px bar replaces equal padding to keep text aligned. */
+.exercise-suggestion-active,
+.exercise-suggestion-active:hover {
+  border-left: 3px solid var(--border);
+  padding-left: 6px;
+  background: var(--pale);
+  font-weight: 800;
 }
 
 [data-theme="glass"] .exercise-suggestions {
@@ -356,10 +369,16 @@ input[type="file"]:disabled {
   box-shadow: var(--soft-shadow);
 }
 
-[data-theme="glass"] .exercise-suggestion-active,
 [data-theme="glass"] .exercise-suggestion:hover {
   border-radius: var(--radius-control);
   background: var(--soft);
+}
+
+[data-theme="glass"] .exercise-suggestion-active,
+[data-theme="glass"] .exercise-suggestion-active:hover {
+  border-left-color: var(--border);
+  border-radius: var(--radius-control);
+  background: var(--pale);
 }
 
 /* ── surfaces ──────────────────────────────────────────────────── */

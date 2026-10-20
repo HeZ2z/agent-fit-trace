@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
@@ -298,7 +298,7 @@ describe("WorkoutEditorScreen", () => {
 describe("exercise-name combobox", () => {
   afterEach(() => {
     window.localStorage.clear();
-    setLanguage("en");
+    act(() => setLanguage("en"));
   });
 
   function nameCombobox(accessibilityName: RegExp = /exercise 1 name/i): HTMLElement {
@@ -523,5 +523,77 @@ describe("exercise-name combobox", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(input).toHaveValue("Barbell Deadlift");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("keeps a dirty raw draft across a language switch", async () => {
+    const { adapter, user } = renderEditorOver();
+    const input = nameCombobox();
+
+    // A typed alias is a raw draft, not a localized catalog display.
+    await user.type(input, "Squat");
+    expect(input).toHaveValue("Squat");
+
+    // Switching the UI language must not translate the text under the cursor.
+    act(() => setLanguage("zh"));
+    expect(input).toHaveValue("Squat");
+
+    // The next keystroke extends the raw text, so the stored name stays raw
+    // instead of becoming localized copy (`杠铃深蹲 Jump`).
+    await user.type(input, " Jump");
+    expect(input).toHaveValue("Squat Jump");
+
+    await fillSetFieldsZh(user);
+    await user.click(screen.getByRole("button", { name: /保存训练/ }));
+    await screen.findByTestId("summary-id");
+
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.exercises[0]!.name).toBe("Squat Jump");
+  });
+
+  it("re-localizes a pristine selection when the language changes", async () => {
+    setLanguage("zh");
+    const { user } = renderEditorOver();
+    const input = nameCombobox(/动作 1 名称/i);
+
+    await user.type(input, "卧推");
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", { name: "杠铃卧推" }),
+    );
+    expect(input).toHaveValue("杠铃卧推");
+
+    // A pristine selection is display-only: the same canonical value follows the
+    // UI language in both directions.
+    act(() => setLanguage("en"));
+    expect(input).toHaveValue("Barbell Bench Press - Medium Grip");
+    act(() => setLanguage("zh"));
+    expect(input).toHaveValue("杠铃卧推");
+  });
+
+  it("stores the edited visible text after a Chinese selection", async () => {
+    setLanguage("zh");
+    const { adapter, user } = renderEditorOver();
+    const input = nameCombobox(/动作 1 名称/i);
+
+    await user.type(input, "卧推");
+    await user.click(
+      within(screen.getByRole("listbox")).getByRole("option", { name: "杠铃卧推" }),
+    );
+    expect(input).toHaveValue("杠铃卧推");
+
+    // Editing the localized display turns the value into a custom name: the
+    // visible text is exactly what the record stores from then on.
+    await user.keyboard("{Backspace}");
+    expect(input).toHaveValue("杠铃卧");
+    await user.type(input, "推举");
+    expect(input).toHaveValue("杠铃卧推举");
+
+    await fillSetFieldsZh(user);
+    await user.click(screen.getByRole("button", { name: /保存训练/ }));
+    await screen.findByTestId("summary-id");
+
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.exercises[0]!.name).toBe("杠铃卧推举");
   });
 });

@@ -10,11 +10,13 @@
  *
  * The input keeps a raw editing draft separate from the localized display: the
  * draft is only re-localized when the parent value changes externally (form
- * reset, another record) or the UI language changes. Typing therefore never
- * translates under the cursor — in Chinese UI, typing `Squat Jump` stays
- * `Squat Jump` — while selecting a suggestion still writes the canonical English
- * name and shows its localized display. Every keystroke passes the raw text the
- * user typed to `onChange`, so free text is never rewritten or translated.
+ * reset, another record) or — for a pristine localized selection — when the UI
+ * language changes. Typing therefore never translates under the cursor — in
+ * Chinese UI, typing `Squat Jump` stays `Squat Jump` — and a raw draft stays raw
+ * across a language switch instead of being re-interpreted and later stored as
+ * localized text. Selecting a suggestion still writes the canonical English name
+ * and shows its localized display, and every keystroke passes the raw text the
+ * user typed to `onChange`.
  *
  * Implemented with the WAI-ARIA combobox/listbox pattern on a single text
  * input: `role="combobox"`, `aria-expanded`, `aria-controls`,
@@ -60,16 +62,28 @@ export function ExerciseNameCombobox({
   // never mistaken for an external change.
   const lastEmittedValue = useRef(value);
   const lastLanguage = useRef(language);
+  // True while the draft is a localized display this field owns (a selection or
+  // an externally loaded value); false once the user types raw text. A dirty
+  // draft must never be re-localized by a language switch.
+  const pristineDraft = useRef(true);
   const optionRefs = useRef<Array<HTMLLIElement | null>>([]);
 
-  // Re-localize the draft only when the parent value changes externally or the
-  // UI language changes; the component's own emissions are skipped above.
+  // Follow external parent changes in full; on a language switch, translate only
+  // a pristine display and leave raw user text exactly as typed.
   useEffect(() => {
-    if (language === lastLanguage.current && value === lastEmittedValue.current) {
-      return;
-    }
+    const languageChanged = language !== lastLanguage.current;
+    const valueChanged = value !== lastEmittedValue.current;
+    if (!languageChanged && !valueChanged) return;
     lastLanguage.current = language;
     lastEmittedValue.current = value;
+    if (valueChanged) {
+      // A new value from the parent (form reset, loading another record) is
+      // authoritative: show it localized and treat the draft as pristine again.
+      pristineDraft.current = true;
+      setDraft(displayStoredExerciseName(language, value));
+      return;
+    }
+    if (!pristineDraft.current) return;
     setDraft(displayStoredExerciseName(language, value));
   }, [language, value]);
 
@@ -101,6 +115,7 @@ export function ExerciseNameCombobox({
     // Selection is the only path that writes a canonical name; the field shows
     // the localized display of that canonical name.
     lastEmittedValue.current = suggestion.canonicalName;
+    pristineDraft.current = true;
     setDraft(displayStoredExerciseName(language, suggestion.canonicalName));
     onChange(suggestion.canonicalName);
     close();
@@ -108,9 +123,10 @@ export function ExerciseNameCombobox({
 
   function handleChange(event: ChangeEvent<HTMLInputElement>): void {
     // The parent receives exactly the text the user typed, never a localized
-    // mapping of it.
+    // mapping of it. A typed draft is dirty: language switches leave it alone.
     const next = event.target.value;
     lastEmittedValue.current = next;
+    pristineDraft.current = false;
     setDraft(next);
     onChange(next);
     setOpen(true);
