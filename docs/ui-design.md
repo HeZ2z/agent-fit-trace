@@ -262,14 +262,23 @@ save gate (see [ADR 0003](adr/0003-exercise-catalog.md)).
   aliases; Chinese queries match Chinese display names and Chinese aliases.
   The list is capped at eight suggestions, opens on typing or focus when there
   is a match, filters as the query changes, and stays hidden when nothing
-  matches. Selecting an option writes the canonical English name — the stored
-  spelling — into the field.
-- **Language of the option copy.** The English UI shows the canonical English
-  name alone. The Chinese UI shows the display name followed by the canonical
-  English name (`中文显示名 · canonical English name`), so the value that will
-  be stored is visible beside the translated label.
+  matches.
+- **Suggestion copy is UI-language-only.** The Chinese UI labels each option
+  with the Chinese display name (`杠铃卧推`); the English UI labels it with
+  the canonical English name. The option label is display copy, not the stored
+  value.
+- **The field is a display surface.** A selected canonical English name is
+  displayed in the UI language (`杠铃卧推` in Chinese, the canonical English
+  name in English). The field keeps a raw editing draft: typing never
+  re-localizes or rewrites the text under the cursor (in Chinese UI, typing
+  `Squat Jump` stays `Squat Jump`); the draft is re-localized only when the
+  value changes externally or the UI language changes. Selecting an option
+  writes the canonical English name to the form, while raw typed text passes
+  through unchanged — never looked up, mapped back to a catalog name, or
+  translated. Records, snapshots and exports keep the canonical English
+  spelling; localized display text is never stored.
 - **Never a gate.** Free text is always valid: ignoring, dismissing or
-  out-typing the suggestions saves the name exactly as typed; nothing is
+  out-typing the suggestions saves the name exactly as authored; nothing is
   auto-selected, normalized or rewritten on blur or submit. `Escape` closes
   the list without clearing the field.
 - **Keyboard and ARIA.** One labeled text input carries `role="combobox"`,
