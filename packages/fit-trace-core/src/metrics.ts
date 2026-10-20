@@ -1,4 +1,5 @@
 import { ValidationError } from "./errors.ts";
+import { resolveExerciseName } from "./exercises/resolve.ts";
 import { isValidIsoDate } from "./schema.ts";
 import {
   EXTREME_RPE,
@@ -163,25 +164,73 @@ export function summarizeMetrics(records: WorkoutRecord[]): AnalysisMetrics {
 }
 
 /**
+ * Stable analysis identity for a recorded exercise name.
+ *
+ * A name that resolves unambiguously to one bundled catalog entry is grouped by
+ * that entry and labelled with its canonical English name, so `bench_press`,
+ * `Bench Press`, and the canonical name share one trend. An unknown or
+ * ambiguous name keeps its exact raw spelling: the catalog is a suggestion
+ * layer and never guesses or rewrites user-authored names.
+ */
+interface ExerciseIdentity {
+  /** Grouping key: stable per resolved catalog entry or exact raw name. */
+  key: string;
+  /** Label rendered in the trend: canonical English name or the raw name. */
+  label: string;
+}
+
+function exerciseIdentity(name: string): ExerciseIdentity {
+  const entry = resolveExerciseName(name);
+  return entry === null
+    ? { key: `raw:${name}`, label: name }
+    : { key: `catalog:${entry.id}`, label: entry.name };
+}
+
+/** Order trends by resulting label, then identity key so ties stay stable. */
+function compareExerciseIdentities(left: ExerciseIdentity, right: ExerciseIdentity): number {
+  if (left.label < right.label) return -1;
+  if (left.label > right.label) return 1;
+  if (left.key < right.key) return -1;
+  if (left.key > right.key) return 1;
+  return 0;
+}
+
+/**
  * Per-exercise strength trend based on the best estimated 1RM per session.
- * Requires at least two sessions that contain weighted sets for the exercise.
+ *
+ * Sets are grouped by resolved catalog identity: alias spellings of one catalog
+ * entry merge into a single trend labelled with the canonical English name, and
+ * the best estimated 1RM per session is taken across all merged spellings.
+ * Unknown names stay separate and keep their raw label. Requires at least two
+ * sessions that contain weighted sets for the exercise.
  */
 export function exerciseTrends(records: WorkoutRecord[]): ExerciseTrend[] {
-  const byExercise = new Map<string, Map<string, number>>();
+  const byExercise = new Map<
+    string,
+    { identity: ExerciseIdentity; sessions: Map<string, number> }
+  >();
 
   for (const set of flattenSets(records)) {
     if (set.est1rm === undefined) continue;
-    const sessions = byExercise.get(set.exercise) ?? new Map<string, number>();
+    const identity = exerciseIdentity(set.exercise);
+    const existing = byExercise.get(identity.key);
+    const sessions = existing === undefined ? new Map<string, number>() : existing.sessions;
     const current = sessions.get(set.date);
     if (current === undefined || set.est1rm > current) {
       sessions.set(set.date, set.est1rm);
     }
-    byExercise.set(set.exercise, sessions);
+    if (existing === undefined) {
+      byExercise.set(identity.key, { identity, sessions });
+    }
   }
 
+  const groups = [...byExercise.values()].sort((left, right) =>
+    compareExerciseIdentities(left.identity, right.identity),
+  );
+
   const trends: ExerciseTrend[] = [];
-  for (const exercise of [...byExercise.keys()].sort()) {
-    const sessions = [...byExercise.get(exercise)!.entries()].sort(
+  for (const { identity, sessions: sessionValues } of groups) {
+    const sessions = [...sessionValues.entries()].sort(
       (a, b) => toEpochMs(a[0]) - toEpochMs(b[0]),
     );
     if (sessions.length < 2) continue;
@@ -194,7 +243,7 @@ export function exerciseTrends(records: WorkoutRecord[]): ExerciseTrend[] {
     if (Math.abs(delta) >= 0.01) direction = delta > 0 ? "up" : "down";
 
     trends.push({
-      exercise,
+      exercise: identity.label,
       metric: "est_1rm_kg",
       sessions_compared: sessions.length,
       first: round(first),

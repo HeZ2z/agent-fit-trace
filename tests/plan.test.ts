@@ -46,7 +46,9 @@ test("rising trend at moderate RPE yields progressive overload citing evidence",
 
   assert.ok(overload);
   assert.match(overload.reason, /Estimated 1RM/);
-  assert.equal(overload.evidence.exercise, "bench_press");
+  // Plan text/evidence reuse the analysis trend identity, i.e. the resolved
+  // canonical catalog name rather than the raw `bench_press` spelling.
+  assert.equal(overload.evidence.exercise, "Barbell Bench Press - Medium Grip");
 });
 
 test("high average RPE suppresses progression", async () => {
