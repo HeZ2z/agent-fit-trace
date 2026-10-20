@@ -397,21 +397,37 @@ describe("exercise-name combobox", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 
-  it("offers Chinese display/alias suggestions for a Chinese query", async () => {
+  it("shows the Chinese name in the field and stores the canonical English name", async () => {
     setLanguage("zh");
-    const { user } = renderEditorOver();
+    const { adapter, user } = renderEditorOver();
     const input = nameCombobox(/动作 1 名称/i);
 
     await user.type(input, "卧推");
 
+    expect(input).toHaveValue("卧推");
     expect(input).toHaveAttribute("aria-expanded", "true");
-    // Chinese aliases and display names both match; selecting stores English.
-    const option = within(screen.getByRole("listbox")).getByRole("option", {
-      name: "杠铃卧推 · Barbell Bench Press - Medium Grip",
-    });
+    // Chinese suggestion labels are the Chinese display name only.
+    const listbox = screen.getByRole("listbox", { name: /动作/i });
+    const option = within(listbox).getByRole("option", { name: "杠铃卧推" });
+    expect(listbox).not.toHaveTextContent("Barbell Bench Press");
+
     await user.click(option);
 
-    expect(input).toHaveValue("Barbell Bench Press - Medium Grip");
+    // The field displays the localized name (the product-owner demo request)…
+    expect(input).toHaveValue("杠铃卧推");
+    expect(input).not.toHaveValue("Barbell Bench Press - Medium Grip");
+    expect(input).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    // …while the saved record keeps the canonical English spelling.
+    await user.type(screen.getByLabelText(/动作 1 第 1 组重量/), "100");
+    await user.type(screen.getByLabelText(/动作 1 第 1 组次数/), "5");
+    await user.type(screen.getByLabelText(/动作 1 第 1 组 RPE/), "8");
+    await user.click(screen.getByRole("button", { name: /保存训练/ }));
+    await screen.findByTestId("summary-id");
+
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.exercises[0]!.name).toBe("Barbell Bench Press - Medium Grip");
   });
 });

@@ -12,14 +12,16 @@
  * The suggestion helper is the one search implementation shared by the web app
  * and the React Native app: it merges the core catalog's English search with the
  * generated Chinese display/alias tables and returns a de-duplicated list in a
- * deterministic order.
+ * deterministic order. Option copy follows the UI language (Chinese display
+ * name in Chinese, canonical English name in English); selecting a suggestion
+ * always writes the canonical English name.
  *
  * Render-time only: no storage, DOM, Node built-ins, clock or randomness. Both
  * helpers are pure functions of the language, the input text and the bundled
  * catalog data.
  */
 
-import { searchExercises } from "@pi-fit-trace/core";
+import { resolveExerciseName, searchExercises } from "@pi-fit-trace/core";
 import type { AppLanguage } from "./index.ts";
 import { EXERCISE_ALIASES_ZH, EXERCISE_DISPLAY_NAMES_ZH } from "./zh/exercises.ts";
 
@@ -35,9 +37,9 @@ export interface ExerciseSuggestion {
   /** Chinese display name (or the canonical name when no mapping exists). */
   displayName: string;
   /**
-   * Option copy for the selected UI language: the Chinese display name plus the
-   * canonical English name in Chinese (`杠铃卧推 · Barbell Bench Press - Medium
-   * Grip`), or the canonical English name alone in English.
+   * Option copy for the selected UI language: the Chinese display name in
+   * Chinese (`杠铃卧推`), or the canonical English name in English. Selecting a
+   * suggestion always writes `canonicalName`, never the label.
    */
   label: string;
 }
@@ -58,6 +60,21 @@ export function displayExerciseName(language: AppLanguage, canonicalName: string
   return EXERCISE_DISPLAY_NAMES_ZH[canonicalName];
 }
 
+/**
+ * Display a stored (or imported) exercise name in the selected language.
+ *
+ * The stored spelling stays canonical English. In Chinese the name is resolved
+ * through the catalog — canonical name or alias — and rendered with
+ * `displayExerciseName`; unknown and user-authored custom names pass through
+ * unchanged. English returns the stored spelling exactly, without normalizing
+ * an alias.
+ */
+export function displayStoredExerciseName(language: AppLanguage, name: string): string {
+  if (language !== "zh") return name;
+  const entry = resolveExerciseName(name);
+  return displayExerciseName(language, entry === null ? name : entry.name);
+}
+
 /** Stable, locale-independent string ordering so search results are deterministic. */
 function compareText(left: string, right: string): number {
   if (left < right) return -1;
@@ -66,14 +83,12 @@ function compareText(left: string, right: string): number {
 
 function suggestionFor(canonicalName: string, language: AppLanguage): ExerciseSuggestion {
   const displayName = EXERCISE_DISPLAY_NAMES_ZH[canonicalName] ?? canonicalName;
-  const bilingual = displayName !== canonicalName;
   return {
     canonicalName,
     displayName,
-    label:
-      language === "zh" && bilingual
-        ? `${displayName} · ${canonicalName}`
-        : canonicalName,
+    // Label is UI-language copy only; the stored value lives in `canonicalName`
+    // so the two can never be confused.
+    label: language === "zh" ? displayName : canonicalName,
   };
 }
 
@@ -111,10 +126,10 @@ function chineseMatchRank(normalizedQuery: string, canonicalName: string): numbe
  * de-duplicated by canonical name, so a name reachable through an English alias
  * and a Chinese alias appears once.
  *
- * `label` follows the UI language: Chinese shows the display name plus the
- * canonical English name so the user can see what will be stored; English shows
- * the canonical English name alone. Selection always writes `canonicalName`
- * regardless of language.
+ * `label` follows the UI language exactly: Chinese shows only the Chinese
+ * display name, English shows only the canonical English name. Selection always
+ * writes `canonicalName` regardless of language, so the stored value is never
+ * the localized label.
  */
 export function searchExerciseSuggestions(
   query: string,

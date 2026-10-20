@@ -8,6 +8,7 @@ import {
   MAX_EXERCISE_SUGGESTIONS,
   ZH_MESSAGES,
   displayExerciseName,
+  displayStoredExerciseName,
   searchExerciseSuggestions,
 } from "../packages/fit-trace-i18n/src/index.ts";
 import {
@@ -137,6 +138,31 @@ test("displayExerciseName keeps canonical names for English, unknown and custom 
   // Inherited object keys must never leak in as translations.
   for (const value of ["constructor", "__proto__", "toString", "hasOwnProperty", ""]) {
     assert.equal(displayExerciseName("zh", value), value);
+  }
+});
+
+test("displayStoredExerciseName localizes stored names and aliases without touching English", () => {
+  const canonicalName = "Barbell Bench Press - Medium Grip";
+  const displayName = EXPECTED.displayNames[canonicalName];
+
+  // Every catalog canonical name renders as its Chinese display name in Chinese.
+  for (const name of CANONICAL_NAMES) {
+    assert.equal(displayStoredExerciseName("zh", name), EXPECTED.displayNames[name], name);
+  }
+  // A stored alias resolves to the same catalog entry before localization.
+  assert.equal(displayStoredExerciseName("zh", "Bench press"), displayName);
+  assert.equal(displayStoredExerciseName("zh", "bench_press"), displayName);
+  // English returns the exact stored spelling: aliases are not normalized.
+  assert.equal(displayStoredExerciseName("en", "Bench press"), "Bench press");
+  assert.equal(displayStoredExerciseName("en", canonicalName), canonicalName);
+  // Unknown and user-authored custom names pass through unchanged.
+  for (const name of ["My Custom Lift", "custom_exercise_42", "我的自定义动作", ""]) {
+    assert.equal(displayStoredExerciseName("zh", name), name);
+    assert.equal(displayStoredExerciseName("en", name), name);
+  }
+  // Inherited object keys must never leak in as translations.
+  for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    assert.equal(displayStoredExerciseName("zh", name), name);
   }
 });
 
@@ -272,19 +298,23 @@ test("English suggestion labels are the canonical names and contain no Chinese",
   }
 });
 
-test("Chinese suggestion labels pair the display name with the canonical English name", () => {
+test("Chinese suggestion labels are the Chinese display names only", () => {
   const suggestions = searchExerciseSuggestions("卧推", "zh");
   assert.ok(suggestions.length > 0);
   for (const suggestion of suggestions) {
     const displayName = EXERCISE_DISPLAY_NAMES_ZH[suggestion.canonicalName];
     assert.equal(suggestion.displayName, displayName);
-    assert.equal(suggestion.label, `${displayName} · ${suggestion.canonicalName}`);
+    // UI-language copy only: no canonical English suffix in the option label.
+    assert.equal(suggestion.label, displayName);
+    assert.ok(!suggestion.label.includes(suggestion.canonicalName));
     assert.match(suggestion.label, CJK);
+    // The canonical name stays available for selection/storage.
+    assert.ok(CANONICAL_NAME_SET.has(suggestion.canonicalName));
   }
   assert.deepEqual(suggestions[0], {
     canonicalName: BENCH_PRESS,
     displayName: "杠铃卧推",
-    label: "杠铃卧推 · Barbell Bench Press - Medium Grip",
+    label: "杠铃卧推",
   });
 });
 
@@ -299,6 +329,12 @@ test("a query selects the same catalog entries in both UI languages", () => {
     for (const suggestion of english) {
       assert.equal(suggestion.label, suggestion.canonicalName);
     }
+    for (const suggestion of chinese) {
+      assert.equal(
+        suggestion.label,
+        EXERCISE_DISPLAY_NAMES_ZH[suggestion.canonicalName],
+      );
+    }
   }
 });
 
@@ -309,10 +345,13 @@ test("Chinese display names and alias spellings both match", () => {
   assert.ok(!EXERCISE_DISPLAY_NAMES_ZH["Leg Press"].includes("倒蹬"));
   const legPress = searchExerciseSuggestions("倒蹬", "zh");
   assert.equal(legPress[0]?.canonicalName, "Leg Press");
-  assert.equal(legPress[0]?.label, "腿举 · Leg Press");
+  // The Chinese UI option is the Chinese display name only; the canonical name
+  // remains the selection value, it is just not repeated in the label.
+  assert.equal(legPress[0]?.label, "腿举");
   // Search is not language-gated: the English UI can find a Chinese spelling but
   // still labels and writes the canonical English name.
   assert.equal(searchExerciseSuggestions("倒蹬", "en")[0]?.canonicalName, "Leg Press");
+  assert.equal(searchExerciseSuggestions("倒蹬", "en")[0]?.label, "Leg Press");
 });
 
 test("every generated Chinese alias finds its own catalog entry exactly once", () => {

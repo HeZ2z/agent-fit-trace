@@ -15,14 +15,21 @@ Native app.
 - **Workout content itself is not translated, with one catalog exception.**
   When the exercise catalog resolves a recorded name to a catalog entry, the
   catalog-backed exercise name is translated at render time by its canonical
-  English name (`displayExerciseName`). User-authored/custom exercise names,
-  notes, ids, dates and other user/artifact content pass through unchanged.
+  English name (`displayExerciseName` for a known canonical name,
+  `displayStoredExerciseName` for a stored/typed name that may be an alias).
+  This includes the workout editor's exercise-name input: in Chinese it shows
+  the Chinese display name (e.g. `杠铃卧推`), while the value passed to storage
+  stays the canonical English name (`Barbell Bench Press - Medium Grip`). The
+  input is a display surface only; user-authored/custom exercise names, notes,
+  ids, dates and other user/artifact content pass through unchanged, and English
+  UI shows the stored spelling exactly.
 - **Autocomplete search is shared.** `searchExerciseSuggestions` is the one
   editor suggestion implementation for both apps: it merges the core catalog's
   English name/alias search with the generated Chinese display/alias tables,
-  de-duplicates by canonical name, keeps a deterministic order, and labels each
-  result for the selected UI language. Selecting a result always writes the
-  canonical English name.
+  de-duplicates by canonical name, and keeps a deterministic order. Option
+  labels are UI-language copy only — Chinese shows the Chinese display name
+  (e.g. `杠铃卧推`), English shows the canonical English name — while selecting
+  a result always writes the canonical English name to `canonicalName`/storage.
 - **Catalog exercise names are data, not interface copy.** Chinese names and
   aliases live in `zh/exercises.ts`, are keyed by canonical English name and
   are generated from `data/exercise-catalog/zh-names.v1.json`; they are never
@@ -44,9 +51,9 @@ Native app.
   `LANGUAGE_STORAGE_KEY`, `LANGUAGES`, `MessageParams`, `isLanguage`,
   `formatMessage`, `translate`, `ZH_MESSAGES`, and the catalog-backed exercise
   display/autocomplete layer: `displayExerciseName`,
-  `searchExerciseSuggestions`, `MAX_EXERCISE_SUGGESTIONS`,
-  `ExerciseSuggestion`, `EXERCISE_DISPLAY_NAMES_ZH`,
-  `EXERCISE_ALIASES_ZH`.
+  `displayStoredExerciseName`, `searchExerciseSuggestions`,
+  `MAX_EXERCISE_SUGGESTIONS`, `ExerciseSuggestion`,
+  `EXERCISE_DISPLAY_NAMES_ZH`, `EXERCISE_ALIASES_ZH`.
 - `@pi-fit-trace/i18n/domain` — Chinese rebuild helpers for deterministic,
   code-bearing domain content (`displayFlagMessage`, `displayRecommendation`,
   `displayValidationMessage`, …).

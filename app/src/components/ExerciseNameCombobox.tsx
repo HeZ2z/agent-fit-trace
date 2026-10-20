@@ -4,9 +4,13 @@
  * The catalog is a suggestion layer, never a gate: typing stays fully valid,
  * Escape/blur only close the suggestion list, and ignoring every suggestion
  * saves the free-text name exactly as typed. Selecting a suggestion writes the
- * canonical English catalog name into the field (the stored spelling), while
- * the option copy follows the UI language: Chinese shows the display name plus
- * that canonical name, English shows the canonical name alone.
+ * canonical English catalog name into the parent state (the stored spelling),
+ * while the field itself and the option copy follow the UI language: Chinese
+ * shows `杠铃卧推`, English shows `Barbell Bench Press - Medium Grip`.
+ *
+ * The input is a display surface only. Its visible text is the localized form of
+ * the parent value; every keystroke still passes the raw text the user typed to
+ * `onChange`, so free text is never rewritten or translated.
  *
  * Implemented with the WAI-ARIA combobox/listbox pattern on a single text
  * input: `role="combobox"`, `aria-expanded`, `aria-controls`,
@@ -15,7 +19,10 @@
 
 import { useMemo, useState } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
-import { searchExerciseSuggestions } from "../i18n/exercises.ts";
+import {
+  displayStoredExerciseName,
+  searchExerciseSuggestions,
+} from "../i18n/exercises.ts";
 import type { ExerciseSuggestion } from "../i18n/exercises.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 
@@ -26,7 +33,7 @@ export interface ExerciseNameComboboxProps {
   label: string;
   /** Current field value: free text or a canonical English name. */
   value: string;
-  /** Called on typing and after a suggestion is selected. */
+  /** Called on typing (raw text) and after a suggestion is selected (canonical). */
   onChange: (value: string) => void;
 }
 
@@ -41,6 +48,8 @@ export function ExerciseNameCombobox({
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
 
+  // The parent value stays canonical; only the rendered text is localized.
+  const visibleValue = displayStoredExerciseName(language, value);
   const suggestions = useMemo(
     () => searchExerciseSuggestions(value, language),
     [value, language],
@@ -64,6 +73,8 @@ export function ExerciseNameCombobox({
   }
 
   function handleChange(event: ChangeEvent<HTMLInputElement>): void {
+    // The visible text may be localized, but the parent receives exactly the
+    // text the user typed; it is never mapped back to a catalog name here.
     onChange(event.target.value);
     setOpen(true);
     setActiveIndex(-1);
@@ -118,7 +129,9 @@ export function ExerciseNameCombobox({
           id={id}
           type="text"
           role="combobox"
-          value={value}
+          // Display-only localization: the selected canonical English name is
+          // shown as its Chinese display name in Chinese UI.
+          value={visibleValue}
           autoComplete="off"
           aria-autocomplete="list"
           aria-haspopup="listbox"

@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { searchExerciseSuggestions as sharedSearchExerciseSuggestions } from "@pi-fit-trace/i18n";
+import {
+  displayStoredExerciseName as sharedDisplayStoredExerciseName,
+  searchExerciseSuggestions as sharedSearchExerciseSuggestions,
+} from "@pi-fit-trace/i18n";
 import {
   displayStoredExerciseName,
   searchExerciseSuggestions,
 } from "./exercises.ts";
 
 describe("app exercise display helper", () => {
+  it("re-exports the shared i18n display helper instead of reimplementing it", () => {
+    expect(displayStoredExerciseName).toBe(sharedDisplayStoredExerciseName);
+  });
+
   it("shows the catalog Chinese display name for a stored canonical name", () => {
     expect(displayStoredExerciseName("zh", "Barbell Bench Press - Medium Grip")).toBe(
       "杠铃卧推",
@@ -53,8 +60,8 @@ describe("app exercise autocomplete suggestions", () => {
     for (const suggestion of suggestions) {
       expect(suggestion.canonicalName.toLowerCase()).toContain("bench");
       expect(suggestion.displayName).not.toBe("");
-      // English UI shows the canonical English name only, never the .zh label.
-      expect(suggestion.label).not.toContain("·");
+      // English UI shows exactly the canonical English name: no Chinese, no `·`.
+      expect(suggestion.label).toBe(suggestion.canonicalName);
     }
     const benchPress = suggestions.find(
       (suggestion) => suggestion.canonicalName === BENCH_PRESS,
@@ -63,14 +70,19 @@ describe("app exercise autocomplete suggestions", () => {
     expect(benchPress?.label).toBe(BENCH_PRESS);
   });
 
-  it("matches Chinese display names and aliases with bilingual labels", () => {
+  it("shows only the Chinese display name as the Chinese label", () => {
     const suggestions = searchExerciseSuggestions("卧推", "zh");
     expect(suggestions.length).toBeGreaterThan(0);
     expect(suggestions[0]).toEqual({
       canonicalName: BENCH_PRESS,
       displayName: "杠铃卧推",
-      label: "杠铃卧推 · Barbell Bench Press - Medium Grip",
+      label: "杠铃卧推",
     });
+    for (const suggestion of suggestions) {
+      // The UI-language label is the display name, never the canonical name.
+      expect(suggestion.label).toBe(suggestion.displayName);
+      expect(suggestion.label).not.toContain("·");
+    }
     // Every option is unique by canonical name, even though the query matches
     // both a display name and an alias for some entries.
     const canonicalNames = suggestions.map((suggestion) => suggestion.canonicalName);
@@ -86,7 +98,7 @@ describe("app exercise autocomplete suggestions", () => {
       (suggestion) => suggestion.canonicalName === BENCH_PRESS,
     );
     expect(english?.label).toBe(BENCH_PRESS);
-    expect(chinese?.label).toBe("杠铃卧推 · Barbell Bench Press - Medium Grip");
+    expect(chinese?.label).toBe("杠铃卧推");
     // Only the label changes; selection always writes the canonical English name.
     expect(chinese?.canonicalName).toBe(english?.canonicalName);
   });
@@ -94,7 +106,8 @@ describe("app exercise autocomplete suggestions", () => {
   it("matches a Chinese-only alias", () => {
     const suggestions = searchExerciseSuggestions("倒蹬", "zh");
     expect(suggestions[0]?.canonicalName).toBe("Leg Press");
-    expect(suggestions[0]?.label).toBe("腿举 · Leg Press");
+    // The stored canonical English name stays available for selection.
+    expect(suggestions[0]?.label).toBe("腿举");
   });
 
   it("respects the suggestion limit", () => {
