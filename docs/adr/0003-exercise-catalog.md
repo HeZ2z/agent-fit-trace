@@ -4,7 +4,9 @@
   feature branch and awaits review and merge: the versioned 194-entry catalog
   and alias resolver (shared core), render-time Chinese display names,
   Chinese localization of catalog exercise names inside rebuilt copy,
-  alias-normalized analysis trends, and the web autocomplete/display layer.
+  alias-normalized analysis trends, and the web and mobile
+  autocomplete/display layers (the mobile Log field consumes the same shared
+  suggestion search as the web editor).
   The frozen 194-entry scope, its IDs, and the 66 canonical-name decisions are
   implemented as-is; no storage, record-schema, or API change is part of it.
   Content review remains open — the 49 priority cue/mistake rewrites, the

@@ -7,7 +7,7 @@
 ## Implementation status (2026-10-20)
 
 - **数据已提交**：194 条动作写入 [`data/exercise-catalog/catalog.v1.json`](../data/exercise-catalog/catalog.v1.json)，由 [`scripts/build-exercise-catalog.mjs`](../scripts/build-exercise-catalog.mjs) 校验并生成共享核心数据；66 条改名已冻结，seed 旧名保留为中文别名。
-- **代码已落地**：共享核心 catalog + resolver、i18n 中文显示表、中文 domain 文案内的动作名、分析归一化、Web 自动补全/显示五个提交都在 `feat/exercise-catalog` 分支上（`9c3e8938`、`3b15460a`、`62d5baa3`、`89390336`、`0d0b0820`）。
+- **代码已落地**：共享核心 catalog + resolver、i18n 中文显示表、中文 domain 文案内的动作名、分析归一化、Web 自动补全/显示、共享 suggestion search、Mobile Log 自动补全都在 `feat/exercise-catalog` 分支上（核心 `9c3e8938`、i18n `3b15460a`/`62d5baa3`、analysis `89390336`、web `0d0b0820`、mobile `b9185d1f`/`ff4aa13d`/`1c4d63a5`）。
 - **审校仍未完成**：49 条要点/常见错误重写、17 个粗粒度肌群在复合动作上的复核、器械 `items[]` 抽查均未经过教练审定；`content_status` 仍为 `template` (145) / `rewrite` (49)，动作内容暂不作为权威依据。
 - **无媒体**：v1 不包含任何图片或视频。
 - **范围不变**：记录 schema / API 未改动；本表映射内容（第 2、3 节与附录）除本节状态说明外保持不变。
