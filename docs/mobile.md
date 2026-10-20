@@ -389,9 +389,9 @@ project uses the Expo managed workflow and does not commit native folders.
 `dist/`, so it is a bundle/asset check rather than a native build.
 
 The root `pnpm typecheck` covers the root project and web app, not the mobile
-workspace, so run `pnpm mobile:typecheck` explicitly. CI runs `pnpm test` and
-`pnpm typecheck`; the pure mobile model suites are part of the `node:test` run,
-but mobile typecheck, Expo export and native builds are not CI steps.
+workspace, so run `pnpm mobile:typecheck` explicitly. CI runs `pnpm test`,
+`pnpm typecheck` and `pnpm mobile:typecheck`; the pure mobile model suites are
+part of the `node:test` run, but Expo export and native builds are not CI steps.
 
 ## Configuration and deployment
 

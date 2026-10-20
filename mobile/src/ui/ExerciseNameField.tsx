@@ -61,9 +61,11 @@ interface ExerciseNameFieldProps {
  * keystrokes. Every keystroke passes the raw typed text to `onChangeText`, and a
  * selection writes the suggestion's canonical English name — the only spelling a
  * record stores. The draft is re-synced only when the parent value changes
- * externally (form reset or load) or when the UI language changes. Option labels
- * are UI-language copy only: the Chinese display name in Chinese, the canonical
- * English name in English.
+ * externally (form reset or load) or, for a pristine selected name, when the UI
+ * language changes; a draft the user typed is never re-localized, so switching
+ * language cannot turn raw text into localized text on the next keystroke. Option
+ * labels are UI-language copy only: the Chinese display name in Chinese, the
+ * canonical English name in English.
  *
  * The panel is an absolute overlay anchored just above the field, so the soft
  * keyboard cannot cover it while the input keeps focus. It is not a modal: the
@@ -92,6 +94,9 @@ export function ExerciseNameField({
   const [open, setOpen] = useState(false);
   const [fieldHeight, setFieldHeight] = useState(0);
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A pristine draft is a localized selection that may re-localize with the UI;
+  // a dirty draft is raw text the user typed and must never be translated.
+  const dirtyRef = useRef(false);
   // Last parent value this field emitted or adopted on an external sync. An
   // incoming value equal to it is our own echo (keep the raw draft); anything
   // else is an external form reset/load (re-localize the draft from it).
@@ -109,14 +114,18 @@ export function ExerciseNameField({
   useEffect(() => {
     const languageChanged = lastLanguageRef.current !== language;
     lastLanguageRef.current = language;
-    if (!languageChanged && value === lastEmittedRef.current) {
-      // The form is echoing an edit this field made; the raw draft wins.
+    if (value !== lastEmittedRef.current) {
+      // Form reset/load: take the incoming value and treat it as pristine again.
+      dirtyRef.current = false;
+      lastEmittedRef.current = value;
+      setDraft(displayStoredExerciseName(language, value));
       return;
     }
-    setDraft(displayStoredExerciseName(language, value));
-    // Adopt the external value as the new baseline, so a later external change
-    // back to a previously emitted value is still detected as external.
-    lastEmittedRef.current = value;
+    if (languageChanged && !dirtyRef.current) {
+      // A selected catalog name follows the UI language; raw typed text does
+      // not, so a dirty draft is left exactly as the user wrote it.
+      setDraft(displayStoredExerciseName(language, value));
+    }
   }, [language, value]);
 
   useEffect(() => {
@@ -145,6 +154,7 @@ export function ExerciseNameField({
   function handleChangeText(next: string): void {
     // Raw text always goes to the parent; only a selection stores a canonical
     // name, so free text is never rewritten or translated.
+    dirtyRef.current = true;
     setDraft(next);
     emit(next);
     setOpen(true);
@@ -180,8 +190,11 @@ export function ExerciseNameField({
   function select(suggestion: ExerciseSuggestion): void {
     // Selecting is the only path that replaces what the user typed: the draft
     // shows the localized name, while the form keeps the canonical English one.
+    // It also makes the draft pristine again, so a later language switch can
+    // re-localize the selection.
     clearBlurTimer();
     setOpen(false);
+    dirtyRef.current = false;
     setDraft(displayStoredExerciseName(language, suggestion.canonicalName));
     emit(suggestion.canonicalName);
   }
@@ -190,6 +203,8 @@ export function ExerciseNameField({
     <View style={[styles.container, containerStyle]}>
       <View onLayout={measureField}>
         <Field
+          accessibilityRole="combobox"
+          accessibilityState={{ expanded: visible }}
           autoCorrect={false}
           label={label}
           onBlur={handleBlur}
@@ -234,6 +249,10 @@ export function ExerciseNameField({
                 accessibilityLabel={suggestion.label}
                 accessibilityRole="button"
                 onPress={() => select(suggestion)}
+                // Cancel the pending blur close as soon as the touch starts, so
+                // a slow tap/hold cannot let the timer unmount the option before
+                // the press releases.
+                onPressIn={clearBlurTimer}
                 style={({ pressed }) => [
                   styles.option,
                   index > 0

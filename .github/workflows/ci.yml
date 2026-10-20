@@ -28,3 +28,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Mobile typecheck
+        run: pnpm mobile:typecheck
+
+      - name: Exercise catalog is current
+        run: node scripts/build-exercise-catalog.mjs --check
