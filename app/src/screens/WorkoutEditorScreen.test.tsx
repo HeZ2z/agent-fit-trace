@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,6 +50,13 @@ async function fillSetFields(user: ReturnType<typeof userEvent.setup>): Promise<
   await user.type(screen.getByLabelText(/exercise 1 set 1 weight \(kg\)/i), "100");
   await user.type(screen.getByLabelText(/exercise 1 set 1 reps/i), "5");
   await user.type(screen.getByLabelText(/exercise 1 set 1 rpe/i), "8");
+}
+
+/** Chinese-UI equivalent of {@link fillSetFields}. */
+async function fillSetFieldsZh(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.type(screen.getByLabelText(/动作 1 第 1 组重量/), "100");
+  await user.type(screen.getByLabelText(/动作 1 第 1 组次数/), "5");
+  await user.type(screen.getByLabelText(/动作 1 第 1 组 RPE/), "8");
 }
 
 describe("WorkoutEditorScreen", () => {
@@ -429,5 +436,92 @@ describe("exercise-name combobox", () => {
     const stored = loadRecords(adapter);
     expect(stored).toHaveLength(1);
     expect(stored[0]!.exercises[0]!.name).toBe("Barbell Bench Press - Medium Grip");
+  });
+
+  it("keeps the raw draft while typing a custom name in Chinese UI", async () => {
+    setLanguage("zh");
+    const { adapter, user } = renderEditorOver();
+    const input = nameCombobox(/动作 1 名称/i);
+
+    // "Squat" alone resolves to 杠铃深蹲, but typing must never localize the
+    // draft under the cursor: the next keystroke would then be appended to the
+    // Chinese display text and the stored custom name would be corrupted.
+    await user.type(input, "Squat");
+    expect(input).toHaveValue("Squat");
+    await user.type(input, " Jump");
+    expect(input).toHaveValue("Squat Jump");
+
+    await fillSetFieldsZh(user);
+    await user.click(screen.getByRole("button", { name: /保存训练/ }));
+    await screen.findByTestId("summary-id");
+
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    // The custom name is stored exactly as typed, with no substitution.
+    expect(stored[0]!.exercises[0]!.name).toBe("Squat Jump");
+  });
+
+  it("scrolls the keyboard-active suggestion into view", async () => {
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrolled: { id: string; block: string | undefined }[] = [];
+    HTMLElement.prototype.scrollIntoView = function (
+      this: HTMLElement,
+      options?: boolean | ScrollIntoViewOptions,
+    ): void {
+      scrolled.push({
+        id: this.id,
+        block: typeof options === "object" ? options.block : undefined,
+      });
+    };
+    try {
+      const { user } = renderEditorOver();
+      const input = nameCombobox();
+      await user.type(input, "press");
+      expect(within(screen.getByRole("listbox")).getAllByRole("option").length).toBeGreaterThan(
+        1,
+      );
+
+      await user.keyboard("{ArrowDown}");
+      await user.keyboard("{ArrowDown}");
+      await user.keyboard("{ArrowDown}");
+
+      const activeId = input.getAttribute("aria-activedescendant");
+      expect(activeId).toBeTruthy();
+      // The most recent scroll targets the row that now has focus, not the list.
+      expect(scrolled.at(-1)).toEqual({ id: activeId, block: "nearest" });
+      expect(scrolled.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      if (originalScrollIntoView === undefined) {
+        delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      } else {
+        HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      }
+    }
+  });
+
+  it("ignores IME composition keys instead of selecting or moving the list", async () => {
+    const { user } = renderEditorOver();
+    const input = nameCombobox();
+    await user.type(input, "deadlift");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+
+    // nativeEvent.isComposing: the IME owns the key while composing.
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(input).toHaveValue("deadlift");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "ArrowDown", isComposing: true });
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+
+    // Legacy browsers only report composition through keyCode 229.
+    fireEvent.keyDown(input, { key: "ArrowDown", keyCode: 229 });
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+
+    // Outside a composition the same keys work normally.
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input).toHaveAttribute("aria-activedescendant");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("Barbell Deadlift");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 });

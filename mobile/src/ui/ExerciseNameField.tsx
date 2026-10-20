@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -30,6 +30,11 @@ const PANEL_GAP = SPACING[2];
  * scrolls instead of growing off-screen.
  */
 const PANEL_MAX_HEIGHT = 240;
+/**
+ * Blur-to-close delay in ms. A blur can be the first half of an option tap, so
+ * the panel closes on a short timer that a refocus or an option press cancels.
+ */
+const BLUR_CLOSE_DELAY_MS = 150;
 
 interface ExerciseNameFieldProps {
   /** Visible label; it is also the input's accessible name. */
@@ -48,22 +53,25 @@ interface ExerciseNameFieldProps {
 /**
  * Labelled exercise-name input with a floating catalog suggestion panel.
  *
- * The catalog is a suggestion layer, never a gate: typing stays fully valid and
- * ignoring every suggestion saves the free-text name exactly as authored. The
- * input is a display surface only — its visible text follows the UI language
- * through the shared `displayStoredExerciseName` helper (Chinese shows
- * `杠铃卧推`, English shows the canonical English name) while the parent value
- * stays the stored spelling. Every keystroke still passes the raw typed text to
- * `onChangeText`, and a selection writes the suggestion's canonical English name
- * into the form. Option labels are UI-language copy only: the Chinese display
- * name in Chinese, the canonical English name in English.
+ * The catalog is a suggestion layer, never a gate: an ignored or custom name is
+ * stored exactly as typed. The TextInput renders a local `draft` instead of the
+ * parent value directly: a selected catalog name is shown through the shared
+ * `displayStoredExerciseName` helper (Chinese shows `杠铃卧推`, English shows the
+ * canonical English name), but free typing is never re-localized between
+ * keystrokes. Every keystroke passes the raw typed text to `onChangeText`, and a
+ * selection writes the suggestion's canonical English name — the only spelling a
+ * record stores. The draft is re-synced only when the parent value changes
+ * externally (form reset or load) or when the UI language changes. Option labels
+ * are UI-language copy only: the Chinese display name in Chinese, the canonical
+ * English name in English.
  *
  * The panel is an absolute overlay anchored just above the field, so the soft
  * keyboard cannot cover it while the input keeps focus. It is not a modal: the
  * options scroll inside it and tapping one is handled by the panel rather than
  * dismissing the keyboard first. It closes after a selection, on submit, and
- * whenever the query matches nothing (including the empty query), and the
- * shared helper caps how many options it can contain.
+ * whenever the query matches nothing (including the empty query); it also closes
+ * shortly after the field loses focus, so moving to another field does not leave
+ * panels open. The shared helper caps how many options it can contain.
  */
 export function ExerciseNameField({
   label,
@@ -76,23 +84,90 @@ export function ExerciseNameField({
   const { language } = useI18n();
   const { skin, tokens } = useSkin();
   const { palette } = tokens;
+
+  // `draft` is the editable text; the parent `value` stays the stored spelling.
+  const [draft, setDraft] = useState(() =>
+    displayStoredExerciseName(language, value),
+  );
   const [open, setOpen] = useState(false);
   const [fieldHeight, setFieldHeight] = useState(0);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last parent value this field emitted or adopted on an external sync. An
+  // incoming value equal to it is our own echo (keep the raw draft); anything
+  // else is an external form reset/load (re-localize the draft from it).
+  const lastEmittedRef = useRef<string | null>(null);
+  const lastLanguageRef = useRef(language);
 
   const suggestions = useMemo(
-    // Search ranks the parent value — canonical English or the raw typed text —
-    // never the localized display text, so the stored spelling drives matching.
-    () => searchExerciseSuggestions(value, language),
-    [value, language],
+    () => searchExerciseSuggestions(draft, language),
+    [draft, language],
   );
-  // The parent value stays canonical; only the rendered text is localized, so a
-  // selected catalog name shows as its Chinese display name in Chinese UI.
-  const visibleValue = displayStoredExerciseName(language, value);
   const visible = open && suggestions.length > 0;
   const isPixel = skin === "pixel";
   const listTestID = `${testID}-suggestions`;
 
+  useEffect(() => {
+    const languageChanged = lastLanguageRef.current !== language;
+    lastLanguageRef.current = language;
+    if (!languageChanged && value === lastEmittedRef.current) {
+      // The form is echoing an edit this field made; the raw draft wins.
+      return;
+    }
+    setDraft(displayStoredExerciseName(language, value));
+    // Adopt the external value as the new baseline, so a later external change
+    // back to a previously emitted value is still detected as external.
+    lastEmittedRef.current = value;
+  }, [language, value]);
+
+  useEffect(() => {
+    return () => {
+      if (blurTimerRef.current !== null) {
+        clearTimeout(blurTimerRef.current);
+        blurTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  function clearBlurTimer(): void {
+    if (blurTimerRef.current !== null) {
+      clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+  }
+
+  function emit(next: string): void {
+    // Record the emitted value before the parent re-renders, so the sync effect
+    // can tell its echo apart from an external update.
+    lastEmittedRef.current = next;
+    onChangeText(next);
+  }
+
+  function handleChangeText(next: string): void {
+    // Raw text always goes to the parent; only a selection stores a canonical
+    // name, so free text is never rewritten or translated.
+    setDraft(next);
+    emit(next);
+    setOpen(true);
+  }
+
+  function handleFocus(): void {
+    clearBlurTimer();
+    setOpen(true);
+  }
+
+  function handleBlur(): void {
+    // Tapping an option blurs the input before the press fires, so closing
+    // immediately would swallow the selection. A short timer also catches
+    // "moved to another field" and is cancelled by focus/press/submit.
+    clearBlurTimer();
+    blurTimerRef.current = setTimeout(() => {
+      blurTimerRef.current = null;
+      setOpen(false);
+    }, BLUR_CLOSE_DELAY_MS);
+  }
+
   function close(): void {
+    clearBlurTimer();
     setOpen(false);
   }
 
@@ -103,10 +178,12 @@ export function ExerciseNameField({
   }
 
   function select(suggestion: ExerciseSuggestion): void {
-    // Free text never triggers this path; selecting is the only way the field
-    // replaces what the user typed with a catalog name.
+    // Selecting is the only path that replaces what the user typed: the draft
+    // shows the localized name, while the form keeps the canonical English one.
+    clearBlurTimer();
     setOpen(false);
-    onChangeText(suggestion.canonicalName);
+    setDraft(displayStoredExerciseName(language, suggestion.canonicalName));
+    emit(suggestion.canonicalName);
   }
 
   return (
@@ -115,19 +192,13 @@ export function ExerciseNameField({
         <Field
           autoCorrect={false}
           label={label}
-          onChangeText={(next) => {
-            // Typing re-opens the list and passes exactly the text the user
-            // typed to the parent, never the localized display text; an empty
-            // or unmatched query renders no list because the shared helper
-            // returns no suggestions.
-            setOpen(true);
-            onChangeText(next);
-          }}
-          onFocus={() => setOpen(true)}
+          onBlur={handleBlur}
+          onChangeText={handleChangeText}
+          onFocus={handleFocus}
           onSubmitEditing={close}
           returnKeyType="done"
           testID={testID}
-          value={visibleValue}
+          value={draft}
         />
       </View>
       {visible ? (

@@ -8,16 +8,22 @@
  * while the field itself and the option copy follow the UI language: Chinese
  * shows `杠铃卧推`, English shows `Barbell Bench Press - Medium Grip`.
  *
- * The input is a display surface only. Its visible text is the localized form of
- * the parent value; every keystroke still passes the raw text the user typed to
- * `onChange`, so free text is never rewritten or translated.
+ * The input keeps a raw editing draft separate from the localized display: the
+ * draft is only re-localized when the parent value changes externally (form
+ * reset, another record) or the UI language changes. Typing therefore never
+ * translates under the cursor — in Chinese UI, typing `Squat Jump` stays
+ * `Squat Jump` — while selecting a suggestion still writes the canonical English
+ * name and shows its localized display. Every keystroke passes the raw text the
+ * user typed to `onChange`, so free text is never rewritten or translated.
  *
  * Implemented with the WAI-ARIA combobox/listbox pattern on a single text
  * input: `role="combobox"`, `aria-expanded`, `aria-controls`,
- * `aria-activedescendant`, and `role="option"` children. No new dependency.
+ * `aria-activedescendant`, and `role="option"` children. Keyboard-selected rows
+ * are scrolled into view, and IME composition keys (Enter/arrows) are ignored so
+ * they never select a suggestion. No new dependency.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
 import {
   displayStoredExerciseName,
@@ -45,14 +51,31 @@ export function ExerciseNameCombobox({
 }: ExerciseNameComboboxProps) {
   const { language, t } = useI18n();
   const listboxId = `${id}-suggestions`;
+  // Raw editing draft: starts as the localized display of the current value and
+  // is only rebuilt on external parent changes or a language switch.
+  const [draft, setDraft] = useState(() => displayStoredExerciseName(language, value));
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  // The last value this component emitted, so its own keystrokes/selection are
+  // never mistaken for an external change.
+  const lastEmittedValue = useRef(value);
+  const lastLanguage = useRef(language);
+  const optionRefs = useRef<Array<HTMLLIElement | null>>([]);
 
-  // The parent value stays canonical; only the rendered text is localized.
-  const visibleValue = displayStoredExerciseName(language, value);
+  // Re-localize the draft only when the parent value changes externally or the
+  // UI language changes; the component's own emissions are skipped above.
+  useEffect(() => {
+    if (language === lastLanguage.current && value === lastEmittedValue.current) {
+      return;
+    }
+    lastLanguage.current = language;
+    lastEmittedValue.current = value;
+    setDraft(displayStoredExerciseName(language, value));
+  }, [language, value]);
+
   const suggestions = useMemo(
-    () => searchExerciseSuggestions(value, language),
-    [value, language],
+    () => searchExerciseSuggestions(draft, language),
+    [draft, language],
   );
   const expanded = open && suggestions.length > 0;
   const activeSuggestion =
@@ -62,25 +85,44 @@ export function ExerciseNameCombobox({
   const activeOptionId =
     activeSuggestion === null ? undefined : `${listboxId}-option-${activeIndex}`;
 
+  // Keep the keyboard-selected row inside the scrollable suggestion list.
+  // Optional call: jsdom and some environments do not implement scrollIntoView.
+  useEffect(() => {
+    if (!expanded || activeIndex < 0) return;
+    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
+  }, [expanded, activeIndex]);
+
   function close(): void {
     setOpen(false);
     setActiveIndex(-1);
   }
 
   function select(suggestion: ExerciseSuggestion): void {
+    // Selection is the only path that writes a canonical name; the field shows
+    // the localized display of that canonical name.
+    lastEmittedValue.current = suggestion.canonicalName;
+    setDraft(displayStoredExerciseName(language, suggestion.canonicalName));
     onChange(suggestion.canonicalName);
     close();
   }
 
   function handleChange(event: ChangeEvent<HTMLInputElement>): void {
-    // The visible text may be localized, but the parent receives exactly the
-    // text the user typed; it is never mapped back to a catalog name here.
-    onChange(event.target.value);
+    // The parent receives exactly the text the user typed, never a localized
+    // mapping of it.
+    const next = event.target.value;
+    lastEmittedValue.current = next;
+    setDraft(next);
+    onChange(next);
     setOpen(true);
     setActiveIndex(-1);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    // While an IME is composing, Enter/arrows belong to the input method (e.g.
+    // committing Chinese text), not to this list. `keyCode === 229` is the
+    // browser fallback for engines that only report composition that way.
+    const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+    if (composing) return;
     switch (event.key) {
       case "ArrowDown": {
         if (suggestions.length === 0) return;
@@ -129,9 +171,9 @@ export function ExerciseNameCombobox({
           id={id}
           type="text"
           role="combobox"
-          // Display-only localization: the selected canonical English name is
-          // shown as its Chinese display name in Chinese UI.
-          value={visibleValue}
+          // The draft is raw while editing and localized after a selection; the
+          // parent value stays canonical English either way.
+          value={draft}
           autoComplete="off"
           aria-autocomplete="list"
           aria-haspopup="listbox"
@@ -159,6 +201,9 @@ export function ExerciseNameCombobox({
                 role="option"
                 aria-selected={index === activeIndex}
                 data-exercise-name={suggestion.canonicalName}
+                ref={(element) => {
+                  optionRefs.current[index] = element;
+                }}
                 className={
                   index === activeIndex
                     ? "exercise-suggestion exercise-suggestion-active"
