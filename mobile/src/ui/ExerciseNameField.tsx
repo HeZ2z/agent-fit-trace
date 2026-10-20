@@ -11,6 +11,7 @@ import {
 } from "react-native";
 
 import {
+  displayStoredExerciseName,
   searchExerciseSuggestions,
   type ExerciseSuggestion,
 } from "@pi-fit-trace/i18n";
@@ -35,7 +36,7 @@ interface ExerciseNameFieldProps {
   label: string;
   /** Current field value: free text or a canonical English name. */
   value: string;
-  /** Called on typing and after a suggestion is selected. */
+  /** Called on typing (raw text) and after a suggestion is selected (canonical). */
   onChangeText: (value: string) => void;
   /** Stable test handle for the input; the list and options derive from it. */
   testID: string;
@@ -48,11 +49,14 @@ interface ExerciseNameFieldProps {
  * Labelled exercise-name input with a floating catalog suggestion panel.
  *
  * The catalog is a suggestion layer, never a gate: typing stays fully valid and
- * ignoring every suggestion saves the free-text name exactly as authored. A
- * selection writes the suggestion's canonical English name — the stored
- * spelling — while option copy follows the UI language through the shared
- * helper (Chinese shows the display name plus the canonical name, English shows
- * the canonical name alone).
+ * ignoring every suggestion saves the free-text name exactly as authored. The
+ * input is a display surface only — its visible text follows the UI language
+ * through the shared `displayStoredExerciseName` helper (Chinese shows
+ * `杠铃卧推`, English shows the canonical English name) while the parent value
+ * stays the stored spelling. Every keystroke still passes the raw typed text to
+ * `onChangeText`, and a selection writes the suggestion's canonical English name
+ * into the form. Option labels are UI-language copy only: the Chinese display
+ * name in Chinese, the canonical English name in English.
  *
  * The panel is an absolute overlay anchored just above the field, so the soft
  * keyboard cannot cover it while the input keeps focus. It is not a modal: the
@@ -76,9 +80,14 @@ export function ExerciseNameField({
   const [fieldHeight, setFieldHeight] = useState(0);
 
   const suggestions = useMemo(
+    // Search ranks the parent value — canonical English or the raw typed text —
+    // never the localized display text, so the stored spelling drives matching.
     () => searchExerciseSuggestions(value, language),
     [value, language],
   );
+  // The parent value stays canonical; only the rendered text is localized, so a
+  // selected catalog name shows as its Chinese display name in Chinese UI.
+  const visibleValue = displayStoredExerciseName(language, value);
   const visible = open && suggestions.length > 0;
   const isPixel = skin === "pixel";
   const listTestID = `${testID}-suggestions`;
@@ -107,8 +116,10 @@ export function ExerciseNameField({
           autoCorrect={false}
           label={label}
           onChangeText={(next) => {
-            // Typing re-opens the list; an empty or unmatched query renders no
-            // list because the shared helper returns no suggestions.
+            // Typing re-opens the list and passes exactly the text the user
+            // typed to the parent, never the localized display text; an empty
+            // or unmatched query renders no list because the shared helper
+            // returns no suggestions.
             setOpen(true);
             onChangeText(next);
           }}
@@ -116,7 +127,7 @@ export function ExerciseNameField({
           onSubmitEditing={close}
           returnKeyType="done"
           testID={testID}
-          value={value}
+          value={visibleValue}
         />
       </View>
       {visible ? (

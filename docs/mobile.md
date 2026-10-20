@@ -198,13 +198,18 @@ names stay as authored.
 
 While logging on mobile, the exercise-name field suggests catalog entries through
 the shared `searchExerciseSuggestions` helper, so web and mobile use one search
-and label implementation. Options show the Chinese display name plus the
-canonical English name in Chinese, and the canonical English name alone in
-English; selecting one writes that canonical English name into the form, which
-is the stored spelling. The catalog remains a suggestion layer: an ignored or
-custom name is still saved exactly as typed, the form model still holds the name
-as a plain string, and the suggestions close after a selection or submit, and
-whenever the query is empty or matches nothing.
+and label implementation. Suggestion labels are UI-language-only: the Chinese
+display name in Chinese, the canonical English name in English. Selecting one
+writes that canonical English name into the form, which is the stored spelling.
+The field itself renders the localized display name through the shared
+`displayStoredExerciseName` helper, so a selected canonical English name shows as
+its Chinese display name (for example `杠铃卧推`) in Chinese UI and as the
+canonical English name in English UI. The form value and the stored record always
+keep the canonical English spelling, custom names pass through unchanged, and
+typing still passes the raw text the user typed. The catalog remains a
+suggestion layer: an ignored or custom name is still saved exactly as typed, the
+form model still holds the name as a plain string, and the suggestions close
+after a selection or submit, and whenever the query is empty or matches nothing.
 
 The suggestion panel is an absolute overlay anchored just above the field rather
 than an inline block under it, so the soft keyboard cannot cover the options
