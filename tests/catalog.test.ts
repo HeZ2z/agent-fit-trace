@@ -29,6 +29,20 @@ const SOURCE_PATH = join(
   "exercise-catalog",
   "catalog.v1.json",
 );
+const ZH_SOURCE_PATH = join(
+  REPO_ROOT,
+  "data",
+  "exercise-catalog",
+  "zh-names.v1.json",
+);
+const ZH_OUTPUT_PATH = join(
+  REPO_ROOT,
+  "packages",
+  "fit-trace-i18n",
+  "src",
+  "zh",
+  "exercises.ts",
+);
 
 const TEMP_ROOT = mkdtempSync(join(tmpdir(), "fit-trace-exercise-catalog-"));
 
@@ -60,6 +74,17 @@ interface MutableCatalog {
   generated: string;
   sources: Array<Record<string, unknown>>;
   entries: MutableCatalogEntry[];
+}
+
+interface MutableZhNameEntry {
+  name: string;
+  aliases: string[];
+}
+
+interface MutableZhNames {
+  schema: unknown;
+  version: unknown;
+  names: Record<string, MutableZhNameEntry>;
 }
 
 const SOURCE_CATALOG = JSON.parse(
@@ -115,6 +140,19 @@ function mutableEntry(catalog: MutableCatalog, id: string): MutableCatalogEntry 
   const entry = catalog.entries.find((candidate) => candidate.id === id);
   assert.ok(entry, `temporary catalog is missing entry ${id}`);
   return entry;
+}
+
+let tempZhFileCount = 0;
+
+function writeTempZh(mutate: (zh: MutableZhNames) => void): string {
+  const zh = JSON.parse(
+    readFileSync(ZH_SOURCE_PATH, "utf8"),
+  ) as MutableZhNames;
+  mutate(zh);
+  const path = join(TEMP_ROOT, `zh-names-${tempZhFileCount}.json`);
+  tempZhFileCount += 1;
+  writeFileSync(path, JSON.stringify(zh, null, 2), "utf8");
+  return path;
 }
 
 test("bundles the 194-entry v1 catalog with version and digest metadata", () => {
@@ -195,11 +233,33 @@ test("dip variants reference each other symmetrically", () => {
   );
 });
 
-test("committed generated catalog is current with the source JSON", () => {
+test("committed generated catalog and Chinese tables are current with the source JSON", () => {
   const result = runGenerator(["--check"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /up to date/);
   assert.match(result.stdout, /194 entries/);
+  // The Chinese table is part of the same deterministic build, not hand-edited.
+  assert.match(result.stdout, /194 Chinese names/);
+  assert.match(result.stdout, /78 alias lists/);
+  assert.match(result.stdout, /sha256 [0-9a-f]{64}; 194 Chinese names.*sha256 [0-9a-f]{64}/);
+  assert.ok(!result.stderr, result.stderr);
+});
+
+test("generator --help preserves the CLI usage and documents both check hooks", () => {
+  const result = runGenerator(["--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /validate and write/);
+  assert.match(result.stdout, /--check/);
+  assert.match(result.stdout, /--catalog <path>/);
+  assert.match(result.stdout, /--zh <path>/);
+});
+
+test("generator reports a malformed zh-names source instead of regenerating", () => {
+  const path = join(TEMP_ROOT, "zh-names-broken.json");
+  writeFileSync(path, "{ not json", "utf8");
+  const result = runGenerator(["--check", "--zh", path]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot parse .*zh-names-broken\.json as JSON/);
 });
 
 test("generator --check reports stale output when catalog content changes", () => {
@@ -211,10 +271,89 @@ test("generator --check reports stale output when catalog content changes", () =
   assert.match(result.stderr, /generated catalog is stale/);
 });
 
+test("generator --check reports stale Chinese output when zh-names content changes", () => {
+  const path = writeTempZh((zh) => {
+    zh.names["Barbell Squat"]!.name = "杠铃深蹲（旧）";
+  });
+  const result = runGenerator(["--check", "--zh", path]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /generated Chinese exercise names table is stale/);
+  // The error names the stale output and the source it disagrees with.
+  assert.match(result.stderr, /packages\/fit-trace-i18n\/src\/zh\/exercises\.ts/);
+  assert.match(result.stderr, /zh-names-\d+\.json/);
+});
+
+test("generator --check reports every stale generated output in one run", () => {
+  const catalogPath = writeTempCatalog((catalog) => {
+    catalog.entries[0]!.aliases.push("Back Squat V1");
+  });
+  const zhPath = writeTempZh((zh) => {
+    zh.names["Barbell Squat"]!.name = "杠铃深蹲（旧）";
+  });
+  const result = runGenerator(["--check", "--catalog", catalogPath, "--zh", zhPath]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /generated catalog is stale/);
+  assert.match(result.stderr, /generated Chinese exercise names table is stale/);
+});
+
 test("generator refuses to write from an alternate catalog path", () => {
   const result = runGenerator(["--catalog", SOURCE_PATH]);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /--catalog may only be used with --check/);
+});
+
+test("generator refuses to write from an alternate zh-names path", () => {
+  const result = runGenerator(["--zh", ZH_SOURCE_PATH]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--zh may only be used with --check/);
+});
+
+test("generated Chinese module contains both tables in catalog order", () => {
+  const source = JSON.parse(readFileSync(ZH_SOURCE_PATH, "utf8")) as MutableZhNames;
+  const catalog = JSON.parse(readFileSync(SOURCE_PATH, "utf8")) as {
+    entries: { name: string }[];
+  };
+  const generated = readFileSync(ZH_OUTPUT_PATH, "utf8");
+
+  // The AUTO-GENERATED banner points at the generator and the two inputs.
+  assert.match(generated, /AUTO-GENERATED FILE — DO NOT EDIT BY HAND/);
+  assert.match(generated, /scripts\/build-exercise-catalog\.mjs/);
+  assert.match(generated, /zh-names\.v1\.json/);
+  assert.match(generated, /export const EXERCISE_DISPLAY_NAMES_ZH: Record<string, string>/);
+  assert.match(generated, /export const EXERCISE_ALIASES_ZH: Record<string, string\[\]>/);
+
+  // Display table: every catalog entry appears once, in catalog order, with the
+  // exact source value.
+  const displayTable = generated.slice(
+    generated.indexOf("EXERCISE_DISPLAY_NAMES_ZH"),
+    generated.indexOf("EXERCISE_ALIASES_ZH"),
+  );
+  let previousIndex = -1;
+  for (const { name } of catalog.entries) {
+    const line = `  ${JSON.stringify(name)}: ${JSON.stringify(source.names[name]!.name)},`;
+    const index = displayTable.indexOf(line);
+    assert.ok(index > previousIndex, `display entry ${name} is missing or out of order`);
+    previousIndex = index;
+  }
+
+  // Alias table: only entries with aliases, likewise in catalog order.
+  const aliasTable = generated.slice(generated.indexOf("EXERCISE_ALIASES_ZH"));
+  previousIndex = -1;
+  let aliasEntryCount = 0;
+  for (const { name } of catalog.entries) {
+    const index = aliasTable.indexOf(`  ${JSON.stringify(name)}: [`);
+    const aliases = source.names[name]!.aliases;
+    if (aliases.length === 0) {
+      assert.equal(index, -1, `alias-free entry ${name} must not appear in the alias table`);
+      continue;
+    }
+    aliasEntryCount += 1;
+    assert.ok(index > previousIndex, `alias entry ${name} is missing or out of order`);
+    const line = `  ${JSON.stringify(name)}: [${aliases.map((alias) => JSON.stringify(alias)).join(", ")}],`;
+    assert.ok(aliasTable.slice(index).startsWith(line), `alias values drift for ${name}`);
+    previousIndex = index;
+  }
+  assert.equal(aliasEntryCount, 78);
 });
 
 const INVALID_CATALOG_CASES: ReadonlyArray<{
@@ -366,6 +505,168 @@ for (const invalidCatalogCase of INVALID_CATALOG_CASES) {
     assert.match(result.stderr, invalidCatalogCase.expected);
   });
 }
+
+const INVALID_ZH_CASES: ReadonlyArray<{
+  label: string;
+  mutate: (zh: MutableZhNames) => void;
+  expected: RegExp;
+}> = [
+  {
+    label: "wrong schema",
+    mutate: (zh) => {
+      zh.schema = "not-zh-names";
+    },
+    expected: /zh\.schema: expected "fit-trace-exercise-zh-names"/,
+  },
+  {
+    label: "unsupported version",
+    mutate: (zh) => {
+      zh.version = 2;
+    },
+    expected: /zh\.version: expected 1, got 2/,
+  },
+  {
+    label: "unknown root field",
+    mutate: (zh) => {
+      (zh as unknown as Record<string, unknown>).catalog = {};
+    },
+    expected: /zh\.catalog: unknown field/,
+  },
+  {
+    label: "names is not an object",
+    mutate: (zh) => {
+      (zh as unknown as Record<string, unknown>).names = [];
+    },
+    expected: /zh\.names: expected an object keyed by canonical English exercise name/,
+  },
+  {
+    label: "missing canonical name",
+    mutate: (zh) => {
+      delete zh.names["Barbell Squat"];
+    },
+    expected: /zh\.names: missing Chinese entry for canonical name "Barbell Squat"/,
+  },
+  {
+    label: "unknown canonical name",
+    mutate: (zh) => {
+      zh.names["Not A Real Exercise"] = { name: "虚构动作", aliases: [] };
+    },
+    expected: /zh\.names\["Not A Real Exercise"\]: unknown canonical name/,
+  },
+  {
+    label: "catalog order mismatch",
+    mutate: (zh) => {
+      const entries = Object.entries(zh.names);
+      const first = entries.shift();
+      assert.ok(first, "the source must have at least one canonical name");
+      entries.push(first);
+      zh.names = Object.fromEntries(entries);
+    },
+    expected: /zh\.names: canonical name order must match catalog\.v1\.json at index 0/,
+  },
+  {
+    label: "entry is not an object",
+    mutate: (zh) => {
+      (zh.names as unknown as Record<string, unknown>)["Barbell Squat"] = "杠铃深蹲";
+    },
+    expected: /zh\.names\["Barbell Squat"\]: expected an object with name and aliases/,
+  },
+  {
+    label: "unknown entry field",
+    mutate: (zh) => {
+      (zh.names["Barbell Squat"] as unknown as Record<string, unknown>).legacy =
+        "深蹲";
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.legacy: unknown field/,
+  },
+  {
+    label: "non-string display name",
+    mutate: (zh) => {
+      (zh.names["Barbell Squat"] as unknown as { name: unknown }).name = 42;
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.name: expected a string; got 42/,
+  },
+  {
+    label: "empty display name",
+    mutate: (zh) => {
+      zh.names["Barbell Squat"]!.name = "   ";
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.name: must not be empty/,
+  },
+  {
+    label: "display name with surrounding whitespace",
+    mutate: (zh) => {
+      zh.names["Barbell Squat"]!.name = "杠铃深蹲 ";
+    },
+    expected: /\.name: must not have leading or trailing whitespace/,
+  },
+  {
+    label: "aliases is not an array",
+    mutate: (zh) => {
+      (zh.names["Barbell Squat"] as unknown as { aliases: unknown }).aliases =
+        "深蹲";
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.aliases: expected an array/,
+  },
+  {
+    label: "empty alias",
+    mutate: (zh) => {
+      zh.names["Barbell Squat"]!.aliases.push("   ");
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.aliases\[1\]: must not be empty/,
+  },
+  {
+    label: "non-string alias",
+    mutate: (zh) => {
+      (zh.names["Barbell Squat"]!.aliases as unknown[]).push(7);
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.aliases\[1\]: expected a string; got 7/,
+  },
+  {
+    label: "duplicate alias",
+    mutate: (zh) => {
+      zh.names["Barbell Squat"]!.aliases.push("深蹲");
+    },
+    expected: /zh\.names\["Barbell Squat"\]\.aliases\[1\]: duplicate alias "深蹲"/,
+  },
+];
+
+for (const invalidZhCase of INVALID_ZH_CASES) {
+  test(`generator rejects malformed Chinese names: ${invalidZhCase.label}`, () => {
+    const path = writeTempZh(invalidZhCase.mutate);
+    const result = runGenerator(["--check", "--zh", path]);
+    assert.notEqual(
+      result.status,
+      0,
+      `expected a non-zero exit for ${invalidZhCase.label}`,
+    );
+    assert.match(result.stderr, /Invalid exercise Chinese names/);
+    assert.match(result.stderr, invalidZhCase.expected);
+  });
+}
+
+test("generator pairs each Chinese-names problem with its canonical key", () => {
+  const path = writeTempZh((zh) => {
+    zh.names["Romanian Deadlift"]!.aliases.push("RDL");
+    delete zh.names["Barbell Squat"];
+    zh.names["Not A Real Exercise"] = { name: "虚构动作", aliases: [] };
+  });
+  const result = runGenerator(["--check", "--zh", path]);
+  assert.notEqual(result.status, 0);
+  // Every problem is reported in one aggregated error, not just the first.
+  assert.match(
+    result.stderr,
+    /zh\.names\["Romanian Deadlift"\]\.aliases\[2\]: duplicate alias "RDL"/,
+  );
+  assert.match(
+    result.stderr,
+    /zh\.names: missing Chinese entry for canonical name "Barbell Squat"/,
+  );
+  assert.match(
+    result.stderr,
+    /zh\.names\["Not A Real Exercise"\]: unknown canonical name/,
+  );
+});
 
 test("normalizeExerciseName produces the canonical lookup spelling", () => {
   assert.equal(normalizeExerciseName("  Bench_Press  "), "bench press");

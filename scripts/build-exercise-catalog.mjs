@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 /**
- * Build the shared-core exercise catalog from the vendored v1 source JSON.
+ * Build the shared-core exercise catalog and the shared i18n Chinese name
+ * tables from the vendored v1 source JSON.
  *
- * The generated TypeScript is committed so the browser-safe core never reads the
- * filesystem or the network at runtime. Output is deterministic: the source JSON
- * is the only input, and no clock, randomness, or network access participates.
+ * The generated TypeScript is committed so the browser-safe packages never read
+ * the filesystem or the network at runtime: the exercise catalog for
+ * `@pi-fit-trace/core`, and the Chinese display names/aliases for
+ * `@pi-fit-trace/i18n`. Output is deterministic: each source JSON is the only
+ * input, and no clock, randomness, or network access participates.
  *
  * Usage:
- *   node scripts/build-exercise-catalog.mjs                # validate and write
- *   node scripts/build-exercise-catalog.mjs --check        # validate; fail if committed output is stale
+ *   node scripts/build-exercise-catalog.mjs                # validate and write both outputs
+ *   node scripts/build-exercise-catalog.mjs --check        # validate; fail if either committed output is stale
  *   node scripts/build-exercise-catalog.mjs --check --catalog <path>
+ *   node scripts/build-exercise-catalog.mjs --check --zh <path>
  *
- * `--catalog` is a validation-only hook for tests and maintenance; it requires
- * `--check` so an alternate file can never overwrite the committed catalog.
+ * `--catalog` and `--zh` are validation-only hooks for tests and maintenance;
+ * they require `--check` so an alternate file can never overwrite a committed
+ * generated output.
  */
 
 import { createHash } from "node:crypto";
@@ -31,10 +36,20 @@ const DEFAULT_OUTPUT_PATH = resolve(
   REPO_ROOT,
   "packages/fit-trace-core/src/exercises/catalog.generated.ts",
 );
+const DEFAULT_ZH_SOURCE_PATH = resolve(
+  REPO_ROOT,
+  "data/exercise-catalog/zh-names.v1.json",
+);
+const DEFAULT_ZH_OUTPUT_PATH = resolve(
+  REPO_ROOT,
+  "packages/fit-trace-i18n/src/zh/exercises.ts",
+);
 
 export const EXPECTED_SCHEMA = "fit-trace-exercise-catalog";
 export const EXPECTED_VERSION = 1;
 export const EXPECTED_ENTRY_COUNT = 194;
+export const EXPECTED_ZH_SCHEMA = "fit-trace-exercise-zh-names";
+export const EXPECTED_ZH_VERSION = 1;
 
 // Keep these vocabularies identical to packages/fit-trace-core/src/exercises/types.ts.
 // `pnpm typecheck` catches drift in the generated data; the generator rejects it here.
@@ -143,6 +158,9 @@ const ENTRY_KEYS = [
 const ENTRY_SOURCE_KEYS = ["free_exercise_db", "guide_page"];
 const EQUIPMENT_KEYS = ["category", "items"];
 
+const ZH_ROOT_KEYS = ["schema", "version", "names"];
+const ZH_ENTRY_KEYS = ["name", "aliases"];
+
 const ID_PATTERN = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const REPO_PATTERN = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+$/;
@@ -150,10 +168,12 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const GUIDE_PAGE_PATTERN = /^exercises\/[^/]+\/[^/]+\.md$/;
 
 const USAGE = `Usage:
-  node scripts/build-exercise-catalog.mjs                validate and write the generated TypeScript
-  node scripts/build-exercise-catalog.mjs --check        validate; fail if the committed output is stale
+  node scripts/build-exercise-catalog.mjs                validate and write the generated TypeScript files
+  node scripts/build-exercise-catalog.mjs --check        validate; fail if a committed generated output is stale
   node scripts/build-exercise-catalog.mjs --check --catalog <path>
-                                                         validate an alternate source file (tests/maintenance)`;
+                                                         validate an alternate catalog source (tests/maintenance)
+  node scripts/build-exercise-catalog.mjs --check --zh <path>
+                                                         validate an alternate Chinese-names source (tests/maintenance)`;
 
 /** Canonical spelling used for uniqueness checks; must mirror the shared resolver. */
 export function normalizeName(value) {
@@ -514,6 +534,128 @@ export function validateCatalog(catalog) {
   return catalog;
 }
 
+/**
+ * Validate a parsed Chinese-names document against the validated catalog.
+ *
+ * The generated i18n table is keyed and ordered exactly like the catalog, so a
+ * missing, extra or reordered canonical name would silently shift or drop
+ * translations. Aliases are alternative search spellings: each entry may only
+ * list unique, non-empty strings (the same alias may still appear on two
+ * entries, which is harmless because suggestions de-duplicate by canonical
+ * name). Every problem is aggregated into one error, like the catalog validator.
+ *
+ * (`JSON.parse` already collapses duplicate object keys, so canonical-name
+ * duplication in the raw text cannot be observed here; the exact key/order
+ * check below is the authoritative guard for the `names` object.)
+ */
+export function validateZhNames(zhNames, catalog) {
+  if (!isPlainObject(zhNames)) {
+    throw new Error("Invalid exercise Chinese names:\n  - zh: expected a JSON object");
+  }
+  const errors = [];
+  checkUnknownKeys(errors, "zh", zhNames, ZH_ROOT_KEYS);
+
+  if (zhNames.schema !== EXPECTED_ZH_SCHEMA) {
+    errors.push(
+      `zh.schema: expected ${JSON.stringify(EXPECTED_ZH_SCHEMA)}, got ${JSON.stringify(zhNames.schema)}`,
+    );
+  }
+  if (zhNames.version !== EXPECTED_ZH_VERSION) {
+    errors.push(
+      `zh.version: expected ${EXPECTED_ZH_VERSION}, got ${JSON.stringify(zhNames.version)}`,
+    );
+  }
+
+  const names = zhNames.names;
+  if (!isPlainObject(names)) {
+    errors.push("zh.names: expected an object keyed by canonical English exercise name");
+  } else {
+    const canonicalNames = catalog.entries.map((entry) => entry.name);
+    const canonicalNameSet = new Set(canonicalNames);
+
+    for (const key of Object.keys(names)) {
+      if (!canonicalNameSet.has(key)) {
+        errors.push(
+          `zh.names[${JSON.stringify(key)}]: unknown canonical name; not present in catalog.v1.json`,
+        );
+      }
+    }
+    for (const canonicalName of canonicalNames) {
+      if (!Object.prototype.hasOwnProperty.call(names, canonicalName)) {
+        errors.push(
+          `zh.names: missing Chinese entry for canonical name ${JSON.stringify(canonicalName)}`,
+        );
+      }
+    }
+
+    // The generated table must keep catalog order. Only compare when both sides
+    // spell the same canonical key set, otherwise the missing/unknown errors
+    // above are the actionable output.
+    const presentCanonicalOrder = canonicalNames.filter((canonicalName) =>
+      Object.prototype.hasOwnProperty.call(names, canonicalName),
+    );
+    const sourceCanonicalOrder = Object.keys(names).filter((key) =>
+      canonicalNameSet.has(key),
+    );
+    if (
+      presentCanonicalOrder.length === canonicalNames.length &&
+      sourceCanonicalOrder.length === canonicalNames.length
+    ) {
+      for (let index = 0; index < canonicalNames.length; index += 1) {
+        if (presentCanonicalOrder[index] !== sourceCanonicalOrder[index]) {
+          errors.push(
+            `zh.names: canonical name order must match catalog.v1.json at index ${index}: expected ${JSON.stringify(presentCanonicalOrder[index])}, got ${JSON.stringify(sourceCanonicalOrder[index])}`,
+          );
+          break;
+        }
+      }
+    }
+
+    for (const key of Object.keys(names)) {
+      const path = `zh.names[${JSON.stringify(key)}]`;
+      const entry = names[key];
+      if (!isPlainObject(entry)) {
+        errors.push(`${path}: expected an object with name and aliases`);
+        continue;
+      }
+      checkUnknownKeys(errors, path, entry, ZH_ENTRY_KEYS);
+      assertString(errors, `${path}.name`, entry.name);
+
+      const aliasesPath = `${path}.aliases`;
+      if (!Array.isArray(entry.aliases)) {
+        errors.push(`${aliasesPath}: expected an array`);
+        continue;
+      }
+      const seenAliases = new Set();
+      entry.aliases.forEach((alias, aliasIndex) => {
+        const aliasPath = `${aliasesPath}[${aliasIndex}]`;
+        if (typeof alias !== "string") {
+          errors.push(`${aliasPath}: expected a string; got ${JSON.stringify(alias)}`);
+          return;
+        }
+        if (alias.trim() === "") {
+          errors.push(`${aliasPath}: must not be empty`);
+          return;
+        }
+        if (alias !== alias.trim()) {
+          errors.push(`${aliasPath}: must not have leading or trailing whitespace`);
+        }
+        if (seenAliases.has(alias)) {
+          errors.push(`${aliasPath}: duplicate alias ${JSON.stringify(alias)}`);
+        }
+        seenAliases.add(alias);
+      });
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `Invalid exercise Chinese names:\n${errors.map((line) => `  - ${line}`).join("\n")}`,
+    );
+  }
+  return zhNames;
+}
+
 /** Render the deterministic, committed TypeScript module for a validated catalog. */
 export function buildGeneratedSource(catalog) {
   const digest = computeCatalogDigest(catalog);
@@ -553,9 +695,79 @@ function freezeCatalog(value: unknown): void {
 `;
 }
 
+/** SHA-256 over the canonical form of the whole Chinese-names document. */
+export function computeZhNamesDigest(zhNames) {
+  return createHash("sha256").update(stableStringify(zhNames), "utf8").digest("hex");
+}
+
+/**
+ * Render the deterministic, committed i18n TypeScript module for validated
+ * Chinese names. Catalog order decides both table orders, so the output is a
+ * pure function of the two source documents.
+ */
+export function buildGeneratedZhSource(zhNames, catalog) {
+  const digest = computeZhNamesDigest(zhNames);
+  const displayLines = [];
+  const aliasLines = [];
+  for (const entry of catalog.entries) {
+    const zhEntry = zhNames.names[entry.name];
+    displayLines.push(
+      `  ${JSON.stringify(entry.name)}: ${JSON.stringify(zhEntry.name)},`,
+    );
+    if (zhEntry.aliases.length > 0) {
+      aliasLines.push(
+        `  ${JSON.stringify(entry.name)}: [${zhEntry.aliases.map((alias) => JSON.stringify(alias)).join(", ")}],`,
+      );
+    }
+  }
+
+  return `/**
+ * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
+ *
+ * Generated by \`scripts/build-exercise-catalog.mjs\` from
+ * \`data/exercise-catalog/zh-names.v1.json\`, using the canonical name order of
+ * \`data/exercise-catalog/catalog.v1.json\`. Run the script (and commit its
+ * output) whenever either source JSON changes.
+ *
+ * Chinese display names for the exercise catalog. Keys are the canonical
+ * English exercise names that stored and transported records use; values are
+ * Simplified Chinese display names. This table stays separate from
+ * \`ZH_MESSAGES\`: exercise names are catalog data keyed by canonical name, not
+ * interface message keys, and a missing entry falls back to the canonical name
+ * instead of showing a key.
+ *
+ * Deterministic: the source JSON is the only input; no clock, randomness, or
+ * network access participates. Version ${zhNames.version}, ${displayLines.length} display names,
+ * ${aliasLines.length} alias lists, sha256 digest ${digest}.
+ */
+
+/** Canonical English name → Chinese display name (all ${catalog.entries.length} catalog entries). */
+export const EXERCISE_DISPLAY_NAMES_ZH: Record<string, string> = {
+${displayLines.join("\n")}
+};
+
+/**
+ * Canonical English name → Chinese aliases, for Chinese search only.
+ *
+ * Only entries that declare at least one Chinese alias appear here, so the
+ * keys are a strict subset of the canonical names. Aliases are alternative
+ * spellings for search; they are never used to rewrite a stored name.
+ */
+export const EXERCISE_ALIASES_ZH: Record<string, string[]> = {
+${aliasLines.join("\n")}
+};
+`;
+}
+
 function parseArgs(args) {
-  const options = { check: false, catalogPath: DEFAULT_CATALOG_PATH, help: false };
+  const options = {
+    check: false,
+    catalogPath: DEFAULT_CATALOG_PATH,
+    zhPath: DEFAULT_ZH_SOURCE_PATH,
+    help: false,
+  };
   let sawCatalog = false;
+  let sawZh = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--check") {
@@ -568,6 +780,14 @@ function parseArgs(args) {
       options.catalogPath = resolve(process.cwd(), value);
       sawCatalog = true;
       index += 1;
+    } else if (arg === "--zh") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error("--zh requires a path argument");
+      }
+      options.zhPath = resolve(process.cwd(), value);
+      sawZh = true;
+      index += 1;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
@@ -577,6 +797,9 @@ function parseArgs(args) {
   if (sawCatalog && !options.check) {
     throw new Error("--catalog may only be used with --check (it never writes generated output)");
   }
+  if (sawZh && !options.check) {
+    throw new Error("--zh may only be used with --check (it never writes generated output)");
+  }
   return options;
 }
 
@@ -584,20 +807,54 @@ function displayPath(absolutePath) {
   return relative(REPO_ROOT, absolutePath) || absolutePath;
 }
 
-function readCatalog(catalogPath) {
+function readJsonSource(sourcePath, label) {
   let text;
   try {
-    text = readFileSync(catalogPath, "utf8");
+    text = readFileSync(sourcePath, "utf8");
   } catch (error) {
     throw new Error(
-      `cannot read catalog source ${displayPath(catalogPath)}: ${error instanceof Error ? error.message : String(error)}`,
+      `cannot read ${label} source ${displayPath(sourcePath)}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   try {
     return JSON.parse(text);
   } catch (error) {
     throw new Error(
-      `cannot parse ${displayPath(catalogPath)} as JSON: ${error instanceof Error ? error.message : String(error)}`,
+      `cannot parse ${displayPath(sourcePath)} as JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function readCatalog(catalogPath) {
+  return readJsonSource(catalogPath, "catalog");
+}
+
+function readZhNames(zhPath) {
+  return readJsonSource(zhPath, "Chinese-names");
+}
+
+function writeGenerated(outputPath, content) {
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, content, "utf8");
+}
+
+/**
+ * Compare one committed generated file with its expected content, collecting
+ * every stale output so a single `--check` run reports all files that need
+ * regeneration instead of stopping at the first one.
+ */
+function collectStaleOutput(stale, outputPath, expected, label, sourcePath) {
+  let existing;
+  try {
+    existing = readFileSync(outputPath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `cannot read ${label} ${displayPath(outputPath)}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (existing !== expected) {
+    stale.push(
+      `${label} is stale: ${displayPath(outputPath)} does not match ${displayPath(sourcePath)}; run \`node scripts/build-exercise-catalog.mjs\` and commit the result`,
     );
   }
 }
@@ -611,32 +868,44 @@ function main(argv) {
 
   const catalog = readCatalog(options.catalogPath);
   validateCatalog(catalog);
+  const zhNames = readZhNames(options.zhPath);
+  validateZhNames(zhNames, catalog);
+
   const digest = computeCatalogDigest(catalog);
+  const zhDigest = computeZhNamesDigest(zhNames);
   const summary = `${catalog.entries.length} entries, version ${catalog.version}, sha256 ${digest}`;
+  const aliasEntryCount = Object.values(zhNames.names).filter(
+    (entry) => entry.aliases.length > 0,
+  ).length;
+  const zhSummary = `${Object.keys(zhNames.names).length} Chinese names, ${aliasEntryCount} alias lists, sha256 ${zhDigest}`;
 
   if (options.check) {
-    let existing;
-    try {
-      existing = readFileSync(DEFAULT_OUTPUT_PATH, "utf8");
-    } catch (error) {
-      throw new Error(
-        `cannot read generated catalog ${displayPath(DEFAULT_OUTPUT_PATH)}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+    const stale = [];
+    collectStaleOutput(
+      stale,
+      DEFAULT_OUTPUT_PATH,
+      buildGeneratedSource(catalog),
+      "generated catalog",
+      options.catalogPath,
+    );
+    collectStaleOutput(
+      stale,
+      DEFAULT_ZH_OUTPUT_PATH,
+      buildGeneratedZhSource(zhNames, catalog),
+      "generated Chinese exercise names table",
+      options.zhPath,
+    );
+    if (stale.length > 0) {
+      throw new Error(stale.join("\n"));
     }
-    const expected = buildGeneratedSource(catalog);
-    if (existing !== expected) {
-      throw new Error(
-        `generated catalog is stale: ${displayPath(DEFAULT_OUTPUT_PATH)} does not match ${displayPath(options.catalogPath)}; run \`node scripts/build-exercise-catalog.mjs\` and commit the result`,
-      );
-    }
-    console.log(`build-exercise-catalog: up to date (${summary})`);
+    console.log(`build-exercise-catalog: up to date (${summary}; ${zhSummary})`);
     return;
   }
 
-  const generated = buildGeneratedSource(catalog);
-  mkdirSync(dirname(DEFAULT_OUTPUT_PATH), { recursive: true });
-  writeFileSync(DEFAULT_OUTPUT_PATH, generated, "utf8");
+  writeGenerated(DEFAULT_OUTPUT_PATH, buildGeneratedSource(catalog));
+  writeGenerated(DEFAULT_ZH_OUTPUT_PATH, buildGeneratedZhSource(zhNames, catalog));
   console.log(`build-exercise-catalog: wrote ${displayPath(DEFAULT_OUTPUT_PATH)} (${summary})`);
+  console.log(`build-exercise-catalog: wrote ${displayPath(DEFAULT_ZH_OUTPUT_PATH)} (${zhSummary})`);
 }
 
 const invokedPath = process.argv[1];
