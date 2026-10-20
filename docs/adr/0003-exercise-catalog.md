@@ -163,13 +163,20 @@ render-time rule for catalog-backed exercise names:
 
 - catalog-backed names are translated at render time through the catalog entry
   (canonical English name → display name in the selected language);
+- the editor input and suggestion labels are display surfaces too: their visible
+  text follows the selected language (for example `杠铃卧推` in Chinese UI), while
+  selecting a suggestion writes the canonical English name and typed free text is
+  stored exactly as authored;
 - custom/free-text names pass through unchanged;
 - notes, user-authored names, ids, and dates are never translated;
+- records, snapshots, exports, and plan payloads keep canonical English;
+  localized display text is never stored;
 - plan and analysis strings that embed an exercise name use the same display
   helper.
 
-`packages/fit-trace-i18n/README.md` and the dictionary tests must be updated with
-this exception when implementation starts.
+`packages/fit-trace-i18n/README.md` and the tests record this boundary; the
+shared display and suggestion helpers are the only render-time exercise-name
+surface.
 
 ### 6. Placement, determinism, and versioning
 
