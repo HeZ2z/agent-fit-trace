@@ -203,8 +203,15 @@ canonical English name in Chinese, and the canonical English name alone in
 English; selecting one writes that canonical English name into the form, which
 is the stored spelling. The catalog remains a suggestion layer: an ignored or
 custom name is still saved exactly as typed, the form model still holds the name
-as a plain string, and the suggestions render inline and close after a selection
-or when the query is empty.
+as a plain string, and the suggestions close after a selection or submit, and
+whenever the query is empty or matches nothing.
+
+The suggestion panel is an absolute overlay anchored just above the field rather
+than an inline block under it, so the soft keyboard cannot cover the options
+while the input stays focused. It is not a modal or dialog, and an option is
+selected with one tap without dismissing the keyboard first. The visible panel
+height is capped and the options scroll inside it; the shared helper still caps
+the list at eight suggestions.
 
 The shared `@pi-fit-trace/i18n` package holds the pure dictionary and domain
 display helpers; the web keeps its localStorage/DOM adapter in
