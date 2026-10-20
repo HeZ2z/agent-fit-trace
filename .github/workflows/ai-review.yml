@@ -9,6 +9,11 @@ on:
         description: Pull request number to review
         required: true
         type: number
+      allow_forks:
+        description: Allow reviewing a fork PR from a manual run
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,7 +47,6 @@ jobs:
           node-version: 24
 
       - name: Review pull request
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -52,4 +56,5 @@ jobs:
           AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek-flash' }}
           AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT || 'none' }}
           AI_REVIEW_JSON_MODE: ${{ vars.AI_REVIEW_JSON_MODE || '1' }}
+          AI_REVIEW_ALLOW_FORKS: ${{ inputs.allow_forks && '1' || '' }}
         run: node --experimental-strip-types scripts/ai-review.ts

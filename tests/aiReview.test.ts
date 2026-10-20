@@ -159,6 +159,7 @@ test("formatReviewComment includes a dedupe marker, verdict and severity order",
 test("reviewBudgets is strictly decreasing and never repeats a budget", () => {
   assert.deepEqual(reviewBudgets(60_000), [60_000, 30_000, 20_000]);
   assert.deepEqual(reviewBudgets(40_000), [40_000, 20_000]);
+  assert.deepEqual(reviewBudgets(25_000), [25_000, 12_500]);
   assert.deepEqual(reviewBudgets(20_000), [20_000, 10_000]);
   assert.deepEqual(reviewBudgets(10_000), [10_000, 5_000]);
 });

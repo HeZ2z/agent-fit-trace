@@ -6,7 +6,9 @@ changed-file patches through the GitHub API, and posts **one PR comment** with
 structured findings.
 
 It is deliberately **comment-only**: it does not approve, request changes, or
-gate a merge. The GitHub Actions check is informational.
+gate a merge. The GitHub Actions check is informational, but the step is not
+`continue-on-error`: a reviewer crash fails the advisory job visibly instead of
+silently passing.
 
 ## Why self-hosted
 
@@ -26,8 +28,8 @@ gate a merge. The GitHub Actions check is informational.
 - **Triggers:** PR `opened`, `synchronize`, `reopened`, and `ready_for_review`;
   plus `workflow_dispatch` with a PR number.
 - **Skipped:** draft PRs, and PRs from forks by default (fork workflows do not
-  receive repository secrets). Manual dispatch also skips forks unless
-  `AI_REVIEW_ALLOW_FORKS=1` is set for the run.
+  receive repository secrets). The manual-dispatch form has an
+  `allow_forks` checkbox for an intentional fork review.
 - **Trusted code:** the workflow checks out the PR **base commit**, not the PR
   head, so a PR cannot change the reviewer script before it is reviewed. The
   script never executes PR code; it only reads the GitHub API and calls the
@@ -77,8 +79,9 @@ The script budgets the model context before calling the provider:
 The review disables reasoning (`reasoning_effort: none`) by default so the JSON
 answer fits the 16,000 completion-token budget (`AI_REVIEW_MAX_TOKENS`). Set
 `AI_REVIEW_REASONING_EFFORT=medium` (or another DeepSeek-supported level) for
-more deliberate reviews at a higher token cost, or `omit` for providers that
-reject the parameter. The script retries transient 429/5xx responses twice. If
+more deliberate reviews at a higher token cost. Set it to `omit` for providers
+that reject the parameter (the workflow's repository variable accepts the same
+value). The script retries transient 429/5xx responses twice. If
 the model exhausts its output budget or returns malformed JSON, it retries with
 a strictly smaller diff budget when one exists (for the default 60,000-char
 budget: 30,000, then 20,000) so it can post a partial review; the comment notes

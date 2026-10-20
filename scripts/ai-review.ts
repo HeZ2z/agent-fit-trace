@@ -159,15 +159,21 @@ function errorMessage(cause: unknown): string {
 /** The model consumed the output budget while reasoning; retrying with a smaller diff helps. */
 class ReviewBudgetError extends Error {}
 
+/** The model produced output that is not the review JSON contract. */
+class ReviewFormatError extends Error {}
+
 /** Budgets for the retry ladder, strictly decreasing so no retry is a no-op. */
 export function reviewBudgets(maxDiffChars: number): number[] {
-  const candidates = [maxDiffChars, Math.floor(maxDiffChars / 2), 20_000]
-    .filter((candidate) => candidate > 0 && candidate <= maxDiffChars);
+  const half = Math.floor(maxDiffChars / 2);
+  const candidates = [maxDiffChars, half];
+  // Keep the fixed 20k step only when it is genuinely smaller than the halved
+  // budget; otherwise the sort would put a larger retry after a smaller one.
+  if (20_000 > 0 && 20_000 <= maxDiffChars && 20_000 < half) candidates.push(20_000);
   const budgets: number[] = [];
   for (const candidate of candidates) {
     if (!budgets.includes(candidate)) budgets.push(candidate);
   }
-  return budgets.sort((left, right) => right - left);
+  return budgets;
 }
 
 export function isExcludedPath(filename: string): boolean {
@@ -282,20 +288,20 @@ export function parseReviewResponse(
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("model response did not contain a JSON object");
+  if (start < 0 || end <= start) throw new ReviewFormatError("model response did not contain a JSON object");
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed.slice(start, end + 1));
   } catch (cause) {
-    throw new Error(`model response was not valid JSON: ${errorMessage(cause)}`);
+    throw new ReviewFormatError(`model response was not valid JSON: ${errorMessage(cause)}`);
   }
   const record = asRecord(parsed);
-  if (record === null) throw new Error("model response JSON was not an object");
+  if (record === null) throw new ReviewFormatError("model response JSON was not an object");
 
   const summary = typeof record.summary === "string" ? record.summary.trim() : "";
   const verdict = record.verdict;
   if (verdict !== "no_blocking_findings" && verdict !== "needs_attention" && verdict !== "insufficient_context") {
-    throw new Error("model response had an invalid verdict");
+    throw new ReviewFormatError("model response had an invalid verdict");
   }
   const rawFindings = Array.isArray(record.findings) ? record.findings : [];
   const findings: ReviewFinding[] = [];
@@ -488,8 +494,8 @@ export async function callModel(options: {
             ? {}
             : { response_format: { type: "json_object" } }),
           // DeepSeek supports reasoning_effort; "none" keeps review output
-          // reliable. Set AI_REVIEW_REASONING_EFFORT="" to omit the field for
-          // providers that reject it.
+          // reliable. Set AI_REVIEW_REASONING_EFFORT=omit for providers that
+          // reject the field.
           ...(options.reasoningEffort === undefined
             ? {}
             : { reasoning_effort: options.reasoningEffort }),
@@ -602,7 +608,7 @@ export async function runReview(env: NodeJS.ProcessEnv = process.env): Promise<v
     } catch (cause) {
       lastError = cause;
       const budgetFailure = cause instanceof ReviewBudgetError;
-      const parseFailure = cause instanceof Error && cause.message.startsWith("model response");
+      const parseFailure = cause instanceof ReviewFormatError;
       if ((budgetFailure || parseFailure) && index < budgets.length - 1) {
         console.warn(
           budgetFailure
