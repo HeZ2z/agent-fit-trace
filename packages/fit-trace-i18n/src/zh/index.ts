@@ -10,6 +10,10 @@ import { messages as mobileCoach } from "./mobile-coach.ts";
  * The Chinese display-layer dictionary, keyed by the exact English source
  * string. Built by merging per-area tables so slices can grow independently;
  * a later table wins only if the same source is listed twice.
+ *
+ * Catalog-backed exercise names are not interface copy: they are keyed by
+ * canonical English exercise name and exported separately from
+ * `./exercises.ts`, never merged into ZH_MESSAGES.
  */
 export const ZH_MESSAGES: Record<string, string> = {
   ...chrome,
@@ -20,3 +24,5 @@ export const ZH_MESSAGES: Record<string, string> = {
   ...mobile,
   ...mobileCoach,
 };
+
+export { EXERCISE_ALIASES_ZH, EXERCISE_DISPLAY_NAMES_ZH } from "./exercises.ts";
