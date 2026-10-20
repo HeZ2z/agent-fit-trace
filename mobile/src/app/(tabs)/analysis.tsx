@@ -242,7 +242,6 @@ export default function AnalysisScreen() {
 
   return (
     <Screen testID="screen-analysis">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
       {content}

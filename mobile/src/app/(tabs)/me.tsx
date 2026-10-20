@@ -89,7 +89,6 @@ export default function MeScreen() {
 
   return (
     <Screen testID="screen-me">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
 

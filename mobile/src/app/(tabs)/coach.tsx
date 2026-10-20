@@ -516,7 +516,6 @@ export default function CoachScreen() {
 
   return (
     <Screen testID="screen-coach">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
 

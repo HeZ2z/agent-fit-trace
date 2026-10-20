@@ -9,6 +9,7 @@ import {
 
 import { useI18n } from "@/i18n";
 import { SPACING, TYPOGRAPHY } from "@/theme";
+import { TabIcon } from "@/ui/TabIcon";
 import { useSkin } from "@/theme/skin";
 
 const TAB_ITEMS = [
@@ -132,19 +133,7 @@ function AppTabBar({ state, emitter, navigateToTab, insets }: BottomTabBarProps)
                 pressed ? styles.pressed : null,
               ]}
               testID={`tab-${route.name}`}>
-              <View
-                style={[
-                  styles.marker,
-                  {
-                    width: isPixel ? 6 : 8,
-                    height: isPixel ? 6 : 8,
-                    borderRadius: isPixel ? 0 : 999,
-                    backgroundColor: focused ? palette.accent : "transparent",
-                    borderWidth: focused ? 0 : tokens.borderWidthThin,
-                    borderColor: palette.muted,
-                  },
-                ]}
-              />
+              <TabIcon focused={focused} name={item.name} tokens={tokens} />
               <Text
                 numberOfLines={1}
                 style={[
@@ -176,7 +165,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     paddingVertical: SPACING[1],
   },
-  marker: { marginBottom: 1 },
   label: { ...TYPOGRAPHY.micro, fontSize: 11, letterSpacing: 0.2 },
   pressed: { opacity: 0.7 },
 });

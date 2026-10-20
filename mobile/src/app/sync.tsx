@@ -268,7 +268,6 @@ export default function SyncScreen() {
 
   return (
     <Screen bottomInset testID="screen-sync">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
 

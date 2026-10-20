@@ -16,7 +16,6 @@ import {
   Card,
   Display,
   EmptyState,
-  Kicker,
   Screen,
   Title,
 } from "@/ui";
@@ -27,7 +26,7 @@ const copy = {
   lede: "Every logged session becomes evidence. Review what you lifted, how it felt, and what changed over time.",
   emptyTitle: "No sessions yet",
   emptyMessage:
-    "Your workout history will appear here once local logging is connected. This shell only reserves the route.",
+    "Log your first session and it will appear here.",
   loading: "Loading workout history…",
   loadError: "Could not load workout history: {message}",
   unknownError: "Unknown error.",
@@ -201,7 +200,6 @@ export default function HistoryScreen() {
 
   return (
     <Screen testID="screen-history">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
       {content}
