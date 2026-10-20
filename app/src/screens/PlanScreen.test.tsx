@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { PlanDraft, WorkoutRecord } from "@pi-fit-trace/core";
 import { generateNextPlan } from "@pi-fit-trace/core";
 import type { FitTraceClient, ImportedArtifact } from "@pi-fit-trace/api-contracts";
+import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { loadRecords, saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider, useWorkoutStore } from "../state/WorkoutStoreContext.tsx";
@@ -397,5 +398,61 @@ describe("PlanScreen", () => {
 
     expect(await screen.findByTestId("history-error")).toHaveTextContent(/reload failed/i);
     expect(screen.queryByTestId("plan-status")).not.toBeInTheDocument();
+  });
+});
+
+describe("PlanScreen exercise name localization", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    setLanguage("en");
+  });
+
+  it("renders Chinese recommendation copy with the catalog display name", async () => {
+    setLanguage("zh");
+    const adapter = new MemoryStorageAdapter();
+    const weights = [100, 105, 110, 115];
+    weights.forEach((weight, index) => {
+      saveRecord(
+        adapter,
+        record({
+          id: `wkt_rising_${index}`,
+          date: `2026-09-${String(index * 3 + 1).padStart(2, "0")}`,
+          sleep_hours: 8,
+          exercises: [{ name: "Bench press", sets: [{ weight, reps: 5, rpe: 6 }] }],
+        }),
+      );
+    });
+
+    renderPlanOver(adapter);
+
+    // The progressive-overload sentence embeds the exercise name; the record's
+    // alias is normalized by analysis and localized by the display helper.
+    expect(await screen.findByText(/渐进超负荷/)).toBeInTheDocument();
+    // Both the detail and the reason sentences carry the localized name.
+    expect(screen.getAllByText(/杠铃卧推/).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the canonical English name in the English payload copy", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const weights = [100, 105, 110, 115];
+    weights.forEach((weight, index) => {
+      saveRecord(
+        adapter,
+        record({
+          id: `wkt_rising_${index}`,
+          date: `2026-09-${String(index * 3 + 1).padStart(2, "0")}`,
+          sleep_hours: 8,
+          exercises: [{ name: "Bench press", sets: [{ weight, reps: 5, rpe: 6 }] }],
+        }),
+      );
+    });
+
+    renderPlanOver(adapter);
+
+    expect(await screen.findByText(/progressive_overload/)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Barbell Bench Press - Medium Grip/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/杠铃卧推/)).not.toBeInTheDocument();
   });
 });

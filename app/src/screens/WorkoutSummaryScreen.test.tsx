@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider, useWorkoutStore } from "../state/WorkoutStoreContext.tsx";
@@ -194,5 +195,47 @@ describe("WorkoutSummaryScreen", () => {
 
     const warnings = await screen.findByRole("status", { name: /warnings/i });
     expect(warnings).toHaveTextContent(/0 kg/i);
+  });
+});
+
+describe("WorkoutSummaryScreen exercise name localization", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    setLanguage("en");
+  });
+
+  it("localizes catalog exercise names and keeps custom names as typed", async () => {
+    setLanguage("zh");
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(
+      adapter,
+      richRecord({
+        pain: undefined,
+        exercises: [
+          {
+            name: "Barbell Bench Press - Medium Grip",
+            sets: [{ weight: 100, reps: 5, rpe: 8 }],
+          },
+          { name: "My Custom Lift", sets: [{ weight: 60, reps: 8, rpe: 7 }] },
+        ],
+      }),
+    );
+
+    renderSummaryOver(adapter, "wkt_sum_1");
+
+    // Catalog-backed headings are translated at render time…
+    expect(
+      await screen.findByRole("heading", { level: 3, name: "杠铃卧推" }),
+    ).toBeInTheDocument();
+    // …while a user-authored custom name stays exactly as stored.
+    expect(
+      screen.getByRole("heading", { level: 3, name: "My Custom Lift" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "Barbell Bench Press - Medium Grip",
+      }),
+    ).not.toBeInTheDocument();
   });
 });

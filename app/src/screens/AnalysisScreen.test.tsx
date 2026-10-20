@@ -9,6 +9,7 @@ import type {
   FitTraceClient,
   ImportedArtifact,
 } from "@pi-fit-trace/api-contracts";
+import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider, useWorkoutStore } from "../state/WorkoutStoreContext.tsx";
@@ -173,7 +174,8 @@ describe("AnalysisScreen", () => {
 
     expect(await screen.findByText(/Sessions: 2/)).toBeInTheDocument();
     expect(screen.getByText(/volume: 1050 kg/i)).toBeInTheDocument();
-    expect(container.querySelector('[data-trend-exercise="Squat"]')).not.toBeNull();
+    // The recorded "Squat" alias now groups under its canonical catalog name.
+    expect(container.querySelector('[data-trend-exercise="Barbell Squat"]')).not.toBeNull();
     expect(screen.queryByLabelText(/import analysis\.json/i)).not.toBeInTheDocument();
     expect(container.querySelector('input[type="file"]')).toBeNull();
   });
@@ -441,5 +443,73 @@ describe("AnalysisScreen", () => {
 
     expect(await screen.findByTestId("history-error")).toHaveTextContent(/reload failed/i);
     expect(screen.queryByText(/Sessions: 1/)).not.toBeInTheDocument();
+  });
+});
+
+describe("AnalysisScreen exercise name localization", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    setLanguage("en");
+  });
+
+  it("renders catalog trends with Chinese display names and keeps custom names", async () => {
+    setLanguage("zh");
+    const adapter = new MemoryStorageAdapter();
+    saveRecord(
+      adapter,
+      record({
+        date: "2026-01-05",
+        exercises: [
+          {
+            name: "Barbell Bench Press - Medium Grip",
+            sets: [{ weight: 80, reps: 5, rpe: 6 }],
+          },
+          { name: "Sled Push", sets: [{ weight: 40, reps: 5, rpe: 6 }] },
+        ],
+      }),
+    );
+    saveRecord(
+      adapter,
+      record({
+        id: "wkt_b",
+        date: "2026-01-07",
+        exercises: [
+          {
+            name: "Barbell Bench Press - Medium Grip",
+            sets: [{ weight: 85, reps: 5, rpe: 6 }],
+          },
+          { name: "Sled Push", sets: [{ weight: 45, reps: 5, rpe: 6 }] },
+        ],
+      }),
+    );
+
+    renderAnalysisOver(adapter);
+
+    expect(await screen.findByText(/杠铃卧推/)).toBeInTheDocument();
+    // Custom names are not in the catalog and stay exactly as recorded.
+    expect(screen.getByText(/Sled Push/)).toBeInTheDocument();
+    expect(screen.queryByText(/Barbell Bench Press/)).not.toBeInTheDocument();
+  });
+
+  it("resolves stored aliases before localizing a trend", async () => {
+    setLanguage("zh");
+    const adapter = new MemoryStorageAdapter();
+    for (const [date, weight] of [
+      ["2026-01-05", 80],
+      ["2026-01-07", 85],
+    ] as const) {
+      saveRecord(
+        adapter,
+        record({
+          id: `wkt_${date}`,
+          date,
+          exercises: [{ name: "Bench press", sets: [{ weight, reps: 5, rpe: 6 }] }],
+        }),
+      );
+    }
+
+    renderAnalysisOver(adapter);
+
+    expect(await screen.findByText(/杠铃卧推/)).toBeInTheDocument();
   });
 });

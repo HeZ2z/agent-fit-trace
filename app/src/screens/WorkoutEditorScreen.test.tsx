@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION } from "@pi-fit-trace/core";
 import { deriveWorkoutId } from "../contracts/ids.ts";
+import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter, StorageUnavailableError } from "../storage/adapter.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import { loadRecords } from "../storage/workoutRepository.ts";
@@ -39,6 +40,13 @@ function renderEditorOver(adapter: StorageAdapter = new MemoryStorageAdapter()) 
 
 async function fillValidSet(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await user.type(screen.getByLabelText(/exercise 1 name/i), "Squat");
+  await user.type(screen.getByLabelText(/exercise 1 set 1 weight \(kg\)/i), "100");
+  await user.type(screen.getByLabelText(/exercise 1 set 1 reps/i), "5");
+  await user.type(screen.getByLabelText(/exercise 1 set 1 rpe/i), "8");
+}
+
+/** Fill the numeric set fields, leaving the exercise name as typed separately. */
+async function fillSetFields(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await user.type(screen.getByLabelText(/exercise 1 set 1 weight \(kg\)/i), "100");
   await user.type(screen.getByLabelText(/exercise 1 set 1 reps/i), "5");
   await user.type(screen.getByLabelText(/exercise 1 set 1 rpe/i), "8");
@@ -277,5 +285,133 @@ describe("WorkoutEditorScreen", () => {
     expect(container.querySelector('[data-safety="pain"]')).toBeNull();
     await user.click(screen.getByRole("button", { name: /add pain/i }));
     expect(container.querySelectorAll('[data-safety="pain"]')).toHaveLength(1);
+  });
+});
+
+describe("exercise-name combobox", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    setLanguage("en");
+  });
+
+  function nameCombobox(accessibilityName: RegExp = /exercise 1 name/i): HTMLElement {
+    return screen.getByRole("combobox", { name: accessibilityName });
+  }
+
+  it("suggests catalog entries with English labels and writes the canonical name", async () => {
+    const { user } = renderEditorOver();
+    const input = nameCombobox();
+    expect(input).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    await user.type(input, "bench");
+
+    expect(input).toHaveAttribute("aria-expanded", "true");
+    const listbox = screen.getByRole("listbox", { name: /exercises/i });
+    expect(input).toHaveAttribute("aria-controls", listbox.id);
+    // In the English UI the option is the canonical English name alone.
+    const option = within(listbox).getByRole("option", {
+      name: "Barbell Bench Press - Medium Grip",
+    });
+    expect(option).toHaveAttribute("aria-selected", "false");
+    expect(listbox).not.toHaveTextContent("杠铃卧推");
+
+    await user.click(option);
+
+    expect(input).toHaveValue("Barbell Bench Press - Medium Grip");
+    expect(input).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("filters suggestions as the query narrows and hides when nothing matches", async () => {
+    const { user } = renderEditorOver();
+    const input = nameCombobox();
+
+    await user.type(input, "zzz-no-such-exercise");
+    expect(input).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, "barbell bench");
+    expect(input).toHaveValue("barbell bench");
+    const listbox = screen.getByRole("listbox");
+    const options = within(listbox).getAllByRole("option");
+    // The wider "bench" query also matched Dumbbell/other variants; the
+    // narrowed query only keeps entries whose names contain "Barbell Bench".
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      expect(option).toHaveTextContent(/Barbell Bench Press/);
+    }
+    const optionTexts = options.map((option) => option.textContent ?? "").join(" ");
+    expect(optionTexts).not.toContain("哑铃卧推");
+    expect(optionTexts).toContain("Barbell Bench Press - Medium Grip");
+    // English UI labels are canonical-only: no bilingual `中文 · English` copy.
+    expect(optionTexts).not.toContain("·");
+  });
+
+  it("dismisses the list with Escape and saves the free text unchanged", async () => {
+    const { adapter, user } = renderEditorOver();
+    const input = nameCombobox();
+
+    // "Squat" is an alias of "Barbell Squat", so suggestions open…
+    await user.type(input, "Squat");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    // …but dismissing them must not rewrite or block the typed custom name.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(input).toHaveValue("Squat");
+
+    await fillSetFields(user);
+    await user.click(screen.getByRole("button", { name: /save workout/i }));
+    await screen.findByTestId("summary-id");
+
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.exercises[0]!.name).toBe("Squat");
+  });
+
+  it("supports ArrowUp/ArrowDown navigation, Enter selection and activedescendant", async () => {
+    const { user } = renderEditorOver();
+    const input = nameCombobox();
+    await user.type(input, "deadlift");
+
+    await user.keyboard("{ArrowDown}");
+    const firstId = input.getAttribute("aria-activedescendant");
+    expect(firstId).toBeTruthy();
+    const firstOption = document.getElementById(firstId ?? "");
+    expect(firstOption).not.toBeNull();
+    expect(firstOption).toHaveAttribute("role", "option");
+    expect(firstOption).toHaveAttribute("aria-selected", "true");
+    expect(firstOption).toHaveTextContent("Barbell Deadlift");
+
+    await user.keyboard("{ArrowDown}");
+    const secondId = input.getAttribute("aria-activedescendant");
+    expect(secondId).not.toBe(firstId);
+
+    await user.keyboard("{ArrowUp}");
+    expect(input).toHaveAttribute("aria-activedescendant", firstId ?? "");
+
+    await user.keyboard("{Enter}");
+    expect(input).toHaveValue("Barbell Deadlift");
+    expect(input).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("offers Chinese display/alias suggestions for a Chinese query", async () => {
+    setLanguage("zh");
+    const { user } = renderEditorOver();
+    const input = nameCombobox(/动作 1 名称/i);
+
+    await user.type(input, "卧推");
+
+    expect(input).toHaveAttribute("aria-expanded", "true");
+    // Chinese aliases and display names both match; selecting stores English.
+    const option = within(screen.getByRole("listbox")).getByRole("option", {
+      name: "杠铃卧推 · Barbell Bench Press - Medium Grip",
+    });
+    await user.click(option);
+
+    expect(input).toHaveValue("Barbell Bench Press - Medium Grip");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 });
