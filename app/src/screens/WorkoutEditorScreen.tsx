@@ -10,6 +10,7 @@ import {
   validateWorkoutRecord,
 } from "@pi-fit-trace/core";
 import type { ValidationIssue, ValidationWarning } from "@pi-fit-trace/core";
+import { ExerciseNameCombobox } from "../components/ExerciseNameCombobox.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import {
@@ -341,17 +342,12 @@ export function WorkoutEditorScreen() {
             <fieldset key={exercise.key} className="exercise-editor">
               <legend>{t("Exercise {index}", { index: exerciseIndex + 1 })}</legend>
 
-              <div className="field">
-                <label htmlFor={`exercise-${exercise.key}-name`}>
-                  {t("Exercise {index} name", { index: exerciseIndex + 1 })}
-                </label>
-                <input
-                  id={`exercise-${exercise.key}-name`}
-                  type="text"
-                  value={exercise.name}
-                  onChange={(event) => updateExerciseName(exercise.key, event.target.value)}
-                />
-              </div>
+              <ExerciseNameCombobox
+                id={`exercise-${exercise.key}-name`}
+                label={t("Exercise {index} name", { index: exerciseIndex + 1 })}
+                value={exercise.name}
+                onChange={(name) => updateExerciseName(exercise.key, name)}
+              />
 
               {exercise.sets.map((set, setIndex) => {
                 const base = `exercise-${exercise.key}-set-${set.key}`;

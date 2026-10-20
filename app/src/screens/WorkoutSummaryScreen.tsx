@@ -12,6 +12,7 @@ import {
   displaySessionType,
   displayWarning,
 } from "../i18n/domain.ts";
+import { displayStoredExerciseName } from "../i18n/exercises.ts";
 
 export function WorkoutSummaryScreen() {
   const { id } = useParams<{ id: string }>();
@@ -90,7 +91,7 @@ export function WorkoutSummaryScreen() {
           <h2>{t("Exercises")}</h2>
           {record.exercises.map((exercise, exerciseIndex) => (
             <div key={`${exercise.name}-${exerciseIndex}`} className="summary-exercise">
-              <h3>{exercise.name}</h3>
+              <h3>{displayStoredExerciseName(language, exercise.name)}</h3>
               <ul>
                 {exercise.sets.map((set, setIndex) => {
                   const extreme = set.rpe !== undefined && set.rpe >= EXTREME_RPE;

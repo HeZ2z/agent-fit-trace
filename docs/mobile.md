@@ -51,7 +51,7 @@ worker in [`docs/deployment.md`](deployment.md).
 | --- | --- | --- |
 | `mobile/src/app/` | Implemented | Routes: root stack, six tabs, invite-only sign-in, manual sync |
 | `mobile/src/theme/` | Implemented | Shared tokens; AsyncStorage-backed skin state |
-| `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, Banner, EmptyState, Screen, text |
+| `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, ExerciseNameField, Banner, EmptyState, Screen, text |
 | `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, log/analysis/plan models |
 | `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session and auth provider |
 | `mobile/src/preferences/` | Implemented | Account skin/language reconciliation provider |
@@ -190,7 +190,33 @@ English is canonical data; Simplified Chinese is a render-time display layer,
 following [`docs/ui-design.md`](ui-design.md). Chrome, labels, validation
 messages and safety copy are translated while rendering. Workout content, saved
 payloads, generated plan strings and exported JSON are not; a content digest
-never depends on who is reading it.
+never depends on who is reading it. The one display exception is catalog-backed
+exercise names: a name that resolves to a bundled catalog entry renders through
+the shared Chinese display table, including inside rebuilt Chinese analysis and
+plan copy, while stored payloads keep the canonical English name and custom
+names stay as authored.
+
+While logging on mobile, the exercise-name field suggests catalog entries through
+the shared `searchExerciseSuggestions` helper, so web and mobile use one search
+and label implementation. Suggestion labels are UI-language-only: the Chinese
+display name in Chinese, the canonical English name in English. Selecting one
+writes that canonical English name into the form, which is the stored spelling.
+The field itself renders the localized display name through the shared
+`displayStoredExerciseName` helper, so a selected canonical English name shows as
+its Chinese display name (for example `杠铃卧推`) in Chinese UI and as the
+canonical English name in English UI. The form value and the stored record always
+keep the canonical English spelling, custom names pass through unchanged, and
+typing still passes the raw text the user typed. The catalog remains a
+suggestion layer: an ignored or custom name is still saved exactly as typed, the
+form model still holds the name as a plain string, and the suggestions close
+after a selection or submit, and whenever the query is empty or matches nothing.
+
+The suggestion panel is an absolute overlay anchored just above the field rather
+than an inline block under it, so the soft keyboard cannot cover the options
+while the input stays focused. It is not a modal or dialog, and an option is
+selected with one tap without dismissing the keyboard first. The visible panel
+height is capped and the options scroll inside it; the shared helper still caps
+the list at eight suggestions.
 
 The shared `@pi-fit-trace/i18n` package holds the pure dictionary and domain
 display helpers; the web keeps its localStorage/DOM adapter in
@@ -335,9 +361,9 @@ widths, shadows and the type ramp, in dp rather than CSS units.
 
 One token set serves both skins. Pixel uses 3dp rules, square corners and hard
 offset shadows; Glass uses hairlines, 8dp cards, blurred chrome and soft
-elevation. Shared components cover Button, Card, Chip, Field, Banner, EmptyState
-and text. `SkinProvider` defaults to Pixel and persists the choice in
-AsyncStorage; the signed-in choice is mirrored to account metadata by
+elevation. Shared components cover Button, Card, Chip, Field, ExerciseNameField,
+Banner, EmptyState and text. `SkinProvider` defaults to Pixel and persists the
+choice in AsyncStorage; the signed-in choice is mirrored to account metadata by
 `PreferencesProvider`. No font assets are bundled, so the Bricolage/DM Sans names
 fall back to platform fonts. The web touch-first rules apply: 44dp targets,
 visible labels and no colour-only state.
@@ -363,9 +389,9 @@ project uses the Expo managed workflow and does not commit native folders.
 `dist/`, so it is a bundle/asset check rather than a native build.
 
 The root `pnpm typecheck` covers the root project and web app, not the mobile
-workspace, so run `pnpm mobile:typecheck` explicitly. CI runs `pnpm test` and
-`pnpm typecheck`; the pure mobile model suites are part of the `node:test` run,
-but mobile typecheck, Expo export and native builds are not CI steps.
+workspace, so run `pnpm mobile:typecheck` explicitly. CI runs `pnpm test`,
+`pnpm typecheck` and `pnpm mobile:typecheck`; the pure mobile model suites are
+part of the `node:test` run, but Expo export and native builds are not CI steps.
 
 ## Configuration and deployment
 

@@ -9,14 +9,36 @@ import {
 } from "../components/ArtifactSourceSelector.tsx";
 import { useArtifactSource } from "../state/useArtifactSource.ts";
 import { useWorkouts } from "../state/useWorkouts.ts";
+import { displayStoredExerciseName } from "../i18n/exercises.ts";
 import { useI18n } from "../i18n/useI18n.ts";
+import type { AppLanguage } from "../i18n/i18n.ts";
 import {
   displayCarePrompt,
   displayRecommendation,
   displaySafetyNote,
 } from "../i18n/domain.ts";
 
-function formatEvidenceValue(value: unknown): string {
+/**
+ * Render one evidence chip value. Evidence is machine metadata and normally
+ * stays canonical, but a catalog-backed exercise name is user-facing copy: it is
+ * displayed in the UI language while the plan payload keeps the canonical
+ * English name.
+ */
+function formatEvidenceValue(
+  key: string,
+  value: unknown,
+  language: AppLanguage,
+): string {
+  if (key === "exercise") {
+    if (typeof value === "string") {
+      return displayStoredExerciseName(language, value);
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => displayStoredExerciseName(language, String(entry)))
+        .join(", ");
+    }
+  }
   if (Array.isArray(value)) return value.map((entry) => String(entry)).join(", ");
   if (value !== null && typeof value === "object") return JSON.stringify(value);
   return String(value);
@@ -60,7 +82,7 @@ function PlanView({ plan }: { plan: PlanDraft }) {
                 </p>
                 <ul className="plan-evidence">
                   {Object.entries(recommendation.evidence).map(([key, value]) => (
-                    <li key={key}>{`${key}: ${formatEvidenceValue(value)}`}</li>
+                    <li key={key}>{`${key}: ${formatEvidenceValue(key, value, language)}`}</li>
                   ))}
                 </ul>
               </li>

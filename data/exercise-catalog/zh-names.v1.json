@@ -1,0 +1,945 @@
+{
+  "schema": "fit-trace-exercise-zh-names",
+  "version": 1,
+  "names": {
+    "Barbell Squat": {
+      "name": "杠铃深蹲",
+      "aliases": [
+        "深蹲"
+      ]
+    },
+    "Front Squat (Clean Grip)": {
+      "name": "前蹲",
+      "aliases": [
+        "前侧深蹲（翻站握法）"
+      ]
+    },
+    "Barbell Hack Squat": {
+      "name": "杠铃哈克深蹲",
+      "aliases": []
+    },
+    "Hack Squat": {
+      "name": "哈克深蹲",
+      "aliases": []
+    },
+    "Goblet Squat": {
+      "name": "高脚杯深蹲",
+      "aliases": []
+    },
+    "Dumbbell Squat": {
+      "name": "哑铃深蹲",
+      "aliases": []
+    },
+    "Bodyweight Squat": {
+      "name": "自重深蹲",
+      "aliases": []
+    },
+    "Box Squat": {
+      "name": "箱式深蹲",
+      "aliases": [
+        "跳箱深蹲"
+      ]
+    },
+    "Zercher Squats": {
+      "name": "泽奇深蹲",
+      "aliases": []
+    },
+    "Smith Machine Squat": {
+      "name": "史密斯机深蹲",
+      "aliases": []
+    },
+    "Leg Press": {
+      "name": "腿举",
+      "aliases": [
+        "倒蹬",
+        "倒蹬机腿举"
+      ]
+    },
+    "Narrow Stance Leg Press": {
+      "name": "窄距腿举",
+      "aliases": [
+        "窄距站距腿举（倒蹬）"
+      ]
+    },
+    "Kettlebell Pistol Squat": {
+      "name": "壶铃手枪深蹲",
+      "aliases": [
+        "壶铃手枪蹲"
+      ]
+    },
+    "Weighted Sissy Squat": {
+      "name": "负重西斯深蹲",
+      "aliases": [
+        "负重西西里深蹲"
+      ]
+    },
+    "Plie Dumbbell Squat": {
+      "name": "相扑哑铃深蹲",
+      "aliases": [
+        "芭蕾式哑铃深蹲"
+      ]
+    },
+    "Jefferson Squats": {
+      "name": "杰斐逊深蹲",
+      "aliases": []
+    },
+    "Barbell Deadlift": {
+      "name": "杠铃硬拉",
+      "aliases": [
+        "硬拉"
+      ]
+    },
+    "Romanian Deadlift": {
+      "name": "罗马尼亚硬拉",
+      "aliases": [
+        "RDL",
+        "直腿硬拉"
+      ]
+    },
+    "Sumo Deadlift": {
+      "name": "相扑硬拉",
+      "aliases": []
+    },
+    "Trap Bar Deadlift": {
+      "name": "六角杠铃硬拉",
+      "aliases": []
+    },
+    "Stiff-Legged Barbell Deadlift": {
+      "name": "直腿杠铃硬拉",
+      "aliases": []
+    },
+    "Stiff-Legged Dumbbell Deadlift": {
+      "name": "直腿哑铃硬拉",
+      "aliases": []
+    },
+    "Good Morning": {
+      "name": "早安式",
+      "aliases": [
+        "早安式体前屈"
+      ]
+    },
+    "Band Good Morning": {
+      "name": "弹力带早安式",
+      "aliases": [
+        "弹力带早安式体前屈"
+      ]
+    },
+    "Barbell Hip Thrust": {
+      "name": "杠铃臀推",
+      "aliases": []
+    },
+    "Barbell Glute Bridge": {
+      "name": "杠铃臀桥",
+      "aliases": []
+    },
+    "Single Leg Glute Bridge": {
+      "name": "单腿臀桥",
+      "aliases": []
+    },
+    "Pull Through": {
+      "name": "绳索胯下后拉",
+      "aliases": [
+        "拉"
+      ]
+    },
+    "Kettlebell One-Legged Deadlift": {
+      "name": "壶铃单腿硬拉",
+      "aliases": []
+    },
+    "Deficit Deadlift": {
+      "name": "垫高硬拉",
+      "aliases": []
+    },
+    "Rack Pulls": {
+      "name": "架上硬拉",
+      "aliases": [
+        "架上拉"
+      ]
+    },
+    "Glute Ham Raise": {
+      "name": "臀腘绳肌上举（器械）",
+      "aliases": [
+        "臀腘绳肌上举"
+      ]
+    },
+    "Natural Glute Ham Raise": {
+      "name": "自然臀腘绳肌上举",
+      "aliases": []
+    },
+    "Cable Deadlifts": {
+      "name": "绳索硬拉",
+      "aliases": []
+    },
+    "Barbell Lunge": {
+      "name": "杠铃箭步蹲",
+      "aliases": []
+    },
+    "Dumbbell Lunges": {
+      "name": "哑铃箭步蹲",
+      "aliases": []
+    },
+    "Dumbbell Rear Lunge": {
+      "name": "哑铃后撤箭步蹲",
+      "aliases": [
+        "哑铃后侧箭步蹲"
+      ]
+    },
+    "Barbell Walking Lunge": {
+      "name": "杠铃行走箭步蹲",
+      "aliases": []
+    },
+    "Bodyweight Walking Lunge": {
+      "name": "自重行走箭步蹲",
+      "aliases": []
+    },
+    "Barbell Step Ups": {
+      "name": "杠铃登阶",
+      "aliases": []
+    },
+    "Dumbbell Step Ups": {
+      "name": "哑铃登阶",
+      "aliases": []
+    },
+    "Split Squat with Dumbbells": {
+      "name": "哑铃分腿蹲",
+      "aliases": []
+    },
+    "Smith Single-Leg Split Squat": {
+      "name": "史密斯机单腿分腿蹲",
+      "aliases": []
+    },
+    "Step-up with Knee Raise": {
+      "name": "登阶提膝",
+      "aliases": [
+        "登阶（举膝）"
+      ]
+    },
+    "Barbell Bench Press - Medium Grip": {
+      "name": "杠铃卧推",
+      "aliases": [
+        "卧推",
+        "平板卧推",
+        "杠铃平板卧推（中握距）"
+      ]
+    },
+    "Barbell Incline Bench Press - Medium Grip": {
+      "name": "上斜杠铃卧推",
+      "aliases": [
+        "杠铃上斜卧推（中握距）"
+      ]
+    },
+    "Decline Barbell Bench Press": {
+      "name": "下斜杠铃卧推",
+      "aliases": []
+    },
+    "Close-Grip Barbell Bench Press": {
+      "name": "窄握杠铃卧推",
+      "aliases": []
+    },
+    "Wide-Grip Barbell Bench Press": {
+      "name": "宽握杠铃卧推",
+      "aliases": []
+    },
+    "Dumbbell Bench Press": {
+      "name": "哑铃卧推",
+      "aliases": [
+        "哑铃平板卧推"
+      ]
+    },
+    "Dumbbell Bench Press with Neutral Grip": {
+      "name": "哑铃对握卧推",
+      "aliases": [
+        "哑铃卧推（对握）"
+      ]
+    },
+    "Decline Dumbbell Bench Press": {
+      "name": "下斜哑铃卧推",
+      "aliases": []
+    },
+    "One Arm Dumbbell Bench Press": {
+      "name": "单臂哑铃卧推",
+      "aliases": []
+    },
+    "Incline Dumbbell Press": {
+      "name": "上斜哑铃卧推",
+      "aliases": []
+    },
+    "Dumbbell Flyes": {
+      "name": "哑铃飞鸟",
+      "aliases": []
+    },
+    "Incline Dumbbell Flyes": {
+      "name": "上斜哑铃飞鸟",
+      "aliases": []
+    },
+    "Decline Dumbbell Flyes": {
+      "name": "下斜哑铃飞鸟",
+      "aliases": []
+    },
+    "Butterfly": {
+      "name": "蝴蝶机夹胸",
+      "aliases": [
+        "蝴蝶机"
+      ]
+    },
+    "Cable Chest Press": {
+      "name": "绳索胸推",
+      "aliases": []
+    },
+    "Incline Cable Chest Press": {
+      "name": "上斜绳索胸推",
+      "aliases": []
+    },
+    "Flat Bench Cable Flyes": {
+      "name": "平板绳索飞鸟",
+      "aliases": [
+        "平板卧凳绳索飞鸟"
+      ]
+    },
+    "Leverage Chest Press": {
+      "name": "器械推胸",
+      "aliases": [
+        "杠杆式胸推"
+      ]
+    },
+    "Machine Bench Press": {
+      "name": "器械卧推",
+      "aliases": []
+    },
+    "Pushups": {
+      "name": "俯卧撑",
+      "aliases": []
+    },
+    "Dips - Chest Version": {
+      "name": "双杠臂屈伸（胸肌版）",
+      "aliases": [
+        "双杠臂屈伸"
+      ]
+    },
+    "Standing Cable Chest Press": {
+      "name": "站姿绳索胸推",
+      "aliases": []
+    },
+    "Standing Military Press": {
+      "name": "站姿杠铃推举",
+      "aliases": [
+        "军推",
+        "站姿军推",
+        "站姿推举"
+      ]
+    },
+    "Seated Barbell Military Press": {
+      "name": "坐姿杠铃推举",
+      "aliases": [
+        "坐姿杠铃军推"
+      ]
+    },
+    "Dumbbell Shoulder Press": {
+      "name": "哑铃肩推",
+      "aliases": []
+    },
+    "Dumbbell One-Arm Shoulder Press": {
+      "name": "单臂哑铃肩推",
+      "aliases": [
+        "哑铃单臂肩推"
+      ]
+    },
+    "Kettlebell Arnold Press": {
+      "name": "壶铃阿诺德推举",
+      "aliases": []
+    },
+    "Smith Machine Overhead Shoulder Press": {
+      "name": "史密斯机肩推",
+      "aliases": [
+        "史密斯机过顶肩推"
+      ]
+    },
+    "Leverage Shoulder Press": {
+      "name": "器械肩推",
+      "aliases": [
+        "杠杆式肩推"
+      ]
+    },
+    "Cable Shoulder Press": {
+      "name": "绳索肩推",
+      "aliases": []
+    },
+    "Seated Cable Shoulder Press": {
+      "name": "坐姿绳索肩推",
+      "aliases": []
+    },
+    "Double Kettlebell Push Press": {
+      "name": "双侧壶铃借力推举",
+      "aliases": []
+    },
+    "One-Arm Kettlebell Push Press": {
+      "name": "单臂壶铃借力推举",
+      "aliases": []
+    },
+    "Handstand Push-Ups": {
+      "name": "倒立撑",
+      "aliases": []
+    },
+    "Bradford/Rocky Presses": {
+      "name": "布拉德福德推举",
+      "aliases": [
+        "布拉德福洛基推举"
+      ]
+    },
+    "Shoulder Press - With Bands": {
+      "name": "弹力带肩推",
+      "aliases": [
+        "肩推（弹力带）"
+      ]
+    },
+    "Bent Over Barbell Row": {
+      "name": "杠铃俯身划船",
+      "aliases": [
+        "俯身划船"
+      ]
+    },
+    "Bent Over Two-Dumbbell Row": {
+      "name": "俯身双哑铃划船",
+      "aliases": []
+    },
+    "One-Arm Dumbbell Row": {
+      "name": "单臂哑铃划船",
+      "aliases": []
+    },
+    "T-Bar Row with Handle": {
+      "name": "T杠划船",
+      "aliases": [
+        "T 杠划船"
+      ]
+    },
+    "Reverse Grip Bent-Over Rows": {
+      "name": "反握俯身划船",
+      "aliases": []
+    },
+    "Seated Cable Rows": {
+      "name": "坐姿绳索划船",
+      "aliases": []
+    },
+    "Leverage Iso Row": {
+      "name": "器械划船",
+      "aliases": [
+        "杠杆式静力划船"
+      ]
+    },
+    "Smith Machine Bent Over Row": {
+      "name": "史密斯机俯身划船",
+      "aliases": []
+    },
+    "One-Arm Kettlebell Row": {
+      "name": "单臂壶铃划船",
+      "aliases": []
+    },
+    "Inverted Row": {
+      "name": "仰卧划船",
+      "aliases": [
+        "反式划船"
+      ]
+    },
+    "Suspended Row": {
+      "name": "悬吊划船",
+      "aliases": []
+    },
+    "Bent Over Two-Dumbbell Row With Palms In": {
+      "name": "对握俯身双哑铃划船",
+      "aliases": [
+        "俯身双哑铃划船（掌心）"
+      ]
+    },
+    "Alternating Kettlebell Row": {
+      "name": "交替壶铃划船",
+      "aliases": []
+    },
+    "Leverage High Row": {
+      "name": "器械高位划船",
+      "aliases": [
+        "杠杆式高位划船"
+      ]
+    },
+    "Cable Rope Rear-Delt Rows": {
+      "name": "绳索后束划船",
+      "aliases": [
+        "绳索后侧三角肌划船"
+      ]
+    },
+    "Seated One-arm Cable Pulley Rows": {
+      "name": "坐姿单臂绳索划船",
+      "aliases": [
+        "坐姿单臂绳索滑轮划船"
+      ]
+    },
+    "Pullups": {
+      "name": "引体向上",
+      "aliases": [
+        "引体"
+      ]
+    },
+    "Chin-Up": {
+      "name": "反握引体向上",
+      "aliases": [
+        "反手引体"
+      ]
+    },
+    "Wide-Grip Lat Pulldown": {
+      "name": "宽握高位下拉",
+      "aliases": [
+        "高位下拉"
+      ]
+    },
+    "Close-Grip Front Lat Pulldown": {
+      "name": "窄握高位下拉",
+      "aliases": []
+    },
+    "V-Bar Pulldown": {
+      "name": "V把下拉",
+      "aliases": [
+        "V 型把手下拉"
+      ]
+    },
+    "Underhand Cable Pulldowns": {
+      "name": "反握绳索下拉",
+      "aliases": []
+    },
+    "Straight-Arm Pulldown": {
+      "name": "直臂下拉",
+      "aliases": []
+    },
+    "Band Assisted Pull-Up": {
+      "name": "弹力带辅助引体向上",
+      "aliases": []
+    },
+    "Weighted Pull Ups": {
+      "name": "负重引体向上",
+      "aliases": []
+    },
+    "One Arm Lat Pulldown": {
+      "name": "单臂高位下拉",
+      "aliases": []
+    },
+    "Plank": {
+      "name": "平板支撑",
+      "aliases": []
+    },
+    "Crunches": {
+      "name": "卷腹",
+      "aliases": []
+    },
+    "Sit-Up": {
+      "name": "仰卧起坐",
+      "aliases": []
+    },
+    "Reverse Crunch": {
+      "name": "反向卷腹",
+      "aliases": []
+    },
+    "Hanging Leg Raise": {
+      "name": "悬垂举腿",
+      "aliases": []
+    },
+    "Flat Bench Lying Leg Raise": {
+      "name": "仰卧举腿（平板凳）",
+      "aliases": [
+        "平板卧凳仰卧举腿"
+      ]
+    },
+    "Ab Roller": {
+      "name": "健腹轮",
+      "aliases": [
+        "腹肌滚轮"
+      ]
+    },
+    "Barbell Ab Rollout": {
+      "name": "杠铃腹肌滚轮",
+      "aliases": []
+    },
+    "Cable Crunch": {
+      "name": "绳索卷腹",
+      "aliases": []
+    },
+    "Pallof Press": {
+      "name": "帕洛夫推举",
+      "aliases": []
+    },
+    "Russian Twist": {
+      "name": "俄罗斯转体",
+      "aliases": []
+    },
+    "Oblique Crunches": {
+      "name": "腹斜肌卷腹",
+      "aliases": []
+    },
+    "Decline Crunch": {
+      "name": "下斜卷腹",
+      "aliases": []
+    },
+    "Hanging Pike": {
+      "name": "悬垂屈体",
+      "aliases": []
+    },
+    "Knee/Hip Raise On Parallel Bars": {
+      "name": "双杠举腿",
+      "aliases": [
+        "膝髋上举（双杠）"
+      ]
+    },
+    "Ab Crunch Machine": {
+      "name": "器械卷腹",
+      "aliases": [
+        "腹肌卷腹器械"
+      ]
+    },
+    "Barbell Curl": {
+      "name": "杠铃弯举",
+      "aliases": [
+        "二头弯举"
+      ]
+    },
+    "EZ-Bar Curl": {
+      "name": "曲杆杠铃弯举",
+      "aliases": []
+    },
+    "Dumbbell Bicep Curl": {
+      "name": "哑铃弯举",
+      "aliases": []
+    },
+    "Hammer Curls": {
+      "name": "锤式弯举",
+      "aliases": []
+    },
+    "Incline Dumbbell Curl": {
+      "name": "上斜哑铃弯举",
+      "aliases": []
+    },
+    "Preacher Curl": {
+      "name": "牧师凳弯举",
+      "aliases": []
+    },
+    "Cable Preacher Curl": {
+      "name": "绳索牧师凳弯举",
+      "aliases": []
+    },
+    "Concentration Curls": {
+      "name": "集中弯举",
+      "aliases": []
+    },
+    "Spider Curl": {
+      "name": "蜘蛛弯举",
+      "aliases": []
+    },
+    "Machine Bicep Curl": {
+      "name": "器械弯举",
+      "aliases": [
+        "器械肱二头肌弯举"
+      ]
+    },
+    "Reverse Barbell Curl": {
+      "name": "反握杠铃弯举",
+      "aliases": []
+    },
+    "Zottman Curl": {
+      "name": "佐特曼弯举",
+      "aliases": []
+    },
+    "Standing Biceps Cable Curl": {
+      "name": "站姿绳索弯举",
+      "aliases": [
+        "站姿肱二头肌绳索弯举"
+      ]
+    },
+    "Cross Body Hammer Curl": {
+      "name": "横跨身体锤式弯举",
+      "aliases": []
+    },
+    "Triceps Pushdown - Rope Attachment": {
+      "name": "绳索三头下压（绳）",
+      "aliases": [
+        "三头下压",
+        "三头下压（绳索把手）"
+      ]
+    },
+    "Triceps Pushdown - V-Bar Attachment": {
+      "name": "绳索三头下压（V把）",
+      "aliases": [
+        "三头下压（V 型把手把手）"
+      ]
+    },
+    "Lying Triceps Press": {
+      "name": "仰卧臂屈伸（碎颅式）",
+      "aliases": []
+    },
+    "EZ-Bar Skullcrusher": {
+      "name": "曲杆仰卧臂屈伸",
+      "aliases": [
+        "曲杆杠铃碎颅式臂屈伸"
+      ]
+    },
+    "Bench Dips": {
+      "name": "凳上臂屈伸",
+      "aliases": [
+        "凳上反屈伸"
+      ]
+    },
+    "Dips - Triceps Version": {
+      "name": "双杠臂屈伸（三头版）",
+      "aliases": [
+        "双杠臂屈伸"
+      ]
+    },
+    "Cable Rope Overhead Triceps Extension": {
+      "name": "绳索过顶臂屈伸",
+      "aliases": [
+        "绳索过顶肱三头肌臂屈伸"
+      ]
+    },
+    "Dumbbell One-Arm Triceps Extension": {
+      "name": "单臂哑铃臂屈伸",
+      "aliases": [
+        "哑铃单臂肱三头肌臂屈伸"
+      ]
+    },
+    "Seated Triceps Press": {
+      "name": "坐姿哑铃臂屈伸",
+      "aliases": [
+        "坐姿肱三头肌推举"
+      ]
+    },
+    "Machine Triceps Extension": {
+      "name": "器械臂屈伸",
+      "aliases": [
+        "器械肱三头肌臂屈伸"
+      ]
+    },
+    "Tate Press": {
+      "name": "泰特推举",
+      "aliases": []
+    },
+    "JM Press": {
+      "name": "JM 推举",
+      "aliases": []
+    },
+    "Reverse Grip Triceps Pushdown": {
+      "name": "反握三头下压",
+      "aliases": []
+    },
+    "Standing Overhead Barbell Triceps Extension": {
+      "name": "站姿过顶杠铃臂屈伸",
+      "aliases": [
+        "站姿过顶杠铃肱三头肌臂屈伸"
+      ]
+    },
+    "Side Lateral Raise": {
+      "name": "哑铃侧平举",
+      "aliases": [
+        "侧平举"
+      ]
+    },
+    "Seated Side Lateral Raise": {
+      "name": "坐姿侧平举",
+      "aliases": [
+        "坐姿侧平举上举"
+      ]
+    },
+    "Front Dumbbell Raise": {
+      "name": "哑铃前平举",
+      "aliases": []
+    },
+    "Front Cable Raise": {
+      "name": "绳索前平举",
+      "aliases": [
+        "前侧绳索上举"
+      ]
+    },
+    "Reverse Flyes": {
+      "name": "反向飞鸟（后束）",
+      "aliases": [
+        "反向飞鸟（三角肌后束）"
+      ]
+    },
+    "Reverse Machine Flyes": {
+      "name": "反向器械飞鸟",
+      "aliases": []
+    },
+    "Cable Rear Delt Fly": {
+      "name": "绳索后束飞鸟",
+      "aliases": [
+        "绳索三角肌后束飞鸟"
+      ]
+    },
+    "Face Pull": {
+      "name": "面拉",
+      "aliases": []
+    },
+    "Dumbbell Shrug": {
+      "name": "哑铃耸肩",
+      "aliases": []
+    },
+    "Barbell Shrug": {
+      "name": "杠铃耸肩",
+      "aliases": []
+    },
+    "Cable Shrugs": {
+      "name": "绳索耸肩",
+      "aliases": []
+    },
+    "Standing Dumbbell Upright Row": {
+      "name": "站姿哑铃直立划船",
+      "aliases": []
+    },
+    "Barbell Rear Delt Row": {
+      "name": "杠铃后束划船",
+      "aliases": [
+        "杠铃三角肌后束划船"
+      ]
+    },
+    "Lateral Raise - With Bands": {
+      "name": "弹力带侧平举",
+      "aliases": [
+        "侧平举（弹力带）"
+      ]
+    },
+    "Leg Extensions": {
+      "name": "坐姿腿屈伸",
+      "aliases": []
+    },
+    "Seated Leg Curl": {
+      "name": "坐姿腿弯举",
+      "aliases": []
+    },
+    "Lying Leg Curls": {
+      "name": "俯卧腿弯举",
+      "aliases": []
+    },
+    "Standing Leg Curl": {
+      "name": "站姿腿弯举",
+      "aliases": []
+    },
+    "Reverse Hyperextension": {
+      "name": "反向山羊挺身",
+      "aliases": []
+    },
+    "Standing Calf Raises": {
+      "name": "站姿提踵",
+      "aliases": []
+    },
+    "Seated Calf Raise": {
+      "name": "坐姿提踵",
+      "aliases": []
+    },
+    "Donkey Calf Raises": {
+      "name": "驴式提踵",
+      "aliases": []
+    },
+    "Smith Machine Calf Raise": {
+      "name": "史密斯机提踵",
+      "aliases": []
+    },
+    "Glute Kickback": {
+      "name": "跪姿后踢腿",
+      "aliases": []
+    },
+    "Thigh Abductor": {
+      "name": "大腿外展",
+      "aliases": [
+        "大腿外展肌"
+      ]
+    },
+    "Thigh Adductor": {
+      "name": "大腿内收",
+      "aliases": [
+        "大腿内收肌"
+      ]
+    },
+    "Hip Extension with Bands": {
+      "name": "弹力带髋伸展",
+      "aliases": []
+    },
+    "Calf Press On The Leg Press Machine": {
+      "name": "腿举机提踵",
+      "aliases": [
+        "腿举（倒蹬）器械器械提踵"
+      ]
+    },
+    "Bicycling": {
+      "name": "骑行",
+      "aliases": []
+    },
+    "Bicycling, Stationary": {
+      "name": "固定单车",
+      "aliases": [
+        "骑行固定式"
+      ]
+    },
+    "Elliptical Trainer": {
+      "name": "椭圆机",
+      "aliases": [
+        "椭圆机训练器"
+      ]
+    },
+    "Rowing, Stationary": {
+      "name": "划船机",
+      "aliases": [
+        "划船机固定式"
+      ]
+    },
+    "Rope Jumping": {
+      "name": "跳绳",
+      "aliases": []
+    },
+    "Stairmaster": {
+      "name": "登山机",
+      "aliases": []
+    },
+    "Walking, Treadmill": {
+      "name": "跑步机行走",
+      "aliases": [
+        "行走跑步机"
+      ]
+    },
+    "Running, Treadmill": {
+      "name": "跑步机跑步",
+      "aliases": [
+        "跑步跑步机"
+      ]
+    },
+    "Hamstring Stretch": {
+      "name": "腘绳肌拉伸",
+      "aliases": []
+    },
+    "Quad Stretch": {
+      "name": "股四头肌拉伸",
+      "aliases": []
+    },
+    "Calf Stretch Hands Against Wall": {
+      "name": "靠墙小腿拉伸",
+      "aliases": [
+        "小腿拉伸双手抵住靠墙"
+      ]
+    },
+    "Chest And Front Of Shoulder Stretch": {
+      "name": "胸肌与肩前侧拉伸",
+      "aliases": [
+        "胸前侧肩拉伸"
+      ]
+    },
+    "Overhead Lat": {
+      "name": "过顶背阔肌拉伸",
+      "aliases": []
+    },
+    "Kneeling Hip Flexor": {
+      "name": "跪姿髋屈肌拉伸",
+      "aliases": []
+    },
+    "Cat Stretch": {
+      "name": "猫式伸展",
+      "aliases": []
+    },
+    "World's Greatest Stretch": {
+      "name": "世界最佳拉伸",
+      "aliases": []
+    }
+  }
+}

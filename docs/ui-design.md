@@ -116,6 +116,11 @@ Implementation: `app/src/styles/controls.css`, `shell.css`, `screens-data.css`,
   padding.
 - **Inputs** — 3px blue rule, 46px min-height, 14px semibold value; focus turns
   the rule ink and adds an inset ink ring. Labels are uppercase micro-caps.
+- **Exercise-name combobox** — the input keeps the standard input recipe; its
+  suggestion list floats below as white paper with a 3px blue rule and a 3px
+  offset shadow, 12.5px semibold rows separated by pale rules, a tinted
+  hover/active row and a 246px max height. Glass swaps in the hairline rule,
+  card radius and soft shadow.
 - **Chips** — machine metadata (period, source, evidence) is a 2px-blue chip
   with a tinted background; evidence chips inside plan recommendations are
   9.5px pale-bordered tags.
@@ -190,9 +195,12 @@ second data model. The boundary is the design:
   messages, import warnings, safety-flag messages, plan recommendations and
   plan safety notes.
 - **Canonical English, never translated in storage:** workout records and
-  notes, exercise names as typed, saved snapshot payloads, plan `detail` /
-  `reason` / `safety_notes` strings inside the payload, adopted digests and
-  exported JSON. A content digest must never depend on who is reading it.
+  notes, exercise names as typed (including custom names), saved snapshot
+  payloads, plan `detail` / `reason` / `safety_notes` strings inside the
+  payload, adopted digests and exported JSON. A content digest must never
+  depend on who is reading it. Catalog-backed exercise *display* is the one
+  exception, described under [Exercise names: autocomplete and
+  display](#exercise-names-autocomplete-and-display).
 - **Rebuilt, not looked up.** Deterministic content is reconstructed from its
   stable code plus evidence at render time: an analysis flag from
   `code + evidence`, a recommendation from `action + evidence`, a safety note
@@ -233,6 +241,54 @@ language it was produced in (all render-time copy is reactive).
 
 ![Me → Language, with Simplified Chinese selected](ui/zh-me.jpg)
 
+## Exercise names: autocomplete and display
+
+Exercise names stay free text in the record. The catalog is a suggestion and
+display layer only: it never becomes a stored field, a validation rule or a
+save gate (see [ADR 0003](adr/0003-exercise-catalog.md)).
+
+- **Chinese display rule.** A recorded name that resolves to exactly one
+  catalog entry — the canonical English name or any append-only alias,
+  ignoring case, width, underscores/hyphens and extra whitespace — is rendered
+  in Chinese through that entry's Chinese display name. A custom or unmatched
+  name renders exactly as stored, and English rendering is byte-identical to
+  the stored string. The same render-time helper localizes the exercise name
+  embedded in rebuilt Chinese analysis-trend and plan-recommendation copy;
+  stored payloads and snapshots keep the canonical English name. Analysis
+  grouping is separate and deliberate: resolved spellings merge under the
+  canonical English label (see [ADR 0003](adr/0003-exercise-catalog.md)).
+- **Autocomplete.** The Log Workout exercise-name input is a WAI-ARIA combobox
+  over the bundled catalog. English queries match canonical names and English
+  aliases; Chinese queries match Chinese display names and Chinese aliases.
+  The list is capped at eight suggestions, opens on typing or focus when there
+  is a match, filters as the query changes, and stays hidden when nothing
+  matches.
+- **Suggestion copy is UI-language-only.** The Chinese UI labels each option
+  with the Chinese display name (`杠铃卧推`); the English UI labels it with
+  the canonical English name. The option label is display copy, not the stored
+  value.
+- **The field is a display surface.** A selected canonical English name is
+  displayed in the UI language (`杠铃卧推` in Chinese, the canonical English
+  name in English). The field keeps a raw editing draft: typing never
+  re-localizes or rewrites the text under the cursor (in Chinese UI, typing
+  `Squat Jump` stays `Squat Jump`); the draft is re-localized only when the
+  value changes externally or the UI language changes. Selecting an option
+  writes the canonical English name to the form, while raw typed text passes
+  through unchanged — never looked up, mapped back to a catalog name, or
+  translated. Records, snapshots and exports keep the canonical English
+  spelling; localized display text is never stored.
+- **Never a gate.** Free text is always valid: ignoring, dismissing or
+  out-typing the suggestions saves the name exactly as authored; nothing is
+  auto-selected, normalized or rewritten on blur or submit. `Escape` closes
+  the list without clearing the field.
+- **Keyboard and ARIA.** One labeled text input carries `role="combobox"`,
+  `aria-autocomplete="list"`, `aria-expanded`, `aria-controls` and
+  `aria-activedescendant`; the popup is a labeled `role="listbox"` of
+  `role="option"` rows. `ArrowDown`/`ArrowUp` move the active option with
+  wrapping, `Enter` selects the active option while the list is open and
+  otherwise keeps its normal submit meaning, and blur closes the list. Focus
+  stays in the input; the active row is highlighted without moving DOM focus.
+
 ## Accessibility and test constraints
 
 The restyle deliberately kept the semantics the test suite pins:
@@ -243,6 +299,9 @@ The restyle deliberately kept the semantics the test suite pins:
 - Account controls stay directly reachable (no collapsed-only menus), and the
   guest sign-out flow stays two-step.
 - Native form controls keep their existing labels; no new unlabeled inputs.
+- The exercise-name combobox keeps its visible `<label>` as the input's
+  accessible name; the suggestion popup is supplementary, so the form stays
+  usable with the popup closed and custom names never depend on it.
 - Text that tests match is never split into per-word child elements
   (`getByText` only reads direct text nodes); decoration is added as
   `aria-hidden` SVG, wrappers or CSS, never by rewriting the copy.

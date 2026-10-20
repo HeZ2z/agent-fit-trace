@@ -105,7 +105,9 @@ test("a full history exposes standard confidence and localized recommendations",
 
   const overload = model.recommendations.find((entry) => entry.code === "progressive_overload");
   assert.equal(overload?.action, "渐进超负荷");
-  assert.match(overload?.detail ?? "", /Bench press/);
+  // Plan text reuses the analysis trend identity (canonical English), and the
+  // Chinese rebuild renders that name through the exercise display helper.
+  assert.match(overload?.detail ?? "", /杠铃卧推/);
   assert.match(overload?.reason ?? "", /1RM/);
 
   const english = buildPlanModel(records, "en");

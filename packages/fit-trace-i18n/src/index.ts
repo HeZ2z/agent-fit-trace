@@ -12,6 +12,15 @@
  * explicitly and touches neither storage nor the DOM. The web app keeps the
  * localStorage/<html> store in `app/src/i18n/i18n.ts`; the matching pre-paint
  * bootstrap lives in `app/index.html` and shares LANGUAGE_STORAGE_KEY with it.
+ *
+ * Catalog-backed exercise names are the one workout-content exception: they are
+ * translated at render time by canonical English name through
+ * `displayExerciseName`/`displayStoredExerciseName`, while custom names, notes,
+ * ids and dates still pass through unchanged. The matching autocomplete search
+ * (`searchExerciseSuggestions`) is shared from the same catalog layer so the web
+ * and React Native apps do not each grow their own copy; its option labels
+ * follow the UI language while a selection always writes the canonical English
+ * name, so displayed copy never becomes stored data.
  */
 
 import { ZH_MESSAGES } from "./zh/index.ts";
@@ -53,3 +62,13 @@ export function translate(
 }
 
 export { ZH_MESSAGES };
+
+export {
+  EXERCISE_ALIASES_ZH,
+  EXERCISE_DISPLAY_NAMES_ZH,
+  MAX_EXERCISE_SUGGESTIONS,
+  displayExerciseName,
+  displayStoredExerciseName,
+  searchExerciseSuggestions,
+} from "./exercises.ts";
+export type { ExerciseSuggestion } from "./exercises.ts";

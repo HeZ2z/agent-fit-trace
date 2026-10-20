@@ -1,0 +1,32 @@
+Exercise catalog third-party data notice
+========================================
+
+The curated exercise catalog in this directory (`catalog.v1.json` and
+`zh-names.v1.json`) is derived from two upstream repositories. Both are
+released under the Unlicense. The exact commits used are pinned in the catalog
+root `sources` array and repeated here:
+
+1. gengyueworks/gym-exercise-guide
+   Repository: https://github.com/gengyueworks/gym-exercise-guide
+   Pinned commit: ed41bb3a262fee9dd8d7d0aa3437696dcef601ed
+   Licence: Unlicense (https://unlicense.org/)
+   Used for: Chinese exercise names and aliases, Chinese taxonomy labels, and
+   the review basis for the per-entry content status. No cue, common-mistake,
+   or other instructional text from this source is included.
+
+2. yuhonas/free-exercise-db
+   Repository: https://github.com/yuhonas/free-exercise-db
+   Pinned commit: f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5
+   Licence: Unlicense (https://unlicense.org/)
+   Used for: English exercise names and aliases, muscles, equipment, level,
+   mechanics, and force.
+
+No images, videos, or other media from either source are included in this
+repository. The Unlicense requires no attribution; this notice records the
+provenance of the derived data anyway.
+
+The upstream repositories are the origin of the metadata, but the committed
+catalog is this repository's own curated data: ids, canonical names, aliases,
+muscle assignments, equipment mappings, and review statuses were reviewed and
+are maintained in `catalog.v1.json` and `zh-names.v1.json` (see `README.md` and
+`docs/exercise-catalog-mapping-v0.md`).

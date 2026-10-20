@@ -105,7 +105,9 @@ test("a non-empty history exposes metrics, span, primary trend and the source co
   });
   assert.equal(summary.sourceCount, 4);
   assert.equal(summary.trends.length, 1);
-  assert.equal(summary.trend?.exercise, "Back squat");
+  // The core labels trends by resolved catalog identity (the canonical English
+  // name), so the stored `Back squat` alias surfaces as `Barbell Squat`.
+  assert.equal(summary.trend?.exercise, "Barbell Squat");
   assert.equal(summary.trend?.direction, "up");
 
   assert.deepEqual(
