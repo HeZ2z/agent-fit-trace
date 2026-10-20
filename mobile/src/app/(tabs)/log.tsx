@@ -18,13 +18,13 @@ import { useI18n } from "@/i18n";
 import { SPACING } from "@/theme";
 import {
   Banner,
+  Kicker,
   Body,
   Button,
   Card,
   Chip,
   Display,
   Field,
-  Kicker,
   Screen,
   Title,
 } from "@/ui";
@@ -294,8 +294,7 @@ export default function LogScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       style={styles.flex}>
       <Screen contentContainerStyle={styles.content} testID="screen-log">
-        <Kicker>{t(copy.kicker)}</Kicker>
-        <Display>{t(copy.title)}</Display>
+          <Display>{t(copy.title)}</Display>
         <Body>{t(copy.lede)}</Body>
 
         {storeLoading ? (

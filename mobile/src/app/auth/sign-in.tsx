@@ -10,7 +10,7 @@ import {
 } from "@/auth";
 import { useI18n } from "@/i18n";
 import { SPACING } from "@/theme";
-import { Banner, Body, Button, Card, Display, Field, Kicker, Screen } from "@/ui";
+import { Banner, Body, Button, Card, Display, Field, Screen } from "@/ui";
 
 /**
  * Invite-only email/password sign-in.
@@ -80,7 +80,6 @@ export default function SignInScreen() {
 
   return (
     <Screen bottomInset testID="screen-auth-sign-in">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
       <Body>{t(copy.inviteNote)}</Body>

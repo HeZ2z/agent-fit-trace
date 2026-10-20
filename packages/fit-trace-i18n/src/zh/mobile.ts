@@ -21,7 +21,7 @@ export const messages: Record<string, string> = {
     "每一次记录的训练都会成为证据。回顾你举起的重量、训练感受，以及随时间发生的变化。",
   "No sessions yet": "还没有训练课",
   "Your workout history will appear here once local logging is connected. This shell only reserves the route.":
-    "本地记录接通后，你的训练历史会显示在这里。此界面目前仅占位该路由。",
+    "记录第一场训练后，它会出现在这里。",
   "{sets} set · {reps} reps · {volume} kg": "{sets} 组 · {reps} 次 · {volume} kg",
   "{sets} sets · {reps} reps · {volume} kg": "{sets} 组 · {reps} 次 · {volume} kg",
   "Workout on {date}: {type}. {summary}": "训练日期 {date}：{type}。{summary}",

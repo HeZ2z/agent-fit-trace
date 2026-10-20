@@ -263,7 +263,6 @@ export default function PlanScreen() {
 
   return (
     <Screen testID="screen-plan">
-      <Kicker>{t(copy.kicker)}</Kicker>
       <Display>{t(copy.title)}</Display>
       <Body>{t(copy.lede)}</Body>
       {content}
