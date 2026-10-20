@@ -4,6 +4,8 @@
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) when preparing commits and PRs. Use [.github/pull_request_template.md](.github/pull_request_template.md) for PR descriptions, and report actual verification results and known gaps.
 
+PRs also receive an advisory, self-hosted AI review comment; it is not a merge gate. See [docs/ai-review.md](docs/ai-review.md) for the BYOK setup, limits, and local dry-run command.
+
 ## What this repo is
 
 `agent-fit-trace` is an Agent-powered workout tracking and coaching application that turns training logs into evidence-based progress analysis and draft training plans. The product targets local coaching through the user's existing Codex, pi, or OpenCode CLI and a hosted cloud coach that requires no local Agent installation. Local coaching through the user's pi CLI is implemented (launcher-gated via `agent-fit-trace start`); the Codex/OpenCode and hosted cloud execution paths are planned. The current implementation includes the App, deterministic shared core, local/authenticated HTTP data access, a pi Extension + training-coach Skill integration, and the local coaching flow. The docs in `docs/` remain the product contract.

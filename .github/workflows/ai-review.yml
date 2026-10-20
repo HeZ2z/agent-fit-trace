@@ -1,0 +1,71 @@
+name: AI PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
+      allow_forks:
+        description: Allow reviewing a fork PR from a manual run
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ai-pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Fork PRs do not receive repository secrets; skip them rather than fail.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.draft != true &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted reviewer
+        uses: actions/checkout@v4
+        with:
+          # Run the reviewer from the base commit, never from PR-author code.
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check reviewer is present in the base commit
+        id: reviewer
+        run: |
+          if [ -f scripts/ai-review.ts ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "The reviewer is not in the base commit yet (bootstrap PR); skipping the review step."
+          fi
+
+      - name: Review pull request
+        if: steps.reviewer.outputs.available == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+          AI_REVIEW_BASE_URL: ${{ vars.AI_REVIEW_BASE_URL || 'https://api.deepseek.com' }}
+          AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek-flash' }}
+          AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT || 'none' }}
+          AI_REVIEW_JSON_MODE: ${{ vars.AI_REVIEW_JSON_MODE || '1' }}
+          AI_REVIEW_ALLOW_FORKS: ${{ inputs.allow_forks && '1' || '' }}
+        run: node --experimental-strip-types scripts/ai-review.ts
