@@ -1,8 +1,16 @@
 # 动作库数据映射表 v0（工作稿）
 
-> 状态：**草案，未落地**。不是产品契约文档；确认后才会进入 ADR / 数据文件。
+> 状态：**v1 数据与实现已在 feature 分支落地，待评审合并**；内容审校（49 条要点重写、肌群/器械复核）仍未完成。本文保留为审校工作底稿，不是产品契约文档。
 > 生成日期：2026-10-20。数据来源：gengyueworks/gym-exercise-guide（Unlicense，commit `ed41bb3a`）+ yuhonas/free-exercise-db（Unlicense，main `f00c92c7`）。
 > 范围：194 条 = 力量核心 178 条 + 有氧种子 8 条 + 灵活性种子 8 条。
+
+## Implementation status (2026-10-20)
+
+- **数据已提交**：194 条动作写入 [`data/exercise-catalog/catalog.v1.json`](../data/exercise-catalog/catalog.v1.json)，由 [`scripts/build-exercise-catalog.mjs`](../scripts/build-exercise-catalog.mjs) 校验并生成共享核心数据；66 条改名已冻结，seed 旧名保留为中文别名。
+- **代码已落地**：共享核心 catalog + resolver、i18n 中文显示表、中文 domain 文案内的动作名、分析归一化、Web 自动补全/显示五个提交都在 `feat/exercise-catalog` 分支上（`9c3e8938`、`3b15460a`、`62d5baa3`、`89390336`、`0d0b0820`）。
+- **审校仍未完成**：49 条要点/常见错误重写、17 个粗粒度肌群在复合动作上的复核、器械 `items[]` 抽查均未经过教练审定；`content_status` 仍为 `template` (145) / `rewrite` (49)，动作内容暂不作为权威依据。
+- **无媒体**：v1 不包含任何图片或视频。
+- **范围不变**：记录 schema / API 未改动；本表映射内容（第 2、3 节与附录）除本节状态说明外保持不变。
 
 ## 1. 已锁定的决定
 

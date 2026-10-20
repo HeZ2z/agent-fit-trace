@@ -190,7 +190,11 @@ English is canonical data; Simplified Chinese is a render-time display layer,
 following [`docs/ui-design.md`](ui-design.md). Chrome, labels, validation
 messages and safety copy are translated while rendering. Workout content, saved
 payloads, generated plan strings and exported JSON are not; a content digest
-never depends on who is reading it.
+never depends on who is reading it. The one display exception is catalog-backed
+exercise names: a name that resolves to a bundled catalog entry renders through
+the shared Chinese display table, including inside rebuilt Chinese analysis and
+plan copy, while stored payloads keep the canonical English name and custom
+names stay as authored.
 
 The shared `@pi-fit-trace/i18n` package holds the pure dictionary and domain
 display helpers; the web keeps its localStorage/DOM adapter in

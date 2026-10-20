@@ -1,8 +1,17 @@
 # ADR 0003: Exercise catalog as a suggestion layer, backed by Unlicense data
 
-- **Status:** Accepted (design only). No catalog data, resolver, UI, storage or
-  schema change is implemented yet. The 194-entry scope and its mappings are
-  frozen for implementation.
+- **Status:** Accepted. The v1 implementation is on the `feat/exercise-catalog`
+  feature branch and awaits review and merge: the versioned 194-entry catalog
+  and alias resolver (shared core), render-time Chinese display names,
+  Chinese localization of catalog exercise names inside rebuilt copy,
+  alias-normalized analysis trends, and the web autocomplete/display layer.
+  The frozen 194-entry scope, its IDs, and the 66 canonical-name decisions are
+  implemented as-is; no storage, record-schema, or API change is part of it.
+  Content review remains open — the 49 priority cue/mistake rewrites, the
+  muscle/equipment review, and authoritative cue authoring are not done, so the
+  catalog is not yet authoritative. Upstream commits are pinned and provenance
+  is recorded in the committed data; a standalone third-party `NOTICE` file is
+  not yet added.
 - **Date:** 2026-10-20
 - **Scope:** the v1 exercise catalog and its integration as a suggestion layer.
   Media, workout-record schema changes, non-strength expansion, and
