@@ -33,7 +33,8 @@ silently passing.
 - **Trusted code:** the workflow checks out the PR **base commit**, not the PR
   head, so a PR cannot change the reviewer script before it is reviewed. The
   script never executes PR code; it only reads the GitHub API and calls the
-  model.
+  model. Until the workflow is merged into the base branch, the workflow skips
+  the review step instead of failing on a missing script.
 - **Deduplication:** the comment starts with an invisible `<!-- ai-pr-review -->`
   marker. A rerun updates that PR's existing comment instead of adding another;
   the rendered review records the head SHA it reviewed.

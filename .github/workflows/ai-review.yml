@@ -46,7 +46,18 @@ jobs:
         with:
           node-version: 24
 
+      - name: Check reviewer is present in the base commit
+        id: reviewer
+        run: |
+          if [ -f scripts/ai-review.ts ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "The reviewer is not in the base commit yet (bootstrap PR); skipping the review step."
+          fi
+
       - name: Review pull request
+        if: steps.reviewer.outputs.available == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
