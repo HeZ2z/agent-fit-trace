@@ -88,8 +88,56 @@ describe("deterministic domain display layer", () => {
       direction: "up" as const,
     };
     expect(displayTrend("zh", trend)).toBe(
-      "Back squat：116.67 → 125.42（+8.75 kg，7.5%，上升）",
+      "杠铃深蹲：116.67 → 125.42（+8.75 kg，7.5%，上升）",
     );
+    // A name outside the catalog is user content: it stays exactly as recorded.
+    expect(displayTrend("zh", { ...trend, exercise: "My Custom Lift" })).toBe(
+      "My Custom Lift：116.67 → 125.42（+8.75 kg，7.5%，上升）",
+    );
+  });
+
+  it("renders catalog exercise names through the display helper in rebuilt copy", () => {
+    const canonical = "Barbell Bench Press - Medium Grip";
+    const trend = {
+      exercise: canonical,
+      metric: "est_1rm_kg" as const,
+      sessions_compared: 3,
+      first: 80,
+      last: 90,
+      delta: 10,
+      delta_pct: 12.5,
+      direction: "up" as const,
+    };
+    expect(displayTrend("zh", trend)).toBe("杠铃卧推：80 → 90（+10 kg，12.5%，上升）");
+    // English payload rendering is byte-identical: no render-time normalization.
+    expect(displayTrend("en", trend)).toBe(
+      `${canonical}: 80 → 90 (+10 kg, 12.5%, up)`,
+    );
+    // A stored alias resolves to the catalog entry but keeps the raw name in
+    // the English payload sentence; only the Chinese rebuild translates.
+    expect(displayTrend("zh", { ...trend, exercise: "Bench press" })).toContain("杠铃卧推");
+
+    const generated = recommendation({
+      action: "progressive_overload",
+      detail: `Add a small increase (~2.5% load or one rep per set) to ${canonical}.`,
+      reason: `Estimated 1RM for ${canonical} rose 7.5% across 3 sessions at an average RPE of 6.77.`,
+      evidence: { exercise: canonical, delta_pct: 7.5, avg_rpe: 6.77 },
+    });
+    expect(displayRecommendation("zh", generated)).toEqual({
+      action: "渐进超负荷",
+      detail: "对 杠铃卧推 小幅加重（约 2.5% 负荷或每组多 1 次）。",
+      reason: "据估计，杠铃卧推 的 1RM 上升 7.5%，平均 RPE 为 6.77。",
+    });
+
+    // A custom name stays as authored in the rebuilt Chinese sentence.
+    const custom = "My Custom Lift";
+    const customRecommendation = recommendation({
+      action: "progressive_overload",
+      detail: `Add a small increase (~2.5% load or one rep per set) to ${custom}.`,
+      reason: `Estimated 1RM for ${custom} rose 7.5% across 3 sessions at an average RPE of 6.77.`,
+      evidence: { exercise: custom, delta_pct: 7.5, avg_rpe: 6.77 },
+    });
+    expect(displayRecommendation("zh", customRecommendation).detail).toContain(custom);
   });
 
   it("rebuilds flag messages from code plus evidence", () => {
@@ -163,7 +211,7 @@ describe("deterministic domain display layer", () => {
       ),
     ).toMatchObject({
       action: "渐进超负荷",
-      detail: expect.stringContaining("Back squat"),
+      detail: expect.stringContaining("杠铃深蹲"),
       reason: expect.stringContaining("7.5%"),
     });
 

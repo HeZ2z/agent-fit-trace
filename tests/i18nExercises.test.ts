@@ -8,6 +8,14 @@ import {
   ZH_MESSAGES,
   displayExerciseName,
 } from "../packages/fit-trace-i18n/src/index.ts";
+import {
+  displayRecommendation,
+  displayTrend,
+} from "../packages/fit-trace-i18n/src/domain.ts";
+import type {
+  ExerciseTrend,
+  Recommendation,
+} from "@pi-fit-trace/core";
 
 /**
  * Integrity coverage for the render-time Chinese exercise-name layer.
@@ -174,4 +182,60 @@ test("the exercise-name layer is deterministic and not merged into the UI dictio
       `exercise name leaked into ZH_MESSAGES: ${canonicalName}`,
     );
   }
+});
+
+test("rebuilt Chinese trend and recommendation copy uses the exercise display helper", () => {
+  const canonicalName = "Barbell Bench Press - Medium Grip";
+  const displayName = EXPECTED.displayNames[canonicalName];
+
+  const trend: ExerciseTrend = {
+    exercise: canonicalName,
+    metric: "est_1rm_kg",
+    sessions_compared: 3,
+    first: 80,
+    last: 90,
+    delta: 10,
+    delta_pct: 12.5,
+    direction: "up",
+  };
+  assert.equal(
+    displayTrend("zh", trend),
+    `${displayName}：80 → 90（+10 kg，12.5%，上升）`,
+  );
+  // A stored alias resolves to the catalog entry; a custom name stays as typed.
+  assert.equal(
+    displayTrend("zh", { ...trend, exercise: "Bench press" }),
+    `${displayName}：80 → 90（+10 kg，12.5%，上升）`,
+  );
+  assert.equal(
+    displayTrend("zh", { ...trend, exercise: "My Custom Lift" }),
+    "My Custom Lift：80 → 90（+10 kg，12.5%，上升）",
+  );
+
+  // The local plan generator's progressive-overload copy embeds the name; the
+  // Chinese rebuild must show the catalog display name, not the English name.
+  const progressiveOverload: Recommendation = {
+    action: "progressive_overload",
+    detail: `Add a small increase (~2.5% load or one rep per set) to ${canonicalName}.`,
+    reason: `Estimated 1RM for ${canonicalName} rose 7.5% across 3 sessions at an average RPE of 6.77.`,
+    evidence: { exercise: canonicalName, delta_pct: 7.5, avg_rpe: 6.77 },
+  };
+  assert.deepEqual(displayRecommendation("zh", progressiveOverload), {
+    action: "渐进超负荷",
+    detail: `对 ${displayName} 小幅加重（约 2.5% 负荷或每组多 1 次）。`,
+    reason: `据估计，${displayName} 的 1RM 上升 7.5%，平均 RPE 为 6.77。`,
+  });
+
+  const customName = "My Custom Lift";
+  const custom: Recommendation = {
+    ...progressiveOverload,
+    detail: `Add a small increase (~2.5% load or one rep per set) to ${customName}.`,
+    reason: `Estimated 1RM for ${customName} rose 7.5% across 3 sessions at an average RPE of 6.77.`,
+    evidence: { exercise: customName, delta_pct: 7.5, avg_rpe: 6.77 },
+  };
+  assert.deepEqual(displayRecommendation("zh", custom), {
+    action: "渐进超负荷",
+    detail: `对 ${customName} 小幅加重（约 2.5% 负荷或每组多 1 次）。`,
+    reason: `据估计，${customName} 的 1RM 上升 7.5%，平均 RPE 为 6.77。`,
+  });
 });

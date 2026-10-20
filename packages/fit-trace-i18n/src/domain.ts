@@ -11,7 +11,7 @@
  * dates pass through unchanged.
  */
 
-import { EXTREME_RPE } from "@pi-fit-trace/core";
+import { EXTREME_RPE, resolveExerciseName } from "@pi-fit-trace/core";
 import type {
   AnalysisFlag,
   ExerciseTrend,
@@ -21,9 +21,22 @@ import type {
   ValidationIssue,
 } from "@pi-fit-trace/core";
 import type { AppLanguage } from "./index.ts";
+import { displayExerciseName } from "./exercises.ts";
 import { domainZh } from "./zh/domain.ts";
 
 type Evidence = Record<string, unknown>;
+
+/**
+ * Render one exercise name inside rebuilt Chinese copy.
+ *
+ * The payload keeps the canonical English name; the display sentence uses the
+ * catalog's Chinese name when the name (canonical or alias) resolves, and keeps
+ * a custom/unresolved name exactly as authored.
+ */
+function displayCatalogExerciseName(language: AppLanguage, name: string): string {
+  const entry = resolveExerciseName(name);
+  return displayExerciseName(language, entry === null ? name : entry.name);
+}
 
 function text(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -58,7 +71,8 @@ export function displayTrend(language: AppLanguage, trend: ExerciseTrend): strin
     return `${trend.exercise}: ${trend.first} → ${trend.last} (${delta} kg, ${trend.delta_pct}%, ${trend.direction})`;
   }
   const direction = domainZh.trendDirections[trend.direction] ?? trend.direction;
-  return `${trend.exercise}：${trend.first} → ${trend.last}（${delta} kg，${trend.delta_pct}%，${direction}）`;
+  const exercise = displayCatalogExerciseName(language, trend.exercise);
+  return `${exercise}：${trend.first} → ${trend.last}（${delta} kg，${trend.delta_pct}%，${direction}）`;
 }
 
 /** Rebuild a flag message from its code and evidence; fall back to English. */
@@ -270,11 +284,14 @@ export function displayRecommendation(
       const deltaPct = numeric(evidence.delta_pct);
       const avgRpe = numeric(evidence.avg_rpe);
       if (exercise === null || deltaPct === null) return english;
+      // The stored evidence keeps the canonical English name; only the rebuilt
+      // Chinese sentence shows the catalog display name (custom names as typed).
+      const displayName = displayCatalogExerciseName(language, exercise);
       return {
         action: actionLabel("progressive_overload"),
-        detail: domainZh.recommendationCopy.progressiveOverloadDetail(exercise),
+        detail: domainZh.recommendationCopy.progressiveOverloadDetail(displayName),
         reason: domainZh.recommendationCopy.progressiveOverloadReason(
-          exercise,
+          displayName,
           deltaPct,
           avgRpe === null ? domainZh.recommendationCopy.notRecorded : String(avgRpe),
         ),
