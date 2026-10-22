@@ -743,7 +743,9 @@
       ],
       "equipment": {
         "category": "barbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -935,7 +937,9 @@
       ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "ghd_bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -1121,8 +1125,7 @@
       "secondary_muscles": [
         "calves",
         "glutes",
-        "hamstrings",
-        "quadriceps"
+        "hamstrings"
       ],
       "equipment": {
         "category": "barbell",
@@ -1549,7 +1552,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -1701,7 +1706,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -1896,7 +1903,9 @@
       ],
       "equipment": {
         "category": "barbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -2283,7 +2292,9 @@
       ],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "compound",
@@ -2363,7 +2374,9 @@
       ],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "v_bar"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "compound",
@@ -2749,7 +2762,9 @@
       ],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "v_bar"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "compound",
@@ -2883,7 +2898,9 @@
       ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "pull_up_bar"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -3021,10 +3038,14 @@
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "hip flexors"
+      ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "pull_up_bar"
+        ]
       },
       "difficulty": "expert",
       "mechanics": "isolation",
@@ -3044,10 +3065,14 @@
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "hip flexors"
+      ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3125,7 +3150,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "rope"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3143,7 +3170,8 @@
       "aliases": [],
       "pattern": "core",
       "primary_muscles": [
-        "abdominals"
+        "abdominals",
+        "obliques"
       ],
       "secondary_muscles": [
         "chest",
@@ -3173,7 +3201,8 @@
         "abdominals"
       ],
       "secondary_muscles": [
-        "lower back"
+        "lower back",
+        "obliques"
       ],
       "equipment": {
         "category": "bodyweight",
@@ -3197,7 +3226,9 @@
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "obliques"
+      ],
       "equipment": {
         "category": "bodyweight",
         "items": []
@@ -3245,10 +3276,14 @@
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "hip flexors"
+      ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "pull_up_bar"
+        ]
       },
       "difficulty": "expert",
       "mechanics": "compound",
@@ -3490,7 +3525,9 @@
       ],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3513,7 +3550,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "ez_bar",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3711,7 +3750,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "ez_bar",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -3736,7 +3777,9 @@
       ],
       "equipment": {
         "category": "ez_bar",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3846,7 +3889,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -3869,7 +3914,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3918,7 +3965,9 @@
       ],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -4038,7 +4087,9 @@
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -4884,7 +4935,9 @@
       ],
       "equipment": {
         "category": "cardio_machine",
-        "items": []
+        "items": [
+          "treadmill"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": null,
@@ -4911,7 +4964,9 @@
       ],
       "equipment": {
         "category": "cardio_machine",
-        "items": []
+        "items": [
+          "treadmill"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": null,
@@ -5048,7 +5103,7 @@
       "aliases": [],
       "pattern": "mobility",
       "primary_muscles": [
-        "quadriceps"
+        "hip flexors"
       ],
       "secondary_muscles": [
         "quadriceps"

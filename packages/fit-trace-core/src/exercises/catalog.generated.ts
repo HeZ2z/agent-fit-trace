@@ -7,13 +7,13 @@
  *
  * Deterministic: the source JSON is the only input; no clock, randomness, or
  * network access participates. Version 1, 194 entries,
- * sha256 digest d542e14eb1e411d974c12d087ca04b5b93f13cd0a6c24e7a8f77e4d6266a3584.
+ * sha256 digest 7f861c2664009b3936289447252defd4a9583e256f9ae68ac362f041e76681a0.
  */
 import type { ExerciseCatalog } from "./types.ts";
 
 export const CATALOG_VERSION = 1;
 export const CATALOG_ENTRY_COUNT = 194;
-export const CATALOG_DIGEST = "d542e14eb1e411d974c12d087ca04b5b93f13cd0a6c24e7a8f77e4d6266a3584";
+export const CATALOG_DIGEST = "7f861c2664009b3936289447252defd4a9583e256f9ae68ac362f041e76681a0";
 
 /** Frozen v1 catalog data shared by web, mobile, the pi extension, and the server. */
 export const CATALOG_DATA: ExerciseCatalog = {
@@ -761,7 +761,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "barbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -953,7 +955,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "ghd_bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -1139,8 +1143,7 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [
         "calves",
         "glutes",
-        "hamstrings",
-        "quadriceps"
+        "hamstrings"
       ],
       "equipment": {
         "category": "barbell",
@@ -1567,7 +1570,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -1719,7 +1724,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -1914,7 +1921,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "barbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -2301,7 +2310,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "compound",
@@ -2381,7 +2392,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "v_bar"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "compound",
@@ -2767,7 +2780,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "v_bar"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "compound",
@@ -2901,7 +2916,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "pull_up_bar"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -3039,10 +3056,14 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "hip flexors"
+      ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "pull_up_bar"
+        ]
       },
       "difficulty": "expert",
       "mechanics": "isolation",
@@ -3062,10 +3083,14 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "hip flexors"
+      ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3143,7 +3168,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "cable",
-        "items": []
+        "items": [
+          "rope"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3161,7 +3188,8 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "aliases": [],
       "pattern": "core",
       "primary_muscles": [
-        "abdominals"
+        "abdominals",
+        "obliques"
       ],
       "secondary_muscles": [
         "chest",
@@ -3191,7 +3219,8 @@ export const CATALOG_DATA: ExerciseCatalog = {
         "abdominals"
       ],
       "secondary_muscles": [
-        "lower back"
+        "lower back",
+        "obliques"
       ],
       "equipment": {
         "category": "bodyweight",
@@ -3215,7 +3244,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "obliques"
+      ],
       "equipment": {
         "category": "bodyweight",
         "items": []
@@ -3263,10 +3294,14 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "primary_muscles": [
         "abdominals"
       ],
-      "secondary_muscles": [],
+      "secondary_muscles": [
+        "hip flexors"
+      ],
       "equipment": {
         "category": "bodyweight",
-        "items": []
+        "items": [
+          "pull_up_bar"
+        ]
       },
       "difficulty": "expert",
       "mechanics": "compound",
@@ -3508,7 +3543,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3531,7 +3568,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "ez_bar",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3729,7 +3768,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "ez_bar",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -3754,7 +3795,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "ez_bar",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3864,7 +3907,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -3887,7 +3932,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -3936,7 +3983,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "intermediate",
       "mechanics": "isolation",
@@ -4056,7 +4105,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "secondary_muscles": [],
       "equipment": {
         "category": "dumbbell",
-        "items": []
+        "items": [
+          "bench"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": "isolation",
@@ -4902,7 +4953,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "cardio_machine",
-        "items": []
+        "items": [
+          "treadmill"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": null,
@@ -4929,7 +4982,9 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "cardio_machine",
-        "items": []
+        "items": [
+          "treadmill"
+        ]
       },
       "difficulty": "beginner",
       "mechanics": null,
@@ -5066,7 +5121,7 @@ export const CATALOG_DATA: ExerciseCatalog = {
       "aliases": [],
       "pattern": "mobility",
       "primary_muscles": [
-        "quadriceps"
+        "hip flexors"
       ],
       "secondary_muscles": [
         "quadriceps"
