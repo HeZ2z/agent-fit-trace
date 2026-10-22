@@ -743,9 +743,7 @@
       ],
       "equipment": {
         "category": "barbell",
-        "items": [
-          "bench"
-        ]
+        "items": []
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -937,9 +935,7 @@
       ],
       "equipment": {
         "category": "bodyweight",
-        "items": [
-          "ghd_bench"
-        ]
+        "items": []
       },
       "difficulty": "intermediate",
       "mechanics": "compound",

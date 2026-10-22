@@ -7,13 +7,13 @@
  *
  * Deterministic: the source JSON is the only input; no clock, randomness, or
  * network access participates. Version 1, 194 entries,
- * sha256 digest 7f861c2664009b3936289447252defd4a9583e256f9ae68ac362f041e76681a0.
+ * sha256 digest 16dc877da5b298ce0affd740a1dc2479bc349d902441ca975ba34ea0a425c53f.
  */
 import type { ExerciseCatalog } from "./types.ts";
 
 export const CATALOG_VERSION = 1;
 export const CATALOG_ENTRY_COUNT = 194;
-export const CATALOG_DIGEST = "7f861c2664009b3936289447252defd4a9583e256f9ae68ac362f041e76681a0";
+export const CATALOG_DIGEST = "16dc877da5b298ce0affd740a1dc2479bc349d902441ca975ba34ea0a425c53f";
 
 /** Frozen v1 catalog data shared by web, mobile, the pi extension, and the server. */
 export const CATALOG_DATA: ExerciseCatalog = {
@@ -761,9 +761,7 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "barbell",
-        "items": [
-          "bench"
-        ]
+        "items": []
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
@@ -955,9 +953,7 @@ export const CATALOG_DATA: ExerciseCatalog = {
       ],
       "equipment": {
         "category": "bodyweight",
-        "items": [
-          "ghd_bench"
-        ]
+        "items": []
       },
       "difficulty": "intermediate",
       "mechanics": "compound",
