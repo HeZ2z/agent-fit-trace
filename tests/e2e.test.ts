@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { analyzeProgress, filterRecords, generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
+import { analyzeProgress, filterRecords, generateNextPlan, validateWorkoutRecord } from "@agent-fit-trace/core";
 import { MemoryStorage, WorkoutStore } from "../.pi/extensions/fit-trace/store.ts";
 import { loadFixture } from "./helpers.ts";
 

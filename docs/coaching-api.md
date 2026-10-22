@@ -1,7 +1,7 @@
 # Coaching API (implemented: local loopback and hosted cloud routes)
 
 Implemented by `server/coaching/coachingServer.ts` + `server/coaching/coachingService.ts`,
-shaped by `@pi-fit-trace/api-contracts` (`src/coaching.ts`).
+shaped by `@agent-fit-trace/api-contracts` (`src/coaching.ts`).
 The local service is loopback-only. The source-run launcher (`agent-fit-trace start`,
 see [`local-launcher.md`](local-launcher.md)) serves it on the same origin as the
 App shell and data proxy, and the App's Coach screen consumes it. Gated local
@@ -179,7 +179,7 @@ events; client abort detaches only (never cancels the run).
 ### SSE wire budgets (shared, single source)
 
 The run service, the HTTP server, and the browser client consume ONE set of
-limits from `@pi-fit-trace/api-contracts`, so an event the service accepts is
+limits from `@agent-fit-trace/api-contracts`, so an event the service accepts is
 always readable by the client:
 
 - A single SSE frame — the full `id:`/`data:` envelope measured in UTF-8

@@ -1,5 +1,5 @@
-import type { ImportedArtifact } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { ImportedArtifact } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { isHttpModeActive } from "../api/runtimeMode.ts";
 import type { ArtifactSource } from "../state/useArtifactSource.ts";
 import { useI18n } from "../i18n/useI18n.ts";

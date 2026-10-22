@@ -1,5 +1,5 @@
 {
-  "name": "@pi-fit-trace/app",
+  "name": "@agent-fit-trace/app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@pi-fit-trace/api-contracts": "workspace:*",
-    "@pi-fit-trace/core": "workspace:*",
-    "@pi-fit-trace/i18n": "workspace:*",
+    "@agent-fit-trace/api-contracts": "workspace:*",
+    "@agent-fit-trace/core": "workspace:*",
+    "@agent-fit-trace/i18n": "workspace:*",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.3"

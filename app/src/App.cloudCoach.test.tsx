@@ -6,7 +6,7 @@ import {
   COACHING_CAPABILITY_VERSION,
   COACHING_PROTOCOL_VERSION,
   type CoachingEventEnvelope,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import App from "./App.tsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.tsx";
 import { CoachingProvider } from "./coaching/CoachingProvider.tsx";

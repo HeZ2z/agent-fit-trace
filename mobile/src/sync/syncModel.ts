@@ -11,9 +11,9 @@
  * this pure model.
  */
 
-import { API_ERROR_CODES } from "@pi-fit-trace/api-contracts";
-import { stableStringify } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { API_ERROR_CODES } from "@agent-fit-trace/api-contracts";
+import { stableStringify } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import type { AuthStatus } from "../auth/authModel.ts";
 import type { SyncConfigStatus } from "./syncConfig.ts";
 

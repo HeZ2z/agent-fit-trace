@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { API_ERROR_CODES, ApiError, NetworkError } from "@pi-fit-trace/api-contracts";
-import { ConflictError, CURRENT_SCHEMA_VERSION, stableStringify } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { API_ERROR_CODES, ApiError, NetworkError } from "@agent-fit-trace/api-contracts";
+import { ConflictError, CURRENT_SCHEMA_VERSION, stableStringify } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   SYNC_CONFLICT_ACTIONS,
   abortSyncRun,

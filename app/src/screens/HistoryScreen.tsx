@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import { summarizeMetrics } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { summarizeMetrics } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import { displaySessionType } from "../i18n/domain.ts";

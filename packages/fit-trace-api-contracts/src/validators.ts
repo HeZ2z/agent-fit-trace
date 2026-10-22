@@ -1,4 +1,4 @@
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
 import type {
   AnalysisFlag,
   AnalysisMetrics,
@@ -9,7 +9,7 @@ import type {
   Severity,
   ValidationWarning,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type { CreateWorkoutResult } from "./types.ts";
 import { MalformedResponseError } from "./errors.ts";
 

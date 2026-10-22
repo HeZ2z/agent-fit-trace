@@ -6,7 +6,7 @@ import type {
   PlanDraft,
   Recommendation,
   Severity,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import { MalformedResponseError } from "./contracts.ts";
 
 /** Parsed response payloads run through these guards before use. */

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 
 /**
  * Real local-Supabase Auth integration for the anonymous-guest compatibility

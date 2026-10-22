@@ -9,4 +9,4 @@ export {
   setLanguage,
   subscribeLanguage,
 } from "./language";
-export type { AppLanguage, MessageParams } from "@pi-fit-trace/i18n";
+export type { AppLanguage, MessageParams } from "@agent-fit-trace/i18n";

@@ -12,7 +12,7 @@ import {
 import { isSkinName, SKINS, type SkinName, type SkinTokens } from "./index";
 
 /** Versioned key so a future palette migration can coexist with v1. */
-export const SKIN_STORAGE_KEY = "pi-fit-trace:skin:v1";
+export const SKIN_STORAGE_KEY = "agent-fit-trace:skin:v1";
 
 interface SkinContextValue {
   skin: SkinName;

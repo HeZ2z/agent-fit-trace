@@ -4,7 +4,7 @@ import {
   stableStringify,
   sortRecords,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type {
   AnalysisFilter,
   PlanConstraints,
@@ -12,8 +12,8 @@ import type {
   AnalysisResult,
   ValidationWarning,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/core";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
 import {
   buildImportedArtifact,
   encodeArtifactCursor,
@@ -23,7 +23,7 @@ import {
   parseImportedArtifact,
   parseImportedArtifactMeta,
   applyImportedArtifactKeyset,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ArtifactSelection,
   CreateWorkoutResult,
@@ -37,8 +37,8 @@ import type {
   PlanAdoption,
   PlanAdoptionInput,
   SaveImportedArtifactResult,
-} from "@pi-fit-trace/api-contracts";
-import { ValidationError } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import { ValidationError } from "@agent-fit-trace/core";
 
 /** Map a thrown core error onto the API error contract; unknown errors pass through. */
 function toApiError(error: unknown): unknown {

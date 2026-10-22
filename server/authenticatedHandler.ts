@@ -1,4 +1,4 @@
-import type { AnalysisFilter, PlanConstraints, WorkoutRecord } from "@pi-fit-trace/core";
+import type { AnalysisFilter, PlanConstraints, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   API_ENDPOINTS,
   API_ERROR_CODES,
@@ -12,13 +12,13 @@ import {
   parseArtifactSelectionRequest,
   parseListImportedArtifactsParams,
   parsePlanAdoptionRequest,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   AuthPrincipal,
   CreateWorkoutResult,
   FitTraceClient,
   ImportArtifactInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { extractBearerToken } from "./auth/verifier.ts";
 import type { TokenVerifier } from "./auth/verifier.ts";
 import type { PrincipalStoreFactory } from "./principalMemoryStore.ts";

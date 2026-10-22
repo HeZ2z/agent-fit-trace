@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { sortRecords } from "@pi-fit-trace/core";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { sortRecords } from "@agent-fit-trace/core";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { createFitTraceClient } from "../api/createFitTraceClient.ts";
 
 export interface WorkoutContextValue {

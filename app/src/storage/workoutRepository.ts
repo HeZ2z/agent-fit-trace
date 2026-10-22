@@ -2,8 +2,8 @@ import {
   ValidationError,
   sortRecords,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import type { StorageAdapter } from "./adapter.ts";
 
 /**
@@ -13,14 +13,14 @@ import type { StorageAdapter } from "./adapter.ts";
  * never read-modify-writes a shared value, so two store instances backed by the
  * same storage cannot clobber each other's history.
  */
-export const RECORD_KEY_PREFIX = "pi-fit-trace:workout:v1:";
+export const RECORD_KEY_PREFIX = "agent-fit-trace:workout:v1:";
 
 /**
  * Identity-scoped keys live under a new v2 namespace so legacy unowned v1
  * keys are never listed by an owner-scoped client and remain untouched on
  * disk (hidden, not migrated or deleted).
  */
-const OWNER_RECORD_KEY_PREFIX = "pi-fit-trace:workout:v2:owner:";
+const OWNER_RECORD_KEY_PREFIX = "agent-fit-trace:workout:v2:owner:";
 
 /** Storage key prefix for one verified owner's records. */
 export function ownerRecordKeyPrefix(ownerId: string): string {

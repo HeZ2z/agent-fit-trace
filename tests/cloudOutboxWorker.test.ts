@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
 import type { CloudCoachingProvider, ProviderRunInput, ProviderSuccess } from "../server/cloud/openRouterProvider.ts";
 import {
   ProviderAcceptanceUnknownError,

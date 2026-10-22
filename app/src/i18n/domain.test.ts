@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { AnalysisFlag, Recommendation, WorkoutRecord } from "@pi-fit-trace/core";
+import { generateNextPlan, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { AnalysisFlag, Recommendation, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   displayCarePrompt,
   displayFlagMessage,

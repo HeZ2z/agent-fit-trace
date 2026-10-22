@@ -17,13 +17,13 @@ import {
   parseCloudReadEventsResult,
   parseCloudReadRunResult,
   parseCloudSubmitRunResult,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CloudCoachingRun,
   CoachingEventPayload,
   CloudRunStatus,
-} from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import type {
   CloudAcceptedInfo,
   CloudAccountState,

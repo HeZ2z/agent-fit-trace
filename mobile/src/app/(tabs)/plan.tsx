@@ -1,4 +1,4 @@
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";

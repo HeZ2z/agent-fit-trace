@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { API_ERROR_CODES } from "@pi-fit-trace/api-contracts";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { API_ERROR_CODES } from "@agent-fit-trace/api-contracts";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { createSupabaseVerifier } from "../server/auth/supabaseVerifier.ts";
 import { extractBearerToken } from "../server/auth/verifier.ts";
 import { createSupabaseWorkoutStore } from "../server/db/supabaseWorkouts.ts";

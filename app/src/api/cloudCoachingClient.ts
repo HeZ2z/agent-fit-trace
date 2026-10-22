@@ -15,7 +15,7 @@ import {
   parseSnapshotFilter,
   parseSubmitCoachingRunInput,
   utf8ByteLength,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CloudCancelRunResult,
   CloudCapabilities,
@@ -25,7 +25,7 @@ import type {
   CoachingEventEnvelope,
   CoachingStreamIdentity,
   SubmitCoachingRunInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import {
   assertSseContentType,
   cancelReaderBestEffort,

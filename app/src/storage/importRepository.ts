@@ -5,7 +5,7 @@ import {
   parseArtifactSelection,
   parseImportedArtifact,
   parsePlanAdoption,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ArtifactCursor,
   ArtifactSelection,
@@ -13,7 +13,7 @@ import type {
   ImportedArtifactKind,
   ImportedArtifactMeta,
   PlanAdoption,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type { StorageAdapter } from "./adapter.ts";
 import { StorageUnavailableError } from "./adapter.ts";
 
@@ -28,7 +28,7 @@ import { StorageUnavailableError } from "./adapter.ts";
  * see each other's artifacts or selections.
  */
 
-export const IMPORT_STORAGE_KEY_PREFIX = "pi-fit-trace:import:v1:";
+export const IMPORT_STORAGE_KEY_PREFIX = "agent-fit-trace:import:v1:";
 
 export class ImportStorageCorruptionError extends Error {
   code = "CORRUPT_STORE";

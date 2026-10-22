@@ -2,7 +2,7 @@
  * The web app's interface-language store.
  *
  * The pure display layer (dictionary, formatting, translation) lives in
- * `@pi-fit-trace/i18n`. This module keeps only the browser-specific store:
+ * `@agent-fit-trace/i18n`. This module keeps only the browser-specific store:
  * localStorage persistence, the in-memory fallback and the
  * `<html lang>`/`data-lang` hooks, then re-exports the unchanged public API.
  *
@@ -14,8 +14,8 @@ import {
   DEFAULT_LANGUAGE,
   LANGUAGE_STORAGE_KEY,
   isLanguage,
-} from "@pi-fit-trace/i18n";
-import type { AppLanguage } from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
+import type { AppLanguage } from "@agent-fit-trace/i18n";
 
 export {
   DEFAULT_LANGUAGE,
@@ -24,8 +24,8 @@ export {
   formatMessage,
   isLanguage,
   translate,
-} from "@pi-fit-trace/i18n";
-export type { AppLanguage, MessageParams } from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
+export type { AppLanguage, MessageParams } from "@agent-fit-trace/i18n";
 
 function languageStorage(): Storage | null {
   try {

@@ -1,4 +1,4 @@
-import { stableStringify } from "@pi-fit-trace/core";
+import { stableStringify } from "@agent-fit-trace/core";
 import {
   applyImportedArtifactKeyset,
   buildImportedArtifact,
@@ -12,7 +12,7 @@ import {
   parseImportedArtifactMeta,
   parsePlanAdoption,
   parsePlanAdoptionRequest,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ArtifactSelection,
   AuthPrincipal,
@@ -26,8 +26,8 @@ import type {
   PlanAdoption,
   PlanAdoptionInput,
   SaveImportedArtifactResult,
-} from "@pi-fit-trace/api-contracts";
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
 
 /**
  * Supabase-backed import resources for one verified principal.

@@ -4,8 +4,8 @@ import {
   MAX_COACHING_SSE_FRAME_BYTES,
   MalformedResponseError,
   NetworkError,
-} from "@pi-fit-trace/api-contracts";
-import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
+import type { CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
 import { CloudCoachingClient } from "./cloudCoachingClient.ts";
 
 const SESSION = "s-1";

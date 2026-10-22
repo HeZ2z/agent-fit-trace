@@ -4,7 +4,7 @@ import {
   sortRecords,
   stableStringify,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type {
   AnalysisFilter,
   PlanConstraints,
@@ -12,11 +12,11 @@ import type {
   AnalysisResult,
   ValidationWarning,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
-import type { CreateWorkoutResult, FitTraceClient } from "@pi-fit-trace/api-contracts";
-import { ValidationError } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
+import type { CreateWorkoutResult, FitTraceClient } from "@agent-fit-trace/api-contracts";
+import { ValidationError } from "@agent-fit-trace/core";
 import { createSupabaseImportMethods } from "./supabaseImports.ts";
 
 /**

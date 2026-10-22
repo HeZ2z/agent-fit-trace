@@ -14,7 +14,7 @@ import {
   displayStoredExerciseName,
   searchExerciseSuggestions,
   type ExerciseSuggestion,
-} from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
 
 import { useI18n } from "@/i18n";
 import { SPACING, TYPOGRAPHY } from "@/theme";

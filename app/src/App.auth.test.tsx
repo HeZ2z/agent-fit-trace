@@ -2,8 +2,8 @@ import { StrictMode } from "react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import App from "./App.tsx";
 import { AUTH_STORAGE_KEY, resetRecoveryTokenMemoryForTests, serializeSession } from "./auth/supabaseAuth.ts";
 import type { SupabaseSession } from "./auth/supabaseAuth.ts";
@@ -293,7 +293,7 @@ describe("App auth integration (HTTP mode)", () => {
 
     expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
     expect(window.location.hash).toBe("");
-    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBe("invite-token");
+    expect(window.sessionStorage.getItem("agent-fit-trace:auth:v1:recovery-token")).toBe("invite-token");
 
     await user.type(screen.getByLabelText("New password"), "new-password-1");
     await user.click(screen.getByRole("button", { name: /update password/i }));
@@ -332,7 +332,7 @@ describe("App auth integration (HTTP mode)", () => {
     expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
     expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument();
     expect(window.location.hash).toBe("");
-    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBe(
+    expect(window.sessionStorage.getItem("agent-fit-trace:auth:v1:recovery-token")).toBe(
       "strict-invite-token",
     );
   });
@@ -349,7 +349,7 @@ describe("App auth integration (HTTP mode)", () => {
 
     expect(await screen.findByRole("heading", { name: /choose a new password/i })).toBeInTheDocument();
     expect(window.location.hash).toBe("");
-    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBe("rec-token");
+    expect(window.sessionStorage.getItem("agent-fit-trace:auth:v1:recovery-token")).toBe("rec-token");
   });
 
   it("prefers password setup over an existing session on the root hash", async () => {
@@ -379,7 +379,7 @@ describe("App auth integration (HTTP mode)", () => {
 
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
     expect(window.location.hash).toBe("#section");
-    expect(window.sessionStorage.getItem("pi-fit-trace:auth:v1:recovery-token")).toBeNull();
+    expect(window.sessionStorage.getItem("agent-fit-trace:auth:v1:recovery-token")).toBeNull();
   });
 
   it("shows the invalid-link notice at root when the hash carries no token", async () => {

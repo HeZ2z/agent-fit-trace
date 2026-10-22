@@ -4,7 +4,7 @@ import {
   detectFlags,
   summarizeMetrics,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import {

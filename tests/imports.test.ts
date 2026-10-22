@@ -8,8 +8,8 @@ import {
   generateNextPlan,
   stableStringify,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { AnalysisResult, PlanDraft, WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { AnalysisResult, PlanDraft, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   API_ERROR_CODES,
   IMPORT_MAX_FILENAME_LENGTH,
@@ -31,14 +31,14 @@ import {
   parsePlanImportFile,
   parseWorkoutImportFile,
   sha256Hex,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ImportArtifactInput,
   ImportedArtifact,
   ImportedArtifactMeta,
   NormalizedListImportedArtifactsQuery,
-} from "@pi-fit-trace/api-contracts";
-import { createMemoryHandler } from "@pi-fit-trace/api-contracts/testing";
+} from "@agent-fit-trace/api-contracts";
+import { createMemoryHandler } from "@agent-fit-trace/api-contracts/testing";
 import { LocalFitTraceClient } from "../app/src/api/localFitTraceClient.ts";
 import { MemoryStorageAdapter, StorageUnavailableError } from "../app/src/storage/adapter.ts";
 import {

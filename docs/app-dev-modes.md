@@ -33,9 +33,9 @@ development build.
   below) and sign in; local mode then uses `LocalFitTraceClient` over browser
   `localStorage`.
 - Records live under owner-scoped v2 keys:
-  `pi-fit-trace:workout:v2:owner:<encoded-user-id>:<record-id>`. The browser
+  `agent-fit-trace:workout:v2:owner:<encoded-user-id>:<record-id>`. The browser
   owns this data; it persists across reloads.
-- Legacy unowned `pi-fit-trace:workout:v1:<id>` keys are preserved on disk but
+- Legacy unowned `agent-fit-trace:workout:v1:<id>` keys are preserved on disk but
   hidden from owner-scoped clients. They are **not** automatically attributed
   to the signed-in user and are **not** migrated or deleted.
 - Unknown build mode values keep the development local fallback; they still
@@ -49,7 +49,7 @@ Run it from the repo root with the authenticated dev API serving
 FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
 
 # Terminal 2 — leave VITE_FIT_TRACE_MODE unset/local
-pnpm --filter @pi-fit-trace/app dev
+pnpm --filter @agent-fit-trace/app dev
 ```
 
 Sign in before using the app. Workout reads/writes stay in this browser; only
@@ -82,7 +82,7 @@ Run it in two terminals:
 
 ```
 pnpm dev:api
-VITE_FIT_TRACE_MODE=http VITE_FIT_TRACE_LEGACY_LOOPBACK=1 pnpm --filter @pi-fit-trace/app dev
+VITE_FIT_TRACE_MODE=http VITE_FIT_TRACE_LEGACY_LOOPBACK=1 pnpm --filter @agent-fit-trace/app dev
 ```
 
 Then open the app and log a workout: the History screen lists the
@@ -95,7 +95,7 @@ and keep the legacy flag on the app:
 
 ```
 FIT_TRACE_DEV_API_PORT=6000 pnpm dev:api
-FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http VITE_FIT_TRACE_LEGACY_LOOPBACK=1 pnpm --filter @pi-fit-trace/app dev
+FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http VITE_FIT_TRACE_LEGACY_LOOPBACK=1 pnpm --filter @agent-fit-trace/app dev
 ```
 
 Recovery-token fallback limit (authenticated mode): the
@@ -116,7 +116,7 @@ server in `FIT_TRACE_DEV_API_MODE=supabase`.
   There is no public sign-up path.
 - The app bootstraps the Supabase URL + publishable key at runtime from
   `GET /api/v1/public-config` (no `VITE_*` secret copies). The session lives
-  under `pi-fit-trace:auth:v1:session`; logout or account change clears all
+  under `agent-fit-trace:auth:v1:session`; logout or account change clears all
   cached workout/analysis state. A `401` surfaces (writes are never retried);
   credential refresh retries transient failures automatically; failed
   business requests are not replayed.
@@ -149,14 +149,14 @@ repo root. Vite runs from `app/` with no `envDir` override
 FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
 
 # Terminal 2 — app in plain HTTP mode (no legacy flag):
-VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
+VITE_FIT_TRACE_MODE=http pnpm --filter @agent-fit-trace/app dev
 ```
 
 With a custom API port, again pass `FIT_TRACE_DEV_API_PORT` to BOTH:
 
 ```sh
 FIT_TRACE_DEV_API_PORT=6000 FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
-FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
+FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http pnpm --filter @agent-fit-trace/app dev
 ```
 
 Verify at least `GET /api/v1/public-config` returns the local Supabase URL
@@ -174,7 +174,7 @@ The three modes do not share data and there is NO automatic migration:
 | Memory HTTP | dev API process memory | dev API process memory | lost on API restart |
 | Authenticated Supabase | Postgres, RLS per owner | Postgres, RLS per owner | account/cloud persistence |
 
-Legacy unowned `pi-fit-trace:workout:v1:<id>` keys are preserved but invisible
+Legacy unowned `agent-fit-trace:workout:v1:<id>` keys are preserved but invisible
 to owner-scoped clients. They are not attributed to the current account, not
 migrated, and not deleted. Switching modes never uploads or copies records;
 existing v2 records remain available when you return to local mode.
@@ -200,10 +200,10 @@ transaction or storage lock.
 There is no automatic upload, background migration, or bulk import button.
 
 **History exports only the current verified owner's v2 records.** Hidden
-unowned legacy `pi-fit-trace:workout:v1:<id>` records cannot be exported
+unowned legacy `agent-fit-trace:workout:v1:<id>` records cannot be exported
 through History and are never attributed automatically. For manual legacy
 recovery, a developer may inspect only keys with the exact
-`pi-fit-trace:workout:v1:` prefix in browser devtools and copy only those JSON
+`agent-fit-trace:workout:v1:` prefix in browser devtools and copy only those JSON
 values into a separate offline workout file. Leave the original localStorage
 keys and values untouched. Because v1 is unowned, the app cannot prove who a
 record belongs to: review ownership and provenance of every record before any

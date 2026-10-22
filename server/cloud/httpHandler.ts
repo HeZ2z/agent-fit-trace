@@ -11,7 +11,7 @@
  * A client resumes with `fromSeq = lastSeq + 1`; the server never invents,
  * skips, or heartbeats events.
  */
-import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
+import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
 import {
   API_ERROR_CODES,
   COACHED_TOOL_NAMES,
@@ -26,9 +26,9 @@ import {
   parseCloudCreateSnapshotInput,
   parseCloudSubmitRunInput,
   parseSnapshotFilter,
-} from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { assertOrderedDateRange, filterRecords, ValidationError, validateWorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { assertOrderedDateRange, filterRecords, ValidationError, validateWorkoutRecord } from "@agent-fit-trace/core";
 import { extractBearerToken } from "../auth/verifier.ts";
 import type { TokenVerifier } from "../auth/verifier.ts";
 import { DEFAULT_MAX_BODY_BYTES } from "../authenticatedHandler.ts";

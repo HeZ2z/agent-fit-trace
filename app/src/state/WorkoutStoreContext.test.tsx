@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";
 import { LocalFitTraceClient } from "../api/localFitTraceClient.ts";

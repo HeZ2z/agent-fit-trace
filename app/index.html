@@ -10,7 +10,7 @@
       // preference never flashes Pixel first. The key and values mirror
       // app/src/theme/theme.ts; keep them in sync.
       try {
-        var savedTheme = window.localStorage.getItem("pi-fit-trace:theme:v1");
+        var savedTheme = window.localStorage.getItem("agent-fit-trace:theme:v1");
         if (savedTheme === "pixel" || savedTheme === "glass") {
           document.documentElement.setAttribute("data-theme", savedTheme);
         }
@@ -18,7 +18,7 @@
         // Blocked storage simply keeps the default Pixel attribute above.
       }
       try {
-        if (window.localStorage.getItem("pi-fit-trace:lang:v1") === "zh") {
+        if (window.localStorage.getItem("agent-fit-trace:lang:v1") === "zh") {
           document.documentElement.lang = "zh-CN";
           document.documentElement.setAttribute("data-lang", "zh");
         }

@@ -11,7 +11,7 @@
     "start": "node ./src/cli.ts start --no-open"
   },
   "dependencies": {
-    "@pi-fit-trace/api-contracts": "workspace:*",
-    "@pi-fit-trace/core": "workspace:*"
+    "@agent-fit-trace/api-contracts": "workspace:*",
+    "@agent-fit-trace/core": "workspace:*"
   }
 }

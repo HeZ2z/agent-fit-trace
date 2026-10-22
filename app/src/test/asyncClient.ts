@@ -4,7 +4,7 @@ import type {
   PlanConstraints,
   PlanDraft,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type {
   ArtifactSelection,
   CreateWorkoutResult,
@@ -17,7 +17,7 @@ import type {
   PlanAdoption,
   PlanAdoptionInput,
   SaveImportedArtifactResult,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { LocalFitTraceClient } from "../api/localFitTraceClient.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";

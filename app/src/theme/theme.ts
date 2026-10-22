@@ -13,7 +13,7 @@
 
 export type ThemeName = "pixel" | "glass";
 
-export const THEME_STORAGE_KEY = "pi-fit-trace:theme:v1";
+export const THEME_STORAGE_KEY = "agent-fit-trace:theme:v1";
 export const DEFAULT_THEME: ThemeName = "pixel";
 export const THEME_NAMES: readonly ThemeName[] = ["pixel", "glass"];
 

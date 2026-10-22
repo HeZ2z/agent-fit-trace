@@ -1,11 +1,11 @@
-import { CURRENT_SCHEMA_VERSION, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { CURRENT_SCHEMA_VERSION, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILE_RECORDS,
   ImportValidationError,
   parseWorkoutImportFile,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type { WorkoutExportFile } from "./contracts.ts";
 
 /**

@@ -1,11 +1,11 @@
-import { stableStringify } from "@pi-fit-trace/core";
-import type { ValidationWarning, WorkoutRecord } from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
+import { stableStringify } from "@agent-fit-trace/core";
+import type { ValidationWarning, WorkoutRecord } from "@agent-fit-trace/core";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
 import type {
   CreateWorkoutResult,
   FitTraceClient,
   WorkoutImportEntry,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 /**
  * Sequential workout-backup restore coordinator.

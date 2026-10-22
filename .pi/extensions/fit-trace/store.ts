@@ -11,8 +11,8 @@ import {
   stableStringify,
   toDateKey,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { HistoryFilter, WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { HistoryFilter, WorkoutRecord } from "@agent-fit-trace/core";
 
 export interface StoreFile {
   schema_version: number;

@@ -4,7 +4,7 @@ import {
   stableStringify,
   ValidationError,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type {
   AnalysisFilter,
   AnalysisResult,
@@ -12,7 +12,7 @@ import type {
   PlanDraft,
   ValidationWarning,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import {
   API_ERROR_CODES,
   ApiError,
@@ -23,7 +23,7 @@ import {
   isImportedArtifactKind,
   normalizeListImportedArtifactsQuery,
   parseImportArtifactInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ArtifactSelection,
   CreateWorkoutResult,
@@ -36,7 +36,7 @@ import type {
   PlanAdoption,
   PlanAdoptionInput,
   SaveImportedArtifactResult,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { LocalStorageAdapter, StorageUnavailableError } from "../storage/adapter.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import {

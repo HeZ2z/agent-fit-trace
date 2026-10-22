@@ -11,7 +11,7 @@
  * dates pass through unchanged.
  */
 
-import { EXTREME_RPE, resolveExerciseName } from "@pi-fit-trace/core";
+import { EXTREME_RPE, resolveExerciseName } from "@agent-fit-trace/core";
 import type {
   AnalysisFlag,
   ExerciseTrend,
@@ -19,7 +19,7 @@ import type {
   Severity,
   ValidationWarning,
   ValidationIssue,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type { AppLanguage } from "./index.ts";
 import { displayExerciseName } from "./exercises.ts";
 import { domainZh } from "./zh/domain.ts";

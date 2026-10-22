@@ -1,6 +1,6 @@
-import { stableStringify, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { deriveWorkoutId } from "@pi-fit-trace/api-contracts";
+import { stableStringify, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { deriveWorkoutId } from "@agent-fit-trace/api-contracts";
 
 /**
  * Pure schema, row mapping and write-classification helpers for the mobile

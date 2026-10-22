@@ -15,15 +15,15 @@ importers:
         specifier: 0.85.1
         version: 0.85.1(ws@8.21.3)(zod@3.25.76)
     devDependencies:
+      '@agent-fit-trace/api-contracts':
+        specifier: workspace:*
+        version: link:packages/fit-trace-api-contracts
+      '@agent-fit-trace/core':
+        specifier: workspace:*
+        version: link:packages/fit-trace-core
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
         version: 0.85.1(ws@8.21.3)(zod@3.25.76)
-      '@pi-fit-trace/api-contracts':
-        specifier: workspace:*
-        version: link:packages/fit-trace-api-contracts
-      '@pi-fit-trace/core':
-        specifier: workspace:*
-        version: link:packages/fit-trace-core
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.4
@@ -36,13 +36,13 @@ importers:
 
   app:
     dependencies:
-      '@pi-fit-trace/api-contracts':
+      '@agent-fit-trace/api-contracts':
         specifier: workspace:*
         version: link:../packages/fit-trace-api-contracts
-      '@pi-fit-trace/core':
+      '@agent-fit-trace/core':
         specifier: workspace:*
         version: link:../packages/fit-trace-core
-      '@pi-fit-trace/i18n':
+      '@agent-fit-trace/i18n':
         specifier: workspace:*
         version: link:../packages/fit-trace-i18n
       react:
@@ -88,21 +88,21 @@ importers:
 
   mobile:
     dependencies:
+      '@agent-fit-trace/api-contracts':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-api-contracts
+      '@agent-fit-trace/core':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-core
+      '@agent-fit-trace/i18n':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-i18n
+      '@agent-fit-trace/ui-tokens':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-ui-tokens
       '@expo/ui':
         specifier: ~58.0.20
         version: 58.0.20(@babel/core@7.29.7)(expo@58.0.14)(react-dom@19.3.0(react@19.3.0))(react-native-worklets@0.13.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))(react@19.3.0))(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))(react@19.3.0)
-      '@pi-fit-trace/api-contracts':
-        specifier: workspace:*
-        version: link:../packages/fit-trace-api-contracts
-      '@pi-fit-trace/core':
-        specifier: workspace:*
-        version: link:../packages/fit-trace-core
-      '@pi-fit-trace/i18n':
-        specifier: workspace:*
-        version: link:../packages/fit-trace-i18n
-      '@pi-fit-trace/ui-tokens':
-        specifier: workspace:*
-        version: link:../packages/fit-trace-ui-tokens
       '@react-native-async-storage/async-storage':
         specifier: 2.2.0
         version: 2.2.0(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))
@@ -206,16 +206,16 @@ importers:
 
   packages/fit-trace-api-contracts:
     dependencies:
-      '@pi-fit-trace/core':
+      '@agent-fit-trace/core':
         specifier: workspace:*
         version: link:../fit-trace-core
 
   packages/fit-trace-cli:
     dependencies:
-      '@pi-fit-trace/api-contracts':
+      '@agent-fit-trace/api-contracts':
         specifier: workspace:*
         version: link:../fit-trace-api-contracts
-      '@pi-fit-trace/core':
+      '@agent-fit-trace/core':
         specifier: workspace:*
         version: link:../fit-trace-core
 
@@ -223,7 +223,7 @@ importers:
 
   packages/fit-trace-i18n:
     dependencies:
-      '@pi-fit-trace/core':
+      '@agent-fit-trace/core':
         specifier: workspace:*
         version: link:../fit-trace-core
 
@@ -5913,9 +5913,7 @@ snapshots:
       metro-runtime: 0.87.1
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 

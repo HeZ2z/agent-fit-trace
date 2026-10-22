@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { detectFlags, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { detectFlags, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { loadFixture } from "./helpers.ts";
 
 function record(overrides: Partial<WorkoutRecord> & { id: string; date: string }): WorkoutRecord {

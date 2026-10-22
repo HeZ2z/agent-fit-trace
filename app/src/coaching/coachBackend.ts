@@ -1,7 +1,7 @@
 import {
   COACHING_BACKEND_DEFINITIONS,
   isCoachingBackendId,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CloudCapabilities,
   CoachingBackendDescriptor,
@@ -10,7 +10,7 @@ import type {
   CoachingEventEnvelope,
   CoachingRuntimeId,
   SubmitCoachingRunInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 /**
  * Backend selection is a UI concern only for THIS slice: the server remains

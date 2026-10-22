@@ -1,4 +1,4 @@
-import type { AnalysisFilter, PlanConstraints, WorkoutRecord } from "@pi-fit-trace/core";
+import type { AnalysisFilter, PlanConstraints, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   API_ENDPOINTS,
   HTTP_STATUS,

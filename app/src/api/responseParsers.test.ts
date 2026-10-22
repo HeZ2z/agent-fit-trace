@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AnalysisResult, PlanDraft } from "@pi-fit-trace/core";
+import type { AnalysisResult, PlanDraft } from "@agent-fit-trace/core";
 import { MalformedResponseError } from "./contracts.ts";
 import { parseAnalysisResponse, parsePlanResponse } from "./responseParsers.ts";
 

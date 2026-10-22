@@ -147,7 +147,7 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.click(screen.getByRole("button", { name: /sign out and lose guest access/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
     // The explicit sign-out does not leave the previous deep link armed.
-    expect(window.sessionStorage.getItem("pi-fit-trace:auth:return-target:v1")).toBeNull();
+    expect(window.sessionStorage.getItem("agent-fit-trace:auth:return-target:v1")).toBeNull();
   });
 
   it("warns before replacing a guest and returns the account to Me", async () => {

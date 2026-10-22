@@ -18,8 +18,8 @@ import {
   normalizeExerciseName,
   resolveExerciseName,
   searchExercises,
-} from "@pi-fit-trace/core";
-import type { ExerciseCatalog } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { ExerciseCatalog } from "@agent-fit-trace/core";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const GENERATOR_PATH = join(REPO_ROOT, "scripts", "build-exercise-catalog.mjs");

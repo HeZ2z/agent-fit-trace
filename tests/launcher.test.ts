@@ -7,14 +7,14 @@ import { join } from "node:path";
 import { request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
 
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   parseAnalysisResult,
   parseCoachingCapabilityDiscovery,
   parseWorkoutList,
-} from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload } from "@agent-fit-trace/api-contracts";
 import {
   checkNodeRuntime,
   isSafeOpenUrl,
@@ -216,7 +216,7 @@ test("missing dist fails with a clear build diagnostic", async () => {
   assert.ok(upstream !== null);
   await assert.rejects(
     startLauncherServer({ distDir: join(distDir, "does-not-exist"), upstreamBaseUrl: upstream.baseUrl }),
-    /Static app build is missing.*pnpm --filter @pi-fit-trace\/app build/,
+    /Static app build is missing.*pnpm --filter @agent-fit-trace\/app build/,
   );
 });
 

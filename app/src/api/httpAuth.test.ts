@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError, buildImportedArtifact } from "@pi-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import { API_ERROR_CODES, ApiError, buildImportedArtifact } from "@agent-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./httpFitTraceClient.ts";
 import type { HttpResponseLike } from "./httpFitTraceClient.ts";
 import { fetchPublicConfig } from "./publicConfig.ts";

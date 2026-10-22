@@ -12,8 +12,8 @@
  * `tests/mobilePreferencesModel.test.ts`).
  */
 
-import { isLanguage, type AppLanguage } from "@pi-fit-trace/i18n";
-import { isSkinName, type SkinName } from "@pi-fit-trace/ui-tokens";
+import { isLanguage, type AppLanguage } from "@agent-fit-trace/i18n";
+import { isSkinName, type SkinName } from "@agent-fit-trace/ui-tokens";
 
 /** The local values a guest sees and an account mirrors. */
 export interface LocalPreferences {

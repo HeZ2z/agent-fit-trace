@@ -8,8 +8,8 @@ import {
   ValidationError,
   stableStringify,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { ValidationIssue, ValidationWarning } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { ValidationIssue, ValidationWarning } from "@agent-fit-trace/core";
 import { ExerciseNameCombobox } from "../components/ExerciseNameCombobox.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useI18n } from "../i18n/useI18n.ts";

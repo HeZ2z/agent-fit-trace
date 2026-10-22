@@ -2,14 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
-import { CURRENT_SCHEMA_VERSION } from "@pi-fit-trace/core";
+import { CURRENT_SCHEMA_VERSION } from "@agent-fit-trace/core";
 import { deriveWorkoutId } from "../contracts/ids.ts";
 import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter, StorageUnavailableError } from "../storage/adapter.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import { loadRecords } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
 import { WorkoutEditorScreen } from "./WorkoutEditorScreen.tsx";
 

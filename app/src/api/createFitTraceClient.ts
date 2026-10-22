@@ -1,4 +1,4 @@
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./httpFitTraceClient.ts";
 import { LocalFitTraceClient } from "./localFitTraceClient.ts";
 import { requireRuntimeMode } from "./runtimeMode.ts";

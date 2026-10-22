@@ -1,4 +1,4 @@
-# @pi-fit-trace/i18n
+# @agent-fit-trace/i18n
 
 Render-time English/Chinese display layer shared by the web app and the React
 Native app.
@@ -42,7 +42,7 @@ Native app.
 - **No environment access.** `translate` takes the language explicitly. This
   package has no localStorage, DOM, React or Node.js dependency, so both the
   web app and the React Native app can use it; the catalog search only imports
-  browser-safe `@pi-fit-trace/core` helpers. The web app keeps its
+  browser-safe `@agent-fit-trace/core` helpers. The web app keeps its
   localStorage/`<html lang>`/`data-lang` store in `app/src/i18n/i18n.ts`; the
   storage key and accepted values are shared with `app/index.html`'s pre-paint
   bootstrap.
@@ -52,19 +52,19 @@ Native app.
 
 ## Exports
 
-- `@pi-fit-trace/i18n` — `AppLanguage`, `DEFAULT_LANGUAGE`,
+- `@agent-fit-trace/i18n` — `AppLanguage`, `DEFAULT_LANGUAGE`,
   `LANGUAGE_STORAGE_KEY`, `LANGUAGES`, `MessageParams`, `isLanguage`,
   `formatMessage`, `translate`, `ZH_MESSAGES`, and the catalog-backed exercise
   display/autocomplete layer: `displayExerciseName`,
   `displayStoredExerciseName`, `searchExerciseSuggestions`,
   `MAX_EXERCISE_SUGGESTIONS`, `ExerciseSuggestion`,
   `EXERCISE_DISPLAY_NAMES_ZH`, `EXERCISE_ALIASES_ZH`.
-- `@pi-fit-trace/i18n/domain` — Chinese rebuild helpers for deterministic,
+- `@agent-fit-trace/i18n/domain` — Chinese rebuild helpers for deterministic,
   code-bearing domain content (`displayFlagMessage`, `displayRecommendation`,
   `displayValidationMessage`, …).
-- `@pi-fit-trace/i18n/zh/*` — individual dictionary tables (and the generated
+- `@agent-fit-trace/i18n/zh/*` — individual dictionary tables (and the generated
   exercise-name table), used by the dictionary integrity test.
 
 ## Scripts
 
-- `pnpm --filter @pi-fit-trace/i18n typecheck`
+- `pnpm --filter @agent-fit-trace/i18n typecheck`

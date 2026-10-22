@@ -6,8 +6,8 @@ import {
   analyzeProgress,
   filterRecords,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { loadFixture } from "./helpers.ts";
 
 /** Record ids of `history-strength.json`, in ascending date order. */

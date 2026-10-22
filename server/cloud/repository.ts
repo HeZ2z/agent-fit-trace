@@ -13,11 +13,11 @@
  * `tests/cloudFakes.ts` implements both in memory so the worker and HTTP
  * handler can be exercised without a database.
  */
-import type { CoachingDataSnapshot, CoachingEventEnvelope, CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import { CLOUD_BACKEND_ID, CLOUD_RUNTIME_ID } from "@pi-fit-trace/api-contracts";
-import type { CloudCoachingRun, CloudRunStatus } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { stableStringify } from "@pi-fit-trace/core";
+import type { CoachingDataSnapshot, CoachingEventEnvelope, CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import { CLOUD_BACKEND_ID, CLOUD_RUNTIME_ID } from "@agent-fit-trace/api-contracts";
+import type { CloudCoachingRun, CloudRunStatus } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { stableStringify } from "@agent-fit-trace/core";
 
 export class CloudError extends Error {
   readonly code: string;

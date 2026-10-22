@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import type {
   ImportedArtifact,
   ImportedArtifactKind,
   ImportedArtifactMeta,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 export type ArtifactSourceStatus = "loading" | "ready" | "error";
 

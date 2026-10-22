@@ -23,7 +23,7 @@ export interface PendingGuestUpgrade {
   startedAt: number;
 }
 
-export const GUEST_UPGRADE_STORAGE_KEY = "pi-fit-trace:auth:v1:guest-upgrade";
+export const GUEST_UPGRADE_STORAGE_KEY = "agent-fit-trace:auth:v1:guest-upgrade";
 
 export function normalizeGuestUpgradeEmail(email: string): string {
   return email.trim().toLowerCase();

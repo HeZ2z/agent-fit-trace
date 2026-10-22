@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import { parseAnalysisResult } from "@pi-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import { parseAnalysisResult } from "@agent-fit-trace/api-contracts";
 import fitTraceExtension from "../.pi/extensions/fit-trace/index.ts";
 import { JsonFileStorage, WorkoutStore } from "../.pi/extensions/fit-trace/store.ts";
 import {
@@ -32,7 +32,7 @@ import {
   toSafeToolError,
 } from "../server/coaching/coachedToolPolicy.ts";
 import { cleanupSnapshotDir, writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
-import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
+import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-trace/api-contracts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createCoachingService, storeFactorySource } from "../server/coaching/coachingService.ts";
 import type { CoachingService } from "../server/coaching/coachingService.ts";

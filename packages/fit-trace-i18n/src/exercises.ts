@@ -21,7 +21,7 @@
  * catalog data.
  */
 
-import { resolveExerciseName, searchExercises } from "@pi-fit-trace/core";
+import { resolveExerciseName, searchExercises } from "@agent-fit-trace/core";
 import type { AppLanguage } from "./index.ts";
 import { EXERCISE_ALIASES_ZH, EXERCISE_DISPLAY_NAMES_ZH } from "./zh/exercises.ts";
 

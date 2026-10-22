@@ -1,5 +1,5 @@
-import { stableStringify, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { ValidationWarning, WorkoutRecord } from "@pi-fit-trace/core";
+import { stableStringify, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { ValidationWarning, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   IMPORT_MAX_COLLECTION_LENGTH,
   IMPORT_MAX_FILE_BYTES,

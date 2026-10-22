@@ -2,7 +2,7 @@
  * pi Extension adapter for fit-trace.
  *
  * This is the only module that depends on the pi runtime. All domain behavior
- * lives in `@pi-fit-trace/core` so it can be tested without pi.
+ * lives in `@agent-fit-trace/core` so it can be tested without pi.
  *
  * Discovery: pi auto-loads project-local extensions from `.pi/extensions/`.
  *
@@ -54,9 +54,9 @@ import {
   analyzeProgress,
   generateNextPlan,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 
-import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
+import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
 
 import { JsonFileStorage, WorkoutStore } from "./store.ts";
 

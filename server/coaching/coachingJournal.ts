@@ -40,7 +40,7 @@ import type {
   CoachingRun,
   CoachingRuntimeId,
   CoachingTerminalStatus,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import {
   COACHING_PROTOCOL_VERSION,
   MAX_COACHING_SESSION_ID_LENGTH,
@@ -50,9 +50,9 @@ import {
   parseCoachingEventPayload,
   parseSubmitCoachingRunResult,
   resolveCoachingBackendSelection,
-} from "@pi-fit-trace/api-contracts";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { canonicalizeCoachingSubmit } from "./coachingCanonical.ts";
 import { NATIVE_SESSION_VERSION_BY_BACKEND } from "./runtimeRegistry.ts";
 

@@ -8,7 +8,7 @@
  * `node:test` suite can load it through Node's TypeScript type stripping (see
  * `tests/mobileCoachModel.test.ts`).
  *
- * The event envelope and wire budgets come from `@pi-fit-trace/api-contracts`
+ * The event envelope and wire budgets come from `@agent-fit-trace/api-contracts`
  * so the mobile and web clients validate the exact same protocol the server
  * writes. The hosted cloud coach is the only mobile coaching backend; the
  * local CLI coach stays on desktop.
@@ -21,12 +21,12 @@ import {
   MAX_COACHING_SSE_FRAME_BYTES,
   MAX_COACHING_SSE_TOTAL_BYTES,
   parseCoachingEventEnvelope,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CoachingEventEnvelope,
   CoachingEventPayload,
   CoachingTerminalStatus,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 export {
   MAX_COACHING_SSE_FRAME_BYTES as MAX_COACH_SSE_FRAME_BYTES,

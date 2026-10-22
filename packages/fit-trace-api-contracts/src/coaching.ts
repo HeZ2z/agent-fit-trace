@@ -1,5 +1,5 @@
-import type { AnalysisResult } from "@pi-fit-trace/core";
-import { assertOrderedDateRange, isValidIsoDate, ValidationError } from "@pi-fit-trace/core";
+import type { AnalysisResult } from "@agent-fit-trace/core";
+import { assertOrderedDateRange, isValidIsoDate, ValidationError } from "@agent-fit-trace/core";
 import { parseAnalysisResult } from "./validators.ts";
 import { MalformedResponseError } from "./errors.ts";
 

@@ -4,9 +4,9 @@ import { test } from "node:test";
 import {
   COACHED_TOOL_NAMES,
   type CoachingEventPayload,
-} from "@pi-fit-trace/api-contracts";
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { loadFixture } from "./helpers.ts";
 import {
   ProviderAcceptanceUnknownError,

@@ -1,7 +1,7 @@
 import { openDatabaseAsync } from "expo-sqlite";
 import type { SQLiteDatabase } from "expo-sqlite";
-import { ConflictError, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { ConflictError, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   WORKOUTS_DB_NAME,
   classifyWorkoutWrite,

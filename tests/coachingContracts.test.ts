@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { AnalysisResult, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   COACHING_CAPABILITY_VERSION,
   COACHING_DISCOVERY_VERSION,
@@ -36,12 +36,12 @@ import {
   replayRunState,
   resolveCoachingBackendSelection,
   utf8ByteLength,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CoachingEventEnvelope,
   CoachingEventPayload,
   CoachingStreamIdentity,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 function record(over: Partial<WorkoutRecord> & { id: string; date: string }): WorkoutRecord {
   return validateWorkoutRecord({

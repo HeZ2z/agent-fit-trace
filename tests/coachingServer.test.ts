@@ -16,10 +16,10 @@ import { request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import { ApiError, API_ERROR_CODES } from "@pi-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import type { CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import { ApiError, API_ERROR_CODES } from "@agent-fit-trace/api-contracts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import type { TokenVerifier } from "../server/auth/verifier.ts";
 import { createPrincipalMemoryStores } from "../server/principalMemoryStore.ts";
@@ -1128,7 +1128,7 @@ test("queued run reports lastSeq -1 with empty event page (contract cursor)", as
     assert.ok(data.expiresAt > Date.now());
     assert.ok(["queued", "running"].includes(data.run.status));
     // Empty page, not an error; contract guard accepts -1.
-    const { parseReadCoachingRunResult } = await import("@pi-fit-trace/api-contracts");
+    const { parseReadCoachingRunResult } = await import("@agent-fit-trace/api-contracts");
     parseReadCoachingRunResult(JSON.parse(JSON.stringify({ ...data, run: { ...data.run, id: runId, sessionId: (read.json.data as { run: { sessionId: string } }).run.sessionId, idempotencyKey: "k", prompt: "p", snapshot: (read.json.data as { run: { snapshot: unknown } }).run.snapshot, runtimeId: "pi" } })));
     // Active run: the stream stays open as a live tail (no terminal yet), so
     // never await the full body while live. Close with it open instead: the

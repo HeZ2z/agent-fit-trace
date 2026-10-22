@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { deriveWorkoutId } from "./ids.ts";
 
 function baseRecord(overrides: Partial<WorkoutRecord> = {}): WorkoutRecord {

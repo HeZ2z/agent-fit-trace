@@ -7,10 +7,10 @@ import {
   IMPORT_MAX_FILENAME_LENGTH,
   WORKOUT_MAX_ID_BYTES,
   parseWorkoutImportFile,
-} from "@pi-fit-trace/api-contracts";
-import type { FitTraceClient, PublicApiConfig } from "@pi-fit-trace/api-contracts";
-import { analyzeProgress, generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import type { FitTraceClient, PublicApiConfig } from "@agent-fit-trace/api-contracts";
+import { analyzeProgress, generateNextPlan, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { downloadJson, readTextFile } from "../api/fileTransport.ts";
 import { AuthProvider, useAuth } from "../auth/AuthContext.tsx";
 import type { SupabaseSession } from "../auth/supabaseAuth.ts";

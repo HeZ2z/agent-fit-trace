@@ -1,5 +1,5 @@
-import type { PublicApiConfig } from "@pi-fit-trace/api-contracts";
-import { MalformedResponseError } from "@pi-fit-trace/api-contracts";
+import type { PublicApiConfig } from "@agent-fit-trace/api-contracts";
+import { MalformedResponseError } from "@agent-fit-trace/api-contracts";
 
 /**
  * Fetch the public bootstrap config (`GET /api/v1/public-config`).

@@ -1,4 +1,4 @@
-import { displayTrend } from "@pi-fit-trace/i18n/domain";
+import { displayTrend } from "@agent-fit-trace/i18n/domain";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";

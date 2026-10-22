@@ -2,13 +2,13 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
-import { analyzeProgress } from "@pi-fit-trace/core";
+import type { AnalysisResult, WorkoutRecord } from "@agent-fit-trace/core";
+import { analyzeProgress } from "@agent-fit-trace/core";
 import type {
   ArtifactSelection,
   FitTraceClient,
   ImportedArtifact,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";

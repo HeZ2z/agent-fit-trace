@@ -1,5 +1,5 @@
 {
-  "name": "pi-fit-trace",
+  "name": "agent-fit-trace",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,12 +15,12 @@
     "dev:api": "node server/devApiServer.ts",
     "start": "node packages/fit-trace-cli/src/cli.ts start",
     "coach:local": "node packages/fit-trace-cli/src/cli.ts start",
-    "build": "pnpm build:server && pnpm --filter @pi-fit-trace/app build",
-    "build:server": "pnpm --filter @pi-fit-trace/app exec vite build --config vite.server.config.ts",
+    "build": "pnpm build:server && pnpm --filter @agent-fit-trace/app build",
+    "build:server": "pnpm --filter @agent-fit-trace/app exec vite build --config vite.server.config.ts",
     "typecheck": "tsc --noEmit && pnpm --filter app typecheck",
-    "mobile:start": "pnpm --filter @pi-fit-trace/mobile start",
-    "mobile:typecheck": "pnpm --filter @pi-fit-trace/mobile typecheck",
-    "mobile:export:android": "pnpm --filter @pi-fit-trace/mobile export:android"
+    "mobile:start": "pnpm --filter @agent-fit-trace/mobile start",
+    "mobile:typecheck": "pnpm --filter @agent-fit-trace/mobile typecheck",
+    "mobile:export:android": "pnpm --filter @agent-fit-trace/mobile export:android"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
@@ -28,8 +28,8 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@pi-fit-trace/api-contracts": "workspace:*",
-    "@pi-fit-trace/core": "workspace:*",
+    "@agent-fit-trace/api-contracts": "workspace:*",
+    "@agent-fit-trace/core": "workspace:*",
     "@types/node": "^24.0.0",
     "typebox": "^1.3.30",
     "typescript": "^5.9.0"

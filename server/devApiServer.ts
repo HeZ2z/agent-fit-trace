@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { pathToFileURL } from "node:url";
-import { createMemoryHandler } from "@pi-fit-trace/api-contracts/testing";
+import { createMemoryHandler } from "@agent-fit-trace/api-contracts/testing";
 import {
   createAuthenticatedHandler,
   MAX_REQUEST_BODY_BYTES,

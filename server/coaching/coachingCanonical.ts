@@ -7,7 +7,7 @@
  * it after a restart. No clock, randomness, credentials, or runtime state is
  * part of the projection.
  */
-import type { CoachingBackendId, CoachingDataSnapshot } from "@pi-fit-trace/api-contracts";
+import type { CoachingBackendId, CoachingDataSnapshot } from "@agent-fit-trace/api-contracts";
 
 export interface CanonicalCoachingSubmit {
   prompt: string;

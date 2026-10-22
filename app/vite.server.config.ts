@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   root: fileURLToPath(new URL("../", import.meta.url)),
-  ssr: { noExternal: [/^@pi-fit-trace\//] },
+  ssr: { noExternal: [/^@agent-fit-trace\//] },
   build: {
     ssr: "server/vercel.ts",
     outDir: "build/server",

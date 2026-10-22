@@ -1,11 +1,11 @@
-import { stableStringify } from "@pi-fit-trace/core";
+import { stableStringify } from "@agent-fit-trace/core";
 import type {
   AnalysisFilter,
   AnalysisResult,
   PlanConstraints,
   PlanDraft,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import {
   API_ENDPOINTS,
   API_ERROR_CODES,
@@ -30,7 +30,7 @@ import {
   parsePlanDraft,
   parseSaveImportedArtifactResult,
   parseWorkoutList,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ArtifactSelection,
   CreateWorkoutResult,
@@ -44,7 +44,7 @@ import type {
   PlanAdoption,
   PlanAdoptionInput,
   SaveImportedArtifactResult,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 /**
  * `FitTraceClient` over an HTTP transport. The fetch dependency is typed

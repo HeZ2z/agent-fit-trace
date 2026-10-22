@@ -65,8 +65,8 @@ import {
   classifyExtensionUiRequest,
   toSafeToolError,
 } from "./coachedToolPolicy.ts";
-import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
+import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-trace/api-contracts";
 
 export const COACHED_TOOLS_FLAG = COACHED_TOOL_NAMES.join(",");
 

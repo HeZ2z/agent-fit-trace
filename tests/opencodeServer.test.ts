@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-trace/api-contracts";
 import {
   CoachedOpenCodeRun,
   MAX_OPENCODE_LINE_BYTES,

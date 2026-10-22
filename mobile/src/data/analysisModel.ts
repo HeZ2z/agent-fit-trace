@@ -1,13 +1,13 @@
-import { analyzeProgress, toDateKey, toEpochMs } from "@pi-fit-trace/core";
+import { analyzeProgress, toDateKey, toEpochMs } from "@agent-fit-trace/core";
 import type {
   AnalysisFlag,
   AnalysisMetrics,
   ExerciseTrend,
   Severity,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { AppLanguage } from "@pi-fit-trace/i18n";
-import { displayFlagMessage, displaySeverity } from "@pi-fit-trace/i18n/domain";
+} from "@agent-fit-trace/core";
+import type { AppLanguage } from "@agent-fit-trace/i18n";
+import { displayFlagMessage, displaySeverity } from "@agent-fit-trace/i18n/domain";
 
 /**
  * Pure display model for the Analysis screen.

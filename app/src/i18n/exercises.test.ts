@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   displayStoredExerciseName as sharedDisplayStoredExerciseName,
   searchExerciseSuggestions as sharedSearchExerciseSuggestions,
-} from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
 import {
   displayStoredExerciseName,
   searchExerciseSuggestions,

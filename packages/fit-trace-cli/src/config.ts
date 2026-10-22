@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import type { CoachingRuntimeId } from "@pi-fit-trace/api-contracts";
+import type { CoachingRuntimeId } from "@agent-fit-trace/api-contracts";
 import {
   isCoachingRuntimeId,
   resolveCoachingBackendSelection,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 /**
  * Launcher configuration: every value is operator-configured (flags or
