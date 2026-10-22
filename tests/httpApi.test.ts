@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { HttpFitTraceClient } from "../app/src/api/httpFitTraceClient.ts";
 import { startDevApiServer } from "../server/devApiServer.ts";
 import type { DevApiServer } from "../server/devApiServer.ts";

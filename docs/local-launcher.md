@@ -18,7 +18,7 @@ Behavior:
 
 - Serves `<repo>/app/dist` on loopback only (`http://127.0.0.1:<port>`,
   default preferred port `5198`, falls forward while busy). Missing
-  `index.html` fails with the build step (`pnpm --filter @pi-fit-trace/app
+  `index.html` fails with the build step (`pnpm --filter @agent-fit-trace/app
   build`).
 - Injects a same-origin runtime bootstrap (`/fit-trace-runtime.js`) into the
   served shell so a build with the default local `VITE_FIT_TRACE_MODE` acts

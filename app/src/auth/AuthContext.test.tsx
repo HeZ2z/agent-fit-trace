@@ -72,12 +72,12 @@ describe("AuthProvider", () => {
     );
     expect(screen.getByTestId("status").textContent).toBe("signed-in");
     expect(screen.getByTestId("token").textContent).toBe("access-user-1");
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:session")).toContain("user-1");
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:session")).toContain("user-1");
 
     fireEvent.click(screen.getByText("sign out"));
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
     expect(screen.getByTestId("user").textContent).toBe("none");
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:session")).toBeNull();
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:session")).toBeNull();
   });
 
   it("switching accounts changes the credential identity (cache key)", async () => {
@@ -378,7 +378,7 @@ describe("AuthProvider", () => {
     // Transient outage: the session survives with AUTH_UNAVAILABLE, no sign-out.
     await waitFor(() => expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE"));
     expect(screen.getByTestId("token").textContent).toBe("access-user-1");
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:session")).toContain("user-1");
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:session")).toContain("user-1");
     // Retry after recovery signs in with the refreshed session.
     failTransient = false;
     fireEvent.click(screen.getByText("retry"));
@@ -403,7 +403,7 @@ describe("AuthProvider", () => {
     // No forever-loading: without a config the session can never validate,
     // so the provider reports signed-out while keeping the stored session.
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("signed-out"));
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:session")).toContain("user-1");
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:session")).toContain("user-1");
   });
 });
 
@@ -1266,7 +1266,7 @@ describe("guest sign-in", () => {
     expect(signupCalls).toBe(1);
     expect(verifyCalls).toBe(1);
     expect(screen.getByTestId("status").textContent).toBe("signed-out");
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).toContain(
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:guest-candidate")).toContain(
       "access-guest-candidate",
     );
 
@@ -1277,7 +1277,7 @@ describe("guest sign-in", () => {
     expect(signupCalls).toBe(1);
     expect(verifyCalls).toBe(2);
     expect(screen.getByTestId("anon").textContent).toBe("true");
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).toBeNull();
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:guest-candidate")).toBeNull();
 
     // A reload restores the verified session, not the candidate.
     view.unmount();
@@ -1333,7 +1333,7 @@ describe("guest sign-in", () => {
       expect(screen.getByTestId("auth-error").textContent).toBe("AUTH_UNAVAILABLE"),
     );
     expect(signupCalls).toBe(1);
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).not.toBeNull();
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:guest-candidate")).not.toBeNull();
     first.unmount();
 
     // Reload: the candidate is restored as an unvalidated session and the
@@ -1353,7 +1353,7 @@ describe("guest sign-in", () => {
     expect(screen.getByTestId("user").textContent).toBe("guest-reload");
     expect(screen.getByTestId("anon").textContent).toBe("true");
     expect(signupCalls).toBe(1);
-    expect(window.localStorage.getItem("pi-fit-trace:auth:v1:guest-candidate")).toBeNull();
+    expect(window.localStorage.getItem("agent-fit-trace:auth:v1:guest-candidate")).toBeNull();
   });
 
   it("never replaces an existing verified account with a direct guest call", async () => {

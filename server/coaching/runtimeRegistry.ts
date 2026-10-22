@@ -26,7 +26,7 @@ import type {
   CoachingExecutionLocation,
   CoachingRuntimeId,
   CoachingTrustedIdentity,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import {
   COACHED_TOOL_NAMES,
   COACHING_BACKEND_DEFINITIONS,
@@ -37,7 +37,7 @@ import {
   COACHING_SSE_TERMINAL_RESERVE_BYTES,
   MAX_COACHING_SSE_TOTAL_BYTES,
   qualifyCloudBackend,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 /** Terminal report from the runtime, with exit confirmation. */
 export interface RuntimeDoneInfo {
@@ -73,9 +73,9 @@ export interface RuntimeLaunchOptions {
    * the stored handle belongs to this same backend + product session.
    */
   resumeNativeSessionHandle?: string;
-  onEvent(payload: import("@pi-fit-trace/api-contracts").CoachingEventPayload): void;
+  onEvent(payload: import("@agent-fit-trace/api-contracts").CoachingEventPayload): void;
   onDone(
-    status: import("@pi-fit-trace/api-contracts").CoachingTerminalStatus,
+    status: import("@agent-fit-trace/api-contracts").CoachingTerminalStatus,
     reason?: string,
     info?: RuntimeDoneInfo,
   ): void;

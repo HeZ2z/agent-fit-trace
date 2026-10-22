@@ -1,11 +1,11 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
+import type { AnalysisResult, WorkoutRecord } from "@agent-fit-trace/core";
 import type {
   ArtifactSelection,
   FitTraceClient,
   ImportedArtifact,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { FakeFitTraceClient, clientFor, deferred } from "../test/asyncClient.ts";
 import { useArtifactSource } from "./useArtifactSource.ts";
 import type { ArtifactSource } from "./useArtifactSource.ts";

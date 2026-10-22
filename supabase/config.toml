@@ -16,7 +16,7 @@
 # Production must apply the hook and trigger, not merely hide a button; see
 # docs/supabase-setup.md.
 
-project_id = "pi-fit-trace"
+project_id = "agent-fit-trace"
 
 [api]
 enabled = true

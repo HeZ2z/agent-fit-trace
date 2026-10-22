@@ -9,8 +9,8 @@ import {
   flattenSets,
   summarizeMetrics,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { loadFixture } from "./helpers.ts";
 
 async function history(): Promise<WorkoutRecord[]> {

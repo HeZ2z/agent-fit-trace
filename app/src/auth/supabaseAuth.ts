@@ -48,7 +48,7 @@ export interface SupabaseAuthConfig {
 
 export type AuthFetch = typeof fetch;
 
-export const AUTH_STORAGE_KEY = "pi-fit-trace:auth:v1:session";
+export const AUTH_STORAGE_KEY = "agent-fit-trace:auth:v1:session";
 
 function authHeaders(config: SupabaseAuthConfig, accessToken?: string): Record<string, string> {
   const headers: Record<string, string> = {
@@ -549,7 +549,7 @@ export function isSessionExpired(session: SupabaseSession | null, now: number = 
  * `sessionStorage` survives a reload); this limitation is intentional and the
  * token is never copied to `localStorage`, the URL query, or logs.
  */
-export const RECOVERY_TOKEN_KEY = "pi-fit-trace:auth:v1:recovery-token";
+export const RECOVERY_TOKEN_KEY = "agent-fit-trace:auth:v1:recovery-token";
 
 // In-page fallback + tombstone. Module-scoped on purpose (single tab page);
 // tests must call `resetRecoveryTokenMemoryForTests()` in `afterEach` so no

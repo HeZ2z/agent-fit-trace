@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
 import { OPENROUTER_CHAT_COMPLETIONS_URL } from "../server/cloud/config.ts";
 import type { OpenRouterConfig } from "../server/cloud/config.ts";
 import { createOpenRouterProvider } from "../server/cloud/openRouterProvider.ts";

@@ -30,8 +30,8 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { createRpcByteFramer, encodeRpcRequest, RpcFrameError } from "./rpcFraming.ts";
-import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
+import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-trace/api-contracts";
 import {
   DomainToolError,
   loadSnapshotDomainExecutor,

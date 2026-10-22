@@ -8,9 +8,9 @@ import {
   NetworkError,
   deriveWorkoutId,
   parseCreateWorkoutResult,
-} from "@pi-fit-trace/api-contracts";
-import { ValidationError, stableStringify, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import { ValidationError, stableStringify, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { SYNC_API_URL_ENV, resolveSyncConfig } from "./syncConfig.ts";
 import type { SyncConfig } from "./syncConfig.ts";
 

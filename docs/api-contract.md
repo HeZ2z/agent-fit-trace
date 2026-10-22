@@ -1,17 +1,17 @@
-# agent-fit-trace API contract (`@pi-fit-trace/api-contracts`)
+# agent-fit-trace API contract (`@agent-fit-trace/api-contracts`)
 
 Source of truth: `packages/fit-trace-api-contracts/src/`.
 
 ## 1. Purpose and scope
 
-`@pi-fit-trace/api-contracts` is a browser-safe, shape-only package shared by
+`@agent-fit-trace/api-contracts` is a browser-safe, shape-only package shared by
 the app and any HTTP-shaped backend. It owns the *shape* of the boundary —
 client surface, JSON envelopes, errors, strict response guards, and
-deterministic ids — while all domain computation stays in `@pi-fit-trace/core`
+deterministic ids — while all domain computation stays in `@agent-fit-trace/core`
 (`analyzeProgress`, `generateNextPlan`, `validateWorkoutRecord`,
 `stableStringify`).
 
-- Computations stay in `@pi-fit-trace/core`; nothing in this package decides
+- Computations stay in `@agent-fit-trace/core`; nothing in this package decides
   values, only shapes (`src/types.ts`, `src/index.ts`).
 - Transport concerns stay out of core: envelopes, endpoint/status mapping, and
   error codes live here, not in core.
@@ -29,7 +29,7 @@ export * from "./validators.ts";
 ```
 
 Test support is a separate entrypoint
-(`@pi-fit-trace/api-contracts/testing`, `src/testing/index.ts`):
+(`@agent-fit-trace/api-contracts/testing`, `src/testing/index.ts`):
 
 ```ts
 export * from "./memoryHandler.ts";
@@ -81,7 +81,7 @@ export interface CreateWorkoutResult {
 
 All domain types (`WorkoutRecord`, `AnalysisFilter`, `AnalysisResult`,
 `PlanConstraints`, `PlanDraft`, `ValidationWarning`) are imported from
-`@pi-fit-trace/core`.
+`@agent-fit-trace/core`.
 
 ## 3. Wire envelopes
 
@@ -270,7 +270,7 @@ re-exports it from one place instead of keeping a duplicate
 (`app/src/api/contracts.ts`):
 
 ```ts
-export { MalformedResponseError } from "@pi-fit-trace/api-contracts";
+export { MalformedResponseError } from "@agent-fit-trace/api-contracts";
 ```
 
 ## 6. Workout IDs and idempotency
@@ -327,7 +327,7 @@ The app's stable import path re-exports the shared implementation
 (`app/src/contracts/ids.ts`):
 
 ```ts
-export { deriveWorkoutId } from "@pi-fit-trace/api-contracts";
+export { deriveWorkoutId } from "@agent-fit-trace/api-contracts";
 ```
 
 ## 7. Response validation
@@ -389,7 +389,7 @@ Hosts register it with their own runner. With `node:test`:
 
 ```ts
 import { test } from "node:test";
-import { runFitTraceClientContractSuite } from "@pi-fit-trace/api-contracts/testing";
+import { runFitTraceClientContractSuite } from "@agent-fit-trace/api-contracts/testing";
 
 runFitTraceClientContractSuite("local", test, () => makeClient());
 ```
@@ -398,7 +398,7 @@ With vitest:
 
 ```ts
 import { test } from "vitest";
-import { runFitTraceClientContractSuite } from "@pi-fit-trace/api-contracts/testing";
+import { runFitTraceClientContractSuite } from "@agent-fit-trace/api-contracts/testing";
 
 runFitTraceClientContractSuite("http", test, () => makeClient());
 ```

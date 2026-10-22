@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
 import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./api/httpFitTraceClient.ts";
 import { LOCAL_DEV_BYPASS_OWNER, LocalFitTraceClient } from "./api/localFitTraceClient.ts";
 import { currentRuntimeMode, isCoachVisible } from "./api/runtimeMode.ts";

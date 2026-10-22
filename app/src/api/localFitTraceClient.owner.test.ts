@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { loadRecords, saveRecord } from "../storage/workoutRepository.ts";
 import { LocalFitTraceClient } from "./localFitTraceClient.ts";

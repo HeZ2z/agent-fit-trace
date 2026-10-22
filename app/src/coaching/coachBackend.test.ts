@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CloudCapabilities } from "@pi-fit-trace/api-contracts";
+import type { CloudCapabilities } from "@agent-fit-trace/api-contracts";
 import {
   cloudOptionFromCapabilities,
   isBackendSupportedInMode,

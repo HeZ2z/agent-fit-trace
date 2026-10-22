@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { analyzeProgress, generateNextPlan, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { analyzeProgress, generateNextPlan, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   API_ERROR_CODES,
   ApiError,
@@ -8,15 +8,15 @@ import {
   encodeArtifactCursor,
   MalformedResponseError,
   NetworkError,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ImportArtifactInput,
   ImportedArtifact,
   ImportedArtifactMeta,
   PlanAdoption,
-} from "@pi-fit-trace/api-contracts";
-import { createMemoryHandler, runFitTraceClientContractSuite } from "@pi-fit-trace/api-contracts/testing";
-import type { HandlerInit } from "@pi-fit-trace/api-contracts/testing";
+} from "@agent-fit-trace/api-contracts";
+import { createMemoryHandler, runFitTraceClientContractSuite } from "@agent-fit-trace/api-contracts/testing";
+import type { HandlerInit } from "@agent-fit-trace/api-contracts/testing";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { HttpFitTraceClient } from "./httpFitTraceClient.ts";
 import type { HttpFetch, HttpResponseLike } from "./httpFitTraceClient.ts";

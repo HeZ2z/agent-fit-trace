@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { stableStringify } from "@pi-fit-trace/core";
-import type { PlanDraft } from "@pi-fit-trace/core";
-import type { FitTraceClient, PlanAdoption } from "@pi-fit-trace/api-contracts";
+import { stableStringify } from "@agent-fit-trace/core";
+import type { PlanDraft } from "@agent-fit-trace/core";
+import type { FitTraceClient, PlanAdoption } from "@agent-fit-trace/api-contracts";
 import {
   ArtifactSnapshotMeta,
   ArtifactSourceSelector,

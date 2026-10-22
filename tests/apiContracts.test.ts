@@ -6,7 +6,7 @@ import {
   generateNextPlan,
   stableStringify,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import {
   API_ENDPOINTS,
   API_ERROR_CODES,
@@ -17,11 +17,11 @@ import {
   parseCreateWorkoutResult,
   parsePlanDraft,
   parseWorkoutList,
-} from "@pi-fit-trace/api-contracts";
-import type { CreateWorkoutResult, FitTraceClient } from "@pi-fit-trace/api-contracts";
-import { createMemoryHandler } from "@pi-fit-trace/api-contracts/testing";
-import type { HandlerResponse } from "@pi-fit-trace/api-contracts/testing";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import type { CreateWorkoutResult, FitTraceClient } from "@agent-fit-trace/api-contracts";
+import { createMemoryHandler } from "@agent-fit-trace/api-contracts/testing";
+import type { HandlerResponse } from "@agent-fit-trace/api-contracts/testing";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { createInMemoryWorkoutStore } from "../server/inMemoryWorkoutStore.ts";
 
 function record(over: Partial<WorkoutRecord> & { id: string; date: string }): WorkoutRecord {

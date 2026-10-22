@@ -5,9 +5,9 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentOptions, StreamFn } from "@earendil-works/pi-agent-core";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { COACHED_TOOL_NAMES, type CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { COACHED_TOOL_NAMES, type CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   ProviderAcceptanceUnknownError,
   ProviderCancelledError,

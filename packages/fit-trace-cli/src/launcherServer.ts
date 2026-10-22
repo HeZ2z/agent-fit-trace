@@ -26,8 +26,8 @@ import {
   acquireCoachingJournalLock,
 } from "../../../server/coaching/coachingJournal.ts";
 import type { CoachingJournalLock } from "../../../server/coaching/coachingJournal.ts";
-import type { CoachingRuntimeId } from "@pi-fit-trace/api-contracts";
-import { resolveCoachingBackendSelection } from "@pi-fit-trace/api-contracts";
+import type { CoachingRuntimeId } from "@agent-fit-trace/api-contracts";
+import { resolveCoachingBackendSelection } from "@agent-fit-trace/api-contracts";
 
 /**
  * Same-origin launcher server: ONE loopback listener owned by the reviewed
@@ -545,7 +545,7 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
   } catch {
     throw new Error(
       `Static app build is missing at ${distDir} (no index.html). ` +
-        `Build it first: pnpm --filter @pi-fit-trace/app build`,
+        `Build it first: pnpm --filter @agent-fit-trace/app build`,
     );
   }
   const indexWithRuntime = injectRuntimeScript(indexHtml);

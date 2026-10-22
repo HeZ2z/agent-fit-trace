@@ -15,9 +15,9 @@
  * - there is no automatic retry. A transport failure after the acceptance
  *   marker is `ProviderAcceptanceUnknownError`, never a resubmission.
  */
-import { COACHED_TOOL_NAMES, parseAnalysisResult } from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { COACHED_TOOL_NAMES, parseAnalysisResult } from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   createSnapshotDomainExecutor,
   DomainToolError,

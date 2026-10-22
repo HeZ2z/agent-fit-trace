@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
+import type { CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
 import App from "./App.tsx";
 import { resetRecoveryTokenMemoryForTests } from "./auth/supabaseAuth.ts";
 

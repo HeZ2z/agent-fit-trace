@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
-import { analyzeProgress, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
+import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { createAuthenticatedHandler } from "../server/authenticatedHandler.ts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import { createPrincipalMemoryStores } from "../server/principalMemoryStore.ts";

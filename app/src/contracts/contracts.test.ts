@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ValidationError, validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { ValidationError, validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 
 const validRecord: WorkoutRecord = {
   id: "browser-1",
@@ -10,7 +10,7 @@ const validRecord: WorkoutRecord = {
   exercises: [{ name: "Squat", sets: [{ weight: 100, reps: 5, rpe: 8 }] }],
 };
 
-describe("@pi-fit-trace/core in the browser bundle", () => {
+describe("@agent-fit-trace/core in the browser bundle", () => {
   it("accepts a valid workout record", () => {
     const { record, warnings } = validateWorkoutRecord(validRecord);
 

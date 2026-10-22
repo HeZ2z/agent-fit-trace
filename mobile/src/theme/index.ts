@@ -1,7 +1,7 @@
 /**
  * React Native access to the shared Pixel/Glass token system.
  *
- * The token values live in @pi-fit-trace/ui-tokens so the web CSS and the
+ * The token values live in @agent-fit-trace/ui-tokens so the web CSS and the
  * native styles cannot drift; this module only owns the app-side skin state.
  */
 export {
@@ -14,4 +14,4 @@ export {
   type SkinName,
   type SkinTokens,
   type SkinPalette,
-} from "@pi-fit-trace/ui-tokens";
+} from "@agent-fit-trace/ui-tokens";

@@ -1,10 +1,10 @@
 {
-  "name": "@pi-fit-trace/api-contracts",
+  "name": "@agent-fit-trace/api-contracts",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@pi-fit-trace/core": "workspace:*"
+    "@agent-fit-trace/core": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts",

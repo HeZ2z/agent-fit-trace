@@ -1,9 +1,9 @@
-import { isValidIsoDate, stableStringify } from "@pi-fit-trace/core";
+import { isValidIsoDate, stableStringify } from "@agent-fit-trace/core";
 import type {
   AnalysisResult,
   PlanDraft,
   ValidationWarning,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import { API_ERROR_CODES, ApiError, MalformedResponseError } from "./errors.ts";
 import { parseAnalysisResult, parsePlanDraft } from "./validators.ts";
 

@@ -19,7 +19,7 @@ import {
   parseSubmitCoachingRunInput,
   parseSubmitCoachingRunResult,
   utf8ByteLength,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CancelCoachingRunResult,
   CoachingBootstrapResult,
@@ -32,7 +32,7 @@ import type {
   ReadCoachingRunResult,
   SubmitCoachingRunInput,
   SubmitCoachingRunResult,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 /**
  * Same-origin browser client for the local coaching HTTP + fetch-SSE API.

@@ -1,5 +1,5 @@
 {
-  "name": "@pi-fit-trace/i18n",
+  "name": "@agent-fit-trace/i18n",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,6 +13,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@pi-fit-trace/core": "workspace:*"
+    "@agent-fit-trace/core": "workspace:*"
   }
 }

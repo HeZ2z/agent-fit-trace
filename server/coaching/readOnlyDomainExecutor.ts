@@ -19,10 +19,10 @@ import {
   filterRecords,
   analyzeProgress,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { parseAnalysisResult } from "@pi-fit-trace/api-contracts";
-import type { AnalysisResult } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { parseAnalysisResult } from "@agent-fit-trace/api-contracts";
+import type { AnalysisResult } from "@agent-fit-trace/core";
 
 const MAX_HISTORY_LIMIT = 200;
 const MAX_STRING_FIELD = 120;

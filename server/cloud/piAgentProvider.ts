@@ -54,9 +54,9 @@ import type {
   Usage,
 } from "@earendil-works/pi-ai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
-import { COACHED_TOOL_NAMES, parseAnalysisResult } from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { COACHED_TOOL_NAMES, parseAnalysisResult } from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { isCoachedToolAllowed } from "../coaching/coachedToolPolicy.ts";
 import {
   createSnapshotDomainExecutor,

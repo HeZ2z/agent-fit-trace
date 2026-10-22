@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { downloadJson } from "./fileTransport.ts";
 import { planWorkoutExport } from "./workoutExport.ts";
 import type { WorkoutExportExclusion } from "./workoutExport.ts";

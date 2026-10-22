@@ -10,7 +10,7 @@ import {
   translate,
   type AppLanguage,
   type MessageParams,
-} from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
 
 import {
   getLanguage,

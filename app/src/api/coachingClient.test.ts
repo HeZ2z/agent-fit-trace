@@ -6,8 +6,8 @@ import {
   MAX_COACHING_SSE_TOTAL_BYTES,
   MalformedResponseError,
   utf8ByteLength,
-} from "@pi-fit-trace/api-contracts";
-import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
+import type { CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
 import { CoachingClient, COACHING_CAPABILITY_HEADER, parseSseEventsText } from "./coachingClient.ts";
 import type { CoachingAccessTokenProvider } from "./coachingClient.ts";
 
@@ -582,7 +582,7 @@ describe("CoachingClient SSE transport fixes", () => {
     const seen: { url: string; init: RequestInit }[] = [];
     const text = sseFrame(envelope(0, { type: "text_delta", delta: "partial" }));
     const client = await fixedClient(sseFetchWith([new TextEncoder().encode(text)], seen));
-    const { NetworkError } = await import("@pi-fit-trace/api-contracts");
+    const { NetworkError } = await import("@agent-fit-trace/api-contracts");
     const error = await client
       .subscribeRunEvents({ runId: RUN, sessionId: SESSION }, () => {})
       .done.catch((caught: unknown) => caught);

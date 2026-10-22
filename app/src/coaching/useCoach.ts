@@ -1,12 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { AnalysisResult } from "@pi-fit-trace/core";
-import { API_ERROR_CODES, ApiError, COACHING_ERROR_CODES, NetworkError, isCoachingBackendId } from "@pi-fit-trace/api-contracts";
+import type { AnalysisResult } from "@agent-fit-trace/core";
+import { API_ERROR_CODES, ApiError, COACHING_ERROR_CODES, NetworkError, isCoachingBackendId } from "@agent-fit-trace/api-contracts";
 import type {
   CoachingBackendId,
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingTerminalStatus,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
 import { CoachingClient } from "../api/coachingClient.ts";
 import { isCoachingEnabled, isHttpModeActive, runtimePiAvailable } from "../api/runtimeMode.ts";

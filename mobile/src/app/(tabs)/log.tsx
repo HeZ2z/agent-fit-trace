@@ -1,6 +1,6 @@
-import { SESSION_TYPES } from "@pi-fit-trace/core";
-import type { ValidationIssue, ValidationWarning, WorkoutRecord } from "@pi-fit-trace/core";
-import { displaySessionType, displayValidationMessage } from "@pi-fit-trace/i18n/domain";
+import { SESSION_TYPES } from "@agent-fit-trace/core";
+import type { ValidationIssue, ValidationWarning, WorkoutRecord } from "@agent-fit-trace/core";
+import { displaySessionType, displayValidationMessage } from "@agent-fit-trace/i18n/domain";
 import { useCallback, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from "react-native";
 

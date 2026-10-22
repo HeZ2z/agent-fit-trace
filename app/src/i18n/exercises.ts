@@ -3,7 +3,7 @@
  *
  * Stored and transported workout/analysis/plan payloads keep the canonical
  * English exercise name. This module is the single app seam that re-exports the
- * shared catalog helpers from `@pi-fit-trace/i18n`:
+ * shared catalog helpers from `@agent-fit-trace/i18n`:
  *
  * - `displayStoredExerciseName` resolves a recorded (possibly alias or custom)
  *   name to a catalog entry and renders it in the selected language, while the
@@ -21,5 +21,5 @@ export {
   MAX_EXERCISE_SUGGESTIONS,
   displayStoredExerciseName,
   searchExerciseSuggestions,
-} from "@pi-fit-trace/i18n";
-export type { ExerciseSuggestion } from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
+export type { ExerciseSuggestion } from "@agent-fit-trace/i18n";

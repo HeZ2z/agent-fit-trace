@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, afterEach, test } from "node:test";
 
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   createSupabaseCoachingRequestRepository,
   createSupabaseCoachingWorkerRepository,
@@ -381,7 +381,7 @@ test("pagination: keyset history over the RPC with special ids and small pages",
     assert.fail("local Supabase stack is not running (`supabase start`).");
   }
   const { createSupabaseWorkoutStore } = await import("../server/db/supabaseWorkouts.ts");
-  const { sortRecords } = await import("@pi-fit-trace/core");
+  const { sortRecords } = await import("@agent-fit-trace/core");
   const user = await provisionUser("page");
   const ids = [
     "w-page-01",
@@ -1252,7 +1252,7 @@ test("imports: anonymous denied, two owners isolated, selections/adoption owner+
     assert.fail("local Supabase stack is not running (`supabase start`).");
   }
 
-  const { analyzeProgress, generateNextPlan } = await import("@pi-fit-trace/core");
+  const { analyzeProgress, generateNextPlan } = await import("@agent-fit-trace/core");
   const userA = await provisionUser("imp-a");
   const userB = await provisionUser("imp-b");
   const workout = seedRecord({ id: `w-imports-${Date.now()}`, date: "2026-09-20" });
@@ -1450,7 +1450,7 @@ test("imports: direct artifact writes are denied and TRUNCATE is not granted", a
     assert.fail("local Supabase stack is not running (`supabase start`).");
   }
 
-  const { analyzeProgress } = await import("@pi-fit-trace/core");
+  const { analyzeProgress } = await import("@agent-fit-trace/core");
   const user = await provisionUser("immutable");
   const store = await importStore(user);
   const record = seedRecord({ id: `w-immutable-${Date.now()}`, date: "2026-09-21" });
@@ -1565,7 +1565,7 @@ test("imports: the save RPC rejects invalid drafts and forged source/id refs", a
     assert.fail("local Supabase stack is not running (`supabase start`).");
   }
 
-  const { analyzeProgress, generateNextPlan } = await import("@pi-fit-trace/core");
+  const { analyzeProgress, generateNextPlan } = await import("@agent-fit-trace/core");
   const user = await provisionUser("forged");
   const record = seedRecord({ id: `w-forged-${Date.now()}`, date: "2026-09-22" });
   const analysis = analyzeProgress([record]);

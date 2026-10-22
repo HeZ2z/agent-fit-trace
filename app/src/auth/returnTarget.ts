@@ -9,8 +9,8 @@
  * auth tokens. Auth callback hashes never enter this store.
  */
 
-const STORAGE_KEY = "pi-fit-trace:auth:return-target:v1";
-const EXPLICIT_SIGN_OUT_KEY = "pi-fit-trace:auth:explicit-sign-out:v1";
+const STORAGE_KEY = "agent-fit-trace:auth:return-target:v1";
+const EXPLICIT_SIGN_OUT_KEY = "agent-fit-trace:auth:explicit-sign-out:v1";
 const EXPLICIT_SIGN_OUT_TTL_MS = 10_000;
 const MAX_LENGTH = 2048;
 const BASE_ORIGIN = "http://fit-trace.invalid";

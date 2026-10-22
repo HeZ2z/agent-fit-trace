@@ -9,7 +9,7 @@ import {
   parseCoachingSession,
   parseSnapshotCreateResult,
   parseSnapshotFilter,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   CloudCancelRunResult,
   CloudCapabilities,
@@ -18,7 +18,7 @@ import type {
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   SubmitCoachingRunInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 
 import { readCoachConfig } from "./coachConfig";
 import {

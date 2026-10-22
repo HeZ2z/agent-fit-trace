@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { MemoryStorageAdapter } from "./adapter.ts";
 import {
   RECORD_KEY_PREFIX,

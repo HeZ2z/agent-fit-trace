@@ -1,5 +1,5 @@
-import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
-import { API_ERROR_CODES, ApiError } from "@pi-fit-trace/api-contracts";
+import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
 import { isValidPrincipalId } from "./verifier.ts";
 import type { TokenVerifier } from "./verifier.ts";
 

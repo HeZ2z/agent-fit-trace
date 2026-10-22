@@ -3,8 +3,8 @@ import {
   generateNextPlan,
   stableStringify,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { AnalysisResult, WorkoutRecord } from "@agent-fit-trace/core";
 import { API_ERROR_CODES } from "../errors.ts";
 import { deriveWorkoutId } from "../deriveWorkoutId.ts";
 import type {

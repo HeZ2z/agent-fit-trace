@@ -15,7 +15,7 @@
  * - the worker claims ONE job per tick. Sequential batch processing would let a
  *   later job's lease expire before it is dispatched.
  */
-import { CLOUD_ERROR_CODES } from "@pi-fit-trace/api-contracts";
+import { CLOUD_ERROR_CODES } from "@agent-fit-trace/api-contracts";
 import type { CloudCoachingProvider } from "./openRouterProvider.ts";
 import {
   ProviderAcceptanceUnknownError,

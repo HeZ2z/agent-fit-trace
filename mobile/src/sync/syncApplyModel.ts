@@ -11,7 +11,7 @@
  * acknowledgements through {@link acknowledgeSyncConflict}.
  */
 
-import { stableStringify } from "@pi-fit-trace/core";
+import { stableStringify } from "@agent-fit-trace/core";
 import type { SyncConflict, SyncFailureKind, SyncPlan } from "./syncModel.ts";
 
 /** Counts shown in the sync summary. Failed attempts are reported separately. */

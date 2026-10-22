@@ -32,8 +32,8 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { timingSafeEqual } from "node:crypto";
 
-import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload, CoachingTerminalStatus } from "@pi-fit-trace/api-contracts";
+import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-trace/api-contracts";
 import {
   DomainToolError,
   loadSnapshotDomainExecutor,
@@ -341,7 +341,7 @@ export class OpenCodeDomainBridge {
     snapshotFile: string;
     onToolStart(tool: string, callId: string): void;
     onToolEnd(tool: string, callId: string, ok: boolean, error?: string): void;
-    onAnalysis(result: import("@pi-fit-trace/core").AnalysisResult): void;
+    onAnalysis(result: import("@agent-fit-trace/core").AnalysisResult): void;
     loadExecutor?: (snapshotFile: string) => Promise<SnapshotDomainExecutor>;
   };
 
@@ -349,7 +349,7 @@ export class OpenCodeDomainBridge {
     snapshotFile: string;
     onToolStart(tool: string, callId: string): void;
     onToolEnd(tool: string, callId: string, ok: boolean, error?: string): void;
-    onAnalysis(result: import("@pi-fit-trace/core").AnalysisResult): void;
+    onAnalysis(result: import("@agent-fit-trace/core").AnalysisResult): void;
     loadExecutor?: (snapshotFile: string) => Promise<SnapshotDomainExecutor>;
   }) {
     this.options = options;

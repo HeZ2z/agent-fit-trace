@@ -1,5 +1,5 @@
-import { stableStringify } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { stableStringify } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 
 /**
  * Deterministic workout IDs.

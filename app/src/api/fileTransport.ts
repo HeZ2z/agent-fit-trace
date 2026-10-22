@@ -5,7 +5,7 @@
  * touches the DOM and can be tested without browser quirks.
  */
 
-import { IMPORT_MAX_FILE_BYTES } from "@pi-fit-trace/api-contracts";
+import { IMPORT_MAX_FILE_BYTES } from "@agent-fit-trace/api-contracts";
 
 /** Trigger a file download. No-op-safe in tests where this is mocked. */
 export function downloadJson(filename: string, text: string): void {

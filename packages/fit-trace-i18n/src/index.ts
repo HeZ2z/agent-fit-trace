@@ -27,7 +27,7 @@ import { ZH_MESSAGES } from "./zh/index.ts";
 
 export type AppLanguage = "en" | "zh";
 
-export const LANGUAGE_STORAGE_KEY = "pi-fit-trace:lang:v1";
+export const LANGUAGE_STORAGE_KEY = "agent-fit-trace:lang:v1";
 export const DEFAULT_LANGUAGE: AppLanguage = "en";
 export const LANGUAGES: readonly AppLanguage[] = ["en", "zh"];
 

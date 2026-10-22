@@ -1,13 +1,13 @@
 {
-  "name": "@pi-fit-trace/mobile",
+  "name": "@agent-fit-trace/mobile",
   "version": "0.1.0",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/ui": "~58.0.20",
-    "@pi-fit-trace/api-contracts": "workspace:*",
-    "@pi-fit-trace/core": "workspace:*",
-    "@pi-fit-trace/i18n": "workspace:*",
-    "@pi-fit-trace/ui-tokens": "workspace:*",
+    "@agent-fit-trace/api-contracts": "workspace:*",
+    "@agent-fit-trace/core": "workspace:*",
+    "@agent-fit-trace/i18n": "workspace:*",
+    "@agent-fit-trace/ui-tokens": "workspace:*",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~58.0.14",
     "expo-blur": "~58.0.4",

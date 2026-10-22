@@ -1,5 +1,5 @@
-import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import type { PrincipalStoreFactory } from "./auth/verifier.ts";
 import { createInMemoryWorkoutStore } from "./inMemoryWorkoutStore.ts";
 

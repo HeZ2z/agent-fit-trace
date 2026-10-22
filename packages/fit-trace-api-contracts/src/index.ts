@@ -5,7 +5,7 @@
  * built-ins, so it can be consumed by both the app (browser) and any Node
  * transport. This package owns the *shape* of the boundary — client surface,
  * envelope, errors, strict response guards, and deterministic ids — while all
- * domain computation stays in `@pi-fit-trace/core`.
+ * domain computation stays in `@agent-fit-trace/core`.
  */
 export * from "./types.ts";
 export * from "./errors.ts";

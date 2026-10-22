@@ -15,17 +15,17 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
-import type { AnalysisResult, WorkoutRecord } from "@pi-fit-trace/core";
-import type { CoachingEventEnvelope, CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import { MAX_COACHING_SSE_FRAME_BYTES } from "@pi-fit-trace/api-contracts";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
+import type { AnalysisResult, WorkoutRecord } from "@agent-fit-trace/core";
+import type { CoachingEventEnvelope, CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import { MAX_COACHING_SSE_FRAME_BYTES } from "@agent-fit-trace/api-contracts";
 import {
   COACHING_SSE_RESERVED_FRAME_BYTES,
   COACHING_TRUNCATION_MARKER,
   MAX_COACHING_SESSION_ID_LENGTH,
   MAX_COACHING_SSE_TOTAL_BYTES,
   coachingEventFrameBytes,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { CoachingClient } from "../app/src/api/coachingClient.ts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import { createPrincipalMemoryStores } from "../server/principalMemoryStore.ts";

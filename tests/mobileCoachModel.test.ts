@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { COACHING_PROTOCOL_VERSION } from "@pi-fit-trace/api-contracts";
-import type { CoachingEventPayload } from "@pi-fit-trace/api-contracts";
+import { COACHING_PROTOCOL_VERSION } from "@agent-fit-trace/api-contracts";
+import type { CoachingEventPayload } from "@agent-fit-trace/api-contracts";
 
 import {
   COACH_ERROR_MESSAGE_KEYS,

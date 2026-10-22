@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { AnalysisResult } from "@pi-fit-trace/core";
+import type { AnalysisResult } from "@agent-fit-trace/core";
 import { AnalysisView } from "../components/AnalysisView.tsx";
 import {
   ArtifactSnapshotMeta,

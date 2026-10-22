@@ -1,4 +1,4 @@
-# @pi-fit-trace/ui-tokens
+# @agent-fit-trace/ui-tokens
 
 Shared design tokens for the blueprint (Pixel) and Glass visual systems.
 

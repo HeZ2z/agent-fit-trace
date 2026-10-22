@@ -15,11 +15,11 @@ import {
   displayRecommendation,
   displayTrend,
 } from "../packages/fit-trace-i18n/src/domain.ts";
-import { searchExercises } from "@pi-fit-trace/core";
+import { searchExercises } from "@agent-fit-trace/core";
 import type {
   ExerciseTrend,
   Recommendation,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 
 /**
  * Integrity coverage for the render-time Chinese exercise-name layer and the
@@ -458,7 +458,7 @@ test("the shared search module only imports browser-safe modules", () => {
   assert.ok(specifiers.length > 0);
   for (const specifier of specifiers) {
     assert.ok(
-      specifier === "@pi-fit-trace/core" || specifier.startsWith("./"),
+      specifier === "@agent-fit-trace/core" || specifier.startsWith("./"),
       `environment dependency in the shared search: ${specifier}`,
     );
   }

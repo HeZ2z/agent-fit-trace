@@ -44,7 +44,7 @@ function session(overrides: Partial<SupabaseSession> = {}): SupabaseSession {
 }
 
 test("mobile session key is versioned, mobile-specific, and SecureStore-safe", () => {
-  assert.equal(MOBILE_AUTH_SESSION_KEY, "pi-fit-trace.auth.v1.mobile");
+  assert.equal(MOBILE_AUTH_SESSION_KEY, "agent-fit-trace.auth.v1.mobile");
   // expo-secure-store rejects keys outside /^[\w.-]+$/ (colons are invalid).
   assert.match(MOBILE_AUTH_SESSION_KEY, /^[\w.-]+$/);
 });

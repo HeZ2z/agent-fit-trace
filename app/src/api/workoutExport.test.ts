@@ -4,8 +4,8 @@ import {
   ValidationError,
   stableStringify,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_FILE_RECORDS,
@@ -13,7 +13,7 @@ import {
   WORKOUT_MAX_ID_BYTES,
   WORKOUT_MAX_REQUEST_BYTES,
   parseWorkoutImportFile,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { planWorkoutExport, serializeWorkoutExport } from "./workoutExport.ts";
 import type { WorkoutExportFile } from "./contracts.ts";
 

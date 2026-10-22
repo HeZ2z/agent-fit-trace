@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { filterRecords } from "@pi-fit-trace/core";
-import type { CoachingBackendId } from "@pi-fit-trace/api-contracts";
+import { filterRecords } from "@agent-fit-trace/core";
+import type { CoachingBackendId } from "@agent-fit-trace/api-contracts";
 import { runtimePiAvailable } from "../api/runtimeMode.ts";
 import { AnalysisView } from "../components/AnalysisView.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";

@@ -3,7 +3,7 @@ import type {
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   SubmitCoachingRunInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type { CoachRunClient } from "./coachBackend.ts";
 
 export interface CoachClientRouterOptions {

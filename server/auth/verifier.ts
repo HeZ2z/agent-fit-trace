@@ -1,4 +1,4 @@
-import type { AuthPrincipal, FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { AuthPrincipal, FitTraceClient } from "@agent-fit-trace/api-contracts";
 
 /**
  * Verifies a bearer token and resolves the stable caller principal.

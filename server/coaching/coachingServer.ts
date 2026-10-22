@@ -33,7 +33,7 @@
  * (`lastSeq` = last stored seq, `-1` when empty); expired cursors are
  * explicit 410s directing a refetch from `firstSeq`, never a silent skip.
  * Frames and whole-stream bodies use the SHARED budgets in
- * `@pi-fit-trace/api-contracts` (`encodeCoachingEventFrame`); the run service
+ * `@agent-fit-trace/api-contracts` (`encodeCoachingEventFrame`); the run service
  * sizes stored events with the same measure, so an accepted event is always
  * readable by the browser client. `close()` stops accepting immediately and
  * is bounded: open streams end, in-flight upstream reads are aborted, and any
@@ -49,8 +49,8 @@ import { randomBytes } from "node:crypto";
 import { extractBearerToken } from "../auth/verifier.ts";
 import type { TokenVerifier } from "../auth/verifier.ts";
 import type { PrincipalStoreFactory } from "../auth/verifier.ts";
-import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
-import { ApiError, API_ERROR_CODES, HTTP_STATUS, parseWorkoutList } from "@pi-fit-trace/api-contracts";
+import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
+import { ApiError, API_ERROR_CODES, HTTP_STATUS, parseWorkoutList } from "@agent-fit-trace/api-contracts";
 import {
   MAX_COACHING_SSE_TOTAL_BYTES,
   encodeCoachingEventFrame,
@@ -58,9 +58,9 @@ import {
   parseCreateCoachingSessionInput,
   parseSnapshotFilter,
   parseSubmitCoachingRunInput,
-} from "@pi-fit-trace/api-contracts";
-import type { CoachingEventEnvelope } from "@pi-fit-trace/api-contracts";
-import { MalformedResponseError } from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
+import type { CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
+import { MalformedResponseError } from "@agent-fit-trace/api-contracts";
 import { DEFAULT_MAX_BODY_BYTES } from "../authenticatedHandler.ts";
 import { getPublicConfig } from "../publicConfig.ts";
 import type { ServerPublicConfig } from "../publicConfig.ts";
@@ -82,7 +82,7 @@ import type {
   CoachingRuntimeRegistration,
   CoachingRuntimeRegistry,
 } from "./runtimeRegistry.ts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 
 export const CAPABILITY_HEADER = "x-fit-trace-capability";
 const SSE_CONTENT_TYPE = "text/event-stream";

@@ -1,19 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { ValidationWarning } from "@pi-fit-trace/core";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { ValidationWarning } from "@agent-fit-trace/core";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import {
   IMPORT_MAX_FILE_BYTES,
   parseAnalysisImportFile,
   parsePlanImportFile,
   parseWorkoutImportFile,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import type {
   ImportArtifactInput,
   ImportedArtifactKind,
   SaveImportedArtifactResult,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import { isHttpModeActive } from "../api/runtimeMode.ts";
 import { readTextFile } from "../api/fileTransport.ts";
 import { useWorkoutExport } from "../api/useWorkoutExport.ts";

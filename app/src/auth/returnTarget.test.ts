@@ -78,7 +78,7 @@ describe("tab-scoped return target storage", () => {
     expect(saveReturnTarget("/plan")).toBe("/plan");
     expect(peekReturnTarget()).toBe("/plan");
 
-    window.sessionStorage.setItem("pi-fit-trace:auth:return-target:v1", "/login");
+    window.sessionStorage.setItem("agent-fit-trace:auth:return-target:v1", "/login");
     expect(peekReturnTarget()).toBeNull();
   });
 
@@ -114,10 +114,10 @@ describe("tab-scoped return target storage", () => {
   it("expires a stale sign-out marker", () => {
     markExplicitSignOut("/plan");
     const marker = JSON.parse(
-      window.sessionStorage.getItem("pi-fit-trace:auth:explicit-sign-out:v1") ?? "{}",
+      window.sessionStorage.getItem("agent-fit-trace:auth:explicit-sign-out:v1") ?? "{}",
     ) as { path: string; at: number };
     marker.at = Date.now() - 60_000;
-    window.sessionStorage.setItem("pi-fit-trace:auth:explicit-sign-out:v1", JSON.stringify(marker));
+    window.sessionStorage.setItem("agent-fit-trace:auth:explicit-sign-out:v1", JSON.stringify(marker));
     expect(saveReturnTarget("/plan")).toBe("/plan");
   });
 });

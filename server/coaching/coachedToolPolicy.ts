@@ -18,7 +18,7 @@
  * explicit `extension_ui_response` denial (`cancelled: true`, unblocking the
  * extension) and fail the run.
  */
-import { COACHED_TOOL_NAMES, parseAnalysisResult } from "@pi-fit-trace/api-contracts";
+import { COACHED_TOOL_NAMES, parseAnalysisResult } from "@agent-fit-trace/api-contracts";
 
 export const COACHED_ALLOWLIST = COACHED_TOOL_NAMES;
 

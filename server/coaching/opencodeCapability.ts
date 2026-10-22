@@ -18,7 +18,7 @@
  */
 import { spawn } from "node:child_process";
 
-import { COACHED_TOOL_NAMES } from "@pi-fit-trace/api-contracts";
+import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
 import {
   OPENCODE_COACH_AGENT,
   OPENCODE_RUN_ARGS,

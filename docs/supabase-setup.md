@@ -59,7 +59,7 @@ shut it down separately with `supabase stop`.
   NOT repo-root `.env.local` — for `VITE_*` vars):
 
   ```sh
-  VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
+  VITE_FIT_TRACE_MODE=http pnpm --filter @agent-fit-trace/app dev
   ```
 
   With a custom API port, pass the shared `FIT_TRACE_DEV_API_PORT` to BOTH
@@ -67,7 +67,7 @@ shut it down separately with `supabase stop`.
 
   ```sh
   FIT_TRACE_DEV_API_PORT=6000 FIT_TRACE_DEV_API_MODE=supabase node --env-file=.env.local server/devApiServer.ts
-  FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http pnpm --filter @pi-fit-trace/app dev
+  FIT_TRACE_DEV_API_PORT=6000 VITE_FIT_TRACE_MODE=http pnpm --filter @agent-fit-trace/app dev
   ```
 
   Smoke-check at least `GET /api/v1/public-config` (local Supabase URL +
@@ -212,7 +212,7 @@ Local config does not change the cloud project. Before releasing auth:
   from another device only after the same UID is upgraded to a real account;
   signing in as a different account is a switch with no merge. This is not a
   cloud trial or a hosted coaching entitlement.
-- The app stores the session under `pi-fit-trace:auth:v1:session`, attaches
+- The app stores the session under `agent-fit-trace:auth:v1:session`, attaches
   the token per request, refreshes expired sessions, and clears all cached
   workout/analysis state on logout or account change. Writes are never
   retried after a 401. Credential refresh retries transient failures; failed

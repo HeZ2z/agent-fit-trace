@@ -143,7 +143,7 @@ Implementation: `app/src/styles/controls.css`, `shell.css`, `screens-data.css`,
 ## Themes
 
 One token set, two skins. The choice is a **display preference**, stored under
-its own browser key (`pi-fit-trace:theme:v1`) and never written into a workout
+its own browser key (`agent-fit-trace:theme:v1`) and never written into a workout
 record, snapshot, export or content digest. It survives data resets and
 account switches.
 
@@ -218,7 +218,7 @@ second data model. The boundary is the design:
   invalidate a saved plan confirmation.
 
 The switch lives once in **Me → Language** (English / 简体中文), persists under
-its own browser key (`pi-fit-trace:lang:v1`), and is applied to
+its own browser key (`agent-fit-trace:lang:v1`), and is applied to
 `<html lang>` + `data-lang` before first paint. A failed preference write keeps
 the in-page choice, exactly like the skin preference.
 

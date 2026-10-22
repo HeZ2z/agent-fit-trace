@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ZH_MESSAGES } from "@pi-fit-trace/i18n";
-import { messages as chrome } from "@pi-fit-trace/i18n/zh/chrome";
-import { messages as domain } from "@pi-fit-trace/i18n/zh/domain";
-import { messages as screensAnalysisPlan } from "@pi-fit-trace/i18n/zh/screens-analysis-plan";
-import { messages as screensCoachMe } from "@pi-fit-trace/i18n/zh/screens-coach-me";
-import { messages as screensHistory } from "@pi-fit-trace/i18n/zh/screens-history";
-import { messages as mobile } from "@pi-fit-trace/i18n/zh/mobile";
-import { messages as mobileCoach } from "@pi-fit-trace/i18n/zh/mobile-coach";
+import { ZH_MESSAGES } from "@agent-fit-trace/i18n";
+import { messages as chrome } from "@agent-fit-trace/i18n/zh/chrome";
+import { messages as domain } from "@agent-fit-trace/i18n/zh/domain";
+import { messages as screensAnalysisPlan } from "@agent-fit-trace/i18n/zh/screens-analysis-plan";
+import { messages as screensCoachMe } from "@agent-fit-trace/i18n/zh/screens-coach-me";
+import { messages as screensHistory } from "@agent-fit-trace/i18n/zh/screens-history";
+import { messages as mobile } from "@agent-fit-trace/i18n/zh/mobile";
+import { messages as mobileCoach } from "@agent-fit-trace/i18n/zh/mobile-coach";
 
 const SLICES: readonly { name: string; messages: Record<string, string> }[] = [
   { name: "chrome", messages: chrome },

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CURRENT_SCHEMA_VERSION } from "@pi-fit-trace/core";
-import type { Recommendation, WorkoutRecord } from "@pi-fit-trace/core";
+import { CURRENT_SCHEMA_VERSION } from "@agent-fit-trace/core";
+import type { Recommendation, WorkoutRecord } from "@agent-fit-trace/core";
 import {
   buildPlanModel,
   buildRecommendationView,

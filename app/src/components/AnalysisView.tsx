@@ -1,4 +1,4 @@
-import type { AnalysisResult } from "@pi-fit-trace/core";
+import type { AnalysisResult } from "@agent-fit-trace/core";
 import { useI18n } from "../i18n/useI18n.ts";
 import {
   displayFlagMessage,

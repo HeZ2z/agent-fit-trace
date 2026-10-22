@@ -54,7 +54,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { AuthPrincipal } from "@pi-fit-trace/api-contracts";
+import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
 import type {
   CoachingBackendId,
   CoachingCapabilityDiscovery,
@@ -70,7 +70,7 @@ import type {
   CoachingTerminalStatus,
   CoachingTrustedIdentity,
   SubmitCoachingRunInput,
-} from "@pi-fit-trace/api-contracts";
+} from "@agent-fit-trace/api-contracts";
 import {
   COACHED_TOOL_NAMES,
   COACHING_PROTOCOL_VERSION,
@@ -87,15 +87,15 @@ import {
   parseCoachingEventPayload,
   qualifyCloudBackend,
   resolveCoachingBackendSelection,
-} from "@pi-fit-trace/api-contracts";
-import { MalformedResponseError } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import { MalformedResponseError } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   assertOrderedDateRange,
   assertValidFilterDate,
   filterRecords,
   ValidationError,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type { PrincipalStoreFactory } from "../auth/verifier.ts";
 import {
   asCoachingRuntimeRegistry,

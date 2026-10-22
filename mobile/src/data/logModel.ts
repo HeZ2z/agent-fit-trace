@@ -3,7 +3,7 @@ import {
   SESSION_TYPES,
   ValidationError,
   validateWorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type {
   PainReport,
   SessionType,
@@ -11,7 +11,7 @@ import type {
   ValidationWarning,
   WorkoutRecord,
   WorkoutSet,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 
 /**
  * Pure form model for the Log screen.

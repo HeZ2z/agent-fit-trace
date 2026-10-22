@@ -16,7 +16,7 @@
  * web client's localStorage entry. SecureStore keys accept only word
  * characters, `.`, `-` and `_`, so the web-style colons are dots here.
  */
-export const MOBILE_AUTH_SESSION_KEY = "pi-fit-trace.auth.v1.mobile";
+export const MOBILE_AUTH_SESSION_KEY = "agent-fit-trace.auth.v1.mobile";
 
 /** Refresh a session this long before its access token actually expires. */
 export const AUTH_EXPIRY_SKEW_MS = 60_000;

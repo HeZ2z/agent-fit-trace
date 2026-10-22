@@ -6,9 +6,9 @@ import {
   ApiError,
   MalformedResponseError,
   NetworkError,
-} from "@pi-fit-trace/api-contracts";
-import { CURRENT_SCHEMA_VERSION } from "@pi-fit-trace/core";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+} from "@agent-fit-trace/api-contracts";
+import { CURRENT_SCHEMA_VERSION } from "@agent-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
   canSync,
   classifySyncFailure,

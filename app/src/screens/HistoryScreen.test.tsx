@@ -2,11 +2,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { saveRecord } from "../storage/workoutRepository.ts";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
-import type { FitTraceClient } from "@pi-fit-trace/api-contracts";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
 import { HistoryScreen } from "./HistoryScreen.tsx";
 

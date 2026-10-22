@@ -5,8 +5,8 @@
  *
  * The generated TypeScript is committed so the browser-safe packages never read
  * the filesystem or the network at runtime: the exercise catalog for
- * `@pi-fit-trace/core`, and the Chinese display names/aliases for
- * `@pi-fit-trace/i18n`. Output is deterministic: each source JSON is the only
+ * `@agent-fit-trace/core`, and the Chinese display names/aliases for
+ * `@agent-fit-trace/i18n`. Output is deterministic: each source JSON is the only
  * input, and no clock, randomness, or network access participates.
  *
  * Usage:

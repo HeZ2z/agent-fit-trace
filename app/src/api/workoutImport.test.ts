@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { parseWorkoutImportFile } from "@pi-fit-trace/api-contracts";
-import { ApiError, NetworkError } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
+import { parseWorkoutImportFile } from "@agent-fit-trace/api-contracts";
+import { ApiError, NetworkError } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { FakeFitTraceClient } from "../test/asyncClient.ts";
 import { previewWorkoutImport, runWorkoutImport } from "./workoutImport.ts";
 

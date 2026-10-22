@@ -5,7 +5,7 @@ import type {
   PlanDraft,
   ValidationWarning,
   WorkoutRecord,
-} from "@pi-fit-trace/core";
+} from "@agent-fit-trace/core";
 import type {
   ArtifactSelection,
   ImportArtifactInput,
@@ -23,7 +23,7 @@ import type {
  *
  * This module describes *how* the four domain operations cross a network
  * boundary — the client surface, the JSON envelope, and the endpoint/status
- * mapping. The computations themselves stay in `@pi-fit-trace/core`; nothing
+ * mapping. The computations themselves stay in `@agent-fit-trace/core`; nothing
  * here decides values, only shapes.
  */
 

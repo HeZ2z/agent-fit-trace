@@ -1,4 +1,4 @@
-import { displaySessionType } from "@pi-fit-trace/i18n/domain";
+import { displaySessionType } from "@agent-fit-trace/i18n/domain";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Share, StyleSheet, View } from "react-native";

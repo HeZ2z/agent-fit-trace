@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { PublicApiConfig } from "@pi-fit-trace/api-contracts";
+import type { PublicApiConfig } from "@agent-fit-trace/api-contracts";
 import { fetchPublicConfig } from "../api/publicConfig.ts";
 import { markExplicitSignOut } from "./returnTarget.ts";
 import {
@@ -97,7 +97,7 @@ function readStoredSession(): SupabaseSession | null {
  * transient verification outage can be retried without creating a second
  * anonymous user.
  */
-const GUEST_CANDIDATE_STORAGE_KEY = "pi-fit-trace:auth:v1:guest-candidate";
+const GUEST_CANDIDATE_STORAGE_KEY = "agent-fit-trace:auth:v1:guest-candidate";
 
 function readStoredGuestCandidate(): SupabaseSession | null {
   try {

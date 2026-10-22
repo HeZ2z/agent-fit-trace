@@ -2,7 +2,7 @@
  * The mobile app's interface-language store.
  *
  * The pure display layer (dictionary, formatting, translation) lives in
- * `@pi-fit-trace/i18n`. This module keeps only the React Native-specific
+ * `@agent-fit-trace/i18n`. This module keeps only the React Native-specific
  * store: AsyncStorage persistence, the in-memory fallback and the
  * system-language default read from expo-localization.
  *
@@ -18,7 +18,7 @@ import {
   LANGUAGE_STORAGE_KEY,
   isLanguage,
   type AppLanguage,
-} from "@pi-fit-trace/i18n";
+} from "@agent-fit-trace/i18n";
 import { getLocales } from "expo-localization";
 
 export { DEFAULT_LANGUAGE, LANGUAGE_STORAGE_KEY, isLanguage };

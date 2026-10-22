@@ -1,8 +1,8 @@
 # Mobile app (React Native)
 
 The Android-first React Native client lives in [`mobile/`](../mobile/) as
-workspace package `@pi-fit-trace/mobile`. It reuses `@pi-fit-trace/core` for
-deterministic domain logic and `@pi-fit-trace/api-contracts` for record and
+workspace package `@agent-fit-trace/mobile`. It reuses `@agent-fit-trace/core` for
+deterministic domain logic and `@agent-fit-trace/api-contracts` for record and
 transport shapes, so it does not fork validation, workout IDs, analysis or plan
 rules. This is a status and plan record, not a second product contract: workout
 semantics, transport, coaching and visual rules stay governed by
@@ -36,7 +36,7 @@ sync and hosted coaching. A guest can use the app without an account or
 connection.
 
 Core owns domain logic, `api-contracts` record and transport shapes, and
-`ui-tokens` visual values; `@pi-fit-trace/i18n` owns the render-time dictionary.
+`ui-tokens` visual values; `@agent-fit-trace/i18n` owns the render-time dictionary.
 Presentation lives in `mobile/src/app` and `mobile/src/ui`. The adapters are
 split by concern: `mobile/src/data` owns the SQLite store, `mobile/src/auth`
 owns identity, `mobile/src/preferences` reconciles account metadata,
@@ -134,7 +134,7 @@ not cached. Only a signed-in session reaches account-backed preferences, sync
 and coach features; guests still get local skin, language and workouts.
 
 The session is stored with `expo-secure-store` under the versioned key
-`pi-fit-trace.auth.v1.mobile`; the cached value carries the tokens, expiry and
+`agent-fit-trace.auth.v1.mobile`; the cached value carries the tokens, expiry and
 user id/email, and deliberately drops the classification fields. Tokens never
 go to AsyncStorage, the workout database, exported JSON or logs. A SecureStore
 read/write failure falls back to a module-scoped in-memory copy so the current
@@ -158,7 +158,7 @@ best-effort step.
 ## Account preferences
 
 Skin and interface language remain device settings that are rendered from
-AsyncStorage (`pi-fit-trace:skin:v1` and `pi-fit-trace:lang:v1`). When a user is
+AsyncStorage (`agent-fit-trace:skin:v1` and `agent-fit-trace:lang:v1`). When a user is
 signed in, the app mirrors the same two choices into Supabase `user_metadata`
 under the `skin` and `language` keys. Guests make no account calls and behave
 exactly as before.
@@ -218,13 +218,13 @@ selected with one tap without dismissing the keyboard first. The visible panel
 height is capped and the options scroll inside it; the shared helper still caps
 the list at eight suggestions.
 
-The shared `@pi-fit-trace/i18n` package holds the pure dictionary and domain
+The shared `@agent-fit-trace/i18n` package holds the pure dictionary and domain
 display helpers; the web keeps its localStorage/DOM adapter in
 [`app/src/i18n/`](../app/src/i18n/), and mobile keeps an AsyncStorage adapter in
 `mobile/src/i18n/`. The boundary is one dictionary shared by web and mobile,
 translated at render time and falling back to English for unknown keys. Mobile
 starts in the device language (Chinese locale selects Chinese, otherwise English)
-and remembers an explicit choice under the shared `pi-fit-trace:lang:v1` key; the
+and remembers an explicit choice under the shared `agent-fit-trace:lang:v1` key; the
 Me screen switches it, and while signed in the choice is written through to
 account metadata. A dictionary integrity test checks every slice, including the
 mobile shell and mobile coach copy.
@@ -353,7 +353,7 @@ blurred Glass variant, following [`docs/ui-design.md`](ui-design.md); Me holds
 account, skin, language and sign-out controls plus the manual sync entry. Sign-in
 and sync are stack routes.
 
-`@pi-fit-trace/ui-tokens` is the token contract. `src/palette.ts` mirrors web
+`@agent-fit-trace/ui-tokens` is the token contract. `src/palette.ts` mirrors web
 oklch custom properties as sRGB values because React Native color props are not
 CSS custom properties; it is generated from the web CSS and must be updated with
 it. `src/index.ts` owns hand-written structural tokens: spacing, radii, border

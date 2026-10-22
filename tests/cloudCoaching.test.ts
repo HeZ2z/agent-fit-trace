@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { AuthPrincipal, CoachingEventPayload } from "@pi-fit-trace/api-contracts";
-import type { WorkoutRecord } from "@pi-fit-trace/core";
-import { validateWorkoutRecord } from "@pi-fit-trace/core";
+import type { AuthPrincipal, CoachingEventPayload } from "@agent-fit-trace/api-contracts";
+import type { WorkoutRecord } from "@agent-fit-trace/core";
+import { validateWorkoutRecord } from "@agent-fit-trace/core";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import { createCloudCoachingHandler } from "../server/cloud/httpHandler.ts";
 import type { CloudCoachingProvider } from "../server/cloud/openRouterProvider.ts";

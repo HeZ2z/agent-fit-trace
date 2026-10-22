@@ -1,11 +1,11 @@
-import { MIN_HISTORY_SESSIONS, generateNextPlan } from "@pi-fit-trace/core";
-import type { Recommendation, WorkoutRecord } from "@pi-fit-trace/core";
-import type { AppLanguage } from "@pi-fit-trace/i18n";
+import { MIN_HISTORY_SESSIONS, generateNextPlan } from "@agent-fit-trace/core";
+import type { Recommendation, WorkoutRecord } from "@agent-fit-trace/core";
+import type { AppLanguage } from "@agent-fit-trace/i18n";
 import {
   displayCarePrompt,
   displayRecommendation,
   displaySafetyNote,
-} from "@pi-fit-trace/i18n/domain";
+} from "@agent-fit-trace/i18n/domain";
 
 /**
  * Pure display model for the Plan screen.
