@@ -204,6 +204,23 @@ describe("WorkoutEditorScreen session draft", () => {
     expect(loadSessionDraft(adapter, OWNER)).toBeNull();
   });
 
+  it("does not clear a draft another tab wrote while this editor was open", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveSessionDraft(adapter, validDraft(), OWNER);
+    renderEditor(adapter);
+    const user = userEvent.setup();
+
+    // Another tab owns the same key and autosaves its newer draft while this
+    // editor still shows the older in-memory copy.
+    saveSessionDraft(adapter, { ...validDraft(), notes: "another tab" }, OWNER);
+
+    await user.click(screen.getByRole("button", { name: /save workout/i }));
+    expect(await screen.findByTestId("summary")).toBeInTheDocument();
+
+    // This tab saved its older record, but must not delete the other tab's draft.
+    expect(loadSessionDraft(adapter, OWNER)?.notes).toBe("another tab");
+  });
+
   it("does not clear a newer draft when an older save resolves", async () => {
     const adapter = new MemoryStorageAdapter();
     const client = new FakeFitTraceClient({ records: [] });

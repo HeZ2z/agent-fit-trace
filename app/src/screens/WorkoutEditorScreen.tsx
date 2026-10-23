@@ -156,6 +156,12 @@ interface DraftBootstrap {
   problem: DraftProblem | null;
   /** False for corruption and read failures, so a failed load is never rewritten. */
   autosave: boolean;
+  /**
+   * The payload the editor last observed in storage, before any in-memory
+   * rehydration. Saving may clear only this baseline, never whatever another
+   * tab happened to write in the meantime.
+   */
+  persistedBaseline: SessionDraft | null;
 }
 
 function messageOf(error: unknown): string {
@@ -179,7 +185,13 @@ function bootstrapDraft(drafts: SessionDraftContextValue): DraftBootstrap {
   try {
     const stored = drafts.load();
     if (stored === null) {
-      return { state: blankSessionState(), notice: null, problem: null, autosave: true };
+      return {
+        state: blankSessionState(),
+        notice: null,
+        problem: null,
+        autosave: true,
+        persistedBaseline: null,
+      };
     }
     const timing = stored.timing;
     const wasActive =
@@ -192,9 +204,15 @@ function bootstrapDraft(drafts: SessionDraftContextValue): DraftBootstrap {
       notice: wasActive ? "auto-paused" : "restored",
       problem: null,
       autosave: true,
+      persistedBaseline: stored,
     };
   } catch (error) {
-    const blank = { state: blankSessionState(), notice: null, autosave: false };
+    const blank = {
+      state: blankSessionState(),
+      notice: null,
+      autosave: false,
+      persistedBaseline: null,
+    };
     if (error instanceof SessionDraftCorruptionError) {
       return { ...blank, problem: { kind: "corrupt" } };
     }
@@ -246,6 +264,7 @@ export function WorkoutEditorScreen() {
   // based, mounting, StrictMode's double effect run, and the post-discard reset
   // never rewrite storage. A failed write disables further attempts.
   const autosaveBaselineRef = useRef(bootstrap.state.draft);
+  const persistedBaselineRef = useRef<SessionDraft | null>(bootstrap.persistedBaseline);
   const autosaveFailedRef = useRef(false);
 
   // Autosave every persisted-draft change (fields, timing, per-exercise rest).
@@ -257,6 +276,7 @@ export function WorkoutEditorScreen() {
     try {
       drafts.save(draft);
       autosaveBaselineRef.current = draft;
+      persistedBaselineRef.current = draft;
       setHasDraft(true);
       setDiscardedNotice(false);
     } catch (error) {
@@ -400,6 +420,7 @@ export function WorkoutEditorScreen() {
     // change is the first autosave after an explicit discard.
     const blank = blankSessionState();
     autosaveBaselineRef.current = blank.draft;
+    persistedBaselineRef.current = null;
     autosaveFailedRef.current = false;
     setState(blank);
     setAutosaveEnabled(true);
@@ -420,33 +441,28 @@ export function WorkoutEditorScreen() {
       stableStringify(pendingSave.record);
 
   async function persist(record: WorkoutRecord): Promise<void> {
-    // Snapshot storage at save start, not the in-memory draft: restoring an
-    // active timing auto-pauses it only in memory, so the stored payload can
-    // legitimately differ from `draft`. Comparing storage before/after still
-    // detects a newer autosave from this or another editor instance.
-    let storedDraft: SessionDraft | null | undefined;
-    try {
-      storedDraft = drafts.load();
-    } catch {
-      // An unreadable payload cannot be safely matched; leave it for discard.
-      storedDraft = undefined;
-    }
+    // The baseline is the payload this editor last observed in or wrote to
+    // storage, not whatever happens to be there when Save is clicked. Two tabs
+    // share the owner key; a save built from this editor's draft must never
+    // delete a newer draft another tab wrote in the meantime.
+    const persistedAtSave = persistedBaselineRef.current;
     // Save failures (unavailable, quota, conflict) must surface to the user
     // rather than escaping as an unhandled error. Input is retained and no
     // navigation happens until the save resolves.
     try {
       const saved = await saveWorkout(toSaveInput(record));
       // The record is already stored; a failed draft clear must neither undo the
-      // save nor block navigation. Only clear the draft when storage still holds
-      // exactly the payload observed when this save started.
+      // save nor block navigation. Clear only when storage still holds the
+      // baseline this editor is responsible for.
       try {
-        if (storedDraft !== undefined) {
+        if (persistedAtSave !== null) {
           const currentDraft = drafts.load();
           if (
             currentDraft !== null &&
-            stableStringify(currentDraft) === stableStringify(storedDraft)
+            stableStringify(currentDraft) === stableStringify(persistedAtSave)
           ) {
             drafts.clear();
+            persistedBaselineRef.current = null;
           }
         }
       } catch {
