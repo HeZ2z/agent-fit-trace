@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { EXTREME_RPE, SESSION_TYPES, stableStringify } from "@agent-fit-trace/core";
@@ -9,18 +9,23 @@ import type {
   WorkoutRecord,
 } from "@agent-fit-trace/core";
 import {
+  SessionDraftCorruptionError,
   buildWorkoutRecord,
   createSessionDraft,
   createSessionRuntime,
   elapsedMs,
   reduceSessionState,
+  rehydrateSessionDraft,
   restRemainingMs,
   sessionPhase,
   toSaveInput,
   todayLocalDate,
   validateSessionDraft,
 } from "@agent-fit-trace/workout-session";
+import type { SessionAction, SessionState } from "@agent-fit-trace/workout-session";
 import { ExerciseNameCombobox } from "../components/ExerciseNameCombobox.tsx";
+import { useSessionDraft } from "../state/SessionDraftContext.tsx";
+import type { SessionDraftContextValue } from "../state/SessionDraftContext.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import {
@@ -79,24 +84,131 @@ interface PendingSave {
   nowMs: number;
 }
 
+/** Which restore banner the editor owes the user after loading the draft. */
+type RestoreNotice = "restored" | "auto-paused" | null;
+
+/**
+ * Draft-storage problems the editor renders non-blockingly.
+ *
+ * `corrupt` is fail-closed: an unreadable payload is never overwritten, so
+ * autosave stays off until the user explicitly discards it. `read-error` and
+ * `save-error` are best-effort storage failures; the session remains editable.
+ */
+type DraftProblem =
+  | { kind: "corrupt" }
+  | { kind: "read-error"; message: string }
+  | { kind: "save-error"; message: string };
+
+interface DraftBootstrap {
+  state: SessionState;
+  notice: RestoreNotice;
+  problem: DraftProblem | null;
+  /** False for corruption and read failures, so a failed load is never rewritten. */
+  autosave: boolean;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A brand-new untimed draft; also the state a discard resets to. */
+function blankSessionState(): SessionState {
+  return { draft: createSessionDraft(todayLocalDate()), runtime: createSessionRuntime() };
+}
+
+/**
+ * Load the one stored draft before the editor's first render.
+ *
+ * Restoring an active timing runs the shared rehydrate policy: the session is
+ * auto-paused at its last confirmed activity so time while the page was closed
+ * is never counted, and the user is told to resume. Runtime rest is always
+ * empty after a restore (a stale countdown must never be resurrected).
+ */
+function bootstrapDraft(drafts: SessionDraftContextValue): DraftBootstrap {
+  try {
+    const stored = drafts.load();
+    if (stored === null) {
+      return { state: blankSessionState(), notice: null, problem: null, autosave: true };
+    }
+    const timing = stored.timing;
+    const wasActive =
+      timing !== null && timing.endedAtMs === null && timing.pausedAtMs === null;
+    return {
+      state: {
+        draft: rehydrateSessionDraft(stored, Date.now()),
+        runtime: createSessionRuntime(),
+      },
+      notice: wasActive ? "auto-paused" : "restored",
+      problem: null,
+      autosave: true,
+    };
+  } catch (error) {
+    const blank = { state: blankSessionState(), notice: null, autosave: false };
+    if (error instanceof SessionDraftCorruptionError) {
+      return { ...blank, problem: { kind: "corrupt" } };
+    }
+    return { ...blank, problem: { kind: "read-error", message: messageOf(error) } };
+  }
+}
+
 export function WorkoutEditorScreen() {
   const navigate = useNavigate();
+  const drafts = useSessionDraft();
   const { saveWorkout, saveStatus } = useWorkouts();
   const { language, t } = useI18n();
   const saving = saveStatus === "saving";
 
   // One shared draft + runtime reducer owns every field, exercise, set and pain
-  // edit; keys are allocated by the reducer instead of a component counter.
-  const [state, dispatch] = useReducer(reduceSessionState, {
-    draft: createSessionDraft(todayLocalDate()),
-    runtime: createSessionRuntime(),
-  });
+  // edit. The stored draft is loaded synchronously before the first render, and
+  // `useState` (over the same shared pure reducer) is used instead of
+  // `useReducer` so a discard can replace the whole state with a blank draft.
+  const [bootstrap] = useState(() => bootstrapDraft(drafts));
+  const [state, setState] = useState<SessionState>(bootstrap.state);
+  const dispatch = useCallback((action: SessionAction): void => {
+    setState((current) => reduceSessionState(current, action));
+  }, []);
   const { draft, runtime } = state;
 
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [warnings, setWarnings] = useState<ValidationWarning[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
+
+  const [restoredNotice, setRestoredNotice] = useState<RestoreNotice>(bootstrap.notice);
+  const [draftProblem, setDraftProblem] = useState<DraftProblem | null>(bootstrap.problem);
+  const [autosaveEnabled, setAutosaveEnabled] = useState(bootstrap.autosave);
+  // A restored draft, an unreadable payload, or any autosaved edit means there
+  // is something the explicit discard action can clear. Read/write failures also
+  // expose discard so the user can recover fresh storage without a hidden retry.
+  const [hasDraft, setHasDraft] = useState(
+    bootstrap.notice !== null || bootstrap.problem !== null,
+  );
+  const [discardConfirming, setDiscardConfirming] = useState(false);
+  const [discardedNotice, setDiscardedNotice] = useState(false);
+  // Autosave writes only drafts that differ from the last known-persisted (or
+  // intentionally unpersisted) baseline. Because the check is value-identity
+  // based, mounting, StrictMode's double effect run, and the post-discard reset
+  // never rewrite storage. A failed write disables further attempts.
+  const autosaveBaselineRef = useRef(bootstrap.state.draft);
+  const autosaveFailedRef = useRef(false);
+
+  // Autosave every persisted-draft change (fields, timing, per-exercise rest).
+  // Rest countdown ticks are runtime-only and therefore never saved.
+  useEffect(() => {
+    if (!autosaveEnabled) return;
+    if (autosaveFailedRef.current) return;
+    if (draft === autosaveBaselineRef.current) return;
+    try {
+      drafts.save(draft);
+      autosaveBaselineRef.current = draft;
+      setHasDraft(true);
+      setDiscardedNotice(false);
+    } catch (error) {
+      autosaveFailedRef.current = true;
+      setHasDraft(true);
+      setDraftProblem({ kind: "save-error", message: messageOf(error) });
+    }
+  }, [draft, drafts, autosaveEnabled]);
 
   // Live clock. The model never reads a clock: this component injects the
   // current time into every timing/rest action and keeps one render-local `now`
@@ -138,7 +250,7 @@ export function WorkoutEditorScreen() {
       dispatch({ type: "tick", nowMs: now });
     }, LIVE_TICK_MS);
     return () => window.clearInterval(interval);
-  }, [timerRunning]);
+  }, [timerRunning, dispatch]);
 
   // Returning to the tab after the interval was throttled/suspended: catch the
   // clock up immediately and settle a rest that elapsed in the background, so
@@ -153,7 +265,7 @@ export function WorkoutEditorScreen() {
     }
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, []);
+  }, [dispatch]);
 
   /** Dispatch a timing transition with a fresh injected clock. */
   function dispatchTimed(
@@ -196,6 +308,40 @@ export function WorkoutEditorScreen() {
     dispatch({ type: "setExerciseRestSeconds", exerciseKey, restSeconds });
   }
 
+  /**
+   * Two-step inline discard (no `window.confirm`).
+   *
+   * A failed clear leaves the unreadable payload untouched and keeps autosave
+   * blocked, so the editor never fabricates a replacement draft over data it
+   * could not read. A successful clear resets the form to a blank draft; the
+   * reset is baseline-skipped, so it is not written back.
+   */
+  function handleDiscardDraft(): void {
+    if (!discardConfirming) {
+      setDiscardConfirming(true);
+      return;
+    }
+    try {
+      drafts.clear();
+    } catch (error) {
+      setDiscardConfirming(false);
+      setDraftProblem({ kind: "save-error", message: messageOf(error) });
+      return;
+    }
+    // The reset itself is not a persisted edit: baseline it so the next actual
+    // change is the first autosave after an explicit discard.
+    const blank = blankSessionState();
+    autosaveBaselineRef.current = blank.draft;
+    autosaveFailedRef.current = false;
+    setState(blank);
+    setAutosaveEnabled(true);
+    setRestoredNotice(null);
+    setDraftProblem(null);
+    setHasDraft(false);
+    setDiscardConfirming(false);
+    setDiscardedNotice(true);
+  }
+
   // The captured record is only valid while the form still builds the same
   // content. Deriving staleness (rather than clearing it in every change
   // handler) means no field edit can be forgotten, so a stale value can never
@@ -211,6 +357,14 @@ export function WorkoutEditorScreen() {
     // navigation happens until the save resolves.
     try {
       const saved = await saveWorkout(toSaveInput(record));
+      // The record is already stored; a failed draft clear must neither undo the
+      // save nor block navigation. Surfacing it here would race the unmount, so
+      // it is best-effort (a stale draft is otherwise replaced on the next edit).
+      try {
+        drafts.clear();
+      } catch {
+        // Ignore: the saved workout is the durable outcome.
+      }
       navigate(`/workout/${saved.id}`);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
@@ -274,6 +428,62 @@ export function WorkoutEditorScreen() {
           "Record one session. Validation runs before anything is stored, and no existing record is ever overwritten.",
         )}
       </p>
+
+      {restoredNotice !== null && (
+        <p role="status" className="session-draft-notice" data-testid="draft-notice">
+          {restoredNotice === "auto-paused"
+            ? t("Session restored and auto-paused. Resume to continue.")
+            : t("Unfinished session restored.")}
+        </p>
+      )}
+
+      {discardedNotice && (
+        <p role="status" className="session-draft-notice" data-testid="draft-discarded">
+          {t("Session draft discarded.")}
+        </p>
+      )}
+
+      {draftProblem?.kind === "corrupt" && (
+        <div role="alert" className="validation-summary" data-testid="draft-corrupt">
+          <p>
+            {t(
+              "Could not restore the saved session draft. Discard it to start a new session.",
+            )}
+          </p>
+        </div>
+      )}
+
+      {draftProblem?.kind === "read-error" && (
+        <p role="status" className="session-draft-notice" data-testid="draft-read-error">
+          {draftProblem.message}
+        </p>
+      )}
+
+      {draftProblem?.kind === "save-error" && (
+        <p role="alert" className="validation-summary" data-testid="draft-save-error">
+          {t("Draft autosave failed: {message}", { message: draftProblem.message })}
+        </p>
+      )}
+
+      {hasDraft && (
+        <div className="session-draft-actions" data-testid="draft-actions">
+          {discardConfirming ? (
+            <>
+              <p role="status">{t("Discard the unfinished session draft?")}</p>
+              <button type="button" onClick={handleDiscardDraft}>
+                {t("Discard draft")}
+              </button>
+              <button type="button" onClick={() => setDiscardConfirming(false)}>
+                {t("Cancel")}
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={handleDiscardDraft}>
+              {t("Discard draft")}
+            </button>
+          )}
+        </div>
+      )}
 
       <section
         className="session-timer"
@@ -640,19 +850,23 @@ export function WorkoutEditorScreen() {
             </select>
           </div>
 
-          <div className="field">
-            <label htmlFor="workout-duration-minutes">{t("Duration (minutes)")}</label>
-            <input
-              id="workout-duration-minutes"
-              type="number"
-              min="1"
-              step="1"
-              value={draft.durationMinutes}
-              onChange={(event) =>
-                dispatch({ type: "setDurationMinutes", value: event.target.value })
-              }
-            />
-          </div>
+          {/* A timed session derives its duration from the shared timing, so the
+              manual field only exists for after-the-fact entries. */}
+          {!timed && (
+            <div className="field">
+              <label htmlFor="workout-duration-minutes">{t("Duration (minutes)")}</label>
+              <input
+                id="workout-duration-minutes"
+                type="number"
+                min="1"
+                step="1"
+                value={draft.durationMinutes}
+                onChange={(event) =>
+                  dispatch({ type: "setDurationMinutes", value: event.target.value })
+                }
+              />
+            </div>
+          )}
 
           <div className="field">
             <label htmlFor="workout-sleep-hours">{t("Sleep (hours)")}</label>

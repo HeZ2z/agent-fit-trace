@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
+import { SessionDraftProvider } from "../state/SessionDraftContext.tsx";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
 import { clientFor } from "../test/asyncClient.ts";
 import { WorkoutEditorScreen } from "./WorkoutEditorScreen.tsx";
@@ -23,16 +24,21 @@ vi.mock("../workout/liveFeedback.ts", () => ({
 }));
 
 const START = new Date("2026-01-05T10:00:00.000Z");
+const DRAFT_OWNER = "editor-live-test-owner";
 
 function renderEditor(): void {
+  // One in-memory adapter backs both workouts and the session draft so these
+  // tests never read or write the real localStorage.
   const adapter = new MemoryStorageAdapter();
   render(
     <MemoryRouter initialEntries={["/workout/new"]}>
       <WorkoutStoreProvider client={clientFor(adapter)}>
-        <Routes>
-          <Route path="/workout/new" element={<WorkoutEditorScreen />} />
-          <Route path="/workout/:id" element={<div data-testid="summary" />} />
-        </Routes>
+        <SessionDraftProvider ownerId={DRAFT_OWNER} adapter={adapter}>
+          <Routes>
+            <Route path="/workout/new" element={<WorkoutEditorScreen />} />
+            <Route path="/workout/:id" element={<div data-testid="summary" />} />
+          </Routes>
+        </SessionDraftProvider>
       </WorkoutStoreProvider>
     </MemoryRouter>,
   );

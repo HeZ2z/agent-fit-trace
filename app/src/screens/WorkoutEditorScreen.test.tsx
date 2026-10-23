@@ -8,25 +8,34 @@ import { setLanguage } from "../i18n/i18n.ts";
 import { MemoryStorageAdapter, StorageUnavailableError } from "../storage/adapter.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import { loadRecords } from "../storage/workoutRepository.ts";
+import { SessionDraftProvider } from "../state/SessionDraftContext.tsx";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
 import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
 import { WorkoutEditorScreen } from "./WorkoutEditorScreen.tsx";
+
+/** Every editor test gets an isolated in-memory draft store, never localStorage. */
+const DRAFT_OWNER = "editor-test-owner";
 
 function SummaryProbe() {
   const { id } = useParams<{ id: string }>();
   return <div data-testid="summary-id">{id}</div>;
 }
 
-function renderEditor(client: FitTraceClient) {
+function renderEditor(
+  client: FitTraceClient,
+  draftAdapter: StorageAdapter = new MemoryStorageAdapter(),
+) {
   const user = userEvent.setup();
   const view = render(
     <MemoryRouter initialEntries={["/workout/new"]}>
       <WorkoutStoreProvider client={client}>
-        <Routes>
-          <Route path="/workout/new" element={<WorkoutEditorScreen />} />
-          <Route path="/workout/:id" element={<SummaryProbe />} />
-        </Routes>
+        <SessionDraftProvider ownerId={DRAFT_OWNER} adapter={draftAdapter}>
+          <Routes>
+            <Route path="/workout/new" element={<WorkoutEditorScreen />} />
+            <Route path="/workout/:id" element={<SummaryProbe />} />
+          </Routes>
+        </SessionDraftProvider>
       </WorkoutStoreProvider>
     </MemoryRouter>,
   );
@@ -35,7 +44,7 @@ function renderEditor(client: FitTraceClient) {
 }
 
 function renderEditorOver(adapter: StorageAdapter = new MemoryStorageAdapter()) {
-  return { adapter, ...renderEditor(clientFor(adapter)) };
+  return { adapter, ...renderEditor(clientFor(adapter), adapter) };
 }
 
 async function fillValidSet(user: ReturnType<typeof userEvent.setup>): Promise<void> {
