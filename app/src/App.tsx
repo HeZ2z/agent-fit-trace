@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
+import { SessionDraftProvider } from "./state/SessionDraftContext.tsx";
 import { WorkoutStoreProvider } from "./state/WorkoutStoreContext.tsx";
 import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./api/httpFitTraceClient.ts";
@@ -55,10 +56,10 @@ export function isLegacyLoopbackAllowed(explicitProp?: boolean): boolean {
 
 /**
  * Mode-aware client: HTTP mode attaches the current session token per
- * request; local mode stays on browser storage. The provider is keyed by the
- * signed-in user id so a logout or account change remounts the workout store
- * and clears the previous user's records/analysis caches — no flash of the
- * old account's data.
+ * request; local mode stays on browser storage. The draft provider is keyed by
+ * the signed-in user id and wraps the workout store, so a logout or account
+ * change remounts both and clears the previous user's records/analysis caches
+ * and draft callbacks — no flash of the old account's data.
  *
  * This provider must only mount inside the auth gate (see `ProtectedContent`
  * below): mounting it earlier would dispatch history reads with an
@@ -84,24 +85,22 @@ function AuthenticatedWorkoutProvider({
     () => new LocalFitTraceClient(undefined, ownerId),
     [ownerId],
   );
-  if (clientProp !== undefined) {
-    return (
-      <WorkoutStoreProvider key={ownerId} client={clientProp}>
-        {children}
-      </WorkoutStoreProvider>
+  // Every client mode gets the same owner-scoped draft storage. The provider is
+  // keyed by the owner here (instead of on the store) so an account change
+  // remounts the whole subtree: workout records, analysis caches and the
+  // previous owner's in-memory draft handlers all go with it.
+  const store =
+    clientProp !== undefined ? (
+      <WorkoutStoreProvider client={clientProp}>{children}</WorkoutStoreProvider>
+    ) : isHttpMode() ? (
+      <WorkoutStoreProvider client={httpClient}>{children}</WorkoutStoreProvider>
+    ) : (
+      <WorkoutStoreProvider client={localClient}>{children}</WorkoutStoreProvider>
     );
-  }
-  if (isHttpMode()) {
-    return (
-      <WorkoutStoreProvider key={ownerId} client={httpClient}>
-        {children}
-      </WorkoutStoreProvider>
-    );
-  }
   return (
-    <WorkoutStoreProvider key={ownerId} client={localClient}>
-      {children}
-    </WorkoutStoreProvider>
+    <SessionDraftProvider key={ownerId} ownerId={ownerId}>
+      {store}
+    </SessionDraftProvider>
   );
 }
 
