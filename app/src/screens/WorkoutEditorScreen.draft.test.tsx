@@ -175,6 +175,35 @@ describe("WorkoutEditorScreen session draft", () => {
     expect(loadSessionDraft(adapter, OWNER)).toBeNull();
   });
 
+  it("clears a saved auto-paused restored draft without edits", async () => {
+    const now = Date.now();
+    const adapter = new MemoryStorageAdapter();
+    saveSessionDraft(
+      adapter,
+      {
+        ...validDraft(),
+        timing: {
+          startedAtMs: now - 10 * 60_000,
+          endedAtMs: null,
+          pausedAtMs: null,
+          pausedTotalMs: 0,
+          lastActiveAtMs: now - 5 * 60_000,
+        },
+      },
+      OWNER,
+    );
+    renderEditor(adapter);
+    const user = userEvent.setup();
+
+    // Restoring auto-pauses in memory while storage still holds the active
+    // timing. Saving without edits must still clear that stored payload.
+    expect(screen.getByTestId("session-phase")).toHaveTextContent(/paused/i);
+    await user.click(screen.getByRole("button", { name: /save workout/i }));
+
+    expect(await screen.findByTestId("summary")).toBeInTheDocument();
+    expect(loadSessionDraft(adapter, OWNER)).toBeNull();
+  });
+
   it("does not clear a newer draft when an older save resolves", async () => {
     const adapter = new MemoryStorageAdapter();
     const client = new FakeFitTraceClient({ records: [] });

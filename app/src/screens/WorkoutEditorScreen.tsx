@@ -30,7 +30,11 @@ import {
   todayLocalDate,
   validateSessionDraft,
 } from "@agent-fit-trace/workout-session";
-import type { SessionAction, SessionState } from "@agent-fit-trace/workout-session";
+import type {
+  SessionAction,
+  SessionDraft,
+  SessionState,
+} from "@agent-fit-trace/workout-session";
 import { ExerciseNameCombobox } from "../components/ExerciseNameCombobox.tsx";
 import { useSessionDraft } from "../state/SessionDraftContext.tsx";
 import type { SessionDraftContextValue } from "../state/SessionDraftContext.tsx";
@@ -416,10 +420,17 @@ export function WorkoutEditorScreen() {
       stableStringify(pendingSave.record);
 
   async function persist(record: WorkoutRecord): Promise<void> {
-    // Snapshot the draft this save represents. A newer editor instance (or an
-    // edit made while the request is in flight) can autosave different content
-    // under the same owner key; an old success must not delete it.
-    const savedDraft = draft;
+    // Snapshot storage at save start, not the in-memory draft: restoring an
+    // active timing auto-pauses it only in memory, so the stored payload can
+    // legitimately differ from `draft`. Comparing storage before/after still
+    // detects a newer autosave from this or another editor instance.
+    let storedDraft: SessionDraft | null | undefined;
+    try {
+      storedDraft = drafts.load();
+    } catch {
+      // An unreadable payload cannot be safely matched; leave it for discard.
+      storedDraft = undefined;
+    }
     // Save failures (unavailable, quota, conflict) must surface to the user
     // rather than escaping as an unhandled error. Input is retained and no
     // navigation happens until the save resolves.
@@ -427,14 +438,16 @@ export function WorkoutEditorScreen() {
       const saved = await saveWorkout(toSaveInput(record));
       // The record is already stored; a failed draft clear must neither undo the
       // save nor block navigation. Only clear the draft when storage still holds
-      // exactly the content this save was built from.
+      // exactly the payload observed when this save started.
       try {
-        const currentDraft = drafts.load();
-        if (
-          currentDraft !== null &&
-          stableStringify(currentDraft) === stableStringify(savedDraft)
-        ) {
-          drafts.clear();
+        if (storedDraft !== undefined) {
+          const currentDraft = drafts.load();
+          if (
+            currentDraft !== null &&
+            stableStringify(currentDraft) === stableStringify(storedDraft)
+          ) {
+            drafts.clear();
+          }
         }
       } catch {
         // Ignore: the saved workout is the durable outcome.
