@@ -14,6 +14,7 @@
     "@agent-fit-trace/api-contracts": "workspace:*",
     "@agent-fit-trace/core": "workspace:*",
     "@agent-fit-trace/i18n": "workspace:*",
+    "@agent-fit-trace/workout-session": "workspace:*",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.3"

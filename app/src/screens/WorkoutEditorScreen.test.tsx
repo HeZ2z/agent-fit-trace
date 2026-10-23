@@ -69,14 +69,40 @@ describe("WorkoutEditorScreen", () => {
     expect(screen.getByRole("button", { name: /save workout/i })).toBeInTheDocument();
   });
 
-  it("shows an error and does not persist when saving with no exercises", async () => {
+  it("shows an error and does not persist when saving a blank form", async () => {
     const { adapter, user } = renderEditorOver();
 
-    await user.click(screen.getByRole("button", { name: /remove exercise/i }));
+    // The editor always keeps one exercise and one set; the shared build drops
+    // blank content, so core reports the empty session as missing exercises.
     await user.click(screen.getByRole("button", { name: /save workout/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/exercises/i);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/exercises/i);
+    expect(alert.querySelector('[data-issue-code="MISSING_EXERCISES"]')).not.toBeNull();
     expect(loadRecords(adapter)).toHaveLength(0);
+  });
+
+  it("keeps at least one exercise and one set", async () => {
+    const { user } = renderEditorOver();
+
+    // The remove controls are unavailable at the minimum instead of leaving an
+    // empty form that the shared reducer would refuse to create anyway.
+    expect(screen.getByRole("button", { name: /remove exercise/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /remove set/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /add set/i }));
+    const setRemovers = screen.getAllByRole("button", { name: /remove set/i });
+    expect(setRemovers).toHaveLength(2);
+    expect(setRemovers[0]).toBeEnabled();
+    await user.click(setRemovers[0]!);
+    expect(screen.getByRole("button", { name: /remove set/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /add exercise/i }));
+    const exerciseRemovers = screen.getAllByRole("button", { name: /remove exercise/i });
+    expect(exerciseRemovers).toHaveLength(2);
+    expect(exerciseRemovers[0]).toBeEnabled();
+    await user.click(exerciseRemovers[0]!);
+    expect(screen.getByRole("button", { name: /remove exercise/i })).toBeDisabled();
   });
 
   it("rejects a negative weight", async () => {
@@ -138,6 +164,32 @@ describe("WorkoutEditorScreen", () => {
     const stored = loadRecords(adapter);
     expect(stored).toHaveLength(1);
     expect(stored[0]!.id).toBe(expectedId);
+  });
+
+  it("derives the id from pre-validation content so padded names stay idempotent", async () => {
+    const { adapter, user } = renderEditorOver();
+    await user.type(screen.getByLabelText(/exercise 1 name/i), " Squat ");
+    await fillSetFields(user);
+
+    const dateValue = (screen.getByLabelText(/^date$/i) as HTMLInputElement).value;
+    // The client hashes the submitted content before the core trims the name.
+    // Keeping that pre-validation build as the save input prevents re-entering
+    // an older padded-name workout from creating a second record.
+    const expectedId = deriveWorkoutId({
+      id: "pending",
+      schema_version: CURRENT_SCHEMA_VERSION,
+      date: dateValue,
+      session_type: "strength",
+      exercises: [{ name: " Squat ", sets: [{ weight: 100, reps: 5, rpe: 8 }] }],
+    });
+
+    await user.click(screen.getByRole("button", { name: /save workout/i }));
+
+    expect(await screen.findByTestId("summary-id")).toHaveTextContent(expectedId);
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.id).toBe(expectedId);
+    expect(stored[0]!.exercises[0]!.name).toBe("Squat");
   });
 
   it("disables submit while a save is pending and does not double-submit", async () => {

@@ -1,15 +1,22 @@
-import { useRef, useState } from "react";
+import { useReducer, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  CURRENT_SCHEMA_VERSION,
-  EXTREME_RPE,
-  SESSION_TYPES,
-  ValidationError,
-  stableStringify,
-  validateWorkoutRecord,
+import { EXTREME_RPE, SESSION_TYPES, stableStringify } from "@agent-fit-trace/core";
+import type {
+  SessionType,
+  ValidationIssue,
+  ValidationWarning,
+  WorkoutRecord,
 } from "@agent-fit-trace/core";
-import type { ValidationIssue, ValidationWarning } from "@agent-fit-trace/core";
+import {
+  buildWorkoutRecord,
+  createSessionDraft,
+  createSessionRuntime,
+  reduceSessionState,
+  toSaveInput,
+  todayLocalDate,
+  validateSessionDraft,
+} from "@agent-fit-trace/workout-session";
 import { ExerciseNameCombobox } from "../components/ExerciseNameCombobox.tsx";
 import { useWorkouts } from "../state/useWorkouts.ts";
 import { useI18n } from "../i18n/useI18n.ts";
@@ -20,43 +27,26 @@ import {
   displayWarning,
 } from "../i18n/domain.ts";
 
-interface SetDraft {
-  key: number;
-  weight: string;
-  reps: string;
-  rpe: string;
-}
-
-interface ExerciseDraft {
-  key: number;
-  name: string;
-  sets: SetDraft[];
-}
-
-interface PainDraft {
-  key: number;
-  area: string;
-  level: string;
-}
-
-/** UI-only default so the date field opens on today; the core has no clock. */
-function todayLocalDate(): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
-}
-
-/** Parse a numeric field, treating blank input as absent. */
-function parseOptionalNumber(raw: string): number | undefined {
-  const trimmed = raw.trim();
-  if (trimmed === "") return undefined;
-  return Number(trimmed);
-}
-
+/**
+ * Presentation-only safety hint. The shared build already parses the draft, but
+ * the threshold check stays local so the badge can react to partially typed RPE
+ * input without touching the record model.
+ */
 function isExtremeRpe(raw: string): boolean {
-  const value = parseOptionalNumber(raw);
-  return value !== undefined && Number.isFinite(value) && value >= EXTREME_RPE;
+  const trimmed = raw.trim();
+  if (trimmed === "") return false;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value >= EXTREME_RPE;
+}
+
+/**
+ * A record captured for the warning confirmation, plus the clock used to build
+ * it. The built (pre-validation-normalization) record is stored so staleness can
+ * compare like with like against a fresh build of the current draft.
+ */
+interface PendingSave {
+  record: WorkoutRecord;
+  nowMs: number;
 }
 
 export function WorkoutEditorScreen() {
@@ -64,157 +54,35 @@ export function WorkoutEditorScreen() {
   const { saveWorkout, saveStatus } = useWorkouts();
   const { language, t } = useI18n();
   const saving = saveStatus === "saving";
-  const nextKey = useRef(1);
 
-  const makeSet = (): SetDraft => ({ key: nextKey.current++, weight: "", reps: "", rpe: "" });
-  const makeExercise = (): ExerciseDraft => ({
-    key: nextKey.current++,
-    name: "",
-    sets: [makeSet()],
+  // One shared draft + runtime reducer owns every field, exercise, set and pain
+  // edit; keys are allocated by the reducer instead of a component counter.
+  const [state, dispatch] = useReducer(reduceSessionState, {
+    draft: createSessionDraft(todayLocalDate()),
+    runtime: createSessionRuntime(),
   });
-  const makePain = (): PainDraft => ({ key: nextKey.current++, area: "", level: "" });
+  const { draft } = state;
 
-  const [date, setDate] = useState(todayLocalDate);
-  const [sessionType, setSessionType] = useState<string>(SESSION_TYPES[0]);
-  const [durationMinutes, setDurationMinutes] = useState("");
-  const [sleepHours, setSleepHours] = useState("");
-  const [notes, setNotes] = useState("");
-  const [exercises, setExercises] = useState<ExerciseDraft[]>(() => [makeExercise()]);
-  const [pain, setPain] = useState<PainDraft[]>([]);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [warnings, setWarnings] = useState<ValidationWarning[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [pendingSave, setPendingSave] = useState<Record<string, unknown> | null>(null);
+  const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
 
-  // The captured draft is only valid while the form still matches it. Deriving
-  // staleness (rather than clearing it in every change handler) means no field
-  // edit can be forgotten, so a stale value can never be saved.
+  // The captured record is only valid while the form still builds the same
+  // content. Deriving staleness (rather than clearing it in every change
+  // handler) means no field edit can be forgotten, so a stale value can never
+  // be saved.
   const pendingIsStale =
-    pendingSave !== null && stableStringify(buildDraft()) !== stableStringify(pendingSave);
+    pendingSave !== null &&
+    stableStringify(buildWorkoutRecord(draft, pendingSave.nowMs)) !==
+      stableStringify(pendingSave.record);
 
-  function addExercise(): void {
-    const exercise = makeExercise();
-    setExercises((prev) => [...prev, exercise]);
-  }
-
-  function removeExercise(key: number): void {
-    setExercises((prev) => prev.filter((exercise) => exercise.key !== key));
-  }
-
-  function updateExerciseName(key: number, name: string): void {
-    setExercises((prev) =>
-      prev.map((exercise) => (exercise.key === key ? { ...exercise, name } : exercise)),
-    );
-  }
-
-  function addSet(exerciseKey: number): void {
-    const set = makeSet();
-    setExercises((prev) =>
-      prev.map((exercise) =>
-        exercise.key === exerciseKey ? { ...exercise, sets: [...exercise.sets, set] } : exercise,
-      ),
-    );
-  }
-
-  function removeSet(exerciseKey: number, setKey: number): void {
-    setExercises((prev) =>
-      prev.map((exercise) =>
-        exercise.key === exerciseKey
-          ? { ...exercise, sets: exercise.sets.filter((set) => set.key !== setKey) }
-          : exercise,
-      ),
-    );
-  }
-
-  function updateSet(
-    exerciseKey: number,
-    setKey: number,
-    field: "weight" | "reps" | "rpe",
-    value: string,
-  ): void {
-    setExercises((prev) =>
-      prev.map((exercise) =>
-        exercise.key === exerciseKey
-          ? {
-              ...exercise,
-              sets: exercise.sets.map((set) =>
-                set.key === setKey ? { ...set, [field]: value } : set,
-              ),
-            }
-          : exercise,
-      ),
-    );
-  }
-
-  function addPain(): void {
-    const entry = makePain();
-    setPain((prev) => [...prev, entry]);
-  }
-
-  function removePain(key: number): void {
-    setPain((prev) => prev.filter((entry) => entry.key !== key));
-  }
-
-  function updatePain(key: number, field: "area" | "level", value: string): void {
-    setPain((prev) => prev.map((entry) => (entry.key === key ? { ...entry, [field]: value } : entry)));
-  }
-
-  function buildDraft(): Record<string, unknown> {
-    const draft: Record<string, unknown> = {
-      // Placeholder id: validation requires a non-empty id, but the id is
-      // owned by the client — it is stripped before saving so the client
-      // derives the real id from content (idempotent retries).
-      id: "pending",
-      schema_version: CURRENT_SCHEMA_VERSION,
-      date,
-      session_type: sessionType,
-      exercises: exercises.map((exercise) => ({
-        name: exercise.name,
-        sets: exercise.sets.map((set) => {
-          const built: Record<string, unknown> = {};
-          const weight = parseOptionalNumber(set.weight);
-          if (weight !== undefined) built.weight = weight;
-          const reps = parseOptionalNumber(set.reps);
-          if (reps !== undefined) built.reps = reps;
-          const rpe = parseOptionalNumber(set.rpe);
-          if (rpe !== undefined) built.rpe = rpe;
-          return built;
-        }),
-      })),
-    };
-
-    if (durationMinutes.trim() !== "") draft.duration_minutes = Number(durationMinutes);
-    if (sleepHours.trim() !== "") draft.sleep_hours = Number(sleepHours);
-    if (notes.trim() !== "") draft.notes = notes;
-
-    if (pain.length > 0) {
-      draft.pain = pain.map((entry) => {
-        const report: Record<string, unknown> = {};
-        if (entry.area.trim() !== "") report.area = entry.area;
-        const level = parseOptionalNumber(entry.level);
-        if (level !== undefined) report.level = level;
-        return report;
-      });
-    }
-
-    return draft;
-  }
-
-  /** Drop the validation placeholder so the client derives the real id. */
-  function buildSaveInputFrom(draft: Record<string, unknown>): Record<string, unknown> {
-    if (draft.id === "pending") {
-      const { id: _placeholder, ...rest } = draft;
-      return rest;
-    }
-    return draft;
-  }
-
-  async function persist(draft: Record<string, unknown>): Promise<void> {
+  async function persist(record: WorkoutRecord): Promise<void> {
     // Save failures (unavailable, quota, conflict) must surface to the user
     // rather than escaping as an unhandled error. Input is retained and no
     // navigation happens until the save resolves.
     try {
-      const saved = await saveWorkout(buildSaveInputFrom(draft));
+      const saved = await saveWorkout(toSaveInput(record));
       navigate(`/workout/${saved.id}`);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
@@ -229,17 +97,19 @@ export function WorkoutEditorScreen() {
     setSaveError(null);
     setPendingSave(null);
 
-    const draft = buildDraft();
+    const nowMs = Date.now();
+    // Build before validation: the client derives the content id from the
+    // submitted content, and historical records were hashed with the untrimmed
+    // name. Persisting this pre-normalization build keeps re-entry idempotent;
+    // validation still trims/normalizes the record the client stores.
+    const candidate = buildWorkoutRecord(draft, nowMs);
+    // The shared bridge runs core validation and separates hard issues from
+    // accepted-input warnings.
+    const validated = validateSessionDraft(draft, nowMs);
 
-    let validated;
-    try {
-      validated = validateWorkoutRecord(draft);
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        setIssues(error.issues);
-        return; // Do not persist an invalid record.
-      }
-      throw error;
+    if (!validated.ok) {
+      setIssues(validated.issues);
+      return; // Do not persist an invalid record.
     }
 
     // Accepted-but-suspicious input (e.g. implausibly low sleep) must be seen
@@ -247,25 +117,25 @@ export function WorkoutEditorScreen() {
     // than navigating away immediately.
     if (validated.warnings.length > 0) {
       setWarnings(validated.warnings);
-      setPendingSave(draft);
+      setPendingSave({ record: candidate, nowMs });
       return;
     }
 
-    await persist(draft);
+    await persist(candidate);
   }
 
   async function handleConfirmSave(): Promise<void> {
     if (saving) return;
-    // The form changed after the warning was shown: drop the stale draft and
+    // The form changed after the warning was shown: drop the stale record and
     // require a fresh submission and validation.
     if (pendingSave === null || pendingIsStale) {
       setPendingSave(null);
       setWarnings([]);
       return;
     }
-    const draft = pendingSave;
+    const pending = pendingSave;
     setPendingSave(null);
-    await persist(draft);
+    await persist(pending.record);
   }
 
   return (
@@ -338,7 +208,7 @@ export function WorkoutEditorScreen() {
         <fieldset>
           <legend>{t("Exercises")}</legend>
 
-          {exercises.map((exercise, exerciseIndex) => (
+          {draft.exercises.map((exercise, exerciseIndex) => (
             <fieldset key={exercise.key} className="exercise-editor">
               <legend>{t("Exercise {index}", { index: exerciseIndex + 1 })}</legend>
 
@@ -346,7 +216,9 @@ export function WorkoutEditorScreen() {
                 id={`exercise-${exercise.key}-name`}
                 label={t("Exercise {index} name", { index: exerciseIndex + 1 })}
                 value={exercise.name}
-                onChange={(name) => updateExerciseName(exercise.key, name)}
+                onChange={(name) =>
+                  dispatch({ type: "setExerciseName", exerciseKey: exercise.key, name })
+                }
               />
 
               {exercise.sets.map((set, setIndex) => {
@@ -378,7 +250,13 @@ export function WorkoutEditorScreen() {
                         step="any"
                         value={set.weight}
                         onChange={(event) =>
-                          updateSet(exercise.key, set.key, "weight", event.target.value)
+                          dispatch({
+                            type: "setSetField",
+                            exerciseKey: exercise.key,
+                            setKey: set.key,
+                            field: "weight",
+                            value: event.target.value,
+                          })
                         }
                       />
                     </div>
@@ -395,7 +273,15 @@ export function WorkoutEditorScreen() {
                         type="number"
                         step="1"
                         value={set.reps}
-                        onChange={(event) => updateSet(exercise.key, set.key, "reps", event.target.value)}
+                        onChange={(event) =>
+                          dispatch({
+                            type: "setSetField",
+                            exerciseKey: exercise.key,
+                            setKey: set.key,
+                            field: "reps",
+                            value: event.target.value,
+                          })
+                        }
                       />
                     </div>
 
@@ -413,29 +299,58 @@ export function WorkoutEditorScreen() {
                         max="10"
                         step="0.5"
                         value={set.rpe}
-                        onChange={(event) => updateSet(exercise.key, set.key, "rpe", event.target.value)}
+                        onChange={(event) =>
+                          dispatch({
+                            type: "setSetField",
+                            exerciseKey: exercise.key,
+                            setKey: set.key,
+                            field: "rpe",
+                            value: event.target.value,
+                          })
+                        }
                       />
                     </div>
 
                     {extreme && <span className="safety-badge">{t("Extreme effort")}</span>}
 
-                    <button type="button" onClick={() => removeSet(exercise.key, set.key)}>
+                    <button
+                      type="button"
+                      // The shared reducer keeps at least one set per exercise,
+                      // so the last remaining one cannot be removed.
+                      disabled={exercise.sets.length <= 1}
+                      onClick={() =>
+                        dispatch({
+                          type: "removeSet",
+                          exerciseKey: exercise.key,
+                          setKey: set.key,
+                        })
+                      }
+                    >
                       {t("Remove set")}
                     </button>
                   </fieldset>
                 );
               })}
 
-              <button type="button" onClick={() => addSet(exercise.key)}>
+              <button
+                type="button"
+                onClick={() => dispatch({ type: "addSet", exerciseKey: exercise.key })}
+              >
                 {t("Add set")}
               </button>
-              <button type="button" onClick={() => removeExercise(exercise.key)}>
+              <button
+                type="button"
+                // The shared reducer keeps at least one exercise, so the last
+                // remaining one cannot be removed.
+                disabled={draft.exercises.length <= 1}
+                onClick={() => dispatch({ type: "removeExercise", exerciseKey: exercise.key })}
+              >
                 {t("Remove exercise")}
               </button>
             </fieldset>
           ))}
 
-          <button type="button" onClick={addExercise}>
+          <button type="button" onClick={() => dispatch({ type: "addExercise" })}>
             {t("Add exercise")}
           </button>
         </fieldset>
@@ -448,8 +363,8 @@ export function WorkoutEditorScreen() {
             <input
               id="workout-date"
               type="date"
-              value={date}
-              onChange={(event) => setDate(event.target.value)}
+              value={draft.date}
+              onChange={(event) => dispatch({ type: "setDate", date: event.target.value })}
             />
           </div>
 
@@ -457,8 +372,13 @@ export function WorkoutEditorScreen() {
             <label htmlFor="workout-session-type">{t("Session type")}</label>
             <select
               id="workout-session-type"
-              value={sessionType}
-              onChange={(event) => setSessionType(event.target.value)}
+              value={draft.sessionType}
+              onChange={(event) =>
+                dispatch({
+                  type: "setSessionType",
+                  sessionType: event.target.value as SessionType,
+                })
+              }
             >
               {SESSION_TYPES.map((type) => (
                 <option key={type} value={type}>
@@ -475,8 +395,10 @@ export function WorkoutEditorScreen() {
               type="number"
               min="1"
               step="1"
-              value={durationMinutes}
-              onChange={(event) => setDurationMinutes(event.target.value)}
+              value={draft.durationMinutes}
+              onChange={(event) =>
+                dispatch({ type: "setDurationMinutes", value: event.target.value })
+              }
             />
           </div>
 
@@ -488,8 +410,8 @@ export function WorkoutEditorScreen() {
               min="0"
               max="24"
               step="0.5"
-              value={sleepHours}
-              onChange={(event) => setSleepHours(event.target.value)}
+              value={draft.sleepHours}
+              onChange={(event) => dispatch({ type: "setSleepHours", value: event.target.value })}
             />
           </div>
 
@@ -497,8 +419,8 @@ export function WorkoutEditorScreen() {
             <label htmlFor="workout-notes">{t("Notes")}</label>
             <textarea
               id="workout-notes"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
+              value={draft.notes}
+              onChange={(event) => dispatch({ type: "setNotes", value: event.target.value })}
             />
           </div>
         </fieldset>
@@ -506,7 +428,7 @@ export function WorkoutEditorScreen() {
         <fieldset>
           <legend>{t("Pain")}</legend>
 
-          {pain.map((entry, index) => (
+          {draft.pain.map((entry, index) => (
             <div key={entry.key} className="pain-editor" data-safety="pain">
               <div className="field">
                 <label htmlFor={`pain-${entry.key}-area`}>
@@ -516,7 +438,14 @@ export function WorkoutEditorScreen() {
                   id={`pain-${entry.key}-area`}
                   type="text"
                   value={entry.area}
-                  onChange={(event) => updatePain(entry.key, "area", event.target.value)}
+                  onChange={(event) =>
+                    dispatch({
+                      type: "setPainField",
+                      painKey: entry.key,
+                      field: "area",
+                      value: event.target.value,
+                    })
+                  }
                 />
               </div>
 
@@ -531,19 +460,29 @@ export function WorkoutEditorScreen() {
                   max="10"
                   step="1"
                   value={entry.level}
-                  onChange={(event) => updatePain(entry.key, "level", event.target.value)}
+                  onChange={(event) =>
+                    dispatch({
+                      type: "setPainField",
+                      painKey: entry.key,
+                      field: "level",
+                      value: event.target.value,
+                    })
+                  }
                 />
               </div>
 
               <span className="safety-badge">{t("Pain reported")}</span>
 
-              <button type="button" onClick={() => removePain(entry.key)}>
+              <button
+                type="button"
+                onClick={() => dispatch({ type: "removePain", painKey: entry.key })}
+              >
                 {t("Remove pain")}
               </button>
             </div>
           ))}
 
-          <button type="button" onClick={addPain}>
+          <button type="button" onClick={() => dispatch({ type: "addPain" })}>
             {t("Add pain")}
           </button>
         </fieldset>

@@ -45,6 +45,9 @@ importers:
       '@agent-fit-trace/i18n':
         specifier: workspace:*
         version: link:../packages/fit-trace-i18n
+      '@agent-fit-trace/workout-session':
+        specifier: workspace:*
+        version: link:../packages/fit-trace-workout-session
       react:
         specifier: ^19.3.0
         version: 19.3.0
