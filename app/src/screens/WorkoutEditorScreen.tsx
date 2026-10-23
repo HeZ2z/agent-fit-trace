@@ -1,4 +1,4 @@
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { EXTREME_RPE, SESSION_TYPES, stableStringify } from "@agent-fit-trace/core";
@@ -12,7 +12,10 @@ import {
   buildWorkoutRecord,
   createSessionDraft,
   createSessionRuntime,
+  elapsedMs,
   reduceSessionState,
+  restRemainingMs,
+  sessionPhase,
   toSaveInput,
   todayLocalDate,
   validateSessionDraft,
@@ -26,6 +29,12 @@ import {
   displayValidationMessage,
   displayWarning,
 } from "../i18n/domain.ts";
+import {
+  REST_ENDED_VIBRATION,
+  SET_CHECKED_VIBRATION_MS,
+  playRestCue,
+  vibrate,
+} from "../workout/liveFeedback.ts";
 
 /**
  * Presentation-only safety hint. The shared build already parses the draft, but
@@ -38,6 +47,27 @@ function isExtremeRpe(raw: string): boolean {
   const value = Number(trimmed);
   return Number.isFinite(value) && value >= EXTREME_RPE;
 }
+
+/**
+ * Format a live duration as `MM:SS`, adding an `H:` segment after an hour.
+ *
+ * Elapsed and rest times are derived from injected epoch milliseconds, so this
+ * stays a pure presentation helper and never reads a clock itself.
+ */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/** Rest steps the UI's -15s/+15s buttons move the shared timer by. */
+const REST_ADJUST_MS = 15_000;
+
+/** Ticker cadence for the elapsed display and rest settlement. */
+const LIVE_TICK_MS = 250;
 
 /**
  * A record captured for the warning confirmation, plus the clock used to build
@@ -61,12 +91,110 @@ export function WorkoutEditorScreen() {
     draft: createSessionDraft(todayLocalDate()),
     runtime: createSessionRuntime(),
   });
-  const { draft } = state;
+  const { draft, runtime } = state;
 
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [warnings, setWarnings] = useState<ValidationWarning[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
+
+  // Live clock. The model never reads a clock: this component injects the
+  // current time into every timing/rest action and keeps one render-local `now`
+  // so elapsed time and the rest countdown re-render on the ticker.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const phase = sessionPhase(state, nowMs);
+  const timed = draft.timing !== null;
+  const paused = phase === "paused";
+  const finished = phase === "finished";
+  // Only a running (started, not paused/finished) session needs a ticker.
+  const timerRunning = timed && !paused && !finished;
+  const elapsed = elapsedMs(draft, nowMs);
+  const rest = runtime.rest;
+  const restRemaining = rest === null ? null : restRemainingMs(rest, nowMs);
+
+  // The cue plays on the null -> number transition, so a settled rest is
+  // announced exactly once. Starting a new rest clears the cue back to null,
+  // which resets the ref and arms the next announcement.
+  const cuedRestEndRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (runtime.restEndedAtMs === null) {
+      cuedRestEndRef.current = null;
+      return;
+    }
+    if (cuedRestEndRef.current === runtime.restEndedAtMs) return;
+    cuedRestEndRef.current = runtime.restEndedAtMs;
+    playRestCue();
+    vibrate(REST_ENDED_VIBRATION);
+  }, [runtime.restEndedAtMs]);
+
+  // 250ms ticker while the session is running: updates the elapsed display and
+  // settles an elapsed rest (which emits the rest-ended cue). It is cleared as
+  // soon as the session pauses or finishes.
+  useEffect(() => {
+    if (!timerRunning) return;
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      setNowMs(now);
+      dispatch({ type: "tick", nowMs: now });
+    }, LIVE_TICK_MS);
+    return () => window.clearInterval(interval);
+  }, [timerRunning]);
+
+  // Returning to the tab after the interval was throttled/suspended: catch the
+  // clock up immediately and settle a rest that elapsed in the background, so
+  // the cue fires once without waiting for the next tick.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    function handleVisibilityChange(): void {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      setNowMs(now);
+      dispatch({ type: "tick", nowMs: now });
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
+  /** Dispatch a timing transition with a fresh injected clock. */
+  function dispatchTimed(
+    action:
+      | { type: "startSession" }
+      | { type: "pauseSession" }
+      | { type: "resumeSession" }
+      | { type: "finishSession" },
+  ): void {
+    const now = Date.now();
+    setNowMs(now);
+    dispatch({ ...action, nowMs: now });
+  }
+
+  function handleToggleSetDone(exerciseKey: number, setKey: number, done: boolean): void {
+    const now = Date.now();
+    setNowMs(now);
+    if (!done) vibrate(SET_CHECKED_VIBRATION_MS);
+    dispatch({ type: "toggleSetDone", exerciseKey, setKey, nowMs: now });
+  }
+
+  function handleAdjustRest(deltaMs: number): void {
+    setNowMs(Date.now());
+    dispatch({ type: "adjustRest", deltaMs });
+  }
+
+  function handleSkipRest(): void {
+    setNowMs(Date.now());
+    dispatch({ type: "skipRest" });
+  }
+
+  /**
+   * Whole seconds of rest between sets; empty means zero (no rest), matching
+   * the shared draft's numeric field. A transiently unparsable value never
+   * reaches the reducer as `NaN`.
+   */
+  function handleRestSecondsChange(exerciseKey: number, raw: string): void {
+    const restSeconds = raw.trim() === "" ? 0 : Number(raw);
+    if (!Number.isFinite(restSeconds)) return;
+    dispatch({ type: "setExerciseRestSeconds", exerciseKey, restSeconds });
+  }
 
   // The captured record is only valid while the form still builds the same
   // content. Deriving staleness (rather than clearing it in every change
@@ -147,6 +275,85 @@ export function WorkoutEditorScreen() {
         )}
       </p>
 
+      <section
+        className="session-timer"
+        aria-label={t("Session timer")}
+        data-testid="session-timer"
+      >
+        {!timed && (
+          <button type="button" onClick={() => dispatchTimed({ type: "startSession" })}>
+            {t("Start session")}
+          </button>
+        )}
+
+        {timed && (
+          <>
+            {/* The elapsed value refreshes every 250ms; announcing that would
+                flood a screen reader, so the timer region stays quiet. */}
+            <p className="session-timer-elapsed" aria-live="off" data-testid="session-elapsed">
+              {t("Elapsed")}: <time>{formatElapsed(elapsed ?? 0)}</time>
+            </p>
+            {paused && <p data-testid="session-phase">{t("Paused")}</p>}
+            {finished && <p data-testid="session-phase">{t("Finished")}</p>}
+            <button
+              type="button"
+              disabled={finished}
+              onClick={() =>
+                dispatchTimed({ type: paused ? "resumeSession" : "pauseSession" })
+              }
+            >
+              {paused ? t("Resume session") : t("Pause session")}
+            </button>
+            <button
+              type="button"
+              disabled={finished}
+              onClick={() => dispatchTimed({ type: "finishSession" })}
+            >
+              {t("Finish session")}
+            </button>
+          </>
+        )}
+
+        {rest !== null && restRemaining !== null && (
+          <div
+            className="rest-bar"
+            role="group"
+            aria-label={t("Rest timer")}
+            data-testid="rest-bar"
+          >
+            <p aria-live="off" data-testid="rest-remaining">
+              {t("Rest")}: <time>{formatElapsed(restRemaining)}</time>
+            </p>
+            <button
+              type="button"
+              aria-label={t("Subtract 15 seconds")}
+              onClick={() => handleAdjustRest(-REST_ADJUST_MS)}
+            >
+              −15s
+            </button>
+            <button
+              type="button"
+              aria-label={t("Add 15 seconds")}
+              onClick={() => handleAdjustRest(REST_ADJUST_MS)}
+            >
+              +15s
+            </button>
+            <button type="button" onClick={handleSkipRest}>
+              {t("Skip rest")}
+            </button>
+          </div>
+        )}
+
+        {/* The settled-rest status mirrors the cue: it appears when the model
+            records the rest-ended transition and disappears when a new rest
+            starts (startRest clears the cue). Finishing hides it too. */}
+        {rest === null && runtime.restEndedAtMs !== null && !finished && (
+          <p role="status" className="rest-complete" data-testid="rest-complete">
+            {t("Rest complete")}
+          </p>
+        )}
+      </section>
+
       {saveError !== null && (
         <div role="alert" className="validation-summary" data-testid="save-error">
           <p>
@@ -221,6 +428,27 @@ export function WorkoutEditorScreen() {
                 }
               />
 
+              {/* Rest is session configuration, not workout content: it is
+                  only offered once the clock is running. */}
+              {timed && (
+                <div className="field">
+                  <label htmlFor={`exercise-${exercise.key}-rest`}>
+                    {t("Rest (seconds)")} · {t("Exercise {index}", { index: exerciseIndex + 1 })}
+                  </label>
+                  <input
+                    id={`exercise-${exercise.key}-rest`}
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={exercise.restSeconds}
+                    disabled={finished}
+                    onChange={(event) =>
+                      handleRestSecondsChange(exercise.key, event.target.value)
+                    }
+                  />
+                </div>
+              )}
+
               {exercise.sets.map((set, setIndex) => {
                 const base = `exercise-${exercise.key}-set-${set.key}`;
                 const extreme = isExtremeRpe(set.rpe);
@@ -236,6 +464,30 @@ export function WorkoutEditorScreen() {
                         set: setIndex + 1,
                       })}
                     </legend>
+
+                    {/* Check-off only exists for a timed session: on an untimed
+                        draft the `done` marker is meaningless at save time. */}
+                    {timed && (
+                      <div className="field field-checkbox">
+                        <input
+                          id={`${base}-done`}
+                          type="checkbox"
+                          checked={set.done}
+                          disabled={finished}
+                          // Scoped to the exercise so several cards cannot all
+                          // be announced as "Set 1 complete".
+                          aria-label={`${t("Exercise {index}", {
+                            index: exerciseIndex + 1,
+                          })}: ${t("Set {set} complete", { set: setIndex + 1 })}`}
+                          onChange={() =>
+                            handleToggleSetDone(exercise.key, set.key, set.done)
+                          }
+                        />
+                        <label htmlFor={`${base}-done`}>
+                          {t("Set {set} complete", { set: setIndex + 1 })}
+                        </label>
+                      </div>
+                    )}
 
                     <div className="field">
                       <label htmlFor={`${base}-weight`}>
