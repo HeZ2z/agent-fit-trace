@@ -90,7 +90,7 @@ test("restores an invalid mid-edit draft without core validation", () => {
         key: 1,
         name: "",
         restSeconds: 90,
-        sets: [{ key: 2, reps: "", weight: "abc", rpe: "-", done: false }],
+        sets: [{ key: 2, reps: "", weight: "abc", rpe: "-", done: false, prefilled: true }],
       },
     ],
     pain: [{ key: 3, area: " knee ", level: "?" }],
@@ -165,6 +165,7 @@ test("rejects wrong field types", () => {
     [(root) => { firstSet(root).weight = 80; }, /weight/],
     [(root) => { firstSet(root).rpe = 8; }, /rpe/],
     [(root) => { firstSet(root).done = "yes"; }, /done/],
+    [(root) => { firstSet(root).prefilled = "yes"; }, /prefilled/],
     [(root) => { (root.pain as unknown[]).push({ key: 99, area: 1, level: "" }); }, /area/],
   ];
 
@@ -255,6 +256,7 @@ test("rejects payloads with missing required fields", () => {
   assertCorrupt(payloadWith((root) => { delete root.timing; }), /missing field/);
   assertCorrupt(payloadWith((root) => { delete firstExercise(root).name; }), /missing field/);
   assertCorrupt(payloadWith((root) => { delete firstSet(root).done; }), /missing field/);
+  assertCorrupt(payloadWith((root) => { delete firstSet(root).prefilled; }), /missing field/);
 });
 
 test("accepts untimed, active, paused and finished timing states", () => {

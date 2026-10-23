@@ -8,6 +8,9 @@
  * - a set is dropped only when reps, weight and rpe are ALL blank; partially
  *   filled sets are passed through so the core reports INVALID_REPS,
  *   INVALID_WEIGHT, INVALID_RPE, etc.;
+ * - a timed draft additionally drops auto-prefilled sets that are still
+ *   unchecked: they are suggestions for the next set, not performed work.
+ *   Editing any field or checking the set clears the flag and includes it;
  * - an exercise with no remaining sets is dropped, and an all-blank draft
  *   produces an empty exercises array so the core reports MISSING_EXERCISES
  *   through the normal validation path.
@@ -68,10 +71,14 @@ function isDroppedSet(set: DraftSet): boolean {
 
 function buildSets(draft: SessionDraft): Exercise[] {
   const exercises: Exercise[] = [];
+  const timed = draft.timing !== null;
 
   for (const exerciseDraft of draft.exercises) {
     const sets: WorkoutSet[] = [];
     for (const setDraft of exerciseDraft.sets) {
+      // Auto-prefilled suggestions are not performed content. Only a timed
+      // session creates them, and editing or checking one clears the flag.
+      if (timed && setDraft.prefilled && !setDraft.done) continue;
       if (isDroppedSet(setDraft)) continue;
 
       const built: WorkoutSet = { reps: parseRequiredNumber(setDraft.reps) };

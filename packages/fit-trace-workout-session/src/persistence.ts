@@ -50,7 +50,7 @@ const DRAFT_KEYS = [
 ] as const;
 
 const EXERCISE_KEYS = ["key", "name", "restSeconds", "sets"] as const;
-const SET_KEYS = ["key", "reps", "weight", "rpe", "done"] as const;
+const SET_KEYS = ["key", "reps", "weight", "rpe", "done", "prefilled"] as const;
 const PAIN_KEYS = ["key", "area", "level"] as const;
 const TIMING_KEYS = [
   "startedAtMs",
@@ -150,6 +150,7 @@ function decodeSet(value: unknown, path: string): DraftSet {
     weight: requireString(raw.weight, `${path}.weight`),
     rpe: requireString(raw.rpe, `${path}.rpe`),
     done: requireBoolean(raw.done, `${path}.done`),
+    prefilled: requireBoolean(raw.prefilled, `${path}.prefilled`),
   };
 }
 

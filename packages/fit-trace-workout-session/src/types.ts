@@ -32,6 +32,13 @@ export interface DraftSet {
    * `timing !== null`; the reducer ignores toggles on an untimed draft.
    */
   done: boolean;
+  /**
+   * True for the auto-prefilled next set created when the last set of an
+   * exercise is checked. A timed build drops it while it is still unchecked;
+   * editing any field or checking it promotes it to real content. Always false
+   * for manually added sets and before the first toggle.
+   */
+  prefilled: boolean;
 }
 
 /** One editable exercise. `key` is unique across the whole draft. */

@@ -2,9 +2,10 @@
  * Draft construction and deterministic key allocation.
  *
  * The reducer owns key allocation: an add action carries no key, and the
- * reducer asks {@link allocateKey} for the next one. That keeps keys out of the
- * persisted payload and makes the same action sequence produce the same draft
- * on every client. There is no module-level counter and no randomness.
+ * reducer asks {@link allocateKey} for the next one. Entity keys are part of
+ * the persisted draft; only the next-key counter is derived, so a reload cannot
+ * desynchronize it and the same action sequence produces the same draft on
+ * every client. There is no module-level counter and no randomness.
  */
 
 import { SESSION_TYPES } from "@agent-fit-trace/core";
@@ -13,7 +14,7 @@ import { DEFAULT_REST_SECONDS, SESSION_DRAFT_VERSION } from "./types.ts";
 
 /** A blank set with an explicit key. */
 export function createDraftSet(key: number): DraftSet {
-  return { key, reps: "", weight: "", rpe: "", done: false };
+  return { key, reps: "", weight: "", rpe: "", done: false, prefilled: false };
 }
 
 /**
@@ -60,8 +61,9 @@ export function createSessionDraft(date: string): SessionDraft {
 /**
  * Next key for this draft: one past the highest exercise, set, or pain key.
  *
- * Keys are allocated but never stored, so the maximum is derived from the
- * current content. Empty drafts return `1`.
+ * Entity keys are persisted with the draft; only this next-key counter is
+ * derived from the current content, so no separate counter has to be stored.
+ * Empty drafts return `1`.
  */
 export function allocateKey(draft: SessionDraft): number {
   let maxKey = 0;

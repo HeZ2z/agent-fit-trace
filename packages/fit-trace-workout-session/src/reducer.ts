@@ -181,7 +181,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         updateSet(draft, action.exerciseKey, action.setKey, (set) =>
           set[action.field] === action.value
             ? set
-            : { ...set, [action.field]: action.value },
+            : // Editing a prefilled suggestion makes it real user content.
+              { ...set, [action.field]: action.value, prefilled: false },
         ),
       );
     case "toggleSetDone": {
@@ -216,7 +217,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       };
 
       // Checking the last set of an exercise pre-fills the next one so a live
-      // session keeps logging without an explicit add.
+      // session keeps logging without an explicit add. `prefilled` lets the
+      // timed build exclude this suggestion until the user edits or checks it.
       if (setIndex === exercise.sets.length - 1) {
         const nextSet: DraftSet = {
           key: allocateKey(nextDraft),
@@ -224,6 +226,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
           weight: set.weight,
           rpe: "",
           done: false,
+          prefilled: true,
         };
         nextDraft = updateExercise(nextDraft, action.exerciseKey, (current) => ({
           ...current,

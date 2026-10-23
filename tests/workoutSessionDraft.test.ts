@@ -52,18 +52,25 @@ test("creates an untimed draft with one blank exercise and one blank set", () =>
     key: 1,
     name: "",
     restSeconds: DEFAULT_REST_SECONDS,
-    sets: [{ key: 2, reps: "", weight: "", rpe: "", done: false }],
+    sets: [{ key: 2, reps: "", weight: "", rpe: "", done: false, prefilled: false }],
   });
 });
 
 test("creates blank entities deterministically", () => {
-  assert.deepEqual(createDraftSet(7), { key: 7, reps: "", weight: "", rpe: "", done: false });
+  assert.deepEqual(createDraftSet(7), {
+    key: 7,
+    reps: "",
+    weight: "",
+    rpe: "",
+    done: false,
+    prefilled: false,
+  });
   assert.deepEqual(createDraftPain(3), { key: 3, area: "", level: "" });
   assert.deepEqual(createDraftExercise(4), {
     key: 4,
     name: "",
     restSeconds: DEFAULT_REST_SECONDS,
-    sets: [{ key: 5, reps: "", weight: "", rpe: "", done: false }],
+    sets: [{ key: 5, reps: "", weight: "", rpe: "", done: false, prefilled: false }],
   });
 
   // No ambient state: identical arguments always produce identical values.
@@ -190,7 +197,14 @@ test("adds, edits, and removes sets while keeping one set per exercise", () => {
   state = reduceSessionState(state, { type: "addSet", exerciseKey: 1 });
   assert.equal(state.draft.exercises[0].sets.length, 2);
   const added = state.draft.exercises[0].sets[1];
-  assert.deepEqual(added, { key: 3, reps: "", weight: "", rpe: "", done: false });
+  assert.deepEqual(added, {
+    key: 3,
+    reps: "",
+    weight: "",
+    rpe: "",
+    done: false,
+    prefilled: false,
+  });
 
   for (const [field, value] of [
     ["reps", "5"],
@@ -211,6 +225,7 @@ test("adds, edits, and removes sets while keeping one set per exercise", () => {
     weight: "100",
     rpe: "8",
     done: false,
+    prefilled: false,
   });
 
   const wrongExercise = reduceSessionState(state, {

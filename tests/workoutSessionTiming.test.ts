@@ -191,6 +191,7 @@ test("checking the last set pre-fills a follow-up set and starts its rest", () =
     weight: "100",
     rpe: "",
     done: false,
+    prefilled: true,
   });
   assert.equal(state.draft.timing?.lastActiveAtMs, 10_000, "checking a set counts as activity");
 
@@ -218,6 +219,47 @@ test("checking a non-last set starts rest without appending", () => {
   assert.equal(state.draft.exercises[0].sets.length, setCount);
   assert.equal(state.draft.exercises[0].sets[0].done, true);
   assert.equal(state.runtime.rest?.setKey, 2);
+});
+
+test("editing a prefilled suggestion promotes it to user content", () => {
+  let state = reduceSessionState(startedState(1_000), {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: 2,
+    field: "weight",
+    value: "100",
+  });
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 2,
+    nowMs: 10_000,
+  });
+  const prefilledSet = state.draft.exercises[0].sets[1];
+  assert.equal(prefilledSet.prefilled, true);
+
+  // Repeating the same value is a no-op and must not silently promote it.
+  const unchanged = reduceSessionState(state, {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: prefilledSet.key,
+    field: "weight",
+    value: "100",
+  });
+  assert.equal(unchanged.draft.exercises[0].sets[1].prefilled, true);
+
+  // Actually editing the suggestion makes it real content.
+  state = reduceSessionState(state, {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: prefilledSet.key,
+    field: "rpe",
+    value: "8",
+  });
+  const edited = state.draft.exercises[0].sets[1];
+  assert.equal(edited.prefilled, false);
+  assert.equal(edited.rpe, "8");
+  assert.equal(edited.weight, "100");
 });
 
 test("a zero restSeconds disables rest and a paused session never starts one", () => {

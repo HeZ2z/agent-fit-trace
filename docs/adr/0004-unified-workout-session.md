@@ -71,7 +71,9 @@ flag beyond `timing`. The `done` marker on a set is only meaningful when the
 session is timed; untimed saves ignore it and the unified editor hides the
 checkboxes.
 Saving is content-based: blank sets and exercises are dropped rather than
-reported, while partially filled sets still pass through core validation.
+reported, while partially filled sets still pass through core validation. A
+timed save additionally excludes auto-prefilled, unchecked next sets: they are
+suggestions until the user edits or checks them.
 
 ### 2. Timing is optional persisted draft data
 
@@ -98,7 +100,8 @@ only in memory. The persisted per-exercise `restSeconds` is configuration
 (default 90 s), not a timer.
 
 - Checking a set starts (or replaces) that exercise's rest; checking the last set
-  also prefills the next one from the same weight/reps.
+  also prefills the next one from the same weight/reps, marked `prefilled` and
+  excluded from a timed save until the user edits or checks it.
 - `±15 s` adjusts the timer, `skipRest` clears it, pause freezes the remaining
   milliseconds, and resume rebuilds `endsAtMs` from that remainder.
 - `tick` settles an elapsed rest and writes `restEndedAtMs` once; the UI plays
@@ -117,10 +120,11 @@ machine, the core bridge, and the draft payload. It is private, exports
 `@agent-fit-trace/core`, and stays browser-safe: no React, expo, DOM, or Node
 built-ins, `.ts` relative imports, and erasable syntax.
 
-Editable keys are not persisted and not counted by the UI. `allocateKey(draft)`
-returns `max(all exercise/set/pain keys) + 1`; add actions carry no key, so a
-reload cannot desynchronize keys. This replaces the web `useRef` counter and the
-mobile `createSetDraft` allocation in later PRs.
+Entity keys are persisted with the draft, but the next-key counter is not.
+`allocateKey(draft)` derives `max(all exercise/set/pain keys) + 1`, and add
+actions carry no key, so a reload cannot desynchronize the next key and the
+reducer always allocates a fresh one. This replaces the web `useRef` counter and
+the mobile `createSetDraft` allocation in later PRs.
 
 The session package bridges to the core rather than reimplementing validation:
 `buildWorkoutRecord` maps draft strings to a `WorkoutRecord`,

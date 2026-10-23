@@ -6,6 +6,8 @@ import {
   DRAFT_PLACEHOLDER_ID,
   buildWorkoutRecord,
   createSessionDraft,
+  createSessionRuntime,
+  reduceSessionState,
   toSaveInput,
   validateSessionDraft,
 } from "../packages/fit-trace-workout-session/src/index.ts";
@@ -14,13 +16,14 @@ import type {
   DraftPain,
   DraftSet,
   SessionDraft,
+  SessionState,
   SessionTiming,
 } from "../packages/fit-trace-workout-session/src/index.ts";
 
 const DATE = "2026-10-23";
 
 function makeSet(overrides: Partial<DraftSet> = {}): DraftSet {
-  return { key: 10, reps: "", weight: "", rpe: "", done: false, ...overrides };
+  return { key: 10, reps: "", weight: "", rpe: "", done: false, prefilled: false, ...overrides };
 }
 
 function makeExercise(
@@ -55,6 +58,14 @@ function validDraft(): SessionDraft {
   return untimedDraft({
     exercises: [makeExercise(1, [makeSet({ key: 2, reps: "5", weight: "80", rpe: "8" })])],
   });
+}
+
+/** Active timed state started at 1s. */
+function startedState(nowMs = 1_000): SessionState {
+  return reduceSessionState(
+    { draft: createSessionDraft(DATE), runtime: createSessionRuntime() },
+    { type: "startSession", nowMs },
+  );
 }
 
 test("drops fully blank sets and exercises but keeps partially filled sets", () => {
@@ -284,7 +295,7 @@ test("never leaks draft-only fields into the core record", () => {
   assert.deepEqual(Object.keys(record.exercises[0].sets[0]).sort(), ["reps", "rpe", "weight"]);
 
   const serialized = JSON.stringify(record);
-  for (const forbidden of ["restSeconds", "done", "timing", "key"]) {
+  for (const forbidden of ["restSeconds", "done", "prefilled", "timing", "key"]) {
     assert.equal(serialized.includes(forbidden), false, `${forbidden} must not leak`);
   }
 });
@@ -299,4 +310,141 @@ test("invalid content is reported by the core validator, not pre-thrown", () => 
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.ok(result.issues.some((issue) => issue.code === "INVALID_DATE"));
+});
+
+test("a timed save excludes the auto-prefilled unchecked next set", () => {
+  let state = startedState(1_000);
+  state = reduceSessionState(state, {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: 2,
+    field: "weight",
+    value: "100",
+  });
+  state = reduceSessionState(state, {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: 2,
+    field: "reps",
+    value: "5",
+  });
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 2,
+    nowMs: 61_000,
+  });
+
+  const prefilled = state.draft.exercises[0].sets[1];
+  assert.equal(prefilled.prefilled, true);
+  assert.equal(prefilled.done, false);
+
+  state = reduceSessionState(state, { type: "finishSession", nowMs: 120_000 });
+
+  const record = buildWorkoutRecord(state.draft, 120_000);
+  assert.equal(
+    record.exercises[0].sets.length,
+    1,
+    "the unchecked suggestion is not saved as a performed set",
+  );
+  assert.deepEqual(record.exercises[0].sets[0], { reps: 5, weight: 100 });
+  assert.equal(record.duration_minutes, 2);
+});
+
+test("a checked prefilled set counts as performed content", () => {
+  let state = startedState(1_000);
+  for (const [field, value] of [
+    ["weight", "100"],
+    ["reps", "5"],
+  ] as const) {
+    state = reduceSessionState(state, {
+      type: "setSetField",
+      exerciseKey: 1,
+      setKey: 2,
+      field,
+      value,
+    });
+  }
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 2,
+    nowMs: 61_000,
+  });
+  // Check the prefilled suggestion: it becomes performed and a new trailing
+  // suggestion is created.
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 3,
+    nowMs: 120_000,
+  });
+
+  const record = buildWorkoutRecord(state.draft, 120_000);
+  assert.equal(record.exercises[0].sets.length, 2, "only the trailing suggestion is dropped");
+  assert.deepEqual(record.exercises[0].sets, [
+    { reps: 5, weight: 100 },
+    { reps: 5, weight: 100 },
+  ]);
+});
+
+test("an edited unchecked prefilled suggestion is included in a timed save", () => {
+  let state = startedState(1_000);
+  for (const [field, value] of [
+    ["weight", "100"],
+    ["reps", "5"],
+  ] as const) {
+    state = reduceSessionState(state, {
+      type: "setSetField",
+      exerciseKey: 1,
+      setKey: 2,
+      field,
+      value,
+    });
+  }
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 2,
+    nowMs: 61_000,
+  });
+
+  // Edit the suggestion (which clears `prefilled`) but never check it.
+  state = reduceSessionState(state, {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: 3,
+    field: "reps",
+    value: "6",
+  });
+
+  const record = buildWorkoutRecord(state.draft, 120_000);
+  assert.equal(record.exercises[0].sets.length, 2);
+  assert.deepEqual(record.exercises[0].sets[1], { reps: 6, weight: 100 });
+});
+
+test("manually added unchecked sets stay content-based in a timed save", () => {
+  let state = startedState(1_000);
+  state = reduceSessionState(state, { type: "addSet", exerciseKey: 1 });
+  state = reduceSessionState(state, {
+    type: "setSetField",
+    exerciseKey: 1,
+    setKey: 3,
+    field: "reps",
+    value: "8",
+  });
+
+  const record = buildWorkoutRecord(state.draft, 60_000);
+  assert.equal(record.exercises[0].sets.length, 1, "a manually added set is never treated as a suggestion");
+  assert.deepEqual(record.exercises[0].sets[0], { reps: 8 });
+});
+
+test("untimed builds ignore the prefilled marker", () => {
+  const draft = untimedDraft({
+    exercises: [makeExercise(1, [makeSet({ key: 2, reps: "5", weight: "80", prefilled: true })])],
+  });
+
+  const record = buildWorkoutRecord(draft, 0);
+  assert.equal(record.exercises[0].sets.length, 1);
+  assert.deepEqual(record.exercises[0].sets[0], { reps: 5, weight: 80 });
 });
