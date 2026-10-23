@@ -141,11 +141,11 @@ CREATE TABLE IF NOT EXISTS session_draft (
   with a flush when the app backgrounds and when the screen unmounts. A
   successful workout save clears the row only when the editor still holds the
   submitted draft for the same owner.
-- **Failure handling.** Corruption (`SessionDraftCorruptionError`) starts a blank
-  editor, shows a banner, blocks autosave for that mount and offers an explicit
-  native discard confirmation; the unreadable payload is never overwritten. A
-  transient read error shows a non-blocking banner and also blocks autosave for
-  the mount. A write failure shows one banner and stops retrying.
+- **Failure handling.** Corruption (`SessionDraftCorruptionError`) or a
+  transient read error starts a blank editor, shows a banner, blocks autosave
+  and saves for that mount, and is never overwritten; both failures offer an
+  explicit native discard confirmation. A write failure shows one banner and
+  stops retrying.
 
 ### Workout IDs
 

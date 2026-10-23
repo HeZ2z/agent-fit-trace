@@ -325,6 +325,7 @@ export default function LogScreen() {
   const enqueueDraftWrite = useCallback(
     (targetOwner: string, snapshot: SessionDraft): void => {
       if (autosaveBlockedRef.current) return;
+      if (draftProtectedRef.current) return;
       const repository = draftRepositoryRef.current;
       if (repository === null) return;
       const epoch = ownerEpochRef.current;
@@ -374,6 +375,7 @@ export default function LogScreen() {
   /** Write the latest draft immediately (backgrounding or unmounting). */
   const flushLatestDraft = useCallback((): void => {
     if (autosaveBlockedRef.current) return;
+    if (draftProtectedRef.current) return;
     if (hydratedOwnerRef.current === null) return;
     if (hydratedOwnerRef.current !== ownerIdRef.current) return;
     if (!autosaveEnabledRef.current) return;
@@ -496,6 +498,7 @@ export default function LogScreen() {
     if (!autosaveEnabled) return;
     if (draftRepository === null) return;
     if (autosaveFailedRef.current) return;
+    if (draftProtectedRef.current) return;
     if (draft === persistedBaselineRef.current) return;
 
     const targetOwner = ownerId;
@@ -627,12 +630,17 @@ export default function LogScreen() {
         setRestoredNotice(null);
         setDiscardedNotice(false);
         setHasDraft(false);
-        draftProtectedRef.current = false;
         // The record is saved; a failed clear must not turn into a save error.
+        const clearEpoch = ownerEpochRef.current;
         await enqueueDraftClear(submittedOwner).catch(() => undefined);
-        autosaveBlockedRef.current = false;
-        autosaveEnabledRef.current = true;
-        setAutosaveEnabled(true);
+        // The account may have changed while the clear waited behind an earlier
+        // write. Only this editor's still-current session may re-enable writes;
+        // a newer owner's load (including a failed load) stays in control.
+        if (clearEpoch === ownerEpochRef.current && ownerIdRef.current === submittedOwner) {
+          autosaveBlockedRef.current = false;
+          autosaveEnabledRef.current = true;
+          setAutosaveEnabled(true);
+        }
       }
       setIssues([]);
       setWarnings([]);

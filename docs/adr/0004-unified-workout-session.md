@@ -150,10 +150,11 @@ Only the draft is serialized, as canonical JSON via core `stableStringify`.
   draft-only codec; the transient rest runtime is never written. The editor
   loads the owner's row before saving is enabled, debounces changes by 500 ms,
   serializes writes through one queue, and flushes the latest draft when the app
-  backgrounds or unmounts. A corrupt or unreadable payload blocks autosave for
-  that mount and is never overwritten; corruption additionally offers an
-  explicit native discard confirmation. A successful save clears the row only
-  while the editor still holds the submitted draft for the same owner. The
+  backgrounds or unmounts. A corrupt or unreadable payload blocks autosave and
+  saves for that mount and is never overwritten; both corruption and a plain
+  read error offer an explicit native discard confirmation. A successful save
+  clears the row only while the editor still holds the submitted draft for the
+  same owner and the owner has not changed while the clear was queued. The
   rest-ended cue is a bundled WAV played through `expo-audio` plus
   `expo-haptics`, best effort only: there is no notification or foreground
   service, and a restart restores no countdown and replays no cue.
