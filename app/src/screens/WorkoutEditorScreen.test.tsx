@@ -166,6 +166,32 @@ describe("WorkoutEditorScreen", () => {
     expect(stored[0]!.id).toBe(expectedId);
   });
 
+  it("derives the id from pre-validation content so padded names stay idempotent", async () => {
+    const { adapter, user } = renderEditorOver();
+    await user.type(screen.getByLabelText(/exercise 1 name/i), " Squat ");
+    await fillSetFields(user);
+
+    const dateValue = (screen.getByLabelText(/^date$/i) as HTMLInputElement).value;
+    // The client hashes the submitted content before the core trims the name.
+    // Keeping that pre-validation build as the save input prevents re-entering
+    // an older padded-name workout from creating a second record.
+    const expectedId = deriveWorkoutId({
+      id: "pending",
+      schema_version: CURRENT_SCHEMA_VERSION,
+      date: dateValue,
+      session_type: "strength",
+      exercises: [{ name: " Squat ", sets: [{ weight: 100, reps: 5, rpe: 8 }] }],
+    });
+
+    await user.click(screen.getByRole("button", { name: /save workout/i }));
+
+    expect(await screen.findByTestId("summary-id")).toHaveTextContent(expectedId);
+    const stored = loadRecords(adapter);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.id).toBe(expectedId);
+    expect(stored[0]!.exercises[0]!.name).toBe("Squat");
+  });
+
   it("disables submit while a save is pending and does not double-submit", async () => {
     const client = new FakeFitTraceClient({ records: [] });
     const { user } = renderEditor(client);

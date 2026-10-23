@@ -98,8 +98,13 @@ export function WorkoutEditorScreen() {
     setPendingSave(null);
 
     const nowMs = Date.now();
-    // The shared bridge builds the record, runs core validation and separates
-    // hard issues from accepted-input warnings.
+    // Build before validation: the client derives the content id from the
+    // submitted content, and historical records were hashed with the untrimmed
+    // name. Persisting this pre-normalization build keeps re-entry idempotent;
+    // validation still trims/normalizes the record the client stores.
+    const candidate = buildWorkoutRecord(draft, nowMs);
+    // The shared bridge runs core validation and separates hard issues from
+    // accepted-input warnings.
     const validated = validateSessionDraft(draft, nowMs);
 
     if (!validated.ok) {
@@ -112,11 +117,11 @@ export function WorkoutEditorScreen() {
     // than navigating away immediately.
     if (validated.warnings.length > 0) {
       setWarnings(validated.warnings);
-      setPendingSave({ record: buildWorkoutRecord(draft, nowMs), nowMs });
+      setPendingSave({ record: candidate, nowMs });
       return;
     }
 
-    await persist(validated.record);
+    await persist(candidate);
   }
 
   async function handleConfirmSave(): Promise<void> {
