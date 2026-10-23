@@ -151,9 +151,9 @@ type RestoreNotice = "restored" | "auto-paused";
 /**
  * Draft-storage problems rendered non-blockingly.
  *
- * `corrupt` and `read-error` both disable autosave for this mount so a payload
- * that could not be read is never overwritten; only corruption offers an
- * explicit discard. `save-error` disables further autosave attempts.
+ * `corrupt` and `read-error` both protect the stored row: autosave stays off and
+ * saves are disabled until the user explicitly discards it or a later mount
+ * loads it successfully. `save-error` disables further autosave attempts.
  */
 type DraftProblem =
   | { kind: "corrupt" }
@@ -232,6 +232,9 @@ export default function LogScreen() {
   // One session draft belongs to exactly one identity: the signed-in account, or
   // the stable local guest. A change of owner reloads the other owner's row.
   const ownerId = session?.user.id ?? LOCAL_GUEST_OWNER_ID;
+  // Only the loading -> ready transition matters; transient auth error/refresh
+  // status changes for the same owner must not reload (and reset) a live session.
+  const authReady = authStatus !== "loading";
 
   const [state, setState] = useState<SessionState>(blankSessionState);
   const { draft, runtime } = state;
@@ -267,6 +270,13 @@ export default function LogScreen() {
   const autosaveEnabledRef = useRef(autosaveEnabled);
   autosaveEnabledRef.current = autosaveEnabled;
   const autosaveFailedRef = useRef(false);
+  // Blocks debounce/flush writes while a clear is being queued (discard or a
+  // completed save), so a pending timer cannot write after the delete.
+  const autosaveBlockedRef = useRef(false);
+  // A draft that failed to load is protected from saves/autosave until reloaded
+  // or explicitly discarded; store the flag as a ref because failures surface
+  // through async callbacks and the derived UI state can change.
+  const draftProtectedRef = useRef(false);
   const persistedBaselineRef = useRef<SessionDraft | null>(null);
   // Bumped by every edit that can change the persisted draft, so a save that
   // resolves late can tell whether the editor still shows the submitted draft.
@@ -314,6 +324,7 @@ export default function LogScreen() {
    */
   const enqueueDraftWrite = useCallback(
     (targetOwner: string, snapshot: SessionDraft): void => {
+      if (autosaveBlockedRef.current) return;
       const repository = draftRepositoryRef.current;
       if (repository === null) return;
       const epoch = ownerEpochRef.current;
@@ -362,6 +373,7 @@ export default function LogScreen() {
 
   /** Write the latest draft immediately (backgrounding or unmounting). */
   const flushLatestDraft = useCallback((): void => {
+    if (autosaveBlockedRef.current) return;
     if (hydratedOwnerRef.current === null) return;
     if (hydratedOwnerRef.current !== ownerIdRef.current) return;
     if (!autosaveEnabledRef.current) return;
@@ -385,13 +397,17 @@ export default function LogScreen() {
   /**
    * Load the owner's draft once both auth and the local store are ready.
    *
-   * Any problem fails closed: the editor starts blank, autosave stays off for
-   * this mount, and an unreadable payload is never overwritten. Corruption (as
-   * opposed to a transient read error) exposes the explicit discard action.
+   * Any problem fails closed: the editor starts blank, autosave and saves stay
+   * off for this mount, and an unreadable payload is never overwritten. Both
+   * corruption and a plain read error expose the explicit discard action; a
+   * later mount retries the load.
    */
   useEffect(() => {
-    if (authStatus === "loading") return;
+    if (!authReady) return;
     if (draftRepository === null) return;
+    // A live session already hydrated for this owner survives transient auth
+    // refresh/error status changes; only an actual owner change reloads.
+    if (hydratedOwnerRef.current === ownerId) return;
 
     const epoch = ownerEpochRef.current + 1;
     ownerEpochRef.current = epoch;
@@ -401,6 +417,9 @@ export default function LogScreen() {
     // Reset synchronously for the new owner; `hydratedOwner` stays null so the
     // autosave effect cannot write the previous draft into the new row.
     const blank = blankSessionState();
+    hydratedOwnerRef.current = null;
+    draftProtectedRef.current = false;
+    autosaveBlockedRef.current = false;
     autosaveFailedRef.current = false;
     autosaveEnabledRef.current = true;
     persistedBaselineRef.current = blank.draft;
@@ -428,12 +447,16 @@ export default function LogScreen() {
         const failedBlank = blankSessionState();
         persistedBaselineRef.current = failedBlank.draft;
         autosaveEnabledRef.current = false;
+        draftProtectedRef.current = true;
         setAutosaveEnabled(false);
         setState(failedBlank);
-        setHasDraft(corrupt);
+        // Either failure keeps the stored row protected; the only way out is an
+        // explicit discard, so offer it for read errors too.
+        setHasDraft(true);
         setDraftProblem(
           corrupt ? { kind: "corrupt" } : { kind: "read-error", message: messageOf(cause) },
         );
+        hydratedOwnerRef.current = owner;
         setHydratedOwner(owner);
         return;
       }
@@ -441,6 +464,8 @@ export default function LogScreen() {
       if (cancelled || epoch !== ownerEpochRef.current) return;
 
       if (stored === null) {
+        draftProtectedRef.current = false;
+        hydratedOwnerRef.current = owner;
         setHydratedOwner(owner);
         return;
       }
@@ -450,16 +475,18 @@ export default function LogScreen() {
         timing !== null && timing.endedAtMs === null && timing.pausedAtMs === null;
       const restored = rehydrateSessionDraft(stored, Date.now());
       persistedBaselineRef.current = restored;
+      draftProtectedRef.current = false;
       setState({ draft: restored, runtime: createSessionRuntime() });
       setRestoredNotice(wasActive ? "auto-paused" : "restored");
       setHasDraft(true);
+      hydratedOwnerRef.current = owner;
       setHydratedOwner(owner);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [authStatus, draftRepository, ownerId]);
+  }, [authReady, draftRepository, ownerId]);
 
   // Autosave the draft 500 ms after the last persisted-draft change. Runtime-only
   // rest ticks never change `draft`, and the loaded/written baseline is skipped
@@ -473,6 +500,7 @@ export default function LogScreen() {
 
     const targetOwner = ownerId;
     const timer = setTimeout(() => {
+      if (autosaveBlockedRef.current) return;
       enqueueDraftWrite(targetOwner, draft);
     }, AUTOSAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
@@ -588,16 +616,23 @@ export default function LogScreen() {
         draftRevisionRef.current === submittedRevision;
       if (stillCurrent) {
         const blank = blankSessionState();
+        // Block debounce/flush writes before resetting and clearing, so a timer
+        // that fires while the clear is queued cannot write the draft back.
+        autosaveBlockedRef.current = true;
+        autosaveEnabledRef.current = false;
+        setAutosaveEnabled(false);
         persistedBaselineRef.current = blank.draft;
         autosaveFailedRef.current = false;
-        autosaveEnabledRef.current = true;
-        setAutosaveEnabled(true);
         setState(blank);
         setRestoredNotice(null);
         setDiscardedNotice(false);
         setHasDraft(false);
+        draftProtectedRef.current = false;
         // The record is saved; a failed clear must not turn into a save error.
         await enqueueDraftClear(submittedOwner).catch(() => undefined);
+        autosaveBlockedRef.current = false;
+        autosaveEnabledRef.current = true;
+        setAutosaveEnabled(true);
       }
       setIssues([]);
       setWarnings([]);
@@ -610,7 +645,7 @@ export default function LogScreen() {
   }
 
   function handleSubmit(): void {
-    if (saving || repository === null) return;
+    if (saving || repository === null || draftProtectedRef.current) return;
 
     setIssues([]);
     setWarnings([]);
@@ -733,6 +768,12 @@ export default function LogScreen() {
   async function discardDraft(): Promise<void> {
     const targetOwner = ownerIdRef.current;
     const epoch = ownerEpochRef.current;
+    // Stop the debounce timer and background flushes before waiting on the
+    // clear; otherwise a timer that fires while the clear is queued can write
+    // the discarded session back.
+    autosaveBlockedRef.current = true;
+    autosaveEnabledRef.current = false;
+    setAutosaveEnabled(false);
     try {
       // Queue the clear behind any pending autosave so an old write cannot
       // resurrect the draft after this explicit discard.
@@ -750,6 +791,8 @@ export default function LogScreen() {
     const blank = blankSessionState();
     draftRevisionRef.current += 1;
     persistedBaselineRef.current = blank.draft;
+    draftProtectedRef.current = false;
+    autosaveBlockedRef.current = false;
     autosaveFailedRef.current = false;
     autosaveEnabledRef.current = true;
     setAutosaveEnabled(true);
@@ -779,8 +822,10 @@ export default function LogScreen() {
   // Saving also waits for this owner's draft load so a completed session cannot
   // be written before the restored draft arrives.
   const draftReady = hydratedOwner === ownerId;
+  const draftProtected = draftProtectedRef.current;
   const canSave =
     draftReady &&
+    !draftProtected &&
     repository !== null &&
     !saving &&
     (pendingSave === null || pendingIsStale);
