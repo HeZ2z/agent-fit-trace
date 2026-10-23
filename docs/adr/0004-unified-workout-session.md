@@ -1,9 +1,9 @@
 # ADR 0004: One workout session draft for retro and live logging
 
-- **Status:** Accepted. The shared model, the core plate math, and the web
-  editor's live session — timing and rest controls, plate calculator, and draft
-  restore/autosave/discard — are implemented in PRs 1–3. PR4, moving the mobile
-  Log screen onto the same model, remains a follow-up.
+- **Status:** Accepted. Implemented in PRs 1–4: the shared model, the core plate
+  math, the web editor's live session, and the mobile Log screen's unified
+  editor with its owner-scoped SQLite draft, `expo-audio` rest cue and plate
+  calculator.
 - **Date:** 2026-10-23
 - **Scope:** issue #24. The unified `SessionDraft`, optional live timing, transient
   rest, the shared `@agent-fit-trace/workout-session` package, and the draft
@@ -25,6 +25,9 @@ The App has two workout editors with different local models:
   repository derive the content id. The record contract in
   `packages/fit-trace-core/src/types.ts` is already shared; the editable draft in
   front of it is not.
+
+Both editors have since been migrated onto the shared model (PR2 for web, PR4
+for mobile); this section records the state that motivated the decision.
 
 Issue #24 originally proposed a separate Active Workout Mode: a dedicated route,
 a separate draft entity, and a separate page. That plan predates the product
@@ -142,9 +145,18 @@ Only the draft is serialized, as canonical JSON via core `stableStringify`.
 `SessionRuntime` never enters the payload.
 
 - **Mobile:** a `session_draft` table in the existing SQLite store (migration
-  v2), one row constrained to the active draft, with debounced serialized writes
-  and a flush before backgrounding or finishing. Parse failures raise
-  `SessionDraftCorruptionError` and offer an explicit discard.
+  v2), one row per owner: `owner_id TEXT PRIMARY KEY NOT NULL`,
+  canonical-JSON `payload`, and `updated_at`. The payload is the shared
+  draft-only codec; the transient rest runtime is never written. The editor
+  loads the owner's row before saving is enabled, debounces changes by 500 ms,
+  serializes writes through one queue, and flushes the latest draft when the app
+  backgrounds or unmounts. A corrupt or unreadable payload blocks autosave for
+  that mount and is never overwritten; corruption additionally offers an
+  explicit native discard confirmation. A successful save clears the row only
+  while the editor still holds the submitted draft for the same owner. The
+  rest-ended cue is a bundled WAV played through `expo-audio` plus
+  `expo-haptics`, best effort only: there is no notification or foreground
+  service, and a restart restores no countdown and replays no cue.
 - **Web:** the existing `StorageAdapter` under one owner-scoped key,
   `agent-fit-trace:session-draft:v1:owner:<encodeURIComponent(ownerId)>`, so an
   account can never read or overwrite another account's draft. The draft is
@@ -159,8 +171,8 @@ Only the draft is serialized, as canonical JSON via core `stableStringify`.
   display-only and never persisted.
 - One unfinished draft at a time. A successful save clears it. Drafts stay on
   the device: they are not synced or exported, and logout or account switching
-  changes the addressed owner key (no explicit deletion; the old key simply
-  becomes unreachable).
+  changes the addressed owner key or row (no explicit deletion; the old value
+  simply becomes unreachable).
 - Payload decoding checks structure only — version, types, arrays, unique keys,
   timing consistency, unknown fields — and deliberately skips core record
   validation, so a mid-edit draft with an empty date or unparsable numbers is
@@ -239,10 +251,11 @@ payload.
 **Positive**
 
 - Web and mobile converge on one model, one action contract, and one reducer;
-  later PRs delete their local allocation and draft helpers instead of growing
-  them.
-- Timing, rest, key allocation, build/validation, and the payload are covered by
-  the root `node:test` suite without a browser or a React Native runtime.
+  both editors' local draft shapes and key allocation are gone (the mobile
+  `logModel` was deleted in PR4).
+- Timing, rest, key allocation, build/validation, the payload, and the mobile
+  SQLite row mapping are covered by the root `node:test` suite without a browser
+  or a React Native runtime.
 - An unfinished session survives a restart or refresh; invalid mid-edit input is
   restored and only rejected at save time, where the user can fix it.
 - Rest can never come back stale, and no prompt/sound fires for a countdown that
@@ -261,11 +274,18 @@ payload.
   undercounts the time the app was closed. A future heartbeat could narrow the
   gap, but it was not judged worth the complexity now.
 - The rest countdown is lost on restart by design.
-- The mobile Log screen still needs its parity work, copy, accessibility, i18n
-  slices and tests (PR4). The web editor now implements the full live session,
-  including the plate calculator, timing/rest cues and draft handling.
-- `mobile/` must add the `workspace:*` dependency before it can use the package;
-  `app/` added it in PR2. The root tests import the package by relative path.
+- The mobile Log screen now shares the live session and draft lifecycle, but its
+  native pieces — SQLite autosave, the native `Alert` discard, the plate `Modal`,
+  haptics and audio — have been verified only by typecheck and Android bundle
+  export, not on a device. Neither client's plate dialog has a full focus trap,
+  and there is no recorded device or browser visual verification for the mobile
+  live/draft/plate flow.
+- Owner-scoped drafts are not explicitly deleted on sign-out or account switch:
+  the previous owner's key or `session_draft` row becomes unreachable but stays
+  on disk. This matches the web PR3 behavior and is an accepted privacy tradeoff
+  recorded here rather than implemented.
+- Both `app/` and `mobile/` now depend on the shared package through
+  `workspace:*`; the root tests still import it by relative path.
 - Timezone and clock changes are handled with epoch milliseconds, an elapsed
   floor of zero, and a local calendar date captured at start — not with a global
   clock abstraction.
@@ -281,10 +301,14 @@ payload.
 - **PR3 — `feat/24-web-live-session`:** implemented. Added the web timing bar,
   per-set checkboxes, rest bar, plate calculator, owner-scoped draft
   restore/autosave/discard, sound/vibration, and the shared i18n slice.
-- **PR4 — `feat/24-mobile-unified-session`:** remains. Rewrite the mobile Log
-  editor on the shared model with live capabilities, add the SQLite
-  `session_draft` migration and `expo-audio`, add mobile-specific copy/docs, and
-  remove `mobile/src/data/logModel.ts`.
+- **PR4 — `feat/24-mobile-unified-session`:** implemented. Rewrote the mobile Log
+  editor on the shared model with live timing, rest, per-set check-off, native
+  haptics and the bundled `expo-audio` cue; added the owner-scoped SQLite
+  `session_draft` migration v2 with restore/autosave/discard and the
+  display-only plate calculator; removed `mobile/src/data/logModel.ts`.
+- **Docs-only stage:** [`../mobile.md`](../mobile.md) and
+  [`../ui-design.md`](../ui-design.md) record the PR4 implementation (status,
+  data model, live session, known gaps); it changes no behavior.
 
 ## Out of scope
 

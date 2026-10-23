@@ -228,8 +228,11 @@ injects the clock.
   stays off and only an explicit two-step **Discard draft** clears it. A
   successful workout save clears the draft before navigating. The manual
   **Duration (minutes)** field is hidden while timed, where duration is derived.
-- **Mobile parity is PR4.** The React Native Log screen reuses the same model,
-  copy and behavior; this section documents the web rendering only.
+- **Mobile parity is implemented (PR4).** The React Native Log screen reuses the
+  same model, copy and behavior — timing/rest controls, per-set check-off,
+  owner-scoped draft restore/autosave/discard, best-effort haptics plus the
+  bundled rest cue, and the plate-calculator modal; this section documents the
+  web rendering only.
 
 ## Interface language
 

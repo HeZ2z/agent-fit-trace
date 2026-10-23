@@ -9,24 +9,25 @@ semantics, transport, coaching and visual rules stay governed by
 [`docs/mvp-design.md`](mvp-design.md), [`docs/api-contract.md`](api-contract.md),
 [`docs/ui-design.md`](ui-design.md) and [`docs/deployment.md`](deployment.md).
 
-## Status at PR3
+## Status at PR4
 
-The tree now contains the PR1 shell, the PR2 local-first data layer and the PR3
-account, preference, sync and hosted-coach layer. **Implemented** means present
-in the tree; **planned** means designed but not written. Android is the only
-configured native target.
+The tree now contains the PR1 shell, the PR2 local-first data layer, the PR3
+account, preference, sync and hosted-coach layer, and the PR4 unified mobile Log
+session. **Implemented** means present in the tree; **planned** means designed but
+not written. Android is the only configured native target.
 
 | Area | Implemented now | Planned |
 | --- | --- | --- |
 | App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; six-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
-| Local data | SQLite workout store, migrations, validation on read and write; History, Log, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
+| Local data | SQLite workout store plus the owner-scoped `session_draft` table (migration v2), migrations, validation on read and write; History, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
+| Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, per-set check-off, per-exercise rest, plate calculator, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
 | Account preferences | Skin and language mirrored to Supabase `user_metadata`; account wins on sign-in; write-through while signed in | — |
 | Sync | Manual workout pull/push, content-ID idempotency and three device-only conflict choices | Background sync; persistent conflict acknowledgement |
 | Hosted coach | Signed-in hosted coaching with session/snapshot/run flow, SSE, cancel and mapped errors | — |
-| Notifications | None; coaching and sync are foreground-only | Push notifications |
+| Notifications | None; coaching and sync are foreground-only. Rest cues are best-effort haptics/audio while the app is open, with no background service | Push notifications |
 | Platforms | Android-first; EAS preview APK and linked Expo project | iOS build and device verification |
-| Quality gates | Ten mobile `node:test` suites, mobile typecheck and Android export pass locally | Mobile typecheck/export in CI |
+| Quality gates | Ten mobile `node:test` suites (141 tests), mobile typecheck and Android export pass locally | Mobile typecheck/export in CI |
 
 ## Architecture and boundaries
 
@@ -38,12 +39,14 @@ connection.
 Core owns domain logic, `api-contracts` record and transport shapes, and
 `ui-tokens` visual values; `@agent-fit-trace/i18n` owns the render-time dictionary.
 Presentation lives in `mobile/src/app` and `mobile/src/ui`. The adapters are
-split by concern: `mobile/src/data` owns the SQLite store, `mobile/src/auth`
-owns identity, `mobile/src/preferences` reconciles account metadata,
-`mobile/src/sync` owns manual workout sync and `mobile/src/coach` owns hosted
-coaching. The app embeds no Node runtime, CLI launcher or local coach process
-and never receives a service-role key; privileged work stays on the server and
-worker in [`docs/deployment.md`](deployment.md).
+split by concern: `mobile/src/data` owns the SQLite store and the session-draft
+repository, `mobile/src/workout` owns the native live-feedback adapters and the
+plate-calculator modal, `mobile/src/auth` owns identity,
+`mobile/src/preferences` reconciles account metadata, `mobile/src/sync` owns
+manual workout sync and `mobile/src/coach` owns hosted coaching. The app embeds no
+Node runtime, CLI launcher or local coach process and never receives a
+service-role key; privileged work stays on the server and worker in
+[`docs/deployment.md`](deployment.md).
 
 ### Repository layout
 
@@ -52,7 +55,8 @@ worker in [`docs/deployment.md`](deployment.md).
 | `mobile/src/app/` | Implemented | Routes: root stack, six tabs, invite-only sign-in, manual sync |
 | `mobile/src/theme/` | Implemented | Shared tokens; AsyncStorage-backed skin state |
 | `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, ExerciseNameField, Banner, EmptyState, Screen, text |
-| `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, log/analysis/plan models |
+| `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, session-draft repository and row mapping, analysis/plan models |
+| `mobile/src/workout/` | Implemented | Native live feedback (haptics, bundled `expo-audio` rest cue) and the display-only plate-calculator modal |
 | `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session and auth provider |
 | `mobile/src/preferences/` | Implemented | Account skin/language reconciliation provider |
 | `mobile/src/sync/` | Implemented | Sync config, client, pure plan, runner and conflict/apply model |
@@ -98,10 +102,50 @@ returned as data.
 
 Saves use `INSERT ... ON CONFLICT(id) DO NOTHING`. An identical re-save is a
 no-op; the same id with different content is `CONFLICT`; there is no update or
-replace path. The Log form validates through the shared core before writing and
-asks for explicit confirmation when valid input carries a warning, such as zero
-reps. History orders records newest first by the instant the date denotes, then
-by date text and id, so offset timestamps still sort correctly.
+replace path. The Log editor validates through the shared core before writing
+and asks for explicit confirmation when valid input carries a warning, such as
+zero reps. History orders records newest first by the instant the date denotes,
+then by date text and id, so offset timestamps still sort correctly.
+
+### Session draft
+
+The unfinished live session is SQLite data too, but never in the append-only
+workouts table. Migration v2 adds:
+
+```sql
+CREATE TABLE IF NOT EXISTS session_draft (
+  owner_id TEXT PRIMARY KEY NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+```
+
+- **One row per owner.** `owner_id` is the signed-in account id, or
+  `local-guest` for a signed-out local user. A draft is therefore owner-scoped:
+  sign-out or an account switch makes the previous owner's row unreachable, but
+  does **not** delete it. There is no cross-device or multi-draft support.
+- **Payload.** `payload` is the shared canonical-JSON session draft from
+  `@agent-fit-trace/workout-session` (`encodeSessionDraft`/`decodeSessionDraft`),
+  containing the date, session type, duration/sleep/notes, exercises, multiple
+  pain reports and the persisted timing. Rest is transient runtime state and is
+  never serialized, so a restart restores no countdown.
+- **Migration is one-way.** Upgrading applies v2 once under `PRAGMA
+  user_version`; the `workouts` table is untouched. Rolling back to an older
+  build means forward-fixing or clearing app data. The payload version is a
+  separate layer and has no migration path at all: an unsupported or malformed
+  payload fails closed.
+- **Restore and autosave.** The editor loads the owner's row before saving is
+  enabled, and auto-pauses a timing that was still active at its
+  `lastActiveAtMs`, so time while the process was dead is never counted. Each
+  draft change is written after a 500 ms debounce through one serialized queue,
+  with a flush when the app backgrounds and when the screen unmounts. A
+  successful workout save clears the row only when the editor still holds the
+  submitted draft for the same owner.
+- **Failure handling.** Corruption (`SessionDraftCorruptionError`) starts a blank
+  editor, shows a banner, blocks autosave for that mount and offers an explicit
+  native discard confirmation; the unreadable payload is never overwritten. A
+  transient read error shows a non-blocking banner and also blocks autosave for
+  the mount. A write failure shows one banner and stops retrying.
 
 ### Workout IDs
 
@@ -153,7 +197,27 @@ returns to the foreground, since background timers can be suspended. A network,
 rate-limit or 5xx failure is transient and does not delete the stored session;
 only a definitive invalid or expired session clears it. Sign-out clears local
 identity and the stored session first, then attempts the server logout as a
-best-effort step.
+best-effort step. The owner-scoped session draft is not deleted by sign-out: the
+next identity simply addresses a different row.
+
+## Workout session
+
+The Log tab is the single editor for a session recorded after the fact or while
+training. It renders the shared `SessionState` from
+`@agent-fit-trace/workout-session`: the fields are aligned with the web editor
+(date, session type, exercises/sets, per-exercise rest, duration only while
+untimed, sleep, notes and multiple pain reports), and the same reducer drives
+Start/Pause/Resume/Finish timing with an injected clock, per-set check-off, a
+rest countdown with ±15 s/Skip, and prefilled next sets. Draft persistence follows
+the signed-in owner (or the local guest) as described under [Session
+draft](#session-draft); the plate calculator is display-only and never saved.
+
+Feedback is best effort. Per-set completion and rest-ended haptics use
+`expo-haptics`, and rest-ended replays a bundled ~200 ms WAV through
+`expo-audio`, rewound before each play; a missing module, a rejected player or a
+device without haptics degrades silently. Timing only counts while the app is
+open: a backgrounded or killed app is caught up from timestamps, and there is no
+background notification or foreground service that announces a finished rest.
 
 ## Account preferences
 
@@ -465,6 +529,11 @@ store release; there is no iOS build configuration or verification yet.
 - **Guest data stays local** until the user signs in and explicitly starts a
   sync. Cloud sync sends the workouts the user chose to store in the account; it
   is not an automatic device backup.
+- **Session drafts are device-local and owner-scoped.** They live in the same
+  plaintext SQLite database, keyed by account id (or the local guest), and are
+  never synced or exported. Sign-out or an account switch makes the previous
+  owner's row unreachable but does not delete it, so another identity cannot read
+  it through the app.
 - **The hosted coach reads a server-derived snapshot** of the signed-in account's
   workouts. The transcript is held in memory on the device and is not persisted.
 - **Health-adjacent product.** Training tracking and safety signals are not
@@ -472,16 +541,22 @@ store release; there is no iOS build configuration or verification yet.
 
 ## Verification status and known gaps
 
-The ten mobile model suites pass with 130 tests: store 11, log 12, analysis 8,
-plan 6, auth 9, preferences 9, sync 16, sync apply 18, coach model 18 and coach
-screen 23. The root web suite passes 530 tests. `pnpm typecheck`,
+The ten mobile model suites pass with 141 tests: store 11, session draft 10,
+analysis 8, plan 6, auth 12, preferences 9, sync 16, sync apply 24, coach model
+18 and coach screen 27. The root app suite passes 615 tests. `pnpm typecheck`,
 `pnpm mobile:typecheck` and `expo export --platform android` pass in the current
-tree. These are model and bundle checks, not live service checks.
+tree. These are model and bundle checks, not live service or device checks.
 
 - **PR3 is not verified against live services.** Sign-in, account preference
   round-trips, manual sync and the hosted coach have not been exercised against a
   live Supabase project or a real hosted API in automated tests. A real-provider
   coaching run and device demo are still pending and are recorded separately.
+- **PR4 is not device verified.** The unified Log session, native
+  haptics/`expo-audio` cue, SQLite draft restore/autosave/discard (including the
+  native discard `Alert` and the plate `Modal`) are verified by typecheck and
+  Android bundle export only; no emulator or device pass was recorded. The pure
+  session model and the SQLite row mapping are covered by the root `node:test`
+  suites, which never load expo.
 - **No local import/export parity.** The store has no import/export screen or file
   path yet, and plan application/adoption is not implemented; Plan remains a
   read-only draft.
@@ -500,8 +575,8 @@ tree. These are model and bundle checks, not live service checks.
   mobile typecheck, Expo export and native builds are not CI steps.
 - **One PR1 device smoke test only.** The preview APK was installed and the shell
   was checked on a single Android 14 device (Pixel and Glass, English and
-  Simplified Chinese). The data, account, sync and coach screens have not had a
-  recorded device pass yet.
+  Simplified Chinese). The data, account, sync, coach and unified Log session
+  screens have not had a recorded device pass yet.
 - **Token drift is manual.** The sRGB palette has no automated check against the
   web oklch tokens; a CSS color change must update both sides.
 - **EAS builds are manual.** Builds require an authenticated Expo account and
@@ -538,8 +613,9 @@ recorded separately.
 This is the intended sequencing, not a commitment to a release date:
 
 1. Keep the device smoke test current and verify the PR3 account, preference,
-   sync and hosted-coach flows on a device against live Supabase and hosted API
-   services; record that demo separately.
+   sync and hosted-coach flows plus the PR4 unified Log session, draft lifecycle
+   and plate calculator on a device against live Supabase and hosted API
+   services; record those demos separately.
 2. Add mobile typecheck, Expo export and the preview build to CI while keeping
    the pure model suites in the root `node:test` run.
 3. Add local store import/export parity and finish the plan application path.
