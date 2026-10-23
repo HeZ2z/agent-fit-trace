@@ -448,3 +448,53 @@ test("untimed builds ignore the prefilled marker", () => {
   assert.equal(record.exercises[0].sets.length, 1);
   assert.deepEqual(record.exercises[0].sets[0], { reps: 5, weight: 80 });
 });
+
+test("checking then unchecking a prefilled set keeps its content in a timed save", () => {
+  let state = startedState(1_000);
+  for (const [field, value] of [
+    ["weight", "100"],
+    ["reps", "5"],
+  ] as const) {
+    state = reduceSessionState(state, {
+      type: "setSetField",
+      exerciseKey: 1,
+      setKey: 2,
+      field,
+      value,
+    });
+  }
+
+  // Check the real set, then the appended suggestion: checking promotes the
+  // suggestion to content and appends a fresh trailing suggestion.
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 2,
+    nowMs: 61_000,
+  });
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 3,
+    nowMs: 120_000,
+  });
+
+  const promoted = state.draft.exercises[0].sets[1];
+  assert.equal(promoted.done, true);
+  assert.equal(promoted.prefilled, false, "checking clears the suggestion marker");
+
+  // Unchecking must not delete content the user already performed.
+  state = reduceSessionState(state, {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 3,
+    nowMs: 180_000,
+  });
+
+  const record = buildWorkoutRecord(state.draft, 180_000);
+  assert.equal(record.exercises[0].sets.length, 2, "only the fresh trailing suggestion is dropped");
+  assert.deepEqual(record.exercises[0].sets, [
+    { reps: 5, weight: 100 },
+    { reps: 5, weight: 100 },
+  ]);
+});

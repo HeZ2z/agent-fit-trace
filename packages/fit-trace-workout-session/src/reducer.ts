@@ -212,6 +212,9 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         ...updateSet(draft, action.exerciseKey, action.setKey, (current) => ({
           ...current,
           done: true,
+          // Checking a suggestion performs it: it is real content from now on,
+          // so a later uncheck must not make it disappear from a timed save.
+          prefilled: false,
         })),
         timing: { ...timing, lastActiveAtMs: action.nowMs },
       };
