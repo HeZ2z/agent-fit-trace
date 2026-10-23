@@ -69,14 +69,40 @@ describe("WorkoutEditorScreen", () => {
     expect(screen.getByRole("button", { name: /save workout/i })).toBeInTheDocument();
   });
 
-  it("shows an error and does not persist when saving with no exercises", async () => {
+  it("shows an error and does not persist when saving a blank form", async () => {
     const { adapter, user } = renderEditorOver();
 
-    await user.click(screen.getByRole("button", { name: /remove exercise/i }));
+    // The editor always keeps one exercise and one set; the shared build drops
+    // blank content, so core reports the empty session as missing exercises.
     await user.click(screen.getByRole("button", { name: /save workout/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/exercises/i);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/exercises/i);
+    expect(alert.querySelector('[data-issue-code="MISSING_EXERCISES"]')).not.toBeNull();
     expect(loadRecords(adapter)).toHaveLength(0);
+  });
+
+  it("keeps at least one exercise and one set", async () => {
+    const { user } = renderEditorOver();
+
+    // The remove controls are unavailable at the minimum instead of leaving an
+    // empty form that the shared reducer would refuse to create anyway.
+    expect(screen.getByRole("button", { name: /remove exercise/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /remove set/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /add set/i }));
+    const setRemovers = screen.getAllByRole("button", { name: /remove set/i });
+    expect(setRemovers).toHaveLength(2);
+    expect(setRemovers[0]).toBeEnabled();
+    await user.click(setRemovers[0]!);
+    expect(screen.getByRole("button", { name: /remove set/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /add exercise/i }));
+    const exerciseRemovers = screen.getAllByRole("button", { name: /remove exercise/i });
+    expect(exerciseRemovers).toHaveLength(2);
+    expect(exerciseRemovers[0]).toBeEnabled();
+    await user.click(exerciseRemovers[0]!);
+    expect(screen.getByRole("button", { name: /remove exercise/i })).toBeDisabled();
   });
 
   it("rejects a negative weight", async () => {
