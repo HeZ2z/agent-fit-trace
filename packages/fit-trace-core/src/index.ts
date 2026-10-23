@@ -12,4 +12,5 @@ export * from "./metrics.ts";
 export * from "./analyze.ts";
 export * from "./plan.ts";
 export * from "./canonical.ts";
+export * from "./plates.ts";
 export * from "./exercises/index.ts";
