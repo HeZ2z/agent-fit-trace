@@ -1,8 +1,9 @@
 # ADR 0004: One workout session draft for retro and live logging
 
-- **Status:** Accepted. The shared package, timing/rest machine, core bridge, and
-  draft payload are implemented in PR1. The web and mobile editors (PRs 2–4) are
-  follow-ups.
+- **Status:** Accepted. The shared model, the core plate math, and the web
+  editor's live session — timing and rest controls, plate calculator, and draft
+  restore/autosave/discard — are implemented in PRs 1–3. PR4, moving the mobile
+  Log screen onto the same model, remains a follow-up.
 - **Date:** 2026-10-23
 - **Scope:** issue #24. The unified `SessionDraft`, optional live timing, transient
   rest, the shared `@agent-fit-trace/workout-session` package, and the draft
@@ -144,12 +145,22 @@ Only the draft is serialized, as canonical JSON via core `stableStringify`.
   v2), one row constrained to the active draft, with debounced serialized writes
   and a flush before backgrounding or finishing. Parse failures raise
   `SessionDraftCorruptionError` and offer an explicit discard.
-- **Web:** the existing `StorageAdapter` with a single key
-  `agent-fit-trace:session-draft:v1`, rewritten on reducer changes. Storage
-  failures surface an error with an explicit discard.
+- **Web:** the existing `StorageAdapter` under one owner-scoped key,
+  `agent-fit-trace:session-draft:v1:owner:<encodeURIComponent(ownerId)>`, so an
+  account can never read or overwrite another account's draft. The draft is
+  loaded before the editor's first render; `rehydrateSessionDraft` auto-pauses an
+  active timing at its last confirmed activity, and every draft change then
+  autosaves synchronously. Corruption blocks autosave until an explicit two-step
+  discard (an unreadable payload is never overwritten); read and write failures
+  surface a non-blocking banner. A successful workout save clears the draft
+  before navigating. Logout or an account switch makes the previous owner's key
+  unreachable; explicit deletion of that key is **not** implemented — the
+  owner-scoped namespace hides it instead. Plate-calculator input and results are
+  display-only and never persisted.
 - One unfinished draft at a time. A successful save clears it. Drafts stay on
   the device: they are not synced or exported, and logout or account switching
-  clears them.
+  changes the addressed owner key (no explicit deletion; the old key simply
+  becomes unreachable).
 - Payload decoding checks structure only — version, types, arrays, unique keys,
   timing consistency, unknown fields — and deliberately skips core record
   validation, so a mid-edit draft with an empty date or unparsable numbers is
@@ -250,29 +261,30 @@ payload.
   undercounts the time the app was closed. A future heartbeat could narrow the
   gap, but it was not judged worth the complexity now.
 - The rest countdown is lost on restart by design.
-- The web editor and mobile Log screen still need their parity work, copy,
-  accessibility, i18n slices, and tests (PRs 2–4).
-- `app/` and `mobile/` must add the `workspace:*` dependency before they can use
-  the package; the root tests currently import the package by relative path.
+- The mobile Log screen still needs its parity work, copy, accessibility, i18n
+  slices and tests (PR4). The web editor now implements the full live session,
+  including the plate calculator, timing/rest cues and draft handling.
+- `mobile/` must add the `workspace:*` dependency before it can use the package;
+  `app/` added it in PR2. The root tests import the package by relative path.
 - Timezone and clock changes are handled with epoch milliseconds, an elapsed
   floor of zero, and a local calendar date captured at start — not with a global
   clock abstraction.
 
 ## Follow-ups
 
-- **PR1 (this change):** the shared package (types, reducer, timing/runtime,
+- **PR1:** implemented. The shared package (types, reducer, timing/runtime,
   build/validation, persistence payload), the core plate math, tests, and this
   ADR. No UI changes.
-- **PR2 — `feat/24-web-session-model`:** move the web editor onto the shared
-  model with behavior and existing tests preserved, and delete its local key
-  allocation.
-- **PR3 — `feat/24-web-live-session`:** add the web timing bar, per-set
-  checkboxes, rest bar, plate dialog, draft persistence, sound/vibration, and the
-  shared i18n slice.
-- **PR4 — `feat/24-mobile-unified-session`:** rewrite the mobile Log editor on
-  the shared model with live capabilities, add the SQLite `session_draft`
-  migration and `expo-audio`, add mobile-specific copy/docs, and remove
-  `mobile/src/data/logModel.ts`.
+- **PR2 — `feat/24-web-session-model`:** implemented. Moved the web editor onto
+  the shared model with behavior and existing tests preserved, and deleted its
+  local key allocation.
+- **PR3 — `feat/24-web-live-session`:** implemented. Added the web timing bar,
+  per-set checkboxes, rest bar, plate calculator, owner-scoped draft
+  restore/autosave/discard, sound/vibration, and the shared i18n slice.
+- **PR4 — `feat/24-mobile-unified-session`:** remains. Rewrite the mobile Log
+  editor on the shared model with live capabilities, add the SQLite
+  `session_draft` migration and `expo-audio`, add mobile-specific copy/docs, and
+  remove `mobile/src/data/logModel.ts`.
 
 ## Out of scope
 
