@@ -11,9 +11,9 @@ import type { SessionAction, SessionState } from "../packages/fit-trace-workout-
  * variant to the union without adding a case here (or in the reducer's
  * exhaustive switch) is a TypeScript error.
  *
- * Stage 2 implements draft edits. The persisted-timing and transient-rest
- * variants are declared now but become real transitions in stage 3; while
- * waiting they are explicit, exhaustively-checked no-ops.
+ * The detailed timing/rest behavior has its own file
+ * (`workoutSessionTiming.test.ts`); this table proves every action is routed to
+ * a real transition.
  */
 
 const DATE = "2026-10-23";
@@ -30,16 +30,24 @@ function untimedState(): SessionState {
   return { draft: createSessionDraft(DATE), runtime: { rest: null, restEndedAtMs: null } };
 }
 
-function timedState(): SessionState {
-  const state = untimedState();
-  state.draft.timing = {
-    startedAtMs: 1_000,
-    endedAtMs: null,
-    pausedAtMs: null,
-    pausedTotalMs: 0,
-    lastActiveAtMs: 2_000,
-  };
-  return state;
+/** Active timing started at 1s. */
+function startedState(): SessionState {
+  return reduceSessionState(untimedState(), { type: "startSession", nowMs: 1_000 });
+}
+
+/** Paused timing: started at 1s, paused at 5s. */
+function pausedState(): SessionState {
+  return reduceSessionState(startedState(), { type: "pauseSession", nowMs: 5_000 });
+}
+
+/** Active timing with a 90s rest running for exercise 1 / set 2 from t=3s. */
+function restingState(): SessionState {
+  return reduceSessionState(startedState(), {
+    type: "toggleSetDone",
+    exerciseKey: 1,
+    setKey: 2,
+    nowMs: 3_000,
+  });
 }
 
 function stateWithTwoExercises(): SessionState {
@@ -128,9 +136,12 @@ const CASES: Record<SessionAction["type"], ActionCase> = {
     verify: (next) => assert.equal(next.draft.exercises[0].sets[0].weight, "80"),
   },
   toggleSetDone: {
-    state: timedState,
+    state: startedState,
     action: { type: "toggleSetDone", exerciseKey: 1, setKey: 2, nowMs: 3_000 },
-    verify: (next) => assert.equal(next.draft.exercises[0].sets[0].done, true),
+    verify: (next) => {
+      assert.equal(next.draft.exercises[0].sets[0].done, true);
+      assert.equal(next.runtime.rest?.setKey, 2, "checking a set starts its rest");
+    },
   },
   addPain: {
     state: untimedState,
@@ -151,42 +162,73 @@ const CASES: Record<SessionAction["type"], ActionCase> = {
     verify: (next) => assert.equal(next.draft.pain[0].area, "lower_back"),
   },
 
-  // Stage 3 transitions. Declared in the union now so the exhaustive table and
-  // the reducer switch stay complete; they become real behavior in stage 3.
+  // Persisted timing.
   startSession: {
     state: untimedState,
     action: { type: "startSession", nowMs: 5_000 },
-    verify: (next, before) => assert.deepEqual(next, before),
+    verify: (next) => {
+      assert.deepEqual(next.draft.timing, {
+        startedAtMs: 5_000,
+        endedAtMs: null,
+        pausedAtMs: null,
+        pausedTotalMs: 0,
+        lastActiveAtMs: 5_000,
+      });
+      assert.deepEqual(next.runtime, { rest: null, restEndedAtMs: null });
+    },
   },
   pauseSession: {
-    state: timedState,
+    state: startedState,
     action: { type: "pauseSession", nowMs: 5_000 },
-    verify: (next, before) => assert.deepEqual(next, before),
+    verify: (next) => {
+      assert.equal(next.draft.timing?.pausedAtMs, 5_000);
+      assert.equal(next.draft.timing?.lastActiveAtMs, 5_000);
+    },
   },
   resumeSession: {
-    state: timedState,
-    action: { type: "resumeSession", nowMs: 5_000 },
-    verify: (next, before) => assert.deepEqual(next, before),
+    state: pausedState,
+    action: { type: "resumeSession", nowMs: 8_000 },
+    verify: (next) => {
+      assert.equal(next.draft.timing?.pausedAtMs, null);
+      assert.equal(next.draft.timing?.pausedTotalMs, 3_000);
+      assert.equal(next.draft.timing?.lastActiveAtMs, 8_000);
+    },
   },
   finishSession: {
-    state: timedState,
-    action: { type: "finishSession", nowMs: 5_000 },
-    verify: (next, before) => assert.deepEqual(next, before),
+    state: startedState,
+    action: { type: "finishSession", nowMs: 10_000 },
+    verify: (next) => {
+      assert.equal(next.draft.timing?.endedAtMs, 10_000);
+      assert.equal(next.draft.timing?.lastActiveAtMs, 10_000);
+      assert.equal(next.runtime.rest, null);
+      assert.equal(next.runtime.restEndedAtMs, null, "finishing never cues");
+    },
   },
+
+  // Transient rest.
   skipRest: {
-    state: untimedState,
+    state: restingState,
     action: { type: "skipRest" },
-    verify: (next, before) => assert.deepEqual(next, before),
+    verify: (next) => {
+      assert.equal(next.runtime.rest, null);
+      assert.equal(next.runtime.restEndedAtMs, null, "skipping never cues");
+    },
   },
   adjustRest: {
-    state: untimedState,
+    state: restingState,
     action: { type: "adjustRest", deltaMs: 15_000 },
-    verify: (next, before) => assert.deepEqual(next, before),
+    verify: (next) => {
+      assert.equal(next.runtime.rest?.durationMs, 105_000);
+      assert.equal(next.runtime.rest?.endsAtMs, 108_000);
+    },
   },
   tick: {
-    state: timedState,
-    action: { type: "tick", nowMs: 5_000 },
-    verify: (next, before) => assert.deepEqual(next, before),
+    state: restingState,
+    action: { type: "tick", nowMs: 93_000 },
+    verify: (next) => {
+      assert.equal(next.runtime.rest, null);
+      assert.equal(next.runtime.restEndedAtMs, 93_000);
+    },
   },
 };
 
