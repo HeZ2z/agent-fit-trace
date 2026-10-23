@@ -229,6 +229,12 @@ importers:
 
   packages/fit-trace-ui-tokens: {}
 
+  packages/fit-trace-workout-session:
+    dependencies:
+      '@agent-fit-trace/core':
+        specifier: workspace:*
+        version: link:../fit-trace-core
+
 packages:
 
   2g@1.0.1:
