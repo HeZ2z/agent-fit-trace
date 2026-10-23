@@ -5,6 +5,7 @@ import { messages as domain } from "@agent-fit-trace/i18n/zh/domain";
 import { messages as screensAnalysisPlan } from "@agent-fit-trace/i18n/zh/screens-analysis-plan";
 import { messages as screensCoachMe } from "@agent-fit-trace/i18n/zh/screens-coach-me";
 import { messages as screensHistory } from "@agent-fit-trace/i18n/zh/screens-history";
+import { messages as screensWorkoutSession } from "@agent-fit-trace/i18n/zh/screens-workout-session";
 import { messages as mobile } from "@agent-fit-trace/i18n/zh/mobile";
 import { messages as mobileCoach } from "@agent-fit-trace/i18n/zh/mobile-coach";
 
@@ -13,6 +14,7 @@ const SLICES: readonly { name: string; messages: Record<string, string> }[] = [
   { name: "screens-history", messages: screensHistory },
   { name: "screens-analysis-plan", messages: screensAnalysisPlan },
   { name: "screens-coach-me", messages: screensCoachMe },
+  { name: "screens-workout-session", messages: screensWorkoutSession },
   { name: "domain", messages: domain },
   { name: "mobile", messages: mobile },
   { name: "mobile-coach", messages: mobileCoach },

@@ -185,6 +185,52 @@ never weakens keyboard focus.
 
 ![Me → Appearance, with Glass selected](ui/glass-appearance.jpg)
 
+## Live workout session
+
+The Log Workout editor is one session editor for after-the-fact entry and live
+training. Timing and rest live in the shared session model
+(`@agent-fit-trace/workout-session`); the web screen only renders that state and
+injects the clock.
+
+- **Timing bar.** An untimed draft shows only **Start session**. Once timed, the
+  bar shows elapsed time (`MM:SS`, `H:MM:SS` after an hour), a paused/finished
+  phase chip, and **Pause session** / **Resume session** / **Finish session**.
+  Finishing freezes the time and disables the live controls. A 250 ms ticker
+  refreshes the display and settles rest; it stops while paused or finished, and
+  `visibilitychange` catches the clock up when the tab returns. The elapsed
+  value is `aria-live="off"` so a 250 ms re-render is never announced.
+- **Set checkboxes.** Per-set check-off appears only for a timed session and is
+  disabled once finished. Each checkbox has an exercise-scoped accessible name
+  (`Exercise 2: Set 1 complete`) so several exercise cards never expose the same
+  "Set 1 complete" label. Checking a set vibrates where supported, marks the
+  `done` flag in the draft, pre-fills the next set (excluded from a timed save
+  until edited or checked), and starts that exercise's rest.
+- **Rest bar.** Each exercise carries `Rest (seconds)` (default 90). While a rest
+  is running the bar shows the countdown with **−15s** / **+15s** (accessible
+  `Subtract 15 seconds` / `Add 15 seconds`) and **Skip rest**. Pausing freezes
+  the remaining rest and resuming rebuilds it from the shared runtime. When a
+  rest settles it announces **Rest complete** through `role="status"`; skipping
+  or finishing clears it without a cue. The rest-ended cue is best-effort Web
+  Audio plus vibration and degrades silently.
+- **Plate calculator.** **Open plate calculator** opens an ordinary overlay +
+  card (`role="dialog"`, `aria-modal="true"`, labelled by its heading) rather
+  than the native `<dialog>` element. It takes a target weight and a 20/15 kg
+  bar, and shows plates per side heaviest-first, loaded weight and remainder
+  from the shared core plate math. Invalid input uses the existing validation
+  copy; an exact bar-only target renders an empty plate list rather than
+  invented copy. **Close** and `Escape` dismiss it.
+- **Draft restore and discard.** One owner-scoped draft is stored locally and
+  loaded before the first render. A restore shows **Unfinished session restored.**;
+  an active timing is auto-paused at its last confirmed activity and shows
+  **Session restored and auto-paused. Resume to continue.** so time while the
+  page was closed is never counted. Every draft change autosaves; read/write
+  failures show a non-blocking banner. A corrupt payload fails closed: autosave
+  stays off and only an explicit two-step **Discard draft** clears it. A
+  successful workout save clears the draft before navigating. The manual
+  **Duration (minutes)** field is hidden while timed, where duration is derived.
+- **Mobile parity is PR4.** The React Native Log screen reuses the same model,
+  copy and behavior; this section documents the web rendering only.
+
 ## Interface language
 
 English is the source language; Simplified Chinese is a **display layer**, not a
