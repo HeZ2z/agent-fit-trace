@@ -44,11 +44,30 @@ export const WORKOUTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS workouts (
 export const WORKOUTS_NEWEST_FIRST_INDEX_SQL = `CREATE INDEX IF NOT EXISTS workouts_newest_first_idx
   ON workouts (date DESC, id DESC);`;
 
+/**
+ * The single unfinished session draft, scoped by the owning identity.
+ *
+ * One row per owner: the owner id is the primary key, so an upsert replaces
+ * that owner's draft and two identities can never read each other's work. The
+ * payload is the shared session-draft JSON; `updated_at` records the last
+ * successful write for diagnostics. Rest timers are transient and never stored
+ * here, so this table holds the draft only.
+ */
+export const SESSION_DRAFT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS session_draft (
+  owner_id TEXT PRIMARY KEY NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`;
+
 /** Ordered migrations; every entry is applied once and recorded in user_version. */
 export const WORKOUTS_MIGRATIONS: readonly WorkoutMigration[] = [
   {
     version: 1,
     statements: [WORKOUTS_TABLE_SQL, WORKOUTS_NEWEST_FIRST_INDEX_SQL],
+  },
+  {
+    version: 2,
+    statements: [SESSION_DRAFT_TABLE_SQL],
   },
 ];
 
