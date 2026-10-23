@@ -7,6 +7,7 @@ import {
   createSessionDraft,
 } from "@agent-fit-trace/workout-session";
 import type { SessionDraft } from "@agent-fit-trace/workout-session";
+import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import { MemoryStorageAdapter, StorageUnavailableError } from "../storage/adapter.ts";
 import type { StorageAdapter } from "../storage/adapter.ts";
 import {
@@ -16,7 +17,7 @@ import {
 } from "../storage/sessionDraftRepository.ts";
 import { SessionDraftProvider } from "../state/SessionDraftContext.tsx";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
-import { clientFor } from "../test/asyncClient.ts";
+import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
 import { WorkoutEditorScreen } from "./WorkoutEditorScreen.tsx";
 
 const OWNER = "draft-test-owner";
@@ -47,10 +48,13 @@ function validDraft(): SessionDraft {
   };
 }
 
-function renderEditor(adapter: StorageAdapter = new MemoryStorageAdapter()) {
+function renderEditor(
+  adapter: StorageAdapter = new MemoryStorageAdapter(),
+  client: FitTraceClient = clientFor(adapter),
+) {
   return render(
     <MemoryRouter initialEntries={["/workout/new"]}>
-      <WorkoutStoreProvider client={clientFor(adapter)}>
+      <WorkoutStoreProvider client={client}>
         <SessionDraftProvider ownerId={OWNER} adapter={adapter}>
           <Routes>
             <Route path="/workout/new" element={<WorkoutEditorScreen />} />
@@ -169,6 +173,43 @@ describe("WorkoutEditorScreen session draft", () => {
 
     expect(await screen.findByTestId("summary")).toBeInTheDocument();
     expect(loadSessionDraft(adapter, OWNER)).toBeNull();
+  });
+
+  it("does not clear a newer draft when an older save resolves", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const client = new FakeFitTraceClient({ records: [] });
+    saveSessionDraft(adapter, validDraft(), OWNER);
+
+    const first = renderEditor(adapter, client);
+    const firstUser = userEvent.setup();
+    const gate = client.nextCreate();
+    await firstUser.click(screen.getByRole("button", { name: /save workout/i }));
+    await waitFor(() => expect(client.createCalls).toBe(1));
+
+    // Leave the editor while the save is in flight, then re-enter and make a
+    // newer edit for the same owner.
+    first.unmount();
+    renderEditor(adapter, client);
+    const secondUser = userEvent.setup();
+    await secondUser.type(notesField(), "newer work");
+    expect(loadSessionDraft(adapter, OWNER)?.notes).toBe("newer work");
+
+    gate.resolve({
+      record: {
+        id: "wkt_saved",
+        schema_version: 1,
+        date: "2026-01-05",
+        session_type: "strength",
+        exercises: [{ name: "Squat", sets: [{ weight: 100, reps: 5, rpe: 8 }] }],
+      },
+      duplicate: false,
+      warnings: [],
+    });
+
+    // The old save must not erase the newer draft under the same owner key.
+    await waitFor(() => {
+      expect(loadSessionDraft(adapter, OWNER)?.notes).toBe("newer work");
+    });
   });
 
   it("discards a restored draft only after the inline confirmation", async () => {

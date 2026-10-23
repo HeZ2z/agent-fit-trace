@@ -416,16 +416,26 @@ export function WorkoutEditorScreen() {
       stableStringify(pendingSave.record);
 
   async function persist(record: WorkoutRecord): Promise<void> {
+    // Snapshot the draft this save represents. A newer editor instance (or an
+    // edit made while the request is in flight) can autosave different content
+    // under the same owner key; an old success must not delete it.
+    const savedDraft = draft;
     // Save failures (unavailable, quota, conflict) must surface to the user
     // rather than escaping as an unhandled error. Input is retained and no
     // navigation happens until the save resolves.
     try {
       const saved = await saveWorkout(toSaveInput(record));
       // The record is already stored; a failed draft clear must neither undo the
-      // save nor block navigation. Surfacing it here would race the unmount, so
-      // it is best-effort (a stale draft is otherwise replaced on the next edit).
+      // save nor block navigation. Only clear the draft when storage still holds
+      // exactly the content this save was built from.
       try {
-        drafts.clear();
+        const currentDraft = drafts.load();
+        if (
+          currentDraft !== null &&
+          stableStringify(currentDraft) === stableStringify(savedDraft)
+        ) {
+          drafts.clear();
+        }
       } catch {
         // Ignore: the saved workout is the durable outcome.
       }
