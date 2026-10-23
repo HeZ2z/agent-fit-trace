@@ -2,11 +2,13 @@ import { SESSION_TYPES, stableStringify } from "@agent-fit-trace/core";
 import type { ValidationIssue, ValidationWarning, WorkoutRecord } from "@agent-fit-trace/core";
 import { displaySessionType, displayValidationMessage } from "@agent-fit-trace/i18n/domain";
 import {
+  SessionDraftCorruptionError,
   buildWorkoutRecord,
   createSessionDraft,
   createSessionRuntime,
   elapsedMs,
   reduceSessionState,
+  rehydrateSessionDraft,
   restRemainingMs,
   sessionPhase,
   toSaveInput,
@@ -20,6 +22,7 @@ import type {
 } from "@agent-fit-trace/workout-session";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Alert,
   AppState,
   KeyboardAvoidingView,
   Platform,
@@ -29,7 +32,9 @@ import {
   View,
 } from "react-native";
 
+import { useAuth } from "@/auth";
 import { useWorkoutData } from "@/data/provider";
+import { LOCAL_GUEST_OWNER_ID } from "@/data/sessionDraftSchema";
 import { useI18n } from "@/i18n";
 import { SPACING } from "@/theme";
 import { useSkin } from "@/theme/skin";
@@ -46,6 +51,7 @@ import {
   Screen,
   Title,
 } from "@/ui";
+import { PlateCalculatorModal } from "@/workout/PlateCalculatorModal";
 import { useRestCue, vibrateRestEnded, vibrateSetChecked } from "@/workout/liveFeedback";
 
 /**
@@ -62,8 +68,11 @@ import { useRestCue, vibrateRestEnded, vibrateSetChecked } from "@/workout/liveF
  * keeps the banner on this screen; History refreshes on focus when the user
  * switches tabs. A failed save retains the form for retry.
  *
- * Draft persistence, the plate calculator and account-owner wiring are later
- * stages; nothing here writes the draft.
+ * The unfinished draft is owner-scoped in SQLite (one row per signed-in account,
+ * or the local guest identity). It is loaded before edits are enabled and
+ * autosaved with a debounce; a payload that fails to load is never overwritten
+ * and can only be discarded explicitly. The plate calculator is a local,
+ * display-only tool and never part of the draft.
  */
 const copy = {
   title: "Log a session",
@@ -123,19 +132,46 @@ const copy = {
   skipRest: "Skip rest",
   subtract15: "Subtract 15 seconds",
   add15: "Add 15 seconds",
+  restored: "Unfinished session restored.",
+  autoPaused: "Session restored and auto-paused. Resume to continue.",
+  draftCorrupt: "Could not restore the saved session draft. Discard it to start a new session.",
+  discardDraft: "Discard draft",
+  discardConfirm: "Discard the unfinished session draft?",
+  draftDiscarded: "Session draft discarded.",
+  autosaveFailed: "Draft autosave failed: {message}",
+  cancel: "Cancel",
+  openPlateCalculator: "Open plate calculator",
 } as const;
 
 type SaveSuccess = "created" | "duplicate";
 
+/** Which restore banner the editor owes the user after loading the draft. */
+type RestoreNotice = "restored" | "auto-paused";
+
 /**
- * A record captured for the warning confirmation, plus the clock and draft it
- * was built from. Staleness compares like with like by rebuilding the draft at
- * the same instant.
+ * Draft-storage problems rendered non-blockingly.
+ *
+ * `corrupt` and `read-error` both disable autosave for this mount so a payload
+ * that could not be read is never overwritten; only corruption offers an
+ * explicit discard. `save-error` disables further autosave attempts.
+ */
+type DraftProblem =
+  | { kind: "corrupt" }
+  | { kind: "read-error"; message: string }
+  | { kind: "save-error"; message: string };
+
+/**
+ * A record captured for the warning confirmation, plus the clock, draft and
+ * owner it was built from. Staleness compares like with like by rebuilding the
+ * draft at the same instant.
  */
 interface PendingSave {
   record: WorkoutRecord;
   nowMs: number;
   draft: SessionDraft;
+  ownerId: string;
+  /** Draft revision at submission, so a later edit skips the draft clear. */
+  draftRevision: number;
 }
 
 /** Rest steps the -15s/+15s buttons move the shared timer by. */
@@ -144,10 +180,19 @@ const REST_ADJUST_MS = 15_000;
 /** Ticker cadence for the elapsed display and rest settlement. */
 const LIVE_TICK_MS = 250;
 
+/** Quiet period after a draft edit before it is written to SQLite. */
+const AUTOSAVE_DEBOUNCE_MS = 500;
+
 function describeError(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   if (typeof cause === "string") return cause;
   return "";
+}
+
+/** Message for a storage failure banner; never empty. */
+function messageOf(cause: unknown): string {
+  const message = describeError(cause).trim();
+  return message === "" ? "Unknown error." : message;
 }
 
 /**
@@ -174,8 +219,19 @@ export default function LogScreen() {
   const { language, t } = useI18n();
   const { tokens } = useSkin();
   const { palette } = tokens;
-  const { status: dataStatus, repository, error: openError, reload } = useWorkoutData();
+  const { status: authStatus, session } = useAuth();
+  const {
+    status: dataStatus,
+    repository,
+    draftRepository,
+    error: openError,
+    reload,
+  } = useWorkoutData();
   const playRestCue = useRestCue();
+
+  // One session draft belongs to exactly one identity: the signed-in account, or
+  // the stable local guest. A change of owner reloads the other owner's row.
+  const ownerId = session?.user.id ?? LOCAL_GUEST_OWNER_ID;
 
   const [state, setState] = useState<SessionState>(blankSessionState);
   const { draft, runtime } = state;
@@ -186,6 +242,46 @@ export default function LogScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [success, setSuccess] = useState<SaveSuccess | null>(null);
+
+  // Draft lifecycle state. `hydratedOwner` is the identity whose row was last
+  // read; autosave only runs while it matches the current owner.
+  const [hydratedOwner, setHydratedOwner] = useState<string | null>(null);
+  const [restoredNotice, setRestoredNotice] = useState<RestoreNotice | null>(null);
+  const [draftProblem, setDraftProblem] = useState<DraftProblem | null>(null);
+  const [discardedNotice, setDiscardedNotice] = useState(false);
+  const [hasDraft, setHasDraft] = useState(false);
+  const [autosaveEnabled, setAutosaveEnabled] = useState(true);
+  const [plateCalculatorOpen, setPlateCalculatorOpen] = useState(false);
+
+  // Values read by async callbacks and lifecycle listeners. Rendering the latest
+  // values here keeps the debounce/flush callbacks stable across edits.
+  const ownerEpochRef = useRef(0);
+  const ownerIdRef = useRef(ownerId);
+  ownerIdRef.current = ownerId;
+  const draftRepositoryRef = useRef(draftRepository);
+  draftRepositoryRef.current = draftRepository;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const hydratedOwnerRef = useRef<string | null>(null);
+  hydratedOwnerRef.current = hydratedOwner;
+  const autosaveEnabledRef = useRef(autosaveEnabled);
+  autosaveEnabledRef.current = autosaveEnabled;
+  const autosaveFailedRef = useRef(false);
+  const persistedBaselineRef = useRef<SessionDraft | null>(null);
+  // Bumped by every edit that can change the persisted draft, so a save that
+  // resolves late can tell whether the editor still shows the submitted draft.
+  const draftRevisionRef = useRef(0);
+  // Late autosave completions must not set state after the screen unmounts.
+  const mountedRef = useRef(true);
+  // Writes are chained so a burst of autosaves cannot interleave in the store.
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const dispatch = useCallback((action: SessionAction): void => {
     setState((current) => reduceSessionState(current, action));
@@ -204,10 +300,190 @@ export default function LogScreen() {
   const edit = useCallback(
     (action: SessionAction): void => {
       clearFeedback();
+      setDiscardedNotice(false);
+      draftRevisionRef.current += 1;
       dispatch(action);
     },
     [clearFeedback, dispatch],
   );
+
+  /**
+   * Serialize one draft write. The owner is captured at scheduling time, so a
+   * write can never land in the next owner's row. A failure disables autosave
+   * for this mount and surfaces one banner instead of retrying forever.
+   */
+  const enqueueDraftWrite = useCallback(
+    (targetOwner: string, snapshot: SessionDraft): void => {
+      const repository = draftRepositoryRef.current;
+      if (repository === null) return;
+      const epoch = ownerEpochRef.current;
+      const run = writeQueueRef.current.then(() => repository.save(targetOwner, snapshot));
+      writeQueueRef.current = run.catch(() => {
+        // Keep the chain alive; the failure is reported by the branch below.
+      });
+      void run.then(
+        () => {
+          if (epoch !== ownerEpochRef.current) return;
+          persistedBaselineRef.current = snapshot;
+          if (!mountedRef.current) return;
+          setHasDraft(true);
+        },
+        (cause: unknown) => {
+          if (epoch !== ownerEpochRef.current) return;
+          if (autosaveFailedRef.current) return;
+          autosaveFailedRef.current = true;
+          if (!mountedRef.current) return;
+          setDraftProblem((current) =>
+            current?.kind === "save-error"
+              ? current
+              : { kind: "save-error", message: messageOf(cause) },
+          );
+        },
+      );
+    },
+    [],
+  );
+
+  /**
+   * Delete one owner's saved draft through the same queue as autosave, so a
+   * write already scheduled for the submitted snapshot cannot land after the
+   * clear and resurrect a completed session. The queued result is returned so
+   * the caller can decide whether a failure is worth surfacing.
+   */
+  const enqueueDraftClear = useCallback((targetOwner: string): Promise<void> => {
+    const repository = draftRepositoryRef.current;
+    if (repository === null) return Promise.resolve();
+    const run = writeQueueRef.current.then(() => repository.clear(targetOwner));
+    writeQueueRef.current = run.catch(() => {
+      // Keep the chain alive; the caller handles the failure.
+    });
+    return run;
+  }, []);
+
+  /** Write the latest draft immediately (backgrounding or unmounting). */
+  const flushLatestDraft = useCallback((): void => {
+    if (hydratedOwnerRef.current === null) return;
+    if (hydratedOwnerRef.current !== ownerIdRef.current) return;
+    if (!autosaveEnabledRef.current) return;
+    if (autosaveFailedRef.current) return;
+    if (draftRepositoryRef.current === null) return;
+    const snapshot = draftRef.current;
+    if (snapshot === persistedBaselineRef.current) return;
+    enqueueDraftWrite(ownerIdRef.current, snapshot);
+  }, [enqueueDraftWrite]);
+
+  // Unmount flush. The debounce effect's cleanup has already cancelled any
+  // pending timer by the time this runs, so the latest draft is written once.
+  const flushRef = useRef(flushLatestDraft);
+  flushRef.current = flushLatestDraft;
+  useEffect(() => {
+    return () => {
+      flushRef.current();
+    };
+  }, []);
+
+  /**
+   * Load the owner's draft once both auth and the local store are ready.
+   *
+   * Any problem fails closed: the editor starts blank, autosave stays off for
+   * this mount, and an unreadable payload is never overwritten. Corruption (as
+   * opposed to a transient read error) exposes the explicit discard action.
+   */
+  useEffect(() => {
+    if (authStatus === "loading") return;
+    if (draftRepository === null) return;
+
+    const epoch = ownerEpochRef.current + 1;
+    ownerEpochRef.current = epoch;
+    let cancelled = false;
+    const owner = ownerId;
+
+    // Reset synchronously for the new owner; `hydratedOwner` stays null so the
+    // autosave effect cannot write the previous draft into the new row.
+    const blank = blankSessionState();
+    autosaveFailedRef.current = false;
+    autosaveEnabledRef.current = true;
+    persistedBaselineRef.current = blank.draft;
+    draftRevisionRef.current += 1;
+    setHydratedOwner(null);
+    setAutosaveEnabled(true);
+    setState(blank);
+    setRestoredNotice(null);
+    setDiscardedNotice(false);
+    setDraftProblem(null);
+    setHasDraft(false);
+    setIssues([]);
+    setWarnings([]);
+    setPendingSave(null);
+    setSaveError(null);
+    setSuccess(null);
+
+    void (async () => {
+      let stored: SessionDraft | null;
+      try {
+        stored = await draftRepository.load(owner);
+      } catch (cause) {
+        if (cancelled || epoch !== ownerEpochRef.current) return;
+        const corrupt = cause instanceof SessionDraftCorruptionError;
+        const failedBlank = blankSessionState();
+        persistedBaselineRef.current = failedBlank.draft;
+        autosaveEnabledRef.current = false;
+        setAutosaveEnabled(false);
+        setState(failedBlank);
+        setHasDraft(corrupt);
+        setDraftProblem(
+          corrupt ? { kind: "corrupt" } : { kind: "read-error", message: messageOf(cause) },
+        );
+        setHydratedOwner(owner);
+        return;
+      }
+
+      if (cancelled || epoch !== ownerEpochRef.current) return;
+
+      if (stored === null) {
+        setHydratedOwner(owner);
+        return;
+      }
+
+      const timing = stored.timing;
+      const wasActive =
+        timing !== null && timing.endedAtMs === null && timing.pausedAtMs === null;
+      const restored = rehydrateSessionDraft(stored, Date.now());
+      persistedBaselineRef.current = restored;
+      setState({ draft: restored, runtime: createSessionRuntime() });
+      setRestoredNotice(wasActive ? "auto-paused" : "restored");
+      setHasDraft(true);
+      setHydratedOwner(owner);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authStatus, draftRepository, ownerId]);
+
+  // Autosave the draft 500 ms after the last persisted-draft change. Runtime-only
+  // rest ticks never change `draft`, and the loaded/written baseline is skipped
+  // so mount and restore do not rewrite storage.
+  useEffect(() => {
+    if (hydratedOwner === null || hydratedOwner !== ownerId) return;
+    if (!autosaveEnabled) return;
+    if (draftRepository === null) return;
+    if (autosaveFailedRef.current) return;
+    if (draft === persistedBaselineRef.current) return;
+
+    const targetOwner = ownerId;
+    const timer = setTimeout(() => {
+      enqueueDraftWrite(targetOwner, draft);
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [
+    draft,
+    hydratedOwner,
+    ownerId,
+    autosaveEnabled,
+    draftRepository,
+    enqueueDraftWrite,
+  ]);
 
   // Live clock. The shared model never reads a clock: this screen injects the
   // current time into every timing/rest action, and keeps one render-local
@@ -251,18 +527,22 @@ export default function LogScreen() {
     return () => clearInterval(interval);
   }, [timerRunning, dispatch]);
 
-  // Returning from the background after the interval was suspended: catch the
-  // clock up immediately and settle a rest that elapsed while away, so the cue
-  // fires once without waiting for the next tick.
+  // Backgrounding flushes the pending draft immediately; returning to the
+  // foreground catches the clock up (the interval may have been suspended) and
+  // settles a rest that elapsed while away.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "background" || nextState === "inactive") {
+        flushLatestDraft();
+        return;
+      }
       if (nextState !== "active") return;
       const now = Date.now();
       setNowMs(now);
       dispatch({ type: "tick", nowMs: now });
     });
     return () => subscription.remove();
-  }, [dispatch]);
+  }, [dispatch, flushLatestDraft]);
 
   const translateError = useCallback(
     (cause: unknown): string => {
@@ -283,7 +563,12 @@ export default function LogScreen() {
     stableStringify(buildWorkoutRecord(draft, pendingSave.nowMs)) !==
       stableStringify(pendingSave.record);
 
-  async function persist(record: WorkoutRecord, submittedDraft: SessionDraft): Promise<void> {
+  async function persist(
+    record: WorkoutRecord,
+    submittedDraft: SessionDraft,
+    submittedOwner: string,
+    submittedRevision: number,
+  ): Promise<void> {
     if (repository === null) {
       setSaveError(t(copy.storeNotReady));
       return;
@@ -294,11 +579,26 @@ export default function LogScreen() {
     try {
       const result = await repository.saveWorkout(toSaveInput(record));
       setSuccess(result.created ? "created" : "duplicate");
-      // Reset the editor to an empty shared draft after a successful save, but
-      // keep edits the user made while the write was in flight.
-      setState((current) =>
-        current.draft === submittedDraft ? blankSessionState() : current,
-      );
+      // Clear the saved draft only when this editor still shows the submitted
+      // session for the same owner. Edits during the write (or an owner switch)
+      // leave the newer draft in storage so it can be resumed.
+      const stillCurrent =
+        ownerIdRef.current === submittedOwner &&
+        draftRef.current === submittedDraft &&
+        draftRevisionRef.current === submittedRevision;
+      if (stillCurrent) {
+        const blank = blankSessionState();
+        persistedBaselineRef.current = blank.draft;
+        autosaveFailedRef.current = false;
+        autosaveEnabledRef.current = true;
+        setAutosaveEnabled(true);
+        setState(blank);
+        setRestoredNotice(null);
+        setDiscardedNotice(false);
+        setHasDraft(false);
+        // The record is saved; a failed clear must not turn into a save error.
+        await enqueueDraftClear(submittedOwner).catch(() => undefined);
+      }
       setIssues([]);
       setWarnings([]);
       setPendingSave(null);
@@ -331,11 +631,17 @@ export default function LogScreen() {
 
     if (validated.warnings.length > 0) {
       setWarnings(validated.warnings);
-      setPendingSave({ record: candidate, nowMs, draft });
+      setPendingSave({
+        record: candidate,
+        nowMs,
+        draft,
+        ownerId,
+        draftRevision: draftRevisionRef.current,
+      });
       return;
     }
 
-    void persist(candidate, draft);
+    void persist(candidate, draft, ownerId, draftRevisionRef.current);
   }
 
   function handleConfirmSave(): void {
@@ -347,7 +653,7 @@ export default function LogScreen() {
     }
     const pending = pendingSave;
     setPendingSave(null);
-    void persist(pending.record, pending.draft);
+    void persist(pending.record, pending.draft, pending.ownerId, pending.draftRevision);
   }
 
   function handleRetrySave(): void {
@@ -355,7 +661,7 @@ export default function LogScreen() {
     if (pendingSave !== null && !pendingIsStale) {
       const pending = pendingSave;
       setPendingSave(null);
-      void persist(pending.record, pending.draft);
+      void persist(pending.record, pending.draft, pending.ownerId, pending.draftRevision);
       return;
     }
     handleSubmit();
@@ -372,6 +678,7 @@ export default function LogScreen() {
     // Starting/pausing/resuming/finishing changes the persisted draft timing,
     // so a pending warning confirmation must not survive it.
     clearFeedback();
+    draftRevisionRef.current += 1;
     const now = Date.now();
     setNowMs(now);
     dispatch({ ...action, nowMs: now });
@@ -405,6 +712,59 @@ export default function LogScreen() {
     edit({ type: "setExerciseRestSeconds", exerciseKey, restSeconds });
   }
 
+  /**
+   * Two-step native discard: the button opens one destructive confirmation and
+   * only its confirm action clears storage. This is the only way out of a
+   * corrupted draft, so it is never silent.
+   */
+  function handleDiscardDraft(): void {
+    Alert.alert(t(copy.discardDraft), t(copy.discardConfirm), [
+      { text: t(copy.cancel), style: "cancel" },
+      {
+        text: t(copy.discardDraft),
+        style: "destructive",
+        onPress: () => {
+          void discardDraft();
+        },
+      },
+    ]);
+  }
+
+  async function discardDraft(): Promise<void> {
+    const targetOwner = ownerIdRef.current;
+    const epoch = ownerEpochRef.current;
+    try {
+      // Queue the clear behind any pending autosave so an old write cannot
+      // resurrect the draft after this explicit discard.
+      await enqueueDraftClear(targetOwner);
+    } catch (cause) {
+      if (epoch !== ownerEpochRef.current) return;
+      setDraftProblem({ kind: "save-error", message: messageOf(cause) });
+      return;
+    }
+    if (epoch !== ownerEpochRef.current || targetOwner !== ownerIdRef.current) return;
+    if (!mountedRef.current) return;
+
+    // The row is gone, so the reset is the new baseline: autosave stays quiet
+    // until the user actually edits the fresh draft.
+    const blank = blankSessionState();
+    draftRevisionRef.current += 1;
+    persistedBaselineRef.current = blank.draft;
+    autosaveFailedRef.current = false;
+    autosaveEnabledRef.current = true;
+    setAutosaveEnabled(true);
+    setState(blank);
+    setDraftProblem(null);
+    setRestoredNotice(null);
+    setDiscardedNotice(true);
+    setHasDraft(false);
+    setIssues([]);
+    setWarnings([]);
+    setPendingSave(null);
+    setSaveError(null);
+    setSuccess(null);
+  }
+
   // Duplicate validation-message text is collapsed so a blank set count does
   // not repeat the same sentence once per field.
   const issueLines = [
@@ -416,8 +776,14 @@ export default function LogScreen() {
 
   // A stale pending confirmation can still be submitted: handleSubmit clears it
   // and revalidates the current draft, so the primary Save button must not lock.
+  // Saving also waits for this owner's draft load so a completed session cannot
+  // be written before the restored draft arrives.
+  const draftReady = hydratedOwner === ownerId;
   const canSave =
-    repository !== null && !saving && (pendingSave === null || pendingIsStale);
+    draftReady &&
+    repository !== null &&
+    !saving &&
+    (pendingSave === null || pendingIsStale);
   const storeLoading = dataStatus === "loading";
   const storeFailed = dataStatus === "error";
 
@@ -444,6 +810,46 @@ export default function LogScreen() {
             />
             <Button label={t(copy.retry)} onPress={reload} testID="log-store-retry" />
           </>
+        ) : null}
+
+        {restoredNotice !== null ? (
+          <Banner
+            message={t(restoredNotice === "auto-paused" ? copy.autoPaused : copy.restored)}
+            testID="log-draft-notice"
+          />
+        ) : null}
+
+        {discardedNotice ? (
+          <Banner message={t(copy.draftDiscarded)} testID="log-draft-discarded" />
+        ) : null}
+
+        {draftProblem?.kind === "corrupt" ? (
+          <Banner message={t(copy.draftCorrupt)} testID="log-draft-corrupt" tone="danger" />
+        ) : null}
+
+        {draftProblem?.kind === "read-error" ? (
+          <Banner
+            message={draftProblem.message}
+            testID="log-draft-read-error"
+            tone="danger"
+          />
+        ) : null}
+
+        {draftProblem?.kind === "save-error" ? (
+          <Banner
+            message={t(copy.autosaveFailed, { message: draftProblem.message })}
+            testID="log-draft-save-error"
+            tone="danger"
+          />
+        ) : null}
+
+        {hasDraft ? (
+          <Button
+            label={t(copy.discardDraft)}
+            onPress={handleDiscardDraft}
+            testID="log-discard-draft"
+            variant="secondary"
+          />
         ) : null}
 
         <Card testID="log-timer">
@@ -518,6 +924,16 @@ export default function LogScreen() {
           {rest === null && runtime.restEndedAtMs !== null && !finished ? (
             <Banner message={t(copy.restComplete)} testID="log-rest-complete" />
           ) : null}
+        </Card>
+
+        {/* Display-only tool: its target and bar choice never enter the draft. */}
+        <Card testID="log-tools">
+          <Button
+            label={t(copy.openPlateCalculator)}
+            onPress={() => setPlateCalculatorOpen(true)}
+            testID="log-open-plate"
+            variant="secondary"
+          />
         </Card>
 
         <Field
@@ -886,6 +1302,10 @@ export default function LogScreen() {
           testID="log-submit"
         />
       </Screen>
+      <PlateCalculatorModal
+        onClose={() => setPlateCalculatorOpen(false)}
+        visible={plateCalculatorOpen}
+      />
     </KeyboardAvoidingView>
   );
 }
