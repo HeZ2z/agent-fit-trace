@@ -1,0 +1,22 @@
+{
+  "name": "@agent-fit-trace/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "stdio MCP server exposing the fit-trace tools, read-only resources, and the training-coach prompt.",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "agent-fit-trace-mcp": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@agent-fit-trace/core": "workspace:*",
+    "@agent-fit-trace/store": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  }
+}

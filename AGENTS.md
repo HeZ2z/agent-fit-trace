@@ -17,6 +17,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - `packages/fit-trace-core/` (`@agent-fit-trace/core`) — browser-safe pure TypeScript domain logic and the shared contract (no pi/typebox/Node built-ins). Tests and the app target this.
 - `packages/fit-trace-workout-session/` (`@agent-fit-trace/workout-session`) — browser-safe pure session draft/timing/build/persistence model shared by the web editor and the mobile Log screen (no pi/typebox/React/expo/Node built-ins). Rest is transient runtime state and is never persisted.
 - `packages/fit-trace-api-contracts/` (`@agent-fit-trace/api-contracts`) — the shared app/pi client contract (shapes, errors, contract suite) both clients satisfy.
+- `packages/fit-trace-mcp/` (`@agent-fit-trace/mcp`) — standalone stdio MCP server (`@modelcontextprotocol/sdk`): the four tools, two read-only resources, and the `training-coach` prompt for any MCP host. Default store `$HOME/.fit-trace/workouts.json`, independent of the pi extension's `<cwd>` default; see `docs/mcp.md`.
 - `app/` — React+Vite UI, fixture/client-driven; provider default client is mode-aware (`VITE_FIT_TRACE_MODE=http` → HTTP client, else local).
 - `server/` — loopback dev API (`pnpm dev:api`; in-memory store, clears on restart) that HTTP mode reaches via the Vite `/api` proxy.
 - `.pi/skills/training-coach/SKILL.md` — the Skill; auto-discovered by pi.
@@ -48,4 +49,4 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 
 ## Planned Agent integration
 
-Local coaching through the user's pi CLI IS implemented: the launcher-gated flow runs pi locally over the loopback coaching server. Hosted cloud coaching, and local coaching through the user's Codex or OpenCode CLI, are not implemented. Agent session transport, lifecycle, and shared tool access for those remaining backends remain to be designed and verified. Existing local/HTTP data clients select storage access, not the Agent execution backend.
+Local coaching through the user's pi CLI IS implemented: the launcher-gated flow runs pi locally over the loopback coaching server. Hosted cloud coaching, and local coaching through the user's Codex or OpenCode CLI, are not implemented. Agent session transport, lifecycle, and shared tool access for those remaining backends remain to be designed and verified. Existing local/HTTP data clients select storage access, not the Agent execution backend. A standalone stdio MCP server (`packages/fit-trace-mcp`, issue #27) is also implemented for any MCP host; it mirrors the pi extension's normal-mode tools, is stdio-only, and is not part of the coached pipeline or the runtime registry.
