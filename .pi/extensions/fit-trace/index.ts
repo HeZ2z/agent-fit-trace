@@ -58,7 +58,7 @@ import {
 
 import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
 
-import { JsonFileStorage, WorkoutStore } from "./store.ts";
+import { JsonFileStorage, WorkoutStore } from "@agent-fit-trace/store";
 
 /** Read-only tools exposed to coached runs (shared, browser-safe single source). */
 export { COACHED_TOOL_NAMES };

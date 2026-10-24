@@ -21,6 +21,9 @@ importers:
       '@agent-fit-trace/core':
         specifier: workspace:*
         version: link:packages/fit-trace-core
+      '@agent-fit-trace/store':
+        specifier: workspace:*
+        version: link:packages/fit-trace-store
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
         version: 0.85.1(ws@8.21.3)(zod@3.25.76)
@@ -231,6 +234,12 @@ importers:
   packages/fit-trace-core: {}
 
   packages/fit-trace-i18n:
+    dependencies:
+      '@agent-fit-trace/core':
+        specifier: workspace:*
+        version: link:../fit-trace-core
+
+  packages/fit-trace-store:
     dependencies:
       '@agent-fit-trace/core':
         specifier: workspace:*

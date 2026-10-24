@@ -13,7 +13,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 ## Layout
 
 - `.pi/extensions/fit-trace/index.ts` — the only pi-runtime module; registers the four tools.
-- `.pi/extensions/fit-trace/store.ts` — Node-only JSON persistence, out of the shared core.
+- `packages/fit-trace-store/` (`@agent-fit-trace/store`) — Node-only JSON persistence (atomic file storage + idempotent WorkoutStore), out of the shared core; shared by the pi extension and other Node adapters.
 - `packages/fit-trace-core/` (`@agent-fit-trace/core`) — browser-safe pure TypeScript domain logic and the shared contract (no pi/typebox/Node built-ins). Tests and the app target this.
 - `packages/fit-trace-workout-session/` (`@agent-fit-trace/workout-session`) — browser-safe pure session draft/timing/build/persistence model shared by the web editor and the mobile Log screen (no pi/typebox/React/expo/Node built-ins). Rest is transient runtime state and is never persisted.
 - `packages/fit-trace-api-contracts/` (`@agent-fit-trace/api-contracts`) — the shared app/pi client contract (shapes, errors, contract suite) both clients satisfy.
