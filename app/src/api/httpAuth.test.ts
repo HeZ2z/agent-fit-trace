@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
-import { API_ERROR_CODES, ApiError, buildImportedArtifact } from "@agent-fit-trace/api-contracts";
+import {
+  API_ERROR_CODES,
+  ApiError,
+  buildImportedArtifact,
+  MalformedResponseError,
+} from "@agent-fit-trace/api-contracts";
 import { HttpFitTraceClient } from "./httpFitTraceClient.ts";
 import type { HttpResponseLike } from "./httpFitTraceClient.ts";
 import { fetchPublicConfig } from "./publicConfig.ts";
@@ -232,6 +237,93 @@ describe("fetchPublicConfig", () => {
 
     const empty = (async () => new Response(JSON.stringify({ data: {} }))) as unknown as typeof fetch;
     await expect(fetchPublicConfig("/api/v1", empty)).rejects.toThrow(/supabaseUrl/);
+  });
+
+  it("parses the additive daemon markers strictly and backward compatibly", async () => {
+    // Guest-local daemon: no Supabase project is configured, so the Supabase
+    // fields are legitimately absent and the config boots the local guest.
+    const daemonGuest = (async () =>
+      new Response(
+        JSON.stringify({ data: { daemon: true, auth_configured: false } }),
+      )) as unknown as typeof fetch;
+    expect(await fetchPublicConfig("/api/v1", daemonGuest)).toEqual({
+      supabaseUrl: "",
+      supabasePublishableKey: "",
+      guestSignInEnabled: false,
+      guestUpgradeEnabled: false,
+      guestSignInCaptchaRequired: false,
+      daemon: true,
+      auth_configured: false,
+    });
+
+    // A configured daemon keeps every Supabase field and adds the markers.
+    const daemonConfigured = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            daemon: true,
+            auth_configured: true,
+          },
+        }),
+      )) as unknown as typeof fetch;
+    expect(await fetchPublicConfig("/api/v1", daemonConfigured)).toEqual({
+      supabaseUrl: "http://x",
+      supabasePublishableKey: "pub",
+      guestSignInEnabled: false,
+      guestUpgradeEnabled: false,
+      guestSignInCaptchaRequired: false,
+      daemon: true,
+      auth_configured: true,
+    });
+
+    // Markers must be booleans when present; any other shape is a typed
+    // MalformedResponseError naming the offending field.
+    const malformedDaemon = (async () =>
+      new Response(
+        JSON.stringify({
+          data: { supabaseUrl: "http://x", supabasePublishableKey: "pub", daemon: "yes" },
+        }),
+      )) as unknown as typeof fetch;
+    const daemonError = await fetchPublicConfig("/api/v1", malformedDaemon).catch(
+      (caught: unknown) => caught,
+    );
+    expect(daemonError).toBeInstanceOf(MalformedResponseError);
+    expect(daemonError).toMatchObject({ field: "daemon", code: "MALFORMED_RESPONSE" });
+
+    const malformedAuthConfigured = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            auth_configured: 1,
+          },
+        }),
+      )) as unknown as typeof fetch;
+    const authConfiguredError = await fetchPublicConfig("/api/v1", malformedAuthConfigured).catch(
+      (caught: unknown) => caught,
+    );
+    expect(authConfiguredError).toBeInstanceOf(MalformedResponseError);
+    expect(authConfiguredError).toMatchObject({ field: "auth_configured" });
+
+    // A guest-local daemon still rejects malformed capability flags.
+    const malformedGuestFlag = (async () =>
+      new Response(
+        JSON.stringify({
+          data: { daemon: true, auth_configured: false, guestSignInEnabled: "yes" },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", malformedGuestFlag)).rejects.toThrow(
+      /guestSignInEnabled/,
+    );
+
+    // Without the guest-local marker pair, missing Supabase fields still fail
+    // closed exactly as before (Vercel/launcher payloads unchanged).
+    const daemonWithoutAuth = (async () =>
+      new Response(JSON.stringify({ data: { daemon: true } }))) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", daemonWithoutAuth)).rejects.toThrow(/supabaseUrl/);
   });
 
   it("rejects secret-looking keys instead of publishing them", async () => {
