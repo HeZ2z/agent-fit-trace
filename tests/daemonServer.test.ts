@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,8 +71,71 @@ async function bootDaemon(overrides: Partial<DaemonServerOptions> = {}): Promise
   return { daemon, dataDir };
 }
 
+// --- local fake Supabase Auth (for the configured-login suite below) ---
+
+/** Stable users the fake resolves, keyed by magic bearer token. */
+const FAKE_AUTH_USERS: Record<string, { id: string; email: string; is_anonymous: boolean }> = {
+  "good-alice-token": {
+    id: "11111111-1111-4111-8111-111111111111",
+    email: "alice@example.test",
+    is_anonymous: false,
+  },
+  "good-bob-token": {
+    id: "22222222-2222-4222-8222-222222222222",
+    email: "bob@example.test",
+    is_anonymous: false,
+  },
+};
+
+interface FakeSupabaseAuth {
+  url: string;
+  close(): Promise<void>;
+}
+
+/**
+ * Minimal fake Supabase Auth server: `GET /auth/v1/user` with `apikey` and
+ * `Authorization: Bearer <token>` headers — the exact request shape
+ * `supabaseVerifier.ts` issues. Magic tokens resolve to the user payload the
+ * verifier parses (`id`, `email`, `is_anonymous`); anything else gets a 401,
+ * which the verifier maps to `UNAUTHENTICATED`.
+ */
+function startFakeSupabaseAuth(): Promise<FakeSupabaseAuth> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((request, response) => {
+      const { pathname } = new URL(request.url ?? "/", "http://127.0.0.1");
+      const bearer = /^Bearer (.+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "";
+      const user = FAKE_AUTH_USERS[bearer];
+      if (pathname !== "/auth/v1/user" || user === undefined) {
+        response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ code: 401, error_code: "bad_jwt", msg: "Invalid token" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(user));
+    });
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        reject(new Error("fake auth server did not bind a TCP port"));
+        return;
+      }
+      resolve({
+        url: `http://127.0.0.1:${address.port}`,
+        close: () =>
+          new Promise((resolveClose, rejectClose) => {
+            server.closeAllConnections();
+            server.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
+          }),
+      });
+    });
+  });
+}
+
 let shared: BootedDaemon | null = null;
 let shellDist: string | null = null;
+let fakeAuth: FakeSupabaseAuth | null = null;
+let configured: BootedDaemon | null = null;
 const tempDirs: string[] = [];
 
 before(async () => {
@@ -79,9 +143,23 @@ before(async () => {
   tempDirs.push(shared.dataDir);
   shellDist = await makeShellDist();
   tempDirs.push(shellDist);
+  fakeAuth = await startFakeSupabaseAuth();
+  configured = await bootDaemon({
+    env: {
+      SUPABASE_URL: fakeAuth.url,
+      // Publishable-key shaped: passes getPublicConfig's URL/key checks and
+      // is rejected by neither the `sb_secret_` nor the service-role JWT rule.
+      SUPABASE_PUBLISHABLE_KEY: "test-publishable-key",
+    },
+  });
+  tempDirs.push(configured.dataDir);
 });
 
 after(async () => {
+  await configured?.daemon.close().catch(() => undefined);
+  configured = null;
+  await fakeAuth?.close().catch(() => undefined);
+  fakeAuth = null;
   await shared?.daemon.close().catch(() => undefined);
   shared = null;
   for (const dir of tempDirs.splice(0)) {
@@ -161,6 +239,100 @@ test("startup records the guest identity for followers", async () => {
   ) as { schema_version: number; active_principal: string };
   assert.equal(identity.schema_version, 1);
   assert.equal(identity.active_principal, "guest");
+});
+
+// --- configured Supabase login (local fake auth server) ---
+
+test("public-config advertises the configured Supabase project", async () => {
+  assert.ok(configured !== null);
+  assert.ok(fakeAuth !== null);
+  const response = await fetch(`${configured.daemon.url}/api/v1/public-config`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    data: {
+      supabaseUrl: fakeAuth.url,
+      supabasePublishableKey: "test-publishable-key",
+      guestSignInEnabled: false,
+      guestUpgradeEnabled: false,
+      guestSignInCaptchaRequired: false,
+      daemon: true,
+      auth_configured: true,
+    },
+  });
+});
+
+test("the guest bearer still short-circuits to the guest db while Supabase is configured", async () => {
+  assert.ok(configured !== null);
+  const record = seedRecord({ id: "daemon-w-guest-configured", date: "2026-09-03" });
+  const created = await fetch(`${configured.daemon.url}/api/v1/workouts`, {
+    method: "POST",
+    headers: { authorization: GUEST_AUTH, "content-type": "application/json" },
+    body: JSON.stringify({ record }),
+  });
+  assert.equal(created.status, 201);
+
+  // The local bearer never reaches the Supabase delegation: the record is
+  // durable in the guest principal's own SQLite file.
+  const dbStat = await stat(join(configured.dataDir, "guest.db"));
+  assert.equal(dbStat.isFile(), true);
+});
+
+test("magic tokens resolve distinct Supabase principals with isolated stores", async () => {
+  assert.ok(configured !== null);
+  const alice = FAKE_AUTH_USERS["good-alice-token"] as { id: string; email: string };
+  const bob = FAKE_AUTH_USERS["good-bob-token"] as { id: string; email: string };
+
+  // The SAME business id with different content lands in each principal's
+  // own store: no cross-principal CONFLICT, no cross-principal visibility.
+  const aliceCreated = await fetch(`${configured.daemon.url}/api/v1/workouts`, {
+    method: "POST",
+    headers: { authorization: "Bearer good-alice-token", "content-type": "application/json" },
+    body: JSON.stringify({ record: seedRecord({ id: "daemon-w-shared", date: "2026-09-01" }) }),
+  });
+  assert.equal(aliceCreated.status, 201);
+  const bobCreated = await fetch(`${configured.daemon.url}/api/v1/workouts`, {
+    method: "POST",
+    headers: { authorization: "Bearer good-bob-token", "content-type": "application/json" },
+    body: JSON.stringify({ record: seedRecord({ id: "daemon-w-shared", date: "2026-09-02" }) }),
+  });
+  assert.equal(bobCreated.status, 201);
+
+  const aliceList = await fetch(`${configured.daemon.url}/api/v1/workouts`, {
+    headers: { authorization: "Bearer good-alice-token" },
+  });
+  assert.equal(aliceList.status, 200);
+  const aliceData = (await aliceList.json()) as { data: WorkoutRecord[] };
+  assert.deepEqual(
+    aliceData.data.map((entry) => [entry.id, entry.date]),
+    [["daemon-w-shared", "2026-09-01"]],
+  );
+
+  const bobList = await fetch(`${configured.daemon.url}/api/v1/workouts`, {
+    headers: { authorization: "Bearer good-bob-token" },
+  });
+  assert.equal(bobList.status, 200);
+  const bobData = (await bobList.json()) as { data: WorkoutRecord[] };
+  assert.deepEqual(
+    bobData.data.map((entry) => [entry.id, entry.date]),
+    [["daemon-w-shared", "2026-09-02"]],
+  );
+
+  // Each verified principal maps to `<dataDir>/<sub>.db` (principalDbPath).
+  const aliceDb = await stat(join(configured.dataDir, `${alice.id}.db`));
+  const bobDb = await stat(join(configured.dataDir, `${bob.id}.db`));
+  assert.equal(aliceDb.isFile(), true);
+  assert.equal(bobDb.isFile(), true);
+});
+
+test("a bearer the configured Supabase project rejects fails closed with UNAUTHENTICATED", async () => {
+  assert.ok(configured !== null);
+  const response = await fetch(`${configured.daemon.url}/api/v1/workouts`, {
+    headers: { authorization: "Bearer not-a-magic-token" },
+  });
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get("www-authenticate"), "Bearer");
+  const body = (await response.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "UNAUTHENTICATED");
 });
 
 // --- optional app shell ---
