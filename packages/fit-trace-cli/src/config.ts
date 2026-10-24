@@ -21,6 +21,8 @@ export interface LauncherFlags {
   upstream?: string;
   dist?: string;
   runtime?: string;
+  /** `daemon` only: data directory. `start` never reads it. */
+  data?: string;
 }
 
 export interface ResolvedLauncherConfig {

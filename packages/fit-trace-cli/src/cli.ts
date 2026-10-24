@@ -15,17 +15,28 @@ import { dirname, resolve } from "node:path";
 import { BIND_HOST, checkNodeRuntime, checkPiCli, isSafeOpenUrl, resolveLauncherConfig } from "./config.ts";
 import type { LauncherFlags } from "./config.ts";
 import { startLauncherServer } from "./launcherServer.ts";
+import { startDaemonServer } from "./daemonServer.ts";
+import { resolveDataDir } from "@agent-fit-trace/store";
 
 function printUsage(): void {
   console.log(
     [
-      "Usage: agent-fit-trace start [--port N] [--no-open] [--upstream URL] [--dist PATH] [--runtime ID]",
+      "Usage:",
+      "  agent-fit-trace start [--port N] [--no-open] [--upstream URL] [--dist PATH] [--runtime ID]",
+      "  agent-fit-trace daemon [--port N] [--data PATH] [--dist PATH]",
       "",
+      "start (fixed upstream composite):",
       "  --port N       preferred loopback port (default 5198, falls forward when busy)",
       "  --no-open      do not try to open a browser (for tests/headless)",
       "  --upstream URL fixed authenticated API base (default $FIT_TRACE_API_BASE_URL)",
       "  --dist PATH    built app directory (default <repo>/app/dist)",
       "  --runtime ID   local coaching runtime: pi (default), codex, or opencode",
+      "",
+      "daemon (standalone local data plane):",
+      "  --port N       preferred loopback port (default 5199, falls forward when busy)",
+      "  --data PATH    data directory (default $FIT_TRACE_DATA_DIR or ~/.fit-trace/data)",
+      "  --dist PATH    built app shell directory (default <repo>/app/dist; the shell is",
+      "                 served only when a build exists — headless data plane works without)",
     ].join("\n"),
   );
 }
@@ -53,6 +64,9 @@ function parseArgs(argv: string[]): { command: string; flags: LauncherFlags } {
       index += 1;
     } else if (token === "--dist") {
       flags.dist = takeValue(argv, index + 1, "--dist");
+      index += 1;
+    } else if (token === "--data") {
+      flags.data = takeValue(argv, index + 1, "--data");
       index += 1;
     } else if (token === "--runtime") {
       flags.runtime = takeValue(argv, index + 1, "--runtime");
@@ -89,8 +103,51 @@ function tryOpenBrowser(url: string): void {
   }
 }
 
+/** `agent-fit-trace daemon`: resident local data plane (no browser open). */
+async function runDaemon(flags: LauncherFlags): Promise<void> {
+  checkNodeRuntime();
+  const dataDir = flags.data ?? resolveDataDir(process.env);
+
+  const pi = await checkPiCli();
+  if (pi.available) {
+    console.log(`pi CLI detected${pi.version === null ? "" : `: ${pi.version}`}`);
+  } else {
+    console.log(
+      "pi CLI not found on PATH — workout tracking works; coaching runs report unconfigured until pi is installed.",
+    );
+  }
+
+  const server = await startDaemonServer({
+    ...(flags.port !== undefined ? { port: flags.port } : {}),
+    dataDir,
+    ...(flags.dist !== undefined ? { distDir: flags.dist } : {}),
+    piAvailable: pi.available,
+  });
+  console.log(`fit-trace daemon listening at ${server.url}`);
+  console.log(`data directory: ${server.dataDir}`);
+
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) {
+      process.exit(1);
+    }
+    shuttingDown = true;
+    void server.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+    void signal;
+  };
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+}
+
 async function main(): Promise<void> {
   const { command, flags } = parseArgs(process.argv.slice(2));
+  if (command === "daemon") {
+    await runDaemon(flags);
+    return;
+  }
   if (command !== "start") {
     printUsage();
     process.exit(command === "" ? 0 : 2);

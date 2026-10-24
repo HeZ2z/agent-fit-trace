@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@agent-fit-trace/api-contracts": "workspace:*",
-    "@agent-fit-trace/core": "workspace:*"
+    "@agent-fit-trace/core": "workspace:*",
+    "@agent-fit-trace/store": "workspace:*"
   }
 }
