@@ -215,17 +215,22 @@ function formatElapsed(ms: number): string {
 /** Compact numeric summary; the reference layout shows totals above the rows. */
 function summarizeSets(
   sets: SessionDraft["exercises"][number]["sets"],
-): { reps: number; volume: number } {
+): { sets: number; reps: number; volume: number } {
+  let includedSets = 0;
   let reps = 0;
   let volume = 0;
   for (const set of sets) {
+    // The reducer appends an unchecked prefilled "next set" after a check-off.
+    // The save build excludes it, so the live totals must exclude it too.
+    if (set.prefilled && !set.done) continue;
+    includedSets += 1;
     const setReps = Number(set.reps);
     const setWeight = Number(set.weight);
     if (!Number.isFinite(setReps) || setReps <= 0) continue;
     reps += setReps;
     if (Number.isFinite(setWeight) && setWeight > 0) volume += setReps * setWeight;
   }
-  return { reps, volume };
+  return { sets: includedSets, reps, volume };
 }
 
 function formatSummaryNumber(value: number): string {
@@ -1088,7 +1093,7 @@ export default function LogScreen() {
           const exerciseLabel = t(copy.exercise, { index: exerciseIndex + 1 });
           const totals = summarizeSets(exercise.sets);
           const summary = t(copy.setSummary, {
-            sets: exercise.sets.length,
+            sets: totals.sets,
             reps: formatSummaryNumber(totals.reps),
             volume: formatSummaryNumber(totals.volume),
           });

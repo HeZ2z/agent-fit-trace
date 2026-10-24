@@ -210,7 +210,8 @@ untimed, sleep, notes and multiple pain reports), and the same reducer drives
 Start/Pause/Resume/Finish timing with an injected clock, per-set check-off, a
 rest countdown with ±15 s/Skip, and prefilled next sets. Each set is one compact
 row — set number, kg, reps, RPE, completion check, and an options menu — and the
-exercise header summarizes total sets, reps and volume. The web editor keeps its
+exercise header summarizes the performed sets, reps and volume; an unchecked
+prefilled next set is excluded, matching the save build. The web editor keeps its
 larger labelled field groups; this is a mobile layout choice, not a data-model
 divergence. Draft persistence follows the signed-in owner (or the local guest) as
 described under [Session draft](#session-draft).

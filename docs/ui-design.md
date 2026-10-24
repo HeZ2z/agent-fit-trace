@@ -223,9 +223,9 @@ injects the clock.
   **Duration (minutes)** field is hidden while timed, where duration is derived.
 - **Mobile parity is implemented (PR4).** The React Native Log screen reuses the
   same model and behavior, with compact per-set rows (set number, kg, reps, RPE,
-  check, options) and an exercise-level sets/reps/volume summary instead of the
-  web's larger labelled field groups; this section documents the web rendering
-  only.
+  check, options) and an exercise-level sets/reps/volume summary that excludes
+  unchecked suggested sets, instead of the web's larger labelled field groups;
+  this section documents the web rendering only.
 
 ## Interface language
 
