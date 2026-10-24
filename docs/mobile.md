@@ -562,10 +562,13 @@ not live service checks.
   per-set check-off and options-menu removal, rest countdown with −15 s/+15 s
   and Rest complete, draft restore/auto-pause after a force-stop, save (History
   showed one set, five reps, 100 kg), draft clearing after save, the native
-  discard confirmation, and the absence of the removed plate tool. Haptics and
-  audio were not objectively measured (the rest-complete cue did not crash the
-  bundle), and this is not the installed preview APK or a native dev-client
-  build. The pure session model and SQLite row mapping are covered by the root
+  discard confirmation, and the absence of the removed plate tool. An EAS preview
+  APK (build `913004c9`, `versionName` 0.1.0) was also built and installed with
+  `adb`; it launched standalone, preserved existing local data, and repeated the
+  compact-row, live-rest, rest-complete and save/history flows. Haptics and audio
+  were not objectively measured (the rest-complete cue did not crash either
+  bundle), there is no native dev-client build, and this is not a full device
+  matrix. The pure session model and SQLite row mapping are covered by the root
   `node:test` suites, which never load expo.
 - **No local import/export parity.** The store has no import/export screen or file
   path yet, and plan application/adoption is not implemented; Plan remains a

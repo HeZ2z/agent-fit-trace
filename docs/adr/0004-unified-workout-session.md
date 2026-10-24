@@ -270,12 +270,12 @@ payload.
   gap, but it was not judged worth the complexity now.
 - The rest countdown is lost on restart by design.
 - The mobile Log screen now shares the live session and draft lifecycle. A
-  limited 2026-10-24 smoke on a V2199A (Android 14) through Expo Go 58.0.4
-  verified timing controls, per-set check-off, rest adjustment and completion,
+  limited 2026-10-24 smoke on a V2199A (Android 14) through Expo Go 58.0.4, plus
+  an EAS preview APK (build `913004c9`) installed with `adb`, verified timing
+  controls, compact set rows, per-set check-off, rest adjustment and completion,
   draft restore/auto-pause after a force-stop, save/clear, and the native discard
-  confirmation. Haptics/audio were not objectively measured, and the installed
-  preview APK/dev-client build was not exercised; this is not a full device
-  matrix and there is no recorded visual comparison against the design.
+  confirmation. Haptics/audio were not objectively measured, and this is not a
+  full device matrix or a visual comparison against the design.
 - Owner-scoped drafts are not explicitly deleted on sign-out or account switch:
   the previous owner's key or `session_draft` row becomes unreachable but stays
   on disk. This matches the web PR3 behavior and is an accepted privacy tradeoff
