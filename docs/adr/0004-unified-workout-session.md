@@ -1,9 +1,8 @@
 # ADR 0004: One workout session draft for retro and live logging
 
-- **Status:** Accepted. Implemented in PRs 1–4: the shared model, the core plate
-  math, the web editor's live session, and the mobile Log screen's unified
-  editor with its owner-scoped SQLite draft, `expo-audio` rest cue and plate
-  calculator.
+- **Status:** Accepted. Implemented in PRs 1–4: the shared model, the web
+  editor's live session, and the mobile Log screen's unified editor with its
+  owner-scoped SQLite draft and `expo-audio` rest cue.
 - **Date:** 2026-10-23
 - **Scope:** issue #24. The unified `SessionDraft`, optional live timing, transient
   rest, the shared `@agent-fit-trace/workout-session` package, and the draft
@@ -115,7 +114,7 @@ only in memory. The persisted per-exercise `restSeconds` is configuration
 - Unchecking a set, removing its exercise/set, or finishing the session clears a
   referencing rest without a cue.
 
-### 4. Shared pure package, with plate math in core
+### 4. Shared pure package
 
 `packages/fit-trace-workout-session/` (`@agent-fit-trace/workout-session`) owns
 types, draft constructors, the action union, the reducer, timing, the rest
@@ -134,10 +133,6 @@ The session package bridges to the core rather than reimplementing validation:
 `buildWorkoutRecord` maps draft strings to a `WorkoutRecord`,
 `validateSessionDraft` calls core `validateWorkoutRecord`, and `toSaveInput`
 strips the validation placeholder id so repositories derive the content id.
-
-Barbell plate-loading math lives in `packages/fit-trace-core/src/plates.ts`, not
-in the session package. It is shared domain math used by both editors and has no
-dependency on sessions, timing, or persistence.
 
 ### 5. Per-client async persistence boundaries
 
@@ -168,8 +163,7 @@ Only the draft is serialized, as canonical JSON via core `stableStringify`.
   surface a non-blocking banner. A successful workout save clears the draft
   before navigating. Logout or an account switch makes the previous owner's key
   unreachable; explicit deletion of that key is **not** implemented — the
-  owner-scoped namespace hides it instead. Plate-calculator input and results are
-  display-only and never persisted.
+  owner-scoped namespace hides it instead.
 - One unfinished draft at a time. A successful save clears it. Drafts stay on
   the device: they are not synced or exported, and logout or account switching
   changes the addressed owner key or row (no explicit deletion; the old value
@@ -275,12 +269,13 @@ payload.
   undercounts the time the app was closed. A future heartbeat could narrow the
   gap, but it was not judged worth the complexity now.
 - The rest countdown is lost on restart by design.
-- The mobile Log screen now shares the live session and draft lifecycle, but its
-  native pieces — SQLite autosave, the native `Alert` discard, the plate `Modal`,
-  haptics and audio — have been verified only by typecheck and Android bundle
-  export, not on a device. Neither client's plate dialog has a full focus trap,
-  and there is no recorded device or browser visual verification for the mobile
-  live/draft/plate flow.
+- The mobile Log screen now shares the live session and draft lifecycle. A
+  limited 2026-10-24 smoke on a V2199A (Android 14) through Expo Go 58.0.4
+  verified timing controls, per-set check-off, rest adjustment and completion,
+  draft restore/auto-pause after a force-stop, save/clear, and the native discard
+  confirmation. Haptics/audio were not objectively measured, and the installed
+  preview APK/dev-client build was not exercised; this is not a full device
+  matrix and there is no recorded visual comparison against the design.
 - Owner-scoped drafts are not explicitly deleted on sign-out or account switch:
   the previous owner's key or `session_draft` row becomes unreachable but stays
   on disk. This matches the web PR3 behavior and is an accepted privacy tradeoff
@@ -294,19 +289,18 @@ payload.
 ## Follow-ups
 
 - **PR1:** implemented. The shared package (types, reducer, timing/runtime,
-  build/validation, persistence payload), the core plate math, tests, and this
-  ADR. No UI changes.
+  build/validation, persistence payload), tests, and this ADR. No UI changes.
 - **PR2 — `feat/24-web-session-model`:** implemented. Moved the web editor onto
   the shared model with behavior and existing tests preserved, and deleted its
   local key allocation.
 - **PR3 — `feat/24-web-live-session`:** implemented. Added the web timing bar,
-  per-set checkboxes, rest bar, plate calculator, owner-scoped draft
-  restore/autosave/discard, sound/vibration, and the shared i18n slice.
+  per-set checkboxes, rest bar, owner-scoped draft restore/autosave/discard,
+  sound/vibration, and the shared i18n slice.
 - **PR4 — `feat/24-mobile-unified-session`:** implemented. Rewrote the mobile Log
   editor on the shared model with live timing, rest, per-set check-off, native
   haptics and the bundled `expo-audio` cue; added the owner-scoped SQLite
-  `session_draft` migration v2 with restore/autosave/discard and the
-  display-only plate calculator; removed `mobile/src/data/logModel.ts`.
+  `session_draft` migration v2 with restore/autosave/discard; removed
+  `mobile/src/data/logModel.ts`.
 - **Docs-only stage:** [`../mobile.md`](../mobile.md) and
   [`../ui-design.md`](../ui-design.md) record the PR4 implementation (status,
   data model, live session, known gaps); it changes no behavior.

@@ -2,15 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  BAR_WEIGHTS_KG,
-  DEFAULT_BAR_WEIGHT_KG,
   EXTREME_RPE,
   SESSION_TYPES,
-  computePlateBreakdown,
   stableStringify,
 } from "@agent-fit-trace/core";
 import type {
-  PlateBreakdown,
   SessionType,
   ValidationIssue,
   ValidationWarning,
@@ -85,45 +81,6 @@ const REST_ADJUST_MS = 15_000;
 
 /** Ticker cadence for the elapsed display and rest settlement. */
 const LIVE_TICK_MS = 250;
-
-/**
- * Plate-calculator outcome. Failures carry the exact English source string from
- * the shared dictionary so the dialog translates them at render time.
- */
-type PlateCalculation =
-  | { ok: true; breakdown: PlateBreakdown }
-  | { ok: false; message: string };
-
-/**
- * Compute a per-side plate load for a typed target.
- *
- * Blank and non-numeric input is "not a weight yet"; a finite target lighter
- * than the bar is rejected by core's `RangeError`, which the dialog maps to its
- * own message. Any other error is a programming bug and propagates.
- */
-function calculatePlates(targetRaw: string, barKg: number): PlateCalculation {
-  const trimmed = targetRaw.trim();
-  if (trimmed === "") {
-    return { ok: false, message: "Enter a valid target weight." };
-  }
-  const targetKg = Number(trimmed);
-  if (!Number.isFinite(targetKg) || targetKg <= 0) {
-    return { ok: false, message: "Enter a valid target weight." };
-  }
-  try {
-    return { ok: true, breakdown: computePlateBreakdown(targetKg, { barKg }) };
-  } catch (error) {
-    if (error instanceof RangeError) {
-      return { ok: false, message: "Target weight must be at least the bar weight." };
-    }
-    throw error;
-  }
-}
-
-/** Trim a kilogram amount to at most two decimals for display. */
-function formatKg(value: number): string {
-  return String(Math.round(value * 100) / 100);
-}
 
 /**
  * A record captured for the warning confirmation, plus the clock used to build
@@ -254,11 +211,6 @@ export function WorkoutEditorScreen() {
   );
   const [discardConfirming, setDiscardConfirming] = useState(false);
   const [discardedNotice, setDiscardedNotice] = useState(false);
-  // The plate calculator is a display-only tool: its target/bar/result never
-  // touch the draft, so nothing here is autosaved.
-  const [plateCalculatorOpen, setPlateCalculatorOpen] = useState(false);
-  const [plateTarget, setPlateTarget] = useState("");
-  const [plateBarKg, setPlateBarKg] = useState<number>(DEFAULT_BAR_WEIGHT_KG);
   // Autosave writes only drafts that differ from the last known-persisted (or
   // intentionally unpersisted) baseline. Because the check is value-identity
   // based, mounting, StrictMode's double effect run, and the post-discard reset
@@ -299,7 +251,6 @@ export function WorkoutEditorScreen() {
   const elapsed = elapsedMs(draft, nowMs);
   const rest = runtime.rest;
   const restRemaining = rest === null ? null : restRemainingMs(rest, nowMs);
-  const plateResult = calculatePlates(plateTarget, plateBarKg);
 
   // The cue plays on the null -> number transition, so a settled rest is
   // announced exactly once. Starting a new rest clears the cue back to null,
@@ -343,17 +294,6 @@ export function WorkoutEditorScreen() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [dispatch]);
-
-  // Escape closes the plate calculator. The overlay is an ordinary div (never
-  // the native <dialog>) so jsdom and older browsers behave predictably.
-  useEffect(() => {
-    if (!plateCalculatorOpen) return;
-    function handleKeyDown(event: KeyboardEvent): void {
-      if (event.key === "Escape") setPlateCalculatorOpen(false);
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [plateCalculatorOpen]);
 
   /** Dispatch a timing transition with a fresh injected clock. */
   function dispatchTimed(
@@ -666,13 +606,6 @@ export function WorkoutEditorScreen() {
           </p>
         )}
       </section>
-
-      {/* A display-only tool: its state is never part of the draft payload. */}
-      <div className="session-tools">
-        <button type="button" onClick={() => setPlateCalculatorOpen(true)}>
-          {t("Open plate calculator")}
-        </button>
-      </div>
 
       {saveError !== null && (
         <div role="alert" className="validation-summary" data-testid="save-error">
@@ -1067,86 +1000,6 @@ export function WorkoutEditorScreen() {
           {t("Save workout")}
         </button>
       </form>
-
-      {plateCalculatorOpen && (
-        <div
-          className="plate-overlay"
-          data-testid="plate-overlay"
-          // Plain overlay rather than <dialog>: jsdom support for the native
-          // element and its modal behavior is unreliable.
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setPlateCalculatorOpen(false);
-          }}
-        >
-          <div
-            className="plate-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="plate-dialog-title"
-            data-testid="plate-dialog"
-          >
-            <h2 id="plate-dialog-title">{t("Plate calculator")}</h2>
-
-            <div className="field">
-              <label htmlFor="plate-target-weight">{t("Target weight (kg)")}</label>
-              <input
-                id="plate-target-weight"
-                type="number"
-                inputMode="decimal"
-                step="any"
-                min="0"
-                value={plateTarget}
-                autoFocus
-                onChange={(event) => setPlateTarget(event.target.value)}
-              />
-            </div>
-
-            <div className="field">
-              <label htmlFor="plate-bar-weight">{t("Bar weight (kg)")}</label>
-              <select
-                id="plate-bar-weight"
-                value={plateBarKg}
-                onChange={(event) => setPlateBarKg(Number(event.target.value))}
-              >
-                {BAR_WEIGHTS_KG.map((barKg) => (
-                  <option key={barKg} value={barKg}>
-                    {barKg} kg
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {plateResult.ok ? (
-              <>
-                <h3>{t("Plates per side")}</h3>
-                <ul className="plate-list" data-testid="plate-list">
-                  {plateResult.breakdown.plates.map((plate) => (
-                    <li key={plate.plateKg} className="plate-row">
-                      {plate.plateKg} kg × {plate.count}
-                    </li>
-                  ))}
-                </ul>
-                <p className="plate-summary" data-testid="plate-loaded">
-                  {t("Loaded weight")}:{" "}
-                  <strong>{formatKg(plateResult.breakdown.loadedKg)} kg</strong>
-                </p>
-                <p className="plate-summary" data-testid="plate-remainder">
-                  {t("Remainder")}:{" "}
-                  <strong>{formatKg(plateResult.breakdown.remainderKg)} kg</strong>
-                </p>
-              </>
-            ) : (
-              <p role="alert" className="plate-error" data-testid="plate-error">
-                {t(plateResult.message)}
-              </p>
-            )}
-
-            <button type="button" onClick={() => setPlateCalculatorOpen(false)}>
-              {t("Close")}
-            </button>
-          </div>
-        </div>
-      )}
     </section>
   );
 }

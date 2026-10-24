@@ -212,13 +212,6 @@ injects the clock.
   rest settles it announces **Rest complete** through `role="status"`; skipping
   or finishing clears it without a cue. The rest-ended cue is best-effort Web
   Audio plus vibration and degrades silently.
-- **Plate calculator.** **Open plate calculator** opens an ordinary overlay +
-  card (`role="dialog"`, `aria-modal="true"`, labelled by its heading) rather
-  than the native `<dialog>` element. It takes a target weight and a 20/15 kg
-  bar, and shows plates per side heaviest-first, loaded weight and remainder
-  from the shared core plate math. Invalid input uses the existing validation
-  copy; an exact bar-only target renders an empty plate list rather than
-  invented copy. **Close** and `Escape` dismiss it.
 - **Draft restore and discard.** One owner-scoped draft is stored locally and
   loaded before the first render. A restore shows **Unfinished session restored.**;
   an active timing is auto-paused at its last confirmed activity and shows
@@ -230,9 +223,8 @@ injects the clock.
   **Duration (minutes)** field is hidden while timed, where duration is derived.
 - **Mobile parity is implemented (PR4).** The React Native Log screen reuses the
   same model, copy and behavior — timing/rest controls, per-set check-off,
-  owner-scoped draft restore/autosave/discard, best-effort haptics plus the
-  bundled rest cue, and the plate-calculator modal; this section documents the
-  web rendering only.
+  owner-scoped draft restore/autosave/discard, and best-effort haptics plus the
+  bundled rest cue; this section documents the web rendering only.
 
 ## Interface language
 

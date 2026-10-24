@@ -3,8 +3,8 @@
  *
  * Keys are the exact English source strings used by the web editor and the
  * React Native Log screen for the shared session capabilities: the timing bar,
- * per-set completion, per-exercise rest, the rest countdown, the plate
- * calculator, and draft restore/autosave banners. Values are Simplified
+ * per-set completion, per-exercise rest, the rest countdown, and draft
+ * restore/autosave banners. Values are Simplified
  * Chinese; an entry that is missing falls back to English, so this table is
  * safe to extend in slices.
  *
@@ -38,18 +38,6 @@ export const messages: Record<string, string> = {
   "Add 15 seconds": "增加 15 秒",
   "Subtract 15 seconds": "减少 15 秒",
   "Rest complete": "休息结束",
-
-  /* ── Plate calculator ────────────────────────────────────────── */
-  "Open plate calculator": "打开杠铃片计算器",
-  "Plate calculator": "杠铃片计算器",
-  "Target weight (kg)": "目标重量（kg）",
-  "Bar weight (kg)": "杠铃重量（kg）",
-  "Plates per side": "每侧杠铃片",
-  "Loaded weight": "已加载重量",
-  Remainder: "余量",
-  Close: "关闭",
-  "Enter a valid target weight.": "请输入有效的目标重量。",
-  "Target weight must be at least the bar weight.": "目标重量不能小于杠铃重量。",
 
   /* ── Draft restore / autosave / discard banners ──────────────── */
   "Unfinished session restored.": "已恢复未完成的训练。",

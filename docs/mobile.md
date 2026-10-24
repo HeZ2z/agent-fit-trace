@@ -20,7 +20,7 @@ not written. Android is the only configured native target.
 | --- | --- | --- |
 | App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; six-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
 | Local data | SQLite workout store plus the owner-scoped `session_draft` table (migration v2), migrations, validation on read and write; History, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
-| Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, per-set check-off, per-exercise rest, plate calculator, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
+| Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, per-set check-off, per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
 | Account preferences | Skin and language mirrored to Supabase `user_metadata`; account wins on sign-in; write-through while signed in | — |
 | Sync | Manual workout pull/push, content-ID idempotency and three device-only conflict choices | Background sync; persistent conflict acknowledgement |
@@ -40,8 +40,8 @@ Core owns domain logic, `api-contracts` record and transport shapes, and
 `ui-tokens` visual values; `@agent-fit-trace/i18n` owns the render-time dictionary.
 Presentation lives in `mobile/src/app` and `mobile/src/ui`. The adapters are
 split by concern: `mobile/src/data` owns the SQLite store and the session-draft
-repository, `mobile/src/workout` owns the native live-feedback adapters and the
-plate-calculator modal, `mobile/src/auth` owns identity,
+repository, `mobile/src/workout` owns the native live-feedback adapters,
+`mobile/src/auth` owns identity,
 `mobile/src/preferences` reconciles account metadata, `mobile/src/sync` owns
 manual workout sync and `mobile/src/coach` owns hosted coaching. The app embeds no
 Node runtime, CLI launcher or local coach process and never receives a
@@ -56,7 +56,7 @@ service-role key; privileged work stays on the server and worker in
 | `mobile/src/theme/` | Implemented | Shared tokens; AsyncStorage-backed skin state |
 | `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, ExerciseNameField, Banner, EmptyState, Screen, text |
 | `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, session-draft repository and row mapping, analysis/plan models |
-| `mobile/src/workout/` | Implemented | Native live feedback (haptics, bundled `expo-audio` rest cue) and the display-only plate-calculator modal |
+| `mobile/src/workout/` | Implemented | Native live feedback (haptics and the bundled `expo-audio` rest cue) |
 | `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session and auth provider |
 | `mobile/src/preferences/` | Implemented | Account skin/language reconciliation provider |
 | `mobile/src/sync/` | Implemented | Sync config, client, pure plan, runner and conflict/apply model |
@@ -210,7 +210,7 @@ untimed, sleep, notes and multiple pain reports), and the same reducer drives
 Start/Pause/Resume/Finish timing with an injected clock, per-set check-off, a
 rest countdown with ±15 s/Skip, and prefilled next sets. Draft persistence follows
 the signed-in owner (or the local guest) as described under [Session
-draft](#session-draft); the plate calculator is display-only and never saved.
+draft](#session-draft).
 
 Feedback is best effort. Per-set completion and rest-ended haptics use
 `expo-haptics`, and rest-ended replays a bundled ~200 ms WAV through
@@ -543,20 +543,25 @@ store release; there is no iOS build configuration or verification yet.
 
 The ten mobile model suites pass with 141 tests: store 11, session draft 10,
 analysis 8, plan 6, auth 12, preferences 9, sync 16, sync apply 24, coach model
-18 and coach screen 27. The root app suite passes 615 tests. `pnpm typecheck`,
+18 and coach screen 27. The root app suite passes 607 tests. `pnpm typecheck`,
 `pnpm mobile:typecheck` and `expo export --platform android` pass in the current
-tree. These are model and bundle checks, not live service or device checks.
+tree. These are model and bundle checks plus one limited Expo Go device smoke,
+not live service checks.
 
 - **PR3 is not verified against live services.** Sign-in, account preference
   round-trips, manual sync and the hosted coach have not been exercised against a
   live Supabase project or a real hosted API in automated tests. A real-provider
   coaching run and device demo are still pending and are recorded separately.
-- **PR4 is not device verified.** The unified Log session, native
-  haptics/`expo-audio` cue, SQLite draft restore/autosave/discard (including the
-  native discard `Alert` and the plate `Modal`) are verified by typecheck and
-  Android bundle export only; no emulator or device pass was recorded. The pure
-  session model and the SQLite row mapping are covered by the root `node:test`
-  suites, which never load expo.
+- **PR4 device smoke is partial.** On 2026-10-24 the Expo Go 58.0.4 client on a
+  V2199A (Android 14) was used over LAN to exercise the mobile Log editor:
+  start/pause/resume/finish, per-set check-off, rest countdown with −15 s/+15 s
+  and Rest complete, draft restore/auto-pause after a force-stop, save (History
+  showed one set, five reps, 100 kg), draft clearing after save, the native
+  discard confirmation, and the absence of the removed plate tool. Haptics and
+  audio were not objectively measured (the rest-complete cue did not crash the
+  bundle), and this is not the installed preview APK or a native dev-client
+  build. The pure session model and SQLite row mapping are covered by the root
+  `node:test` suites, which never load expo.
 - **No local import/export parity.** The store has no import/export screen or file
   path yet, and plan application/adoption is not implemented; Plan remains a
   read-only draft.
@@ -613,9 +618,9 @@ recorded separately.
 This is the intended sequencing, not a commitment to a release date:
 
 1. Keep the device smoke test current and verify the PR3 account, preference,
-   sync and hosted-coach flows plus the PR4 unified Log session, draft lifecycle
-   and plate calculator on a device against live Supabase and hosted API
-   services; record those demos separately.
+   sync and hosted-coach flows plus the PR4 unified Log session and draft
+   lifecycle on a device against live Supabase and hosted API services; record
+   those demos separately.
 2. Add mobile typecheck, Expo export and the preview build to CI while keeping
    the pure model suites in the root `node:test` run.
 3. Add local store import/export parity and finish the plan application path.

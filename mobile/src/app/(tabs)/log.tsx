@@ -51,7 +51,6 @@ import {
   Screen,
   Title,
 } from "@/ui";
-import { PlateCalculatorModal } from "@/workout/PlateCalculatorModal";
 import { useRestCue, vibrateRestEnded, vibrateSetChecked } from "@/workout/liveFeedback";
 
 /**
@@ -71,8 +70,7 @@ import { useRestCue, vibrateRestEnded, vibrateSetChecked } from "@/workout/liveF
  * The unfinished draft is owner-scoped in SQLite (one row per signed-in account,
  * or the local guest identity). It is loaded before edits are enabled and
  * autosaved with a debounce; a payload that fails to load is never overwritten
- * and can only be discarded explicitly. The plate calculator is a local,
- * display-only tool and never part of the draft.
+ * and can only be discarded explicitly.
  */
 const copy = {
   title: "Log a session",
@@ -140,7 +138,6 @@ const copy = {
   draftDiscarded: "Session draft discarded.",
   autosaveFailed: "Draft autosave failed: {message}",
   cancel: "Cancel",
-  openPlateCalculator: "Open plate calculator",
 } as const;
 
 type SaveSuccess = "created" | "duplicate";
@@ -254,7 +251,6 @@ export default function LogScreen() {
   const [discardedNotice, setDiscardedNotice] = useState(false);
   const [hasDraft, setHasDraft] = useState(false);
   const [autosaveEnabled, setAutosaveEnabled] = useState(true);
-  const [plateCalculatorOpen, setPlateCalculatorOpen] = useState(false);
 
   // Values read by async callbacks and lifecycle listeners. Rendering the latest
   // values here keeps the debounce/flush callbacks stable across edits.
@@ -979,16 +975,6 @@ export default function LogScreen() {
           ) : null}
         </Card>
 
-        {/* Display-only tool: its target and bar choice never enter the draft. */}
-        <Card testID="log-tools">
-          <Button
-            label={t(copy.openPlateCalculator)}
-            onPress={() => setPlateCalculatorOpen(true)}
-            testID="log-open-plate"
-            variant="secondary"
-          />
-        </Card>
-
         <Field
           autoCapitalize="none"
           autoCorrect={false}
@@ -1355,10 +1341,6 @@ export default function LogScreen() {
           testID="log-submit"
         />
       </Screen>
-      <PlateCalculatorModal
-        onClose={() => setPlateCalculatorOpen(false)}
-        visible={plateCalculatorOpen}
-      />
     </KeyboardAvoidingView>
   );
 }
