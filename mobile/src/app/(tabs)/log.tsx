@@ -29,7 +29,9 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
+  type TextInputProps,
 } from "react-native";
 
 import { useAuth } from "@/auth";
@@ -86,9 +88,12 @@ const copy = {
   setComplete: "Set {set} complete",
   reps: "Reps",
   weight: "Weight (kg)",
+  weightShort: "kg",
   weightHint: "Optional",
   rpe: "RPE",
   rpeHint: "1–10, optional",
+  setSummary: "{sets} sets · {reps} reps · {volume} kg",
+  setOptions: "Set options",
   addSet: "Add set",
   removeSet: "Remove set",
   addExercise: "Add exercise",
@@ -205,6 +210,83 @@ function formatElapsed(ms: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/** Compact numeric summary; the reference layout shows totals above the rows. */
+function summarizeSets(
+  sets: SessionDraft["exercises"][number]["sets"],
+): { reps: number; volume: number } {
+  let reps = 0;
+  let volume = 0;
+  for (const set of sets) {
+    const setReps = Number(set.reps);
+    const setWeight = Number(set.weight);
+    if (!Number.isFinite(setReps) || setReps <= 0) continue;
+    reps += setReps;
+    if (Number.isFinite(setWeight) && setWeight > 0) volume += setReps * setWeight;
+  }
+  return { reps, volume };
+}
+
+function formatSummaryNumber(value: number): string {
+  return String(Math.round(value * 10) / 10);
+}
+
+interface CompactSetFieldProps extends Omit<TextInputProps, "style"> {
+  label: string;
+}
+
+/**
+ * One value cell in a compact set row. The unit label lives inside the cell so
+ * a row stays one line tall; accessibility labels come from the caller.
+ */
+function CompactSetField({
+  label,
+  editable = true,
+  onFocus,
+  onBlur,
+  accessibilityLabel,
+  ...inputProps
+}: CompactSetFieldProps) {
+  const { skin, tokens } = useSkin();
+  const { palette } = tokens;
+  const [focused, setFocused] = useState(false);
+  const borderColor = focused
+    ? palette.accent
+    : skin === "pixel"
+      ? palette.fg
+      : palette.glassEdge;
+
+  return (
+    <View
+      style={[
+        styles.compactField,
+        {
+          backgroundColor: palette.surface,
+          borderColor,
+          borderWidth: tokens.borderWidthThin,
+          borderRadius: tokens.radiusControl,
+        },
+        editable ? null : styles.disabled,
+      ]}>
+      <Text style={[styles.compactFieldLabel, { color: palette.muted }]}>{label}</Text>
+      <TextInput
+        {...inputProps}
+        accessibilityLabel={accessibilityLabel ?? label}
+        editable={editable}
+        onBlur={(event) => {
+          setFocused(false);
+          onBlur?.(event);
+        }}
+        onFocus={(event) => {
+          setFocused(true);
+          onFocus?.(event);
+        }}
+        placeholderTextColor={palette.muted}
+        style={[styles.compactInput, { color: palette.fg }]}
+      />
+    </View>
+  );
 }
 
 /** A brand-new untimed draft; also the state a successful save resets to. */
@@ -1004,11 +1086,20 @@ export default function LogScreen() {
 
         {draft.exercises.map((exercise, exerciseIndex) => {
           const exerciseLabel = t(copy.exercise, { index: exerciseIndex + 1 });
+          const totals = summarizeSets(exercise.sets);
+          const summary = t(copy.setSummary, {
+            sets: exercise.sets.length,
+            reps: formatSummaryNumber(totals.reps),
+            volume: formatSummaryNumber(totals.volume),
+          });
 
           return (
             <Card key={exercise.key} testID={`log-exercise-${exerciseIndex}`}>
               <View style={styles.exerciseHead}>
-                <Title>{exerciseLabel}</Title>
+                <View style={styles.exerciseTitle}>
+                  <Title>{exerciseLabel}</Title>
+                  <Body style={styles.exerciseSummary}>{summary}</Body>
+                </View>
                 {draft.exercises.length > 1 ? (
                   <Button
                     accessibilityLabel={`${exerciseLabel}: ${t(copy.removeExercise)}`}
@@ -1037,6 +1128,7 @@ export default function LogScreen() {
               {timed ? (
                 <Field
                   accessibilityLabel={`${exerciseLabel}: ${t(copy.restSeconds)}`}
+                  containerStyle={styles.restField}
                   editable={!finished}
                   keyboardType="number-pad"
                   label={t(copy.restSeconds)}
@@ -1053,28 +1145,71 @@ export default function LogScreen() {
                 return (
                   <View
                     key={set.key}
-                    style={styles.setBlock}
+                    style={styles.setRow}
                     testID={`log-set-${exerciseIndex}-${setIndex}`}>
-                    <View style={styles.setHead}>
-                      <Body style={styles.setLabel} tone="default">
-                        {setLabel}
-                      </Body>
-                      {exercise.sets.length > 1 ? (
-                        <Button
-                          accessibilityLabel={`${setLabel}: ${t(copy.removeSet)}`}
-                          label={t(copy.removeSet)}
-                          onPress={() =>
-                            edit({
-                              type: "removeSet",
-                              exerciseKey: exercise.key,
-                              setKey: set.key,
-                            })
-                          }
-                          testID={`log-remove-set-${exerciseIndex}-${setIndex}`}
-                          variant="secondary"
-                        />
-                      ) : null}
+                    <View
+                      style={[
+                        styles.setNumber,
+                        {
+                          backgroundColor: palette.soft,
+                          borderColor: palette.pale,
+                          borderWidth: tokens.borderWidthThin,
+                          borderRadius: tokens.radiusControl,
+                        },
+                      ]}>
+                      <Text style={[styles.setNumberText, { color: palette.fg }]}>
+                        {setIndex + 1}
+                      </Text>
                     </View>
+
+                    <CompactSetField
+                      accessibilityLabel={`${setLabel} ${t(copy.weight)}`}
+                      keyboardType="decimal-pad"
+                      label={t(copy.weightShort)}
+                      onChangeText={(value) =>
+                        edit({
+                          type: "setSetField",
+                          exerciseKey: exercise.key,
+                          setKey: set.key,
+                          field: "weight",
+                          value,
+                        })
+                      }
+                      testID={`log-set-${exerciseIndex}-${setIndex}-weight`}
+                      value={set.weight}
+                    />
+                    <CompactSetField
+                      accessibilityLabel={`${setLabel} ${t(copy.reps)}`}
+                      keyboardType="number-pad"
+                      label={t(copy.reps)}
+                      onChangeText={(value) =>
+                        edit({
+                          type: "setSetField",
+                          exerciseKey: exercise.key,
+                          setKey: set.key,
+                          field: "reps",
+                          value,
+                        })
+                      }
+                      testID={`log-set-${exerciseIndex}-${setIndex}-reps`}
+                      value={set.reps}
+                    />
+                    <CompactSetField
+                      accessibilityLabel={`${setLabel} ${t(copy.rpe)}`}
+                      keyboardType="decimal-pad"
+                      label={t(copy.rpe)}
+                      onChangeText={(value) =>
+                        edit({
+                          type: "setSetField",
+                          exerciseKey: exercise.key,
+                          setKey: set.key,
+                          field: "rpe",
+                          value,
+                        })
+                      }
+                      testID={`log-set-${exerciseIndex}-${setIndex}-rpe`}
+                      value={set.rpe}
+                    />
 
                     {/* The check-off only exists for a timed session: on an
                         untimed draft the `done` marker is meaningless at save
@@ -1088,7 +1223,7 @@ export default function LogScreen() {
                         onPress={() =>
                           handleToggleSetDone(exercise.key, set.key, set.done)
                         }
-                        style={[styles.checkRow, finished ? styles.disabled : null]}
+                        style={[styles.setCheck, finished ? styles.disabled : null]}
                         testID={`log-set-${exerciseIndex}-${setIndex}-done`}>
                         <View
                           style={[
@@ -1105,65 +1240,35 @@ export default function LogScreen() {
                             </Text>
                           ) : null}
                         </View>
-                        <Body tone="default">{setCompleteLabel}</Body>
                       </Pressable>
                     ) : null}
 
-                    <View style={styles.setFields}>
-                      <Field
-                        accessibilityLabel={`${setLabel} ${t(copy.reps)}`}
-                        containerStyle={styles.setField}
-                        keyboardType="number-pad"
-                        label={t(copy.reps)}
-                        onChangeText={(value) =>
-                          edit({
-                            type: "setSetField",
-                            exerciseKey: exercise.key,
-                            setKey: set.key,
-                            field: "reps",
-                            value,
-                          })
+                    {exercise.sets.length > 1 ? (
+                      <Pressable
+                        accessibilityLabel={`${setLabel}: ${t(copy.setOptions)}`}
+                        accessibilityRole="button"
+                        onPress={() =>
+                          Alert.alert(setLabel, undefined, [
+                            { text: t(copy.cancel), style: "cancel" },
+                            {
+                              text: t(copy.removeSet),
+                              style: "destructive",
+                              onPress: () =>
+                                edit({
+                                  type: "removeSet",
+                                  exerciseKey: exercise.key,
+                                  setKey: set.key,
+                                }),
+                            },
+                          ])
                         }
-                        testID={`log-set-${exerciseIndex}-${setIndex}-reps`}
-                        value={set.reps}
-                      />
-                      <Field
-                        accessibilityLabel={`${setLabel} ${t(copy.weight)}`}
-                        containerStyle={styles.setField}
-                        hint={t(copy.weightHint)}
-                        keyboardType="decimal-pad"
-                        label={t(copy.weight)}
-                        onChangeText={(value) =>
-                          edit({
-                            type: "setSetField",
-                            exerciseKey: exercise.key,
-                            setKey: set.key,
-                            field: "weight",
-                            value,
-                          })
-                        }
-                        testID={`log-set-${exerciseIndex}-${setIndex}-weight`}
-                        value={set.weight}
-                      />
-                      <Field
-                        accessibilityLabel={`${setLabel} ${t(copy.rpe)}`}
-                        containerStyle={styles.setField}
-                        hint={t(copy.rpeHint)}
-                        keyboardType="decimal-pad"
-                        label={t(copy.rpe)}
-                        onChangeText={(value) =>
-                          edit({
-                            type: "setSetField",
-                            exerciseKey: exercise.key,
-                            setKey: set.key,
-                            field: "rpe",
-                            value,
-                          })
-                        }
-                        testID={`log-set-${exerciseIndex}-${setIndex}-rpe`}
-                        value={set.rpe}
-                      />
-                    </View>
+                        style={styles.setMenu}
+                        testID={`log-set-menu-${exerciseIndex}-${setIndex}`}>
+                        <Text style={[styles.setMenuText, { color: palette.muted }]}>•••</Text>
+                      </Pressable>
+                    ) : (
+                      <View style={styles.setMenu} />
+                    )}
                   </View>
                 );
               })}
@@ -1354,35 +1459,70 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: SPACING[2] },
   exerciseHead: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: SPACING[2],
   },
+  exerciseTitle: { flex: 1, gap: SPACING[1] },
+  exerciseSummary: { fontSize: 12, lineHeight: 17 },
   restBlock: { gap: SPACING[2], marginTop: SPACING[1] },
-  setBlock: { gap: SPACING[2], marginTop: SPACING[1] },
-  setHead: {
+  restField: { width: 136 },
+  setRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: SPACING[2],
+    marginTop: SPACING[1],
   },
-  setLabel: { fontWeight: "700" },
-  setFields: { flexDirection: "row", alignItems: "flex-start", gap: SPACING[2] },
-  setField: { flex: 1 },
-  checkRow: {
-    flexDirection: "row",
+  setNumber: {
+    width: 32,
+    height: 56,
     alignItems: "center",
-    gap: SPACING[3],
-    minHeight: 44,
+    justifyContent: "center",
   },
+  setNumberText: { fontSize: 14, fontWeight: "700" },
+  compactField: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 56,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    justifyContent: "center",
+    gap: 1,
+  },
+  compactFieldLabel: {
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textAlign: "center",
+  },
+  compactInput: {
+    minHeight: 30,
+    padding: 0,
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  setCheck: {
+    width: 44,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  setMenu: {
+    width: 30,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  setMenuText: { fontSize: 16, fontWeight: "700", letterSpacing: 1 },
   checkbox: {
-    width: 24,
-    height: 24,
+    width: 28,
+    height: 28,
     borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
   },
-  checkmark: { fontSize: 16, fontWeight: "800", lineHeight: 20 },
+  checkmark: { fontSize: 18, fontWeight: "800", lineHeight: 22 },
   disabled: { opacity: 0.45 },
   halfField: { flex: 1 },
   notesInput: { minHeight: 88, paddingTop: SPACING[2], textAlignVertical: "top" },

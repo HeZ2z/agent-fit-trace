@@ -25,6 +25,8 @@ export const messages: Record<string, string> = {
 
   /* ── Per-set completion ──────────────────────────────────────── */
   "Set {set} complete": "第 {set} 组完成",
+  "Set options": "组选项",
+  "{sets} sets · {reps} reps · {volume} kg": "{sets} 组 · {reps} 次 · {volume} kg",
 
   /* ── Per-exercise rest configuration ─────────────────────────── */
   "Rest (seconds)": "休息（秒）",

@@ -20,7 +20,7 @@ not written. Android is the only configured native target.
 | --- | --- | --- |
 | App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; six-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
 | Local data | SQLite workout store plus the owner-scoped `session_draft` table (migration v2), migrations, validation on read and write; History, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
-| Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, per-set check-off, per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
+| Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, compact per-set rows (set number, kg, reps, RPE, completion check), per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
 | Account preferences | Skin and language mirrored to Supabase `user_metadata`; account wins on sign-in; write-through while signed in | — |
 | Sync | Manual workout pull/push, content-ID idempotency and three device-only conflict choices | Background sync; persistent conflict acknowledgement |
@@ -208,9 +208,12 @@ training. It renders the shared `SessionState` from
 (date, session type, exercises/sets, per-exercise rest, duration only while
 untimed, sleep, notes and multiple pain reports), and the same reducer drives
 Start/Pause/Resume/Finish timing with an injected clock, per-set check-off, a
-rest countdown with ±15 s/Skip, and prefilled next sets. Draft persistence follows
-the signed-in owner (or the local guest) as described under [Session
-draft](#session-draft).
+rest countdown with ±15 s/Skip, and prefilled next sets. Each set is one compact
+row — set number, kg, reps, RPE, completion check, and an options menu — and the
+exercise header summarizes total sets, reps and volume. The web editor keeps its
+larger labelled field groups; this is a mobile layout choice, not a data-model
+divergence. Draft persistence follows the signed-in owner (or the local guest) as
+described under [Session draft](#session-draft).
 
 Feedback is best effort. Per-set completion and rest-ended haptics use
 `expo-haptics`, and rest-ended replays a bundled ~200 ms WAV through
@@ -554,7 +557,8 @@ not live service checks.
   coaching run and device demo are still pending and are recorded separately.
 - **PR4 device smoke is partial.** On 2026-10-24 the Expo Go 58.0.4 client on a
   V2199A (Android 14) was used over LAN to exercise the mobile Log editor:
-  start/pause/resume/finish, per-set check-off, rest countdown with −15 s/+15 s
+  start/pause/resume/finish, compact set rows with a sets/reps/volume summary,
+  per-set check-off and options-menu removal, rest countdown with −15 s/+15 s
   and Rest complete, draft restore/auto-pause after a force-stop, save (History
   showed one set, five reps, 100 kg), draft clearing after save, the native
   discard confirmation, and the absence of the removed plate tool. Haptics and
