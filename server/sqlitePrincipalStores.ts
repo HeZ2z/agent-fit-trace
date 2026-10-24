@@ -177,12 +177,14 @@ export class SqliteFitTraceClient implements FitTraceClient {
   constructor(dbPath: string) {
     // The workout store owns its connection (mkdir, WAL, busy_timeout, schema).
     this.workoutStore = new SqliteWorkoutStore(dbPath);
+    // Open outside the try: if the open itself fails there is no handle to close.
+    this.stateDb = new DatabaseSync(dbPath);
     try {
-      this.stateDb = new DatabaseSync(dbPath);
       this.stateDb.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
       this.stateDb.exec(CREATE_APP_STATE_SQL);
     } catch (error) {
-      // Setup failed: release the workout store's handle before propagating.
+      // Setup failed: release both handles before propagating.
+      this.stateDb.close();
       this.workoutStore.close();
       throw error;
     }
@@ -257,6 +259,19 @@ export class SqliteFitTraceClient implements FitTraceClient {
         message: `Stored app_state key "${ARTIFACTS_KEY}" is not an artifact list.`,
         details: { key: ARTIFACTS_KEY },
       });
+    }
+    // Stored records are re-validated on load: every element must at least be a
+    // plain object with a non-empty string id, or later reads would trip on
+    // `entry.id` as an opaque API_ERROR instead of naming the corrupt record.
+    for (let index = 0; index < doc.length; index += 1) {
+      const entry: unknown = doc[index];
+      if (!isPlainObject(entry) || typeof entry.id !== "string" || entry.id === "") {
+        throw new ApiError({
+          code: API_ERROR_CODES.CORRUPT_STORE,
+          message: `Stored app_state key "${ARTIFACTS_KEY}" has a malformed artifact at index ${index}.`,
+          details: { key: ARTIFACTS_KEY, index },
+        });
+      }
     }
     return doc as ImportedArtifact[];
   }

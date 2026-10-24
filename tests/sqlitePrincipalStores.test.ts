@@ -531,3 +531,56 @@ test("a corrupt app_state row surfaces a diagnosable error naming the key", asyn
     }
   });
 });
+
+test("a malformed artifact element in app_state reports CORRUPT_STORE with its index", async () => {
+  await withDataDir(async (dataDir) => {
+    const first = createSqlitePrincipalStores(dataDir);
+    try {
+      const client = first.storeFor({ id: "guest" });
+      await client.saveImportedArtifact({
+        kind: "analysis",
+        payload_schema_version: 1,
+        payload: analyzeProgress([seedRecord({ id: "w-malformed", date: "2026-09-01" })]),
+      });
+    } finally {
+      first.closeAll();
+    }
+
+    // Corrupt the array element itself (a bare `null`), not the JSON envelope:
+    // the restarted client must name the failing element instead of tripping on
+    // `entry.id` with an opaque error.
+    const raw = new DatabaseSync(join(dataDir, "guest.db"));
+    try {
+      raw.exec("UPDATE app_state SET value='[null]' WHERE key='imported_artifacts'");
+    } finally {
+      raw.close();
+    }
+
+    const second = createSqlitePrincipalStores(dataDir);
+    try {
+      const client = second.storeFor({ id: "guest" });
+      for (const touch of [
+        () => client.listImportedArtifacts(),
+        () => client.getImportedArtifact("w-malformed"),
+        () => client.saveImportedArtifact({
+          kind: "analysis",
+          payload_schema_version: 1,
+          payload: analyzeProgress([seedRecord({ id: "w-malformed-2", date: "2026-09-02" })]),
+        }),
+      ]) {
+        await assert.rejects(
+          touch(),
+          (error: unknown) =>
+            error instanceof ApiError &&
+            error.code === API_ERROR_CODES.CORRUPT_STORE &&
+            error.message.includes("imported_artifacts") &&
+            error.message.includes("index 0") &&
+            (error.details as { key?: string; index?: number }).key === "imported_artifacts" &&
+            (error.details as { key?: string; index?: number }).index === 0,
+        );
+      }
+    } finally {
+      second.closeAll();
+    }
+  });
+});
