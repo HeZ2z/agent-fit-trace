@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { ConflictError, CorruptStoreError, ValidationError, validateWorkoutRecord } from "@agent-fit-trace/core";
-import { JsonFileStorage, MemoryStorage, WorkoutStore } from "../.pi/extensions/fit-trace/store.ts";
+import { JsonFileStorage, MemoryStorage, WorkoutStore } from "@agent-fit-trace/store";
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { loadFixture } from "./helpers.ts";
 

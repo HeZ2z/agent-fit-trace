@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { analyzeProgress, validateWorkoutRecord } from "@agent-fit-trace/core";
 import { parseAnalysisResult } from "@agent-fit-trace/api-contracts";
 import fitTraceExtension from "../.pi/extensions/fit-trace/index.ts";
-import { JsonFileStorage, WorkoutStore } from "../.pi/extensions/fit-trace/store.ts";
+import { JsonFileStorage, WorkoutStore } from "@agent-fit-trace/store";
 import {
   CoachedPiProcess,
   COACHED_SYSTEM_PROMPT,

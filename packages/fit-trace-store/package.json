@@ -1,0 +1,13 @@
+{
+  "name": "@agent-fit-trace/store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node-only JSON persistence for workout records: atomic file storage plus the idempotent WorkoutStore.",
+  "dependencies": {
+    "@agent-fit-trace/core": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
