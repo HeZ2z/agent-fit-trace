@@ -27,21 +27,24 @@ const dateRangeFields = {
   to: z.string().optional().describe("Inclusive ISO 8601 end date"),
 };
 
+// Loose at every record level: unknown keys must survive to
+// validateWorkoutRecord so its UNKNOWN_FIELD warnings reach the caller, the
+// same as the pi extension path (which does not pre-strip fields).
 const setSchema = z.object({
   weight: z.number().min(0).optional().describe("Weight in kilograms"),
   reps: z.number().int().min(0).describe("Repetitions"),
   rpe: z.number().min(1).max(10).optional().describe("Rate of perceived exertion"),
-});
+}).loose();
 
 const exerciseSchema = z.object({
   name: z.string().min(1),
   sets: z.array(setSchema).min(1),
-});
+}).loose();
 
 const painSchema = z.object({
   area: z.string().optional(),
   level: z.number().min(0).max(10).optional(),
-});
+}).loose();
 
 /** Zod mirror of the pi extension's typebox record schema. */
 const recordSchema = z.object({
@@ -54,7 +57,7 @@ const recordSchema = z.object({
   sleep_hours: z.number().min(0).max(24).optional(),
   pain: z.array(painSchema).optional(),
   notes: z.string().optional(),
-});
+}).loose();
 
 function textResult(text: string, structuredContent: Record<string, unknown>): CallToolResult {
   return { content: [{ type: "text", text }], structuredContent };

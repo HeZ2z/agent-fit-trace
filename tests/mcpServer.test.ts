@@ -332,6 +332,44 @@ test("config resolution follows flag > env > defaults and validates runtime and 
   assert.deepEqual(parseArgs(["--store", "/a/b.json"]), { store: "/a/b.json", help: false, version: false });
 });
 
+test("preserves unknown record fields so core UNKNOWN_FIELD warnings reach the caller", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-mcp-"));
+  try {
+    await withClient(join(dir, "workouts.json"), "", async (client) => {
+      const records = await loadFixture<Array<Record<string, unknown>>>("history-strength.json");
+      const withUnknown = structuredClone(records[0]) as StructuredDetails;
+      withUnknown.weight_unit = "kg";
+      const result = await client.callTool({
+        name: "import_workout",
+        arguments: { record: withUnknown },
+      });
+      assert.ok(!result.isError, firstText(result));
+      const warnings = (result.structuredContent as StructuredDetails).warnings as Array<{
+        code: string;
+        path?: string;
+      }>;
+      assert.ok(
+        warnings.some((warning) => warning.code === "UNKNOWN_FIELD" && warning.path === ".weight_unit"),
+        `expected an UNKNOWN_FIELD warning for .weight_unit, got ${JSON.stringify(warnings)}`,
+      );
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("treats an explicitly empty --store value as unset during resolution", () => {
+  assert.deepEqual(parseArgs(["--store", ""]), { store: "", help: false, version: false });
+  assert.equal(
+    resolveStorePath({ storeArg: "", env: { PI_FIT_TRACE_STORE: "/env.json" }, homeDir: "/home/u" }),
+    "/env.json",
+  );
+  assert.equal(
+    resolveStorePath({ storeArg: "", env: {}, homeDir: "/home/u" }),
+    join("/home/u", ".fit-trace", "workouts.json"),
+  );
+});
+
 test("returns a CORRUPT_STORE isError result when the store file is malformed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fit-trace-mcp-"));
   try {

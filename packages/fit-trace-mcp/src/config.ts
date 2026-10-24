@@ -16,7 +16,9 @@ export interface McpArgs {
 
 function takeValue(argv: readonly string[], index: number, flag: string): string {
   const value = argv[index];
-  if (value === undefined || value === "" || value.startsWith("--")) {
+  // An explicit empty value is allowed through: the resolvers treat a blank
+  // override as unset, matching the documented flag/env behavior.
+  if (value === undefined || value.startsWith("--")) {
     throw new Error(`missing value for ${flag}`);
   }
   return value;
