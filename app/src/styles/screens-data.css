@@ -318,7 +318,7 @@
   letter-spacing: 0.06em;
 }
 
-/* ── Live session, draft and plate calculator ─────────────────── */
+/* ── Live session and draft ───────────────────────────────────── */
 
 .session-timer {
   display: flex;
@@ -419,94 +419,6 @@
 
 .session-draft-actions button {
   width: auto;
-}
-
-.session-tools {
-  margin: 0 0 16px;
-}
-
-/* The plate calculator is an ordinary overlay + card, never <dialog>. */
-.plate-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  /* --fg at 45% opacity, written literally so older engines parse it. */
-  background: oklch(27% 0.1121 265.3 / 0.45);
-}
-
-.plate-dialog {
-  width: min(440px, 100%);
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
-  padding: 18px;
-  border: var(--border-w) solid var(--border);
-  background: var(--bg);
-  box-shadow: var(--shadow-blue);
-}
-
-.plate-dialog h2 {
-  margin: 0 0 14px;
-  color: var(--fg);
-  font-size: 18px;
-}
-
-.plate-dialog h3 {
-  margin: 10px 0 8px;
-  color: var(--blue-deep);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.plate-list {
-  display: grid;
-  gap: 5px;
-  margin: 0 0 10px;
-  padding: 0;
-  list-style: none;
-}
-
-.plate-row {
-  padding: 6px 9px;
-  border: var(--border-w-thin) solid var(--pale);
-  background: var(--info-soft);
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.plate-summary {
-  margin: 0 0 4px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.plate-summary:last-of-type {
-  margin-bottom: 14px;
-}
-
-.plate-summary strong {
-  color: var(--fg);
-  font-variant-numeric: tabular-nums;
-}
-
-.plate-error {
-  margin: 0 0 14px;
-  padding: 10px 12px;
-  border: var(--border-w-thin) solid var(--accent);
-  background: var(--danger-soft);
-  color: var(--fg);
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-.plate-dialog > button {
-  width: 100%;
 }
 
 /* Pain entries are a warning surface, not an error. */

@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import { openWorkoutDatabase, WorkoutRepository } from "./workoutRepository";
+import { SessionDraftRepository } from "./sessionDraftRepository";
 
 /** Lifecycle of the single on-device database connection. */
 export type WorkoutDataStatus = "loading" | "ready" | "error";
@@ -19,6 +20,8 @@ export interface WorkoutData {
   status: WorkoutDataStatus;
   /** Available only while `status` is `"ready"`. */
   repository: WorkoutRepository | null;
+  /** Owner-scoped session-draft storage on the same connection; ready only. */
+  draftRepository: SessionDraftRepository | null;
   /** Open/setup failure; the message is safe to surface in the UI. */
   error: Error | null;
   /** Retry opening the database after a failure. */
@@ -28,12 +31,14 @@ export interface WorkoutData {
 interface WorkoutDataState {
   status: WorkoutDataStatus;
   repository: WorkoutRepository | null;
+  draftRepository: SessionDraftRepository | null;
   error: Error | null;
 }
 
 const INITIAL_STATE: WorkoutDataState = {
   status: "loading",
   repository: null,
+  draftRepository: null,
   error: null,
 };
 
@@ -94,11 +99,17 @@ export function WorkoutDataProvider({ children }: { children: ReactNode }) {
         setState({
           status: "ready",
           repository: new WorkoutRepository(database),
+          draftRepository: new SessionDraftRepository(database),
           error: null,
         });
       } catch (cause) {
         if (!mountedRef.current || attempt !== attemptRef.current) return;
-        setState({ status: "error", repository: null, error: toError(cause) });
+        setState({
+          status: "error",
+          repository: null,
+          draftRepository: null,
+          error: toError(cause),
+        });
       }
     })();
   }, []);
@@ -122,6 +133,7 @@ export function WorkoutDataProvider({ children }: { children: ReactNode }) {
     () => ({
       status: state.status,
       repository: state.repository,
+      draftRepository: state.draftRepository,
       error: state.error,
       reload: openDatabase,
     }),
