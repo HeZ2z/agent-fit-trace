@@ -32,8 +32,11 @@ export const messages: Record<string, string> = {
   Local: "本地",
   "Cloud mode · account data": "云端模式 · 账号数据",
   "Local mode · browser storage": "本地模式 · 浏览器存储",
+  "Local mode · daemon data": "本地模式 · 守护进程数据",
   "Records, snapshots and coaching runs belong to the signed-in account.":
     "训练记录、快照与教练运行都归属于登录账号。",
+  "Records and snapshots stay on this machine through the local daemon; export them from Me.":
+    "训练记录与快照通过本地守护进程保存在本机；可在「我的」中导出。",
   "Records and snapshots stay in this browser; export them from Me.":
     "训练记录与快照保存在此浏览器；可在「我的」中导出。",
   "Account": "账号",

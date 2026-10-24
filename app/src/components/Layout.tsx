@@ -91,28 +91,42 @@ function Brand({ compact = false }: { compact?: boolean }) {
 
 function ModeBadge() {
   const httpMode = isHttpModeActive();
+  const { authSurface } = useAuth();
   const { t } = useI18n();
+  // On the daemon the transport is HTTP but the data is this machine's local
+  // store — never show the cloud badge there, whatever the login state.
+  const daemonLocal = authSurface === "guest-local" || authSurface === "daemon-optional";
   return (
-    <span className="mode-chip" data-mode={httpMode ? "http" : "local"}>
+    <span className="mode-chip" data-mode={httpMode && !daemonLocal ? "http" : "local"}>
       <span className="mode-chip-dot" aria-hidden="true" />
-      {httpMode ? t("Cloud") : t("Local")}
+      {httpMode && !daemonLocal ? t("Cloud") : t("Local")}
     </span>
   );
 }
 
 function SideFoot() {
   const httpMode = isHttpModeActive();
+  const { authSurface } = useAuth();
   const { t } = useI18n();
+  // Same rule as ModeBadge: a daemon deployment keeps records locally even
+  // though the client speaks HTTP, so the cloud copy would be a lie.
+  const daemonLocal = authSurface === "guest-local" || authSurface === "daemon-optional";
   return (
     <div className="sidenav-foot">
       <span className="side-status">
         <span className="side-status-dot" aria-hidden="true" />
-        {httpMode ? t("Cloud mode · account data") : t("Local mode · browser storage")}
+        {daemonLocal
+          ? t("Local mode · daemon data")
+          : httpMode
+            ? t("Cloud mode · account data")
+            : t("Local mode · browser storage")}
       </span>
       <p className="side-note">
-        {httpMode
-          ? t("Records, snapshots and coaching runs belong to the signed-in account.")
-          : t("Records and snapshots stay in this browser; export them from Me.")}
+        {daemonLocal
+          ? t("Records and snapshots stay on this machine through the local daemon; export them from Me.")
+          : httpMode
+            ? t("Records, snapshots and coaching runs belong to the signed-in account.")
+            : t("Records and snapshots stay in this browser; export them from Me.")}
       </p>
       <p className="side-slug">agent-fit-trace</p>
     </div>

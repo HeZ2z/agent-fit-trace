@@ -43,6 +43,8 @@ export const messages: Record<string, string> = {
   "this guest identity": "此访客身份",
   "the signed-in account": "已登录账号",
   "Storage scope: HTTP mode. Snapshots and selections belong to {subject} on the server.{devNote}": "存储范围：HTTP 模式。快照与选择属于服务器上的{subject}。{devNote}",
+  "Storage scope: local daemon. Snapshots and selections belong to {subject} in this machine's local store.":
+    "存储范围：本地守护进程。快照与选择属于本机本地存储中的{subject}。",
   " The development in-memory API clears on restart.": "开发用内存 API 会在重启后清空。",
   "Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.": "存储范围：本地模式。快照与选择保留在此设备上的浏览器中，不会同步到其他设备。",
   "Me": "我的",
