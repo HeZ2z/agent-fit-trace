@@ -5,14 +5,13 @@ import {
   ConflictError,
   CorruptStoreError,
   ValidationError,
-  assertOrderedDateRange,
-  assertValidFilterDate,
   sortRecords,
   stableStringify,
-  toDateKey,
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
 import type { HistoryFilter, WorkoutRecord } from "@agent-fit-trace/core";
+import { assertValidHistoryFilter, filterRecordsPage } from "./filter.ts";
+import type { QueryResult } from "./filter.ts";
 
 export interface StoreFile {
   schema_version: number;
@@ -62,12 +61,8 @@ export class MemoryStorage implements StorageAdapter {
   }
 }
 
-export interface QueryResult {
-  records: WorkoutRecord[];
-  total: number;
-  offset: number;
-  limit: number | null;
-}
+export type { QueryResult } from "./filter.ts";
+export { filterRecordsPage } from "./filter.ts";
 
 /**
  * Append-only, idempotent workout store.
@@ -156,32 +151,23 @@ export class WorkoutStore {
   }
 
   async query(filter: HistoryFilter = {}): Promise<QueryResult> {
-    const from = filter.from === undefined ? undefined : assertValidFilterDate(filter.from, "from");
-    const to = filter.to === undefined ? undefined : assertValidFilterDate(filter.to, "to");
-    assertOrderedDateRange(from, to);
-
-    let records = sortRecords(await this.all());
-
-    if (from !== undefined) {
-      const fromKey = toDateKey(from);
-      records = records.filter((record) => toDateKey(record.date) >= fromKey);
-    }
-    if (to !== undefined) {
-      const toKey = toDateKey(to);
-      records = records.filter((record) => toDateKey(record.date) <= toKey);
-    }
-    if (filter.exercise !== undefined) {
-      const needle = filter.exercise.toLowerCase();
-      records = records.filter((record) =>
-        record.exercises.some((exercise) => exercise.name.toLowerCase() === needle),
-      );
-    }
-
-    const total = records.length;
-    const offset = filter.offset ?? 0;
-    const limit = filter.limit ?? null;
-    const page = limit === null ? records.slice(offset) : records.slice(offset, offset + limit);
-
-    return { records: page, total, offset, limit };
+    // Validate the filter before reading storage so a corrupt store cannot
+    // mask an invalid date range with CORRUPT_STORE.
+    assertValidHistoryFilter(filter);
+    return filterRecordsPage(sortRecords(await this.all()), filter);
   }
 }
+
+export { SqliteWorkoutStore } from "./sqlite.ts";
+export {
+  GUEST_PRINCIPAL,
+  IDENTITY_SCHEMA_VERSION,
+  StaleIdentityError,
+  identityFilePath,
+  principalDbPath,
+  readIdentity,
+  resolveActiveStore,
+  resolveDataDir,
+  writeIdentity,
+} from "./identity.ts";
+export type { IdentityFile, ResolveActiveStoreOptions } from "./identity.ts";

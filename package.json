@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "pnpm run test:extension && pnpm run test:app",
-    "test:extension": "node --test tests/*.test.ts",
+    "test:extension": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
     "test:app": "pnpm --filter app test",
     "dev:api": "node server/devApiServer.ts",
     "start": "node packages/fit-trace-cli/src/cli.ts start",
