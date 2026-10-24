@@ -17,6 +17,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - `packages/fit-trace-core/` (`@agent-fit-trace/core`) — browser-safe pure TypeScript domain logic and the shared contract (no pi/typebox/Node built-ins). Tests and the app target this.
 - `packages/fit-trace-workout-session/` (`@agent-fit-trace/workout-session`) — browser-safe pure session draft/timing/build/persistence model shared by the web editor and the mobile Log screen (no pi/typebox/React/expo/Node built-ins). Rest is transient runtime state and is never persisted.
 - `packages/fit-trace-api-contracts/` (`@agent-fit-trace/api-contracts`) — the shared app/pi client contract (shapes, errors, contract suite) both clients satisfy.
+- `packages/fit-trace-cli/` (`@agent-fit-trace/cli`) — source-run `agent-fit-trace` bin: `start` (same-origin launcher proxying a fixed authenticated upstream; `docs/local-launcher.md`) and `daemon` (resident local data plane: loopback `/api/v1` over per-principal SQLite stores, the same coaching server, optional App shell; `docs/local-daemon.md`).
 - `packages/fit-trace-mcp/` (`@agent-fit-trace/mcp`) — standalone stdio MCP server (`@modelcontextprotocol/sdk`): the four tools, two read-only resources, and the `training-coach` prompt for any MCP host. Default store `$HOME/.fit-trace/workouts.json`, independent of the pi extension's `<cwd>` default; see `docs/mcp.md`.
 - `app/` — React+Vite UI, fixture/client-driven; provider default client is mode-aware (`VITE_FIT_TRACE_MODE=http` → HTTP client, else local).
 - `server/` — loopback dev API (`pnpm dev:api`; in-memory store, clears on restart) that HTTP mode reaches via the Vite `/api` proxy. The SQLite-backed per-principal stores (`sqlitePrincipalStores.ts`) and the guest local verifier (`auth/localVerifier.ts`) are the foundation of the daemon data plane.
@@ -29,6 +30,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - `pnpm test` — extension (`node:test` over `tests/*.test.ts`) + app (`vitest`).
 - `pnpm typecheck` — root `tsc --noEmit` + app typecheck.
 - `pnpm dev:api` — run the loopback dev API (`127.0.0.1:5199`).
+- `pnpm daemon` — run the resident local daemon (loopback `127.0.0.1:5199`, SQLite data plane; see `docs/local-daemon.md`).
 - `pnpm build` — production build of the app.
 
 ## Hard rules

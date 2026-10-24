@@ -31,6 +31,19 @@ export interface ServerPublicConfig {
    * Supabase CAPTCHA is enabled for anonymous sign-ups.
    */
   guestSignInCaptchaRequired?: boolean;
+  /**
+   * Present only on the standalone local daemon (`agent-fit-trace daemon`)
+   * public-config payload: marks it as the local data plane. Additive and
+   * optional so the cloud/launcher payloads are unchanged; the app-side
+   * strict parsing of this flag lands with issue #39.
+   */
+  daemon?: boolean;
+  /**
+   * True when a Supabase project is configured for login on this daemon. The
+   * `supabaseUrl`/`supabasePublishableKey` fields themselves are only carried
+   * when a project is actually configured.
+   */
+  auth_configured?: boolean;
 }
 
 function isRejectedKey(key: string): boolean {

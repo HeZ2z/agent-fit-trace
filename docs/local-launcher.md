@@ -6,6 +6,14 @@ same-origin, proxies data/bootstrap reads to one fixed server-configured
 authenticated API, and serves the reviewed loopback coaching server on the
 same listener (same origin, same port).
 
+> Transition note (#38): `start` keeps exactly the behavior documented
+> here while the standalone local daemon lands alongside it —
+> `agent-fit-trace daemon` (see [`local-daemon.md`](local-daemon.md)) is
+> the new local data-plane entry that owns the data itself (per-principal
+> SQLite) instead of proxying an upstream. The two coexist during the
+> transition; `start` is eventually reduced to a foreground alias of the
+> daemon, and nothing about `start` changes in the meantime.
+
 ## Command
 
 ```sh
