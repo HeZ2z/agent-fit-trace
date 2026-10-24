@@ -2,6 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import type { PublicApiConfig } from "@agent-fit-trace/api-contracts";
 import { fetchPublicConfig } from "../api/publicConfig.ts";
+import {
+  LOCAL_GUEST_BEARER,
+  LOCAL_GUEST_PRINCIPAL_ID,
+  resolveAuthSurface,
+} from "../api/authSurface.ts";
+import type { AuthSurface } from "../api/authSurface.ts";
 import { markExplicitSignOut } from "./returnTarget.ts";
 import {
   clearPendingGuestUpgrade,
@@ -32,6 +38,13 @@ export interface AuthContextValue {
   session: SupabaseSession | null;
   user: SupabaseAuthUser | null;
   publicConfig: PublicApiConfig | null;
+  /**
+   * Runtime auth surface derived from the parsed public config (issue #39):
+   * `supabase` is today's strict gate, `daemon-optional` is the daemon's
+   * optional login overlay (Supabase configured), and `guest-local` is the
+   * daemon's zero-config local guest plane.
+   */
+  authSurface: AuthSurface;
   configError: Error | null;
   authError: AuthError | null;
   /** True while a restored session is being validated against the Auth server. */
@@ -225,6 +238,34 @@ export function AuthProvider({
   const refreshRef = useRef<() => Promise<boolean>>(async () => false);
 
   const effectiveConfig = publicConfigProp ?? publicConfig;
+  const authSurface = resolveAuthSurface(effectiveConfig);
+  const guestLocal = authSurface === "guest-local";
+  // Ref mirror so same-tick credential reads (per-request token providers)
+  // see the surface without waiting for a re-render.
+  const guestLocalRef = useRef(guestLocal);
+  guestLocalRef.current = guestLocal;
+
+  /**
+   * Guest-local identity (issue #39): the daemon's fixed local guest is the
+   * stable signed-in user. It is derived, never persisted and never validated
+   * — there is no identity provider behind the daemon, and the bearer is a
+   * fixed loopback constant (see `authSurface.ts`). While this surface is
+   * active the Supabase session state is ignored, so sign-in/refresh/upgrade
+   * paths are refused before any empty Supabase config field is read.
+   */
+  const localGuestSession = useMemo<SupabaseSession | null>(
+    () =>
+      guestLocal
+        ? {
+            accessToken: LOCAL_GUEST_BEARER,
+            refreshToken: "",
+            expiresAt: 0,
+            user: { id: LOCAL_GUEST_PRINCIPAL_ID, isAnonymous: true },
+          }
+        : null,
+    [guestLocal],
+  );
+  const effectiveSession = localGuestSession ?? session;
 
   /** Keep the ref synchronous with state so same-tick token reads never go stale. */
   const setSessionSync = useCallback((next: SupabaseSession | null): void => {
@@ -414,6 +455,9 @@ export function AuthProvider({
   );
 
   const getAccessToken = useCallback((): string | null => {
+    // Guest-local resolves the daemon's fixed bearer; there is no provider
+    // session to read, and session state is deliberately not consulted.
+    if (guestLocalRef.current) return LOCAL_GUEST_BEARER;
     return sessionRef.current?.accessToken ?? null;
   }, []);
 
@@ -452,6 +496,16 @@ export function AuthProvider({
 
   const signIn = useCallback(
     async (email: string, password: string): Promise<void> => {
+      // Guest-local has no identity provider: every sign-in path fails
+      // cleanly here instead of touching the empty Supabase config fields.
+      if (guestLocalRef.current) {
+        const unconfigured = new AuthError(
+          "SIGN_IN_UNCONFIGURED",
+          "Sign-in is not configured on this deployment.",
+        );
+        setAuthError(unconfigured);
+        throw unconfigured;
+      }
       const attempt = authAttemptRef.current + 1;
       authAttemptRef.current = attempt;
       // Deliberately do NOT bump the session generation yet: if this account
@@ -503,6 +557,16 @@ export function AuthProvider({
    * intact and never creates a second anonymous user on retry after success.
    */
   const signInAsGuest = useCallback(async (): Promise<void> => {
+    // Guest-local already IS the guest: the fixed local guest identity is
+    // active and there is no anonymous sign-up endpoint to call.
+    if (guestLocalRef.current) {
+      const unconfigured = new AuthError(
+        "SIGN_IN_UNCONFIGURED",
+        "Sign-in is not configured on this deployment.",
+      );
+      setAuthError(unconfigured);
+      throw unconfigured;
+    }
     const current = sessionRef.current;
     if (current !== null && current.user.isAnonymous === true) return;
     const candidate = guestCandidateRef.current ?? readStoredGuestCandidate();
@@ -932,6 +996,11 @@ export function AuthProvider({
   );
 
   const signOutSession = useCallback(async (): Promise<void> => {
+    // Guest-local has no other identity to switch to and no server session to
+    // revoke: the local guest stays signed in and the daemon's guest database
+    // persists. The UI hides sign-out on this surface; the guard keeps a
+    // stray call from clearing the local guest or marking an explicit logout.
+    if (guestLocalRef.current) return;
     const current = sessionRef.current;
     const config = publicConfigProp ?? publicConfig;
     // Bump the epoch first so every pending restore/refresh/sign-in/guest
@@ -971,6 +1040,10 @@ export function AuthProvider({
   ]);
 
   const refresh = useCallback(async (): Promise<boolean> => {
+    // Guest-local has no refreshable credential: the fixed daemon bearer never
+    // expires, and a stored Supabase session must never be refreshed against
+    // the empty config fields.
+    if (guestLocalRef.current) return false;
     const current = sessionRef.current;
     const config = publicConfigProp ?? publicConfig;
     if (current === null || config === null) return false;
@@ -1095,7 +1168,7 @@ export function AuthProvider({
   // Transient Auth outages preserve the session with a recoverable
   // `AUTH_UNAVAILABLE` error (retry via `refresh()`) instead of signing out.
   useEffect(() => {
-    if (skipAsyncValidation) return;
+    if (skipAsyncValidation || guestLocalRef.current) return;
     const config = publicConfigProp ?? publicConfig;
     const current = session;
     if (!bootstrapped || config === null || current === null) return;
@@ -1165,7 +1238,7 @@ export function AuthProvider({
   // use a stale token. The timer is keyed by the session identity; any
   // account change clears it via the effect cleanup.
   useEffect(() => {
-    if (skipAsyncValidation || session === null) return;
+    if (skipAsyncValidation || guestLocalRef.current || session === null) return;
     if (session.expiresAt === 0) return;
     const delay = session.expiresAt - Date.now() - 60_000;
     if (delay <= 0) {
@@ -1178,27 +1251,36 @@ export function AuthProvider({
     return () => clearTimeout(timer);
   }, [refresh, session, skipAsyncValidation]);
 
-  const configUnavailable =
-    bootstrapped && !skipAsyncValidation && (publicConfigProp ?? publicConfig) === null;
-
-  const validatingSession =
-    !skipAsyncValidation &&
-    !configUnavailable &&
-    session !== null &&
-    validatedIdentity !== sessionIdentity(session);
-
   // A missing/failed public config fails closed: report signed-out (the
   // stored session is preserved in state for a later retry once the config
   // loads) instead of holding the loading gate forever on a validation that
   // can never run. `RequireAuth` turns the null config into the
-  // login-unavailable notice.
+  // login-unavailable notice. Guest-local never hits this: its config is a
+  // parsed daemon payload, not a Supabase bootstrap.
+  const configUnavailable =
+    bootstrapped &&
+    !skipAsyncValidation &&
+    !guestLocal &&
+    (publicConfigProp ?? publicConfig) === null;
+
+  const validatingSession =
+    !skipAsyncValidation &&
+    !guestLocal &&
+    !configUnavailable &&
+    session !== null &&
+    validatedIdentity !== sessionIdentity(session);
+
+  // Guest-local is a signed-in surface by construction: the local guest is
+  // the stable identity, so no validation gate can ever hold it in loading.
   const status: AuthContextValue["status"] = !bootstrapped
     ? "loading"
-    : validatingSession
-      ? "loading"
-      : session === null || configUnavailable
-        ? "signed-out"
-        : "signed-in";
+    : guestLocal
+      ? "signed-in"
+      : validatingSession
+        ? "loading"
+        : effectiveSession === null || configUnavailable
+          ? "signed-out"
+          : "signed-in";
 
   const guestSignInCaptchaRequired =
     effectiveConfig?.guestSignInCaptchaRequired === true;
@@ -1211,9 +1293,10 @@ export function AuthProvider({
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
-      session,
-      user: session?.user ?? null,
+      session: effectiveSession,
+      user: effectiveSession?.user ?? null,
       publicConfig: publicConfigProp ?? publicConfig,
+      authSurface,
       configError,
       authError,
       validatingSession,
@@ -1233,9 +1316,10 @@ export function AuthProvider({
     }),
     [
       status,
-      session,
+      effectiveSession,
       publicConfig,
       publicConfigProp,
+      authSurface,
       configError,
       authError,
       validatingSession,

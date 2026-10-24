@@ -138,6 +138,19 @@ export interface PublicApiConfig {
    * The transport still accepts an explicit CAPTCHA token for a future UI.
    */
   guestSignInCaptchaRequired?: boolean;
+  /**
+   * Present only on the standalone local daemon (`agent-fit-trace daemon`)
+   * public-config payload: marks it as the local data plane. Additive and
+   * optional so cloud/launcher payloads that omit it behave exactly as before.
+   */
+  daemon?: boolean;
+  /**
+   * Daemon-only: true when a Supabase project is configured for login. Only
+   * the explicit pair `daemon: true` + `auth_configured: false` selects the
+   * client's guest-local mode (the payload legitimately carries no Supabase
+   * fields there); a daemon that omits `auth_configured` keeps the login gate.
+   */
+  auth_configured?: boolean;
 }
 
 /** Resource paths for the four endpoints (see status semantics below). */
