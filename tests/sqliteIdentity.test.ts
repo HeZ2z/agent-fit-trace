@@ -163,7 +163,13 @@ test("concurrent writeIdentity calls to the same path all succeed without temp l
   }
 });
 
-test("an unreadable data directory surfaces the access error instead of StaleIdentityError", async () => {
+test("an unreadable data directory surfaces the access error instead of StaleIdentityError", async (t) => {
+  // Root bypasses directory permissions, so access() would surface ENOENT
+  // (missing carol.db) instead of EACCES and the EACCES path is unenforceable.
+  if (process.getuid?.() === 0) {
+    t.skip("directory permissions cannot restrict root; EACCES path unenforceable");
+    return;
+  }
   const dir = await mkdtemp(join(tmpdir(), "fit-trace-identity-"));
   try {
     await writeIdentity(join(dir, "identity.json"), "carol");
