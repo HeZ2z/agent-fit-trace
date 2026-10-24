@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { CorruptStoreError, validateWorkoutRecord } from "@agent-fit-trace/core";
+import { CorruptStoreError, ValidationError, validateWorkoutRecord } from "@agent-fit-trace/core";
 import { SqliteWorkoutStore } from "@agent-fit-trace/store";
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { loadFixture } from "./helpers.ts";
@@ -106,6 +106,72 @@ test("an idempotent re-import leaves no dirty files behind after close", async (
     const leftovers = entries.filter((name) => !/^workouts\.db(-wal|-shm)?$/.test(name));
     assert.deepEqual(leftovers, []);
     assert.ok(entries.includes("workouts.db"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a file that is not a database fails construction instead of leaking the handle", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-sqlite-garbage-"));
+  try {
+    const path = join(dir, "garbage.db");
+    await writeFile(path, "not a database", "utf8");
+
+    assert.throws(() => new SqliteWorkoutStore(path), /not a database/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stored record that is valid JSON but fails validation raises CORRUPT_STORE", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-sqlite-invalid-"));
+  try {
+    const store = new SqliteWorkoutStore(join(dir, "workouts.db"));
+    try {
+      const record = (await historyRecords())[0];
+      await store.import(record);
+
+      store.db.exec(`UPDATE workouts SET record = '{"id":"broken","schema_version":1}'`);
+
+      await assert.rejects(
+        () => store.all(),
+        (error: unknown) => {
+          assert.ok(error instanceof CorruptStoreError);
+          assert.equal(error.code, "CORRUPT_STORE");
+          return true;
+        },
+      );
+    } finally {
+      store.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an invalid date filter fails before a corrupt store is read", async () => {
+  // Filter validation must happen before storage access: a corrupt row must
+  // not mask the readable date error with CORRUPT_STORE.
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-sqlite-filter-"));
+  try {
+    const store = new SqliteWorkoutStore(join(dir, "workouts.db"));
+    try {
+      const record = (await historyRecords())[0];
+      await store.import(record);
+      store.db.exec(`UPDATE workouts SET record = '{bad' WHERE id = '${record.id}'`);
+
+      await assert.rejects(
+        () => store.query({ from: "not-a-date" }),
+        (error: unknown) => {
+          assert.ok(error instanceof ValidationError);
+          assert.equal(error.code, "VALIDATION_ERROR");
+          assert.equal(error.issues[0].code, "INVALID_FILTER_DATE");
+          return true;
+        },
+      );
+    } finally {
+      store.close();
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

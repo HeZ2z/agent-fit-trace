@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { CorruptStoreError, validateWorkoutRecord } from "@agent-fit-trace/core";
+import { CorruptStoreError, ValidationError, validateWorkoutRecord } from "@agent-fit-trace/core";
 import { JsonFileStorage, MemoryStorage, WorkoutStore } from "@agent-fit-trace/store";
 import { loadFixture } from "./helpers.ts";
 import { runStoreContractSuite } from "./store.contract.ts";
@@ -93,6 +93,43 @@ test("raises CORRUPT_STORE for malformed JSON instead of a raw SyntaxError", asy
       assert.ok(error instanceof CorruptStoreError);
       assert.equal(error.code, "CORRUPT_STORE");
       assert.equal(error.recordIndex, -1);
+      return true;
+    },
+  );
+});
+
+test("re-validates imported records on read and raises CORRUPT_STORE", async () => {
+  // The JSON backend persists imports without validating them first, so a
+  // stored record with a malformed date must fail the read loudly instead of
+  // surfacing as data.
+  const store = new WorkoutStore(new MemoryStorage());
+  const record = validateWorkoutRecord(await loadFixture("valid-strength.json")).record;
+  await store.import({ ...record, date: "not-a-date" });
+
+  await assert.rejects(
+    () => store.all(),
+    (error: unknown) => {
+      assert.ok(error instanceof CorruptStoreError);
+      assert.equal(error.code, "CORRUPT_STORE");
+      assert.equal(error.recordIndex, 0);
+      return true;
+    },
+  );
+  await assert.rejects(() => store.query(), CorruptStoreError);
+});
+
+test("an invalid date filter fails before a corrupt store is read", async () => {
+  // Filter validation must happen before storage access: a corrupt store must
+  // not mask the readable date error with CORRUPT_STORE.
+  const storage = new MemoryStorage();
+  storage.data = '{"schema_version": 1, "records": [';
+
+  await assert.rejects(
+    () => new WorkoutStore(storage).query({ from: "not-a-date" }),
+    (error: unknown) => {
+      assert.ok(error instanceof ValidationError);
+      assert.equal(error.code, "VALIDATION_ERROR");
+      assert.equal(error.issues[0].code, "INVALID_FILTER_DATE");
       return true;
     },
   );

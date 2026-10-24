@@ -10,7 +10,7 @@ import {
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
 import type { HistoryFilter, WorkoutRecord } from "@agent-fit-trace/core";
-import { filterRecordsPage } from "./filter.ts";
+import { assertValidHistoryFilter, filterRecordsPage } from "./filter.ts";
 import type { QueryResult } from "./filter.ts";
 
 export interface StoreFile {
@@ -151,6 +151,9 @@ export class WorkoutStore {
   }
 
   async query(filter: HistoryFilter = {}): Promise<QueryResult> {
+    // Validate the filter before reading storage so a corrupt store cannot
+    // mask an invalid date range with CORRUPT_STORE.
+    assertValidHistoryFilter(filter);
     return filterRecordsPage(sortRecords(await this.all()), filter);
   }
 }

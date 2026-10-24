@@ -1,4 +1,5 @@
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { FitTraceError, ValidationError } from "@agent-fit-trace/core";
@@ -102,9 +103,17 @@ export async function writeIdentity(filePath: string, activePrincipal: string): 
     active_principal: activePrincipal,
   };
   await mkdir(dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-  await rename(tempPath, filePath);
+  // A per-call unique suffix keeps concurrent writes in the same process from
+  // colliding on (and clobbering each other through) one temp file.
+  const tempPath = `${filePath}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+    await rename(tempPath, filePath);
+  } catch (error) {
+    // Best-effort cleanup: a leftover temp file must not mask the original error.
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Raised when identity.json names a principal whose database file is missing. */
@@ -125,8 +134,11 @@ async function defaultFileExists(filePath: string): Promise<boolean> {
   try {
     await access(filePath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only "does not exist" means absent; e.g. EACCES must surface instead of
+    // being misreported as a stale identity.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 

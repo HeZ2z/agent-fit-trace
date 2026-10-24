@@ -13,6 +13,17 @@ export interface QueryResult {
 }
 
 /**
+ * Validate a history filter up front: invalid or inverted date bounds throw a
+ * readable ValidationError. Backends call this before touching storage so a
+ * corrupt store cannot mask the filter error with CORRUPT_STORE.
+ */
+export function assertValidHistoryFilter(filter: HistoryFilter = {}): void {
+  const from = filter.from === undefined ? undefined : assertValidFilterDate(filter.from, "from");
+  const to = filter.to === undefined ? undefined : assertValidFilterDate(filter.to, "to");
+  assertOrderedDateRange(from, to);
+}
+
+/**
  * Pure history filtering shared by the JSON and SQLite backends: validated date
  * bounds, case-insensitive exercise match, then offset/limit paging. Callers
  * sort their records before invoking this so page ordering stays identical
@@ -22,9 +33,11 @@ export function filterRecordsPage(
   records: WorkoutRecord[],
   filter: HistoryFilter = {},
 ): QueryResult {
-  const from = filter.from === undefined ? undefined : assertValidFilterDate(filter.from, "from");
-  const to = filter.to === undefined ? undefined : assertValidFilterDate(filter.to, "to");
-  assertOrderedDateRange(from, to);
+  assertValidHistoryFilter(filter);
+
+  // The bounds are validated above; use them as given.
+  const from = filter.from;
+  const to = filter.to;
 
   let filtered = records;
 

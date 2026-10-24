@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import {
   ConflictError,
-  CorruptStoreError,
   ValidationError,
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
@@ -82,6 +81,26 @@ export function runStoreContractSuite(
       mutated.exercises[0].sets[0].weight = 82.5;
 
       await assert.rejects(() => store.import(mutated), ConflictError);
+      assert.equal((await store.all()).length, 1);
+    });
+  });
+
+  test(`${name}: re-importing a record read back from the store is an idempotent no-op`, async () => {
+    await withStore(makeStore, async (store) => {
+      // Import content that validation normalizes (exercise names are trimmed):
+      // the stored canonical must be the normalized shape, or a read-back
+      // re-import would compare unequal bytes and misreport a conflict.
+      const record = await fixtureRecord("valid-strength.json");
+      const noisy: WorkoutRecord = structuredClone(record);
+      noisy.exercises[0].name = " bench_press ";
+      await store.import(noisy);
+
+      const readBack = (await store.all())[0];
+      assert.equal(readBack.exercises[0].name, "bench_press");
+
+      const again = await store.import(readBack);
+      assert.equal(again.duplicate, true);
+      assert.equal(again.total, 1);
       assert.equal((await store.all()).length, 1);
     });
   });
@@ -170,28 +189,6 @@ export function runStoreContractSuite(
         () => store.query({ from: "2026-09-10", to: "2026-09-01" }),
         ValidationError,
       );
-    });
-  });
-
-  test(`${name}: re-validates every record on read and raises CORRUPT_STORE`, async () => {
-    await withStore(makeStore, async (store) => {
-      // An otherwise-valid record with a malformed date: both backends persist
-      // it without import-time validation, and both must fail the read loudly
-      // instead of surfacing it as data.
-      const record = await fixtureRecord("valid-strength.json");
-      const invalid: WorkoutRecord = { ...record, date: "not-a-date" };
-      await store.import(invalid);
-
-      await assert.rejects(
-        () => store.all(),
-        (error: unknown) => {
-          assert.ok(error instanceof CorruptStoreError);
-          assert.equal(error.code, "CORRUPT_STORE");
-          assert.equal(error.recordIndex, 0);
-          return true;
-        },
-      );
-      await assert.rejects(() => store.query(), CorruptStoreError);
     });
   });
 }

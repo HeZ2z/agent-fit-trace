@@ -10,7 +10,7 @@ import {
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
 import type { HistoryFilter, WorkoutRecord } from "@agent-fit-trace/core";
-import { filterRecordsPage } from "./filter.ts";
+import { assertValidHistoryFilter, filterRecordsPage } from "./filter.ts";
 import type { QueryResult } from "./filter.ts";
 
 const CREATE_SQL = `
@@ -108,15 +108,22 @@ export class SqliteWorkoutStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new DatabaseSync(filePath);
-    // busy_timeout must come first: every later statement then waits on a
-    // locked db instead of failing fast with SQLITE_BUSY. The WAL switch is
-    // the one exception (see enableWal) and gets its own bounded retry.
-    this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    enableWal(this.db);
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    this.db.exec("PRAGMA foreign_keys = ON");
-    this.db.exec(CREATE_SQL);
+    try {
+      // busy_timeout must come first: every later statement then waits on a
+      // locked db instead of failing fast with SQLITE_BUSY. The WAL switch is
+      // the one exception (see enableWal) and gets its own bounded retry.
+      this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      enableWal(this.db);
+      this.db.exec("PRAGMA synchronous = NORMAL");
+      this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      this.db.exec("PRAGMA foreign_keys = ON");
+      this.db.exec(CREATE_SQL);
+    } catch (error) {
+      // Setup failed (e.g. the file is not a database): release the handle
+      // before propagating, or the descriptor leaks for the process lifetime.
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -131,31 +138,35 @@ export class SqliteWorkoutStore {
   }
 
   async import(record: WorkoutRecord): Promise<{ duplicate: boolean; total: number }> {
-    const canonical = stableStringify(record);
+    // Canonicalize the validated, normalized record (names trimmed, dates
+    // coerced, ...) so stored content matches what `all()` returns and a
+    // read-back re-import stays an idempotent no-op instead of a false CONFLICT.
+    const validated = validateWorkoutRecord(record).record;
+    const canonical = stableStringify(validated);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const existing = this.db
         .prepare("SELECT canonical FROM workouts WHERE id = ?")
-        .get(record.id) as { canonical: string } | undefined;
+        .get(validated.id) as { canonical: string } | undefined;
 
       if (existing !== undefined) {
         this.db.exec("ROLLBACK");
         if (existing.canonical === canonical) {
           return { duplicate: true, total: this.countRecords() };
         }
-        throw new ConflictError(record.id);
+        throw new ConflictError(validated.id);
       }
 
       try {
         this.db
           .prepare("INSERT INTO workouts (id, date, canonical, record) VALUES (?, ?, ?, ?)")
-          .run(record.id, record.date, canonical, JSON.stringify(record));
+          .run(validated.id, validated.date, canonical, JSON.stringify(validated));
       } catch (error) {
         // A racing writer may have inserted the same id between BEGIN and the
         // INSERT hitting the PRIMARY KEY: map it to the same CONFLICT contract
         // as the JSON backend. SQLITE_BUSY is left to busy_timeout to absorb.
         if (isSqliteConstraintError(error)) {
-          throw new ConflictError(record.id);
+          throw new ConflictError(validated.id);
         }
         throw error;
       }
@@ -169,6 +180,9 @@ export class SqliteWorkoutStore {
   }
 
   async query(filter: HistoryFilter = {}): Promise<QueryResult> {
+    // Validate the filter before reading storage so a corrupt store cannot
+    // mask an invalid date range with CORRUPT_STORE.
+    assertValidHistoryFilter(filter);
     return filterRecordsPage(await this.all(), filter);
   }
 

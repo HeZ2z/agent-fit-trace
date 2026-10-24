@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -137,6 +137,58 @@ test("identity helpers round-trip through a real file and reject malformed conte
     assert.deepEqual(await readIdentity(path), { schema_version: 1, active_principal: "alice" });
 
     await assert.rejects(() => writeIdentity(path, "../evil"), ValidationError);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent writeIdentity calls to the same path all succeed without temp leftovers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-identity-"));
+  try {
+    const path = join(dir, "identity.json");
+    await Promise.all([writeIdentity(path, "alice"), writeIdentity(path, "bob")]);
+
+    const identity = await readIdentity(path);
+    assert.ok(identity !== null);
+    assert.equal(identity.schema_version, 1);
+    assert.ok(["alice", "bob"].includes(identity.active_principal));
+
+    const entries = await readdir(dir);
+    assert.deepEqual(
+      entries.filter((name) => name.endsWith(".tmp")),
+      [],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unreadable data directory surfaces the access error instead of StaleIdentityError", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-identity-"));
+  try {
+    await writeIdentity(join(dir, "identity.json"), "carol");
+
+    // Make the directory untraversable so the default fileExists check fails
+    // with EACCES, not ENOENT: a permission problem must not be misreported
+    // as a stale identity.
+    await chmod(dir, 0o000);
+    try {
+      await assert.rejects(
+        () =>
+          resolveActiveStore({
+            env: {},
+            dataDir: dir,
+            readIdentity: async () => CAROL,
+          }),
+        (error: unknown) => {
+          assert.ok(!(error instanceof StaleIdentityError));
+          assert.equal((error as NodeJS.ErrnoException).code, "EACCES");
+          return true;
+        },
+      );
+    } finally {
+      await chmod(dir, 0o700);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
