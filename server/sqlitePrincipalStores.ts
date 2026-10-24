@@ -177,17 +177,18 @@ export class SqliteFitTraceClient implements FitTraceClient {
   constructor(dbPath: string) {
     // The workout store owns its connection (mkdir, WAL, busy_timeout, schema).
     this.workoutStore = new SqliteWorkoutStore(dbPath);
-    // Open outside the try: if the open itself fails there is no handle to close.
-    this.stateDb = new DatabaseSync(dbPath);
+    let stateDb: DatabaseSync | undefined;
     try {
-      this.stateDb.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-      this.stateDb.exec(CREATE_APP_STATE_SQL);
+      stateDb = new DatabaseSync(dbPath);
+      stateDb.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      stateDb.exec(CREATE_APP_STATE_SQL);
     } catch (error) {
-      // Setup failed: release both handles before propagating.
-      this.stateDb.close();
+      // Release whichever connections opened successfully before propagating.
+      stateDb?.close();
       this.workoutStore.close();
       throw error;
     }
+    this.stateDb = stateDb;
   }
 
   /** Close both connections; the client is not usable afterwards. */
