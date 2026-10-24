@@ -107,7 +107,17 @@ export async function fetchPublicConfig(
   // closed exactly as before — a bare `daemon: true` without the marker pair
   // never widens the gate.
   const guestLocal = daemon === true && auth_configured === false;
-  if (guestLocal && supabaseUrl === undefined && supabasePublishableKey === undefined) {
+  if (guestLocal) {
+    // A conflicting payload (marker pair plus Supabase fields) is ambiguous:
+    // honoring the Supabase fields would resolve to `daemon-optional`, while
+    // honoring the marker pair would throw the configured project away, so it
+    // is rejected instead of silently picking either surface.
+    if (supabaseUrl !== undefined || supabasePublishableKey !== undefined) {
+      throw new MalformedResponseError(
+        "supabaseUrl",
+        "guest-local payload must not carry Supabase fields",
+      );
+    }
     return {
       supabaseUrl: "",
       supabasePublishableKey: "",

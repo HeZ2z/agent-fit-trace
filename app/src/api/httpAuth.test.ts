@@ -326,6 +326,40 @@ describe("fetchPublicConfig", () => {
     await expect(fetchPublicConfig("/api/v1", daemonWithoutAuth)).rejects.toThrow(/supabaseUrl/);
   });
 
+  it("rejects a guest-local payload that also carries Supabase fields", async () => {
+    // The marker pair says guest-local while the Supabase fields say a project
+    // is configured: that conflict is rejected instead of silently picking a
+    // surface (which would either ignore Supabase or throw the marker away).
+    const conflict = (async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            supabaseUrl: "http://x",
+            supabasePublishableKey: "pub",
+            daemon: true,
+            auth_configured: false,
+          },
+        }),
+      )) as unknown as typeof fetch;
+    const conflictError = await fetchPublicConfig("/api/v1", conflict).catch(
+      (caught: unknown) => caught,
+    );
+    expect(conflictError).toBeInstanceOf(MalformedResponseError);
+    expect(conflictError).toMatchObject({ field: "supabaseUrl", code: "MALFORMED_RESPONSE" });
+    expect(conflictError).toMatchObject({
+      message: expect.stringContaining("guest-local payload must not carry Supabase fields"),
+    });
+
+    // Either field alone is enough to make the payload conflicting.
+    const partialConflict = (async () =>
+      new Response(
+        JSON.stringify({ data: { supabaseUrl: "http://x", daemon: true, auth_configured: false } }),
+      )) as unknown as typeof fetch;
+    await expect(fetchPublicConfig("/api/v1", partialConflict)).rejects.toThrow(
+      /guest-local payload must not carry Supabase fields/,
+    );
+  });
+
   it("rejects secret-looking keys instead of publishing them", async () => {
     const secret = (async () =>
       new Response(

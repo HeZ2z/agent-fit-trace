@@ -33,6 +33,7 @@ export function SignInScreen() {
     authError,
     publicConfig,
     configError,
+    authSurface,
   } = useAuth();
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -106,6 +107,25 @@ export function SignInScreen() {
     signedInAsAccount ||
     publicConfig === null ||
     guestSignInEnabled !== true;
+
+  // Guest-local has no identity provider at all: the sign-in form, the reset
+  // link, and the guest entry button would all submit against the empty
+  // Supabase config fields. Render the truthful unconfigured state instead of
+  // any submittable form.
+  if (authSurface === "guest-local") {
+    return (
+      <section className="auth-screen" aria-labelledby="signin-heading">
+        <h1 id="signin-heading">{t("Sign in")}</h1>
+        <div className="validation-summary" role="alert">
+          <p>
+            {t(
+              "Sign-in is not configured on this deployment. This daemon runs in local guest mode, so there is no account sign-in.",
+            )}
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="auth-screen" aria-labelledby="signin-heading">
@@ -301,7 +321,8 @@ function resolveResetToken(): string | null {
 }
 
 export function ResetPasswordScreen() {
-  const { publicConfig, configError, session, pendingGuestUpgrade, finishGuestUpgrade } = useAuth();
+  const { publicConfig, configError, session, pendingGuestUpgrade, finishGuestUpgrade, authSurface } =
+    useAuth();
   const { t } = useI18n();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
@@ -395,6 +416,25 @@ export function ResetPasswordScreen() {
     } finally {
       setPending(false);
     }
+  }
+
+  // Guest-local has no identity provider: a password reset or first-password
+  // setup would target an auth host that does not exist on this deployment
+  // (the empty Supabase config fields). Render the truthful unconfigured
+  // state instead of a submittable form.
+  if (authSurface === "guest-local") {
+    return (
+      <section className="auth-screen" aria-labelledby="reset-heading">
+        <h1 id="reset-heading">{t("Choose a new password")}</h1>
+        <div className="validation-summary" role="alert">
+          <p>
+            {t(
+              "Password reset is not configured on this deployment. This daemon runs in local guest mode, so there is no account password to reset.",
+            )}
+          </p>
+        </div>
+      </section>
+    );
   }
 
   return (

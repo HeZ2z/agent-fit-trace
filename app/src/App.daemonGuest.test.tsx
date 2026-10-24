@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import type { HandlerInit } from "@agent-fit-trace/api-contracts/testing";
@@ -309,5 +309,61 @@ describe("app guest-local daemon mode", () => {
     // the data plane: the active principal switched with the identity.
     expect(state.bearersSeen.length).toBeGreaterThan(0);
     expect(new Set(state.bearersSeen)).toEqual(new Set(["access-guest-1"]));
+  });
+
+  it("gates the login and reset-password screens with an unconfigured notice in guest-local mode", async () => {
+    const state: DaemonFetchState = { seenUrls: [], bearersSeen: [], publicConfigFetches: 0 };
+    installDaemonFetch(state);
+
+    // /login shows the unconfigured state: no submittable form, no reset
+    // link, no guest entry button — nothing that could reach an auth host.
+    window.history.pushState({}, "", "/login");
+    const { unmount } = render(<App />);
+    const loginRegion = await screen.findByRole("region", { name: /sign in/i });
+    expect(
+      within(loginRegion).getByText(/sign-in is not configured on this deployment/i),
+    ).toBeInTheDocument();
+    expect(within(loginRegion).queryByRole("button")).toBeNull();
+    expect(within(loginRegion).queryByLabelText(/email/i)).toBeNull();
+    expect(within(loginRegion).queryByLabelText(/password/i)).toBeNull();
+    unmount();
+
+    // /reset-password likewise: a reset here would target an auth host that
+    // does not exist on this daemon, so only the notice renders.
+    window.history.pushState({}, "", "/reset-password");
+    render(<App />);
+    const resetRegion = await screen.findByRole("region", {
+      name: /choose a new password/i,
+    });
+    expect(
+      within(resetRegion).getByText(/password reset is not configured on this deployment/i),
+    ).toBeInTheDocument();
+    expect(within(resetRegion).queryByRole("button")).toBeNull();
+    expect(within(resetRegion).queryByLabelText(/new password/i)).toBeNull();
+    unmount();
+  });
+
+  it("keeps the login and reset-password forms on a daemon with auth configured", async () => {
+    const state: ConfiguredState = { seenUrls: [], bearersSeen: [], guestSignupCalls: 0 };
+    installConfiguredDaemonFetch(state);
+
+    // daemon-optional: the ordinary reset form (unchanged behavior).
+    window.history.pushState({}, "", "/reset-password");
+    const { unmount } = render(<App />);
+    const resetRegion = await screen.findByRole("region", {
+      name: /choose a new password/i,
+    });
+    expect(
+      within(resetRegion).getByRole("button", { name: /update password/i }),
+    ).toBeEnabled();
+    unmount();
+
+    // daemon-optional: the ordinary sign-in gate with the guest entry path.
+    window.history.pushState({}, "", "/login");
+    render(<App />);
+    const loginRegion = await screen.findByRole("region", { name: /sign in/i });
+    expect(
+      within(loginRegion).getByRole("button", { name: /continue as guest/i }),
+    ).toBeInTheDocument();
   });
 });
