@@ -19,6 +19,10 @@ App JSON → `import_workout` → deterministic analysis → `generate_next_plan
 - **Data API** — `packages/fit-trace-api-contracts/` and `server/`: shared client contracts and authenticated HTTP data access.
 - **Current pi integration** — `.pi/extensions/fit-trace/` and `.pi/skills/training-coach/SKILL.md`: tool registration, local JSON persistence, and coaching instructions.
 
+## MCP server
+
+`packages/fit-trace-mcp/` exposes the same four tools as the pi extension over the Model Context Protocol (stdio), plus two read-only resources and the `training-coach` prompt, so any MCP host can work against the same local store. See [docs/mcp.md](docs/mcp.md) for storage, host configuration, and verification.
+
 ## Development
 
 Requires Node >= 24 and pnpm.
@@ -34,3 +38,4 @@ pnpm typecheck
 - [Pull request guidelines](CONTRIBUTING.md)
 - [MVP design](docs/mvp-design.md)
 - [pi integration spec](docs/extension-skill-spec.md)
+- [MCP server](docs/mcp.md)

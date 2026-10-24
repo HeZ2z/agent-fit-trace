@@ -19,6 +19,10 @@ App JSON → `import_workout` → 确定性分析 → `generate_next_plan` 草�
 - **数据 API** — `packages/fit-trace-api-contracts/` 和 `server/`：共享客户端契约与认证 HTTP 数据访问。
 - **现有 pi 集成** — `.pi/extensions/fit-trace/` 和 `.pi/skills/training-coach/SKILL.md`：工具注册、本地 JSON 持久化与教练行为指令。
 
+## MCP 服务器
+
+`packages/fit-trace-mcp/` 通过 Model Context Protocol（stdio）暴露与 pi 扩展相同的四个工具，外加两个只读资源和 `training-coach` prompt，任何 MCP 宿主都可以基于同一份本地存储工作。存储、宿主配置与验证方式见 [docs/mcp.md](docs/mcp.md)。
+
 ## 开发
 
 需要 Node >= 24 和 pnpm。
@@ -34,3 +38,4 @@ pnpm typecheck
 - [PR 提交规范](CONTRIBUTING.md)
 - [MVP 设计](docs/mvp-design.md)
 - [pi 集成规范](docs/extension-skill-spec.md)
+- [MCP 服务器](docs/mcp.md)
