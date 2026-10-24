@@ -15,6 +15,10 @@ development/testing modes — pick exactly one:
    `FIT_TRACE_DEV_API_MODE=supabase` dev API, app in plain HTTP mode
    (no legacy flag).
 
+A further runtime exists beyond the development modes: the standalone local
+daemon's **guest-local** plane, which is not selected by any build variable —
+the app negotiates it from the server at boot (see "Daemon mode" below).
+
 Production requires an effective **HTTP** mode. A launcher may inject
 `window.__FIT_TRACE_RUNTIME = { mode: "http" }`; otherwise
 `VITE_FIT_TRACE_MODE=http` must be built in. Missing, `local`, unknown, or
@@ -164,15 +168,61 @@ plus publishable key, and that unauthenticated workout reads are gated
 (`401 UNAUTHENTICATED`). Never write test data to cloud; the integration
 suite refuses non-loopback URLs.
 
+## Daemon mode (guest-local, negotiated from public-config)
+
+Selection: an effective HTTP build served by `agent-fit-trace daemon`
+(`pnpm daemon`; see [`local-daemon.md`](local-daemon.md)). There is no
+`VITE_FIT_TRACE_MODE=daemon` and no build-time configuration: the daemon
+serves the same `/fit-trace-runtime.js` bootstrap as the launcher
+(`mode: "http"`, `coaching: "same-origin"`), so a default production build
+acts as an HTTP client under the daemon without rebuilding.
+
+- The surface is discovered from `GET /api/v1/public-config`: the daemon
+  always advertises `daemon: true` and carries `auth_configured`
+  (`true` only when a Supabase project is configured).
+  `resolveAuthSurface` (`app/src/api/authSurface.ts`) derives the runtime
+  surface from the parsed payload. Both fields are optional strict
+  booleans — a payload without them (Vercel, launcher, dev API) parses
+  exactly as before, and a bare `daemon: true` without the marker pair
+  keeps the strict gate.
+- `daemon: true` + `auth_configured: false` is **guest-local**:
+  `unconfigured` is a first-class state with the same semantics as mobile's
+  account model (`mobile/src/auth/authModel.ts`). The app boots signed-in
+  as the daemon's stable local guest — no Supabase bootstrap call, no
+  sign-in gate, no persisted credential — and every `/api/v1` request
+  carries the daemon's fixed local guest bearer
+  (`fit-trace-local-daemon`; `LOCAL_GUEST_BEARER` in
+  `app/src/api/authSurface.ts`, mirroring `server/auth/localVerifier.ts`).
+  The active principal is `guest`, so records land in the daemon's
+  per-principal SQLite guest database on this machine.
+- Cloud-only surfaces render explicit unavailable states for guests. The
+  Coach screen shows the guest-local note (a local coach needs pi via the
+  launcher; cloud coaching requires a formal account) and never advertises
+  or probes a cloud backend for a guest. Signing in is never
+  auto-triggered: a mode change or identity never starts a sync or a
+  cloud-coach call.
+- The local guest cannot sign out — there is no other identity on the
+  machine and the daemon's guest database persists — so the account page
+  states this instead of offering sign-out/upgrade/switch controls.
+- `daemon: true` + `auth_configured: true` keeps today's strict login gate
+  plus the deployment-advertised "Continue as guest" path. The identity
+  switch selects that principal's own database on the daemon side; guest
+  data and account data stay in separate per-identity stores with no merge
+  or migration.
+- A missing/failed public config still fails closed exactly as in every
+  other mode; guest-local only exists when the daemon explicitly advertised
+  it.
+
 ## Storage ownership / no migration
 
-The three modes do not share data and there is NO automatic migration:
+The modes do not share data and there is NO automatic migration:
 
 | Mode | Workouts | Imported snapshots/selections/adoption | Lifetime |
 | --- | --- | --- | --- |
 | Local browser | owner-namespaced `localStorage` | owner-namespaced `localStorage` | this browser/device only |
 | Memory HTTP | dev API process memory | dev API process memory | lost on API restart |
 | Authenticated Supabase | Postgres, RLS per owner | Postgres, RLS per owner | account/cloud persistence |
+| Daemon guest-local | daemon SQLite (`<dataDir>/guest.db`) | daemon SQLite | this machine's daemon data directory |
 
 Legacy unowned `agent-fit-trace:workout:v1:<id>` keys are preserved but invisible
 to owner-scoped clients. They are not attributed to the current account, not

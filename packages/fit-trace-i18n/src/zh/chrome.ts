@@ -32,8 +32,11 @@ export const messages: Record<string, string> = {
   Local: "本地",
   "Cloud mode · account data": "云端模式 · 账号数据",
   "Local mode · browser storage": "本地模式 · 浏览器存储",
+  "Local mode · daemon data": "本地模式 · 守护进程数据",
   "Records, snapshots and coaching runs belong to the signed-in account.":
     "训练记录、快照与教练运行都归属于登录账号。",
+  "Records and snapshots stay on this machine through the local daemon; export them from Me.":
+    "训练记录与快照通过本地守护进程保存在本机；可在「我的」中导出。",
   "Records and snapshots stay in this browser; export them from Me.":
     "训练记录与快照保存在此浏览器；可在「我的」中导出。",
   "Account": "账号",
@@ -96,6 +99,9 @@ export const messages: Record<string, string> = {
   "Could not start the account upgrade.": "无法开始账号升级。",
   "Could not resend the verification link.": "无法重新发送验证链接。",
   "Could not check the verification link.": "无法检查验证链接。",
+  "· Local guest on this machine's daemon.": "· 本机守护进程上的本地访客。",
+  "Your workouts are stored by the local daemon on this machine under this guest identity. No account sign-in is configured for this daemon, so there is nothing to sign out of and no account to upgrade to.":
+    "你的训练由本机的守护进程以此访客身份存储。此守护进程未配置账号登录，因此没有可退出的会话，也没有可升级的账号。",
 
   /* ── auth: sign in ──────────────────────────────────────────── */
   "Sign in": "登录",
@@ -119,6 +125,8 @@ export const messages: Record<string, string> = {
   "Guest sign-in is not enabled on this deployment.": "此部署未开启访客登录。",
   "Sign out before starting a guest session; an account is never replaced by guest data.":
     "请先退出账号再开启访客会话；访客数据不会替换账号。",
+  "Sign-in is not configured on this deployment. This daemon runs in local guest mode, so there is no account sign-in.":
+    "此部署未配置登录。守护进程以本地访客模式运行，因此没有可用的账号登录。",
   "Continue as guest": "以访客身份继续",
 
   /* ── auth: password recovery ────────────────────────────────── */
@@ -155,6 +163,8 @@ export const messages: Record<string, string> = {
   "The password was saved, but this session changed before the upgrade could be confirmed. The pending upgrade was kept; reopen this tab to finish.":
     "密码已保存，但会话在确认升级前发生变化。待完成的升级已保留；请重新打开此标签页完成。",
   "Could not update the password.": "无法更新密码。",
+  "Password reset is not configured on this deployment. This daemon runs in local guest mode, so there is no account password to reset.":
+    "此部署未配置密码重置。守护进程以本地访客模式运行，因此没有可重置的账号密码。",
   "This link is invalid or expired. Request a new one or sign in.":
     "此链接无效或已过期，请重新获取或登录。",
   "This verification link could not be applied. Your current session was not changed.":

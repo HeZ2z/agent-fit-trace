@@ -25,6 +25,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
   const {
     status,
     user,
+    authSurface,
     guestUpgradeEnabled,
     pendingGuestUpgrade,
     beginGuestUpgrade,
@@ -45,6 +46,37 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
   const [checkMessage, setCheckMessage] = useState<string | null>(null);
 
   if (status !== "signed-in" || user === null || user.isAnonymous !== true) return null;
+
+  // Guest-local (daemon without a configured login): the local guest is the
+  // only identity on this machine, its data lives in the daemon's guest store
+  // (not this browser), and no account sign-in exists to switch or upgrade
+  // to. Show that truthfully instead of the destructive Supabase guest
+  // controls — sign-out and upgrade would be lies here.
+  if (authSurface === "guest-local") {
+    if (compact) {
+      return (
+        <div className="account-area account-guest-compact" aria-label={t("Guest account")}>
+          <span className="account-badge account-guest-label">{t("Guest")}</span>
+          <Link className="account-link" to="/me">
+            {t("Account details")}
+          </Link>
+        </div>
+      );
+    }
+    return (
+      <div className="account-area account-guest" aria-label={t("Guest account")}>
+        <p>
+          <span className="account-guest-label">{t("Guest")}</span>{" "}
+          {t("· Local guest on this machine's daemon.")}
+        </p>
+        <p>
+          {t(
+            "Your workouts are stored by the local daemon on this machine under this guest identity. No account sign-in is configured for this daemon, so there is nothing to sign out of and no account to upgrade to.",
+          )}
+        </p>
+      </div>
+    );
+  }
 
   const pending = pendingGuestUpgrade !== null && pendingGuestUpgrade.userId === user.id
     ? pendingGuestUpgrade

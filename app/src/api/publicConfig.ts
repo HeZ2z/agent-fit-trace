@@ -10,6 +10,17 @@ import { MalformedResponseError } from "@agent-fit-trace/api-contracts";
  * misconfigured server cannot leak secrets through this path. Keys that look
  * like `sb_secret_…` or a JWT with `role: service_role` are rejected
  * client-side as well, so an env mistake cannot publish the service role.
+ *
+ * Additive daemon fields (issue #39): the standalone local daemon answers
+ * `GET /api/v1/public-config` with `daemon: true` and `auth_configured`
+ * instead of the Supabase fields when no project is configured. Both markers
+ * are optional strict booleans; a payload without them parses exactly as
+ * before (Vercel/launcher paths unchanged). A `daemon: true,
+ * auth_configured: false` payload is guest-local mode: it legitimately has no
+ * Supabase fields, so the config carries empty Supabase strings that no
+ * Supabase code path may consume (see `resolveAuthSurface` in
+ * `authSurface.ts` — every sign-in/refresh path is refused before the fields
+ * are read).
  */
 
 function isRejectedKey(key: string): boolean {
@@ -69,15 +80,14 @@ export async function fetchPublicConfig(
     guestSignInEnabled,
     guestUpgradeEnabled,
     guestSignInCaptchaRequired,
+    daemon,
+    auth_configured,
   } = data as Record<string, unknown>;
-  if (typeof supabaseUrl !== "string" || supabaseUrl === "" || !isSafeSupabaseUrl(supabaseUrl)) {
-    throw new MalformedResponseError("supabaseUrl", "must be a non-empty http(s) URL");
+  if (daemon !== undefined && typeof daemon !== "boolean") {
+    throw new MalformedResponseError("daemon", "must be a boolean");
   }
-  if (typeof supabasePublishableKey !== "string" || supabasePublishableKey === "") {
-    throw new MalformedResponseError("supabasePublishableKey", "must be a non-empty string");
-  }
-  if (isRejectedKey(supabasePublishableKey)) {
-    throw new MalformedResponseError("supabasePublishableKey", "must be a publishable key");
+  if (auth_configured !== undefined && typeof auth_configured !== "boolean") {
+    throw new MalformedResponseError("auth_configured", "must be a boolean");
   }
   if (guestSignInEnabled !== undefined && typeof guestSignInEnabled !== "boolean") {
     throw new MalformedResponseError("guestSignInEnabled", "must be a boolean");
@@ -91,6 +101,42 @@ export async function fetchPublicConfig(
   ) {
     throw new MalformedResponseError("guestSignInCaptchaRequired", "must be a boolean");
   }
+  // Guest-local daemon: the explicit marker pair (`daemon: true` AND
+  // `auth_configured: false`) says no Supabase project is configured, so the
+  // Supabase fields are legitimately absent. Anything else missing them fails
+  // closed exactly as before — a bare `daemon: true` without the marker pair
+  // never widens the gate.
+  const guestLocal = daemon === true && auth_configured === false;
+  if (guestLocal) {
+    // A conflicting payload (marker pair plus Supabase fields) is ambiguous:
+    // honoring the Supabase fields would resolve to `daemon-optional`, while
+    // honoring the marker pair would throw the configured project away, so it
+    // is rejected instead of silently picking either surface.
+    if (supabaseUrl !== undefined || supabasePublishableKey !== undefined) {
+      throw new MalformedResponseError(
+        "supabaseUrl",
+        "guest-local payload must not carry Supabase fields",
+      );
+    }
+    return {
+      supabaseUrl: "",
+      supabasePublishableKey: "",
+      guestSignInEnabled: guestSignInEnabled === true,
+      guestUpgradeEnabled: guestUpgradeEnabled === true,
+      guestSignInCaptchaRequired: guestSignInCaptchaRequired === true,
+      daemon: true,
+      auth_configured: false,
+    };
+  }
+  if (typeof supabaseUrl !== "string" || supabaseUrl === "" || !isSafeSupabaseUrl(supabaseUrl)) {
+    throw new MalformedResponseError("supabaseUrl", "must be a non-empty http(s) URL");
+  }
+  if (typeof supabasePublishableKey !== "string" || supabasePublishableKey === "") {
+    throw new MalformedResponseError("supabasePublishableKey", "must be a non-empty string");
+  }
+  if (isRejectedKey(supabasePublishableKey)) {
+    throw new MalformedResponseError("supabasePublishableKey", "must be a publishable key");
+  }
   return {
     supabaseUrl,
     supabasePublishableKey,
@@ -98,5 +144,7 @@ export async function fetchPublicConfig(
     guestSignInEnabled: guestSignInEnabled === true,
     guestUpgradeEnabled: guestUpgradeEnabled === true,
     guestSignInCaptchaRequired: guestSignInCaptchaRequired === true,
+    ...(daemon === undefined ? {} : { daemon }),
+    ...(auth_configured === undefined ? {} : { auth_configured }),
   };
 }

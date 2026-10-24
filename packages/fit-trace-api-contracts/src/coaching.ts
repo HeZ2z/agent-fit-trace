@@ -1326,6 +1326,8 @@ export function parsePublicApiConfig(value: unknown): {
   guestSignInEnabled?: boolean;
   guestUpgradeEnabled?: boolean;
   guestSignInCaptchaRequired?: boolean;
+  daemon?: boolean;
+  auth_configured?: boolean;
 } {
   if (!isObject(value)) fail("(root)", "must be an object");
   if (value.guestSignInEnabled !== undefined && typeof value.guestSignInEnabled !== "boolean") {
@@ -1340,6 +1342,12 @@ export function parsePublicApiConfig(value: unknown): {
   ) {
     fail("guestSignInCaptchaRequired", "must be a boolean");
   }
+  if (value.daemon !== undefined && typeof value.daemon !== "boolean") {
+    fail("daemon", "must be a boolean");
+  }
+  if (value.auth_configured !== undefined && typeof value.auth_configured !== "boolean") {
+    fail("auth_configured", "must be a boolean");
+  }
   return {
     supabaseUrl: assertNonBlankString(value.supabaseUrl, "supabaseUrl"),
     supabasePublishableKey: assertNonBlankString(value.supabasePublishableKey, "supabasePublishableKey"),
@@ -1352,5 +1360,7 @@ export function parsePublicApiConfig(value: unknown): {
     ...(value.guestSignInCaptchaRequired === undefined
       ? {}
       : { guestSignInCaptchaRequired: value.guestSignInCaptchaRequired }),
+    ...(value.daemon === undefined ? {} : { daemon: value.daemon }),
+    ...(value.auth_configured === undefined ? {} : { auth_configured: value.auth_configured }),
   };
 }

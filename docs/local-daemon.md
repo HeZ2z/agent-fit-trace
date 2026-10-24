@@ -11,10 +11,10 @@ browser) and survives client disconnects.
 `agent-fit-trace start` is unchanged in this slice: it keeps its current
 meaning (fixed upstream authenticated API proxy + foreground composite,
 see [`local-launcher.md`](local-launcher.md)) so the documented launcher
-contract is not broken. The two coexist during the transition; once guest
-mode ships and the cloud path migrates, `start` is reduced to a
-foreground alias of the daemon (spawn + open browser), with the upstream
-proxy behavior remaining selectable by flag until then.
+contract is not broken. The two coexist during the transition; with app
+guest mode shipped (#39), `start` is being reduced to a foreground alias
+of the daemon (spawn + open browser), with the upstream proxy behavior
+remaining selectable by flag until the cloud path migrates.
 
 ## Command
 
@@ -82,8 +82,9 @@ login flow scopes snapshots and coaching to the same principal.
   `auth_configured` (`true` only when a Supabase project is configured).
   The Supabase `supabaseUrl`/`supabasePublishableKey` fields (and the
   guest sign-in capability flags) are carried **only when configured**.
-  App-side strict parsing of these fields lands with issue #39; until
-  then the fields are additive and ignored by current clients.
+  App-side strict parsing shipped with #39: the marker pair
+  `daemon: true` + `auth_configured: false` boots the app into guest-local
+  mode; payloads without the markers parse exactly as before.
 - `/api/v1` data plane (the shared `FitTraceClient` contract, served by
   the authenticated handler over SQLite):
   `GET|POST /workouts`, `GET /analysis`, `POST /plans/drafts`,
@@ -119,15 +120,24 @@ curl -H "Authorization: Bearer fit-trace-local-daemon" \
 ```
 
 The default `pnpm daemon` still serves the shell whenever
-`<repo>/app/dist` has been built (`pnpm build`), same-origin.
+`<repo>/app/dist` has been built (`pnpm build`), same-origin. With the
+shell served, the app no longer needs curl: a default build (no build
+variables, no Supabase configuration) negotiates guest-local from
+`GET /api/v1/public-config` and drives the whole `/api/v1` contract —
+workouts, imports, analysis, plan drafts — as the daemon's local guest
+(see `docs/app-dev-modes.md`, "Daemon mode"). The app-shell relationship
+is native app support now, not a curl-only data plane.
 
 ## Relationships to #39 and #40
 
-- **#39 (app-side guest mode):** the daemon serves the valid local
-  payload today (`daemon: true`, `auth_configured`, Supabase fields only
-  when configured). The app's strict parsing that switches cloud surfaces
-  off and gates login on `auth_configured` lands in #39; until then the
-  app treats the extra fields as unknown and ignores them.
+- **#39 (app-side guest mode): implemented.** The app's strict public-config
+  parsing accepts the daemon payload and enters guest-local on
+  `daemon: true` + `auth_configured: false`: it boots signed-in as the
+  stable local guest, sends the fixed guest bearer on every `/api/v1`
+  request, gates cloud surfaces off for guests, and keeps the normal login
+  gate (plus the advertised guest path) when a Supabase project is
+  configured (`auth_configured: true`). No build variables are involved —
+  the surface is negotiated from this endpoint at boot.
 - **#40 (MCP/pi followers):** `identity.json` names the active principal
   the daemon serves; `@agent-fit-trace/store`'s
   `resolveActiveStore`/`principalDbPath` read the same file and db layout,

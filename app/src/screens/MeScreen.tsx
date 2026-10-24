@@ -436,7 +436,7 @@ type WorkoutPreviewState = WorkoutImportPreview & {
 
 export function MeScreen() {
   const { client, records, status: historyStatus, reload } = useWorkouts();
-  const { user } = useAuth();
+  const { user, authSurface } = useAuth();
   const { theme, setTheme } = useTheme();
   const { language, setLanguage, t } = useI18n();
   const { exportWorkouts, error: exportError, result: exportResult } = useWorkoutExport(records);
@@ -653,20 +653,27 @@ export function MeScreen() {
   const httpMode = isHttpModeActive(
     (import.meta.env as Record<string, string | undefined> | undefined)?.VITE_FIT_TRACE_MODE,
   );
+  // On the daemon the HTTP transport talks to this machine's local service,
+  // so "on the server" would be a lie — snapshots stay on this device.
+  const daemonLocal = authSurface === "guest-local" || authSurface === "daemon-optional";
   const storageSubject =
     user === null
       ? t("the current session")
       : user.isAnonymous === true
         ? t("this guest identity")
         : t("the signed-in account");
-  const scope = httpMode
-    ? t("Storage scope: HTTP mode. Snapshots and selections belong to {subject} on the server.{devNote}", {
+  const scope = daemonLocal
+    ? t("Storage scope: local daemon. Snapshots and selections belong to {subject} in this machine's local store.", {
         subject: storageSubject,
-        devNote: import.meta.env.DEV
-          ? t(" The development in-memory API clears on restart.")
-          : "",
       })
-    : t("Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.");
+    : httpMode
+      ? t("Storage scope: HTTP mode. Snapshots and selections belong to {subject} on the server.{devNote}", {
+          subject: storageSubject,
+          devNote: import.meta.env.DEV
+            ? t(" The development in-memory API clears on restart.")
+            : "",
+        })
+      : t("Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.");
 
   return (
     <section data-screen="me">
