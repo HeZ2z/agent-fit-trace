@@ -2,8 +2,11 @@
 
 - **Status:** Accepted. `SqliteWorkoutStore` and per-identity store resolution
   are implemented in `@agent-fit-trace/store` and covered by the shared store
-  contract suite. Wiring the daemon, the MCP server, and pi to the resolved
-  store is issue #40/#38 work and is intentionally out of scope here.
+  contract suite. The server side of #38 has landed as well: per-principal
+  `FitTraceClient`s over these databases
+  (`server/sqlitePrincipalStores.ts`). Wiring the `daemon` command, the MCP
+  server, and pi to the resolved stores is issue #38/#40 work and is
+  intentionally out of scope here.
 - **Date:** 2026-10-24
 - **Scope:** issue #37. This ADR records the engine choice, the multi-process
   posture, and the per-identity file layout for the local workout store. It is

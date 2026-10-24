@@ -19,7 +19,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - `packages/fit-trace-api-contracts/` (`@agent-fit-trace/api-contracts`) — the shared app/pi client contract (shapes, errors, contract suite) both clients satisfy.
 - `packages/fit-trace-mcp/` (`@agent-fit-trace/mcp`) — standalone stdio MCP server (`@modelcontextprotocol/sdk`): the four tools, two read-only resources, and the `training-coach` prompt for any MCP host. Default store `$HOME/.fit-trace/workouts.json`, independent of the pi extension's `<cwd>` default; see `docs/mcp.md`.
 - `app/` — React+Vite UI, fixture/client-driven; provider default client is mode-aware (`VITE_FIT_TRACE_MODE=http` → HTTP client, else local).
-- `server/` — loopback dev API (`pnpm dev:api`; in-memory store, clears on restart) that HTTP mode reaches via the Vite `/api` proxy.
+- `server/` — loopback dev API (`pnpm dev:api`; in-memory store, clears on restart) that HTTP mode reaches via the Vite `/api` proxy. The SQLite-backed per-principal stores (`sqlitePrincipalStores.ts`) and the guest local verifier (`auth/localVerifier.ts`) are the foundation of the daemon data plane.
 - `.pi/skills/training-coach/SKILL.md` — the Skill; auto-discovered by pi.
 - `fixtures/` — JSON fixtures used by tests. `tests/` — `node:test` suite.
 
