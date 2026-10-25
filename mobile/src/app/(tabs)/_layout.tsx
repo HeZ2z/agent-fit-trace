@@ -18,6 +18,7 @@ const TAB_ITEMS = [
   { name: "analysis", label: "Analysis" },
   { name: "plan", label: "Plan" },
   { name: "coach", label: "Coach" },
+  { name: "health", label: "Health" },
   { name: "me", label: "Me" },
 ] as const;
 

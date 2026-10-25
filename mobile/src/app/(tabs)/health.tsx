@@ -1,5 +1,5 @@
 import { todayLocalDate } from "@agent-fit-trace/workout-session";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
@@ -43,7 +43,7 @@ import {
 } from "@/ui";
 
 /**
- * Health screen (stack route, reached from Me — issue #50 redesign).
+ * Health tab (bottom dock, issue #50 redesign).
  *
  * The screen owns everything Health Connect: the device-local opt-in with its
  * permission flow and status line (moved verbatim from the Me tab), the
@@ -54,8 +54,6 @@ import {
  */
 
 const copy = {
-  back: "Back",
-  backLabel: "Go back",
   done: "Done",
   title: "Health",
   lede: "Optional and read-only. Reads from Health Connect happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.",
@@ -156,7 +154,6 @@ interface Notice {
 }
 
 export default function HealthScreen() {
-  const router = useRouter();
   const { t } = useI18n();
   const { tokens } = useSkin();
 
@@ -584,14 +581,6 @@ export default function HealthScreen() {
           />
         ) : null}
       </Card>
-
-      <Button
-        accessibilityLabel={t(copy.backLabel)}
-        label={t(copy.back)}
-        onPress={() => router.back()}
-        testID="health-back"
-        variant="secondary"
-      />
     </Screen>
   );
 }

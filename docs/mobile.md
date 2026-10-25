@@ -18,7 +18,7 @@ not written. Android is the only configured native target.
 
 | Area | Implemented now | Planned |
 | --- | --- | --- |
-| App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; six-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
+| App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; seven-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
 | Local data | SQLite workout store plus the owner-scoped `session_draft` table (migration v2), migrations, validation on read and write; History, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
 | Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, compact per-set rows (set number, kg, reps, RPE, completion check), per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
@@ -67,10 +67,11 @@ service-role key; privileged work stays on the server and worker in
 
 The root layout nests `SafeAreaProvider`, `I18nProvider`, `SkinProvider`,
 `WorkoutDataProvider`, `AuthProvider` and `PreferencesProvider`, in that order.
-`index.tsx` opens History. The six tabs are History, Log, Analysis, Plan, Coach
-and Me; Me hosts account, appearance, language, sign-out and the manual sync
-entry. The sign-in and sync screens are stack routes outside the dock. There are
-no placeholder tabs left.
+`index.tsx` opens History. The seven tabs are History, Log, Analysis, Plan,
+Coach, Health and Me; Health owns the Health Connect sleep import (below) and Me
+hosts account, appearance, language, sign-out and the manual sync entry. The
+sign-in and sync screens are stack routes outside the dock. There are no
+placeholder tabs left.
 
 ## Data model
 
@@ -352,8 +353,8 @@ message. The runner never logs tokens or workout content.
 ## Health page: Health Connect sleep import and sleep history (Android)
 
 Samsung Health (and other wearables) sync sleep into Android Health Connect. Sleep
-lives on its own **Health page** — a stack route (`/health`) reached from Me, not a
-tab — which owns the Health Connect status, the per-night import, manual entry for
+lives on its own **Health page** — a bottom dock tab (the seventh, between Coach
+and Me) — which owns the Health Connect status, the per-night import, manual entry for
 devices without Health Connect, and the device-local sleep history. The Log form no
 longer enters or imports sleep: its date is chosen with the same native picker
 (default today) instead of typed, and saving a workout attaches the recorded night
@@ -565,7 +566,7 @@ stream without cancelling the run.
 ## Navigation and design system
 
 Screens live as Expo Router files under `mobile/src/app/`, with reusable
-components under `mobile/src/ui/`. Six bottom tabs use a token-driven dock with a
+components under `mobile/src/ui/`. Seven bottom tabs use a token-driven dock with a
 blurred Glass variant, following [`docs/ui-design.md`](ui-design.md); Me holds
 account, skin, language and sign-out controls plus the manual sync entry. Sign-in
 and sync are stack routes.

@@ -265,11 +265,6 @@ export const messages: Record<string, string> = {
   "That night's sleep changed while the import was running; the imported value was discarded to keep your newer entry.":
     "导入期间那一晚的睡眠发生了变化；为保留你更新的记录，已丢弃导入的值。",
 
-  /* ── Me: Health entry row ───────────────────────────────────── */
-  "Sleep import, connection status, and history live on their own page.":
-    "睡眠导入、连接状态与历史已移至独立页面。",
-  "Open Health": "打开健康",
-
   /*
    * Proper names. The identity values are intentional: language endonyms are
    * shown in their own language (the same as the web switcher), and the skin

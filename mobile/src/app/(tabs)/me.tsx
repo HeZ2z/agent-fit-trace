@@ -64,10 +64,6 @@ const copy = {
   languageEnglishBody: "Source language. Data and exports stay in English.",
   languageChineseBody:
     "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
-  healthKicker: "HEALTH",
-  healthTitle: "Health",
-  healthEntryLede: "Sleep import, connection status, and history live on their own page.",
-  healthOpen: "Open Health",
 };
 
 export default function MeScreen() {
@@ -190,20 +186,6 @@ export default function MeScreen() {
           />
         </Card>
       ) : null}
-
-      <Card testID="me-health-section">
-        <Kicker>{t(copy.healthKicker)}</Kicker>
-        <Title>{t(copy.healthTitle)}</Title>
-        <Body>{t(copy.healthEntryLede)}</Body>
-        <Button
-          accessibilityLabel={t(copy.healthOpen)}
-          fullWidth
-          label={t(copy.healthOpen)}
-          onPress={() => router.push("/health")}
-          testID="me-health-open"
-          variant="secondary"
-        />
-      </Card>
 
       <View style={styles.section}>
         <Title>{t(copy.appearanceTitle)}</Title>
