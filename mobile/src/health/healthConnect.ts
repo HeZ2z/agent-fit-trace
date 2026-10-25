@@ -5,9 +5,11 @@ import {
   createSingleFlightInit,
   evaluatePermissionGrant,
   importUnavailableReason,
+  isIsoDate,
   mapHealthConnectStatus,
-  nightWindowFor,
+  nightWindowRange,
   HEALTH_READ_SCOPES,
+  SLEEP_READ_SCOPE,
   type HealthAvailability,
   type HealthProvider,
   type PermissionRequestResult,
@@ -97,6 +99,29 @@ function toSleepSessionLike(record: Record<string, unknown>): SleepSessionLike |
   return { start, end, stages };
 }
 
+/**
+ * The UTC offset (minutes east of UTC) in effect at local noon of `date`
+ * ("YYYY-MM-DD", validated by the caller through `isIsoDate`).
+ *
+ * Noon is sampled because DST transitions happen in the early morning, so the
+ * offset at noon is the offset that date's evening and daytime hours use —
+ * the offset each night-window edge must carry on a DST switch day. A
+ * malformed date yields `NaN`, which the caller rejects via the window check.
+ */
+function tzOffsetMinutesForDate(date: string): number {
+  const [year, month, day] = date.split("-").map(Number);
+  const localNoon = new Date(year, month - 1, day, 12, 0, 0);
+  return -localNoon.getTimezoneOffset();
+}
+
+/** The calendar day before `workoutDate` ("YYYY-MM-DD"), rollover-safe. */
+function previousIsoDate(workoutDate: string): string | null {
+  if (!isIsoDate(workoutDate)) return null;
+  const [year, month, day] = workoutDate.split("-").map(Number);
+  // `Date.UTC` normalizes day 0 / month overflow; the ISO slice round-trips.
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
+}
+
 function createHealthConnectProvider(): HealthProvider {
   /**
    * Idempotent initialize guard for every native call that needs a client. In
@@ -170,9 +195,16 @@ function createHealthConnectProvider(): HealthProvider {
       if (native === null) return { kind: "unavailable", reason: "not-found" };
 
       // The read window must be computed before any await that could observe a
-      // timezone change; the device offset is read once here.
-      const tzOffsetMinutes = -new Date().getTimezoneOffset();
-      const window = nightWindowFor(workoutDate, tzOffsetMinutes);
+      // timezone change: each edge gets the offset of its own calendar day, so
+      // a window spanning a DST switch keeps both boundaries on local
+      // 20:00/12:00 instead of drifting by the switched hour.
+      const previousDate = previousIsoDate(workoutDate);
+      if (previousDate === null) {
+        return { kind: "error", message: "Invalid workout date" };
+      }
+      const startOffsetMinutes = tzOffsetMinutesForDate(previousDate);
+      const endOffsetMinutes = tzOffsetMinutesForDate(workoutDate);
+      const window = nightWindowRange(workoutDate, startOffsetMinutes, endOffsetMinutes);
       if (window === null) {
         return { kind: "error", message: "Invalid workout date" };
       }
@@ -181,7 +213,7 @@ function createHealthConnectProvider(): HealthProvider {
       const granted = await grantedReadScopes(native);
       const grant = evaluatePermissionGrant(HEALTH_READ_SCOPES, granted);
       // Only sleep gates the import; resting heart rate is not read yet.
-      if (!grant.granted.includes("SleepSession")) return { kind: "no-permission" };
+      if (!grant.granted.includes(SLEEP_READ_SCOPE)) return { kind: "no-permission" };
 
       let result: { records: Array<Record<string, unknown>> };
       try {
@@ -203,7 +235,7 @@ function createHealthConnectProvider(): HealthProvider {
       const sessions = result.records
         .map(toSleepSessionLike)
         .filter((session): session is SleepSessionLike => session !== null);
-      return aggregateSleepHours(sessions, workoutDate, tzOffsetMinutes);
+      return aggregateSleepHours(sessions, workoutDate, startOffsetMinutes, endOffsetMinutes);
     },
   };
 }

@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
   aggregateSleepHours,
+  createHealthConnectToggle,
   createSingleFlightInit,
   evaluatePermissionGrant,
   formatSleepHours,
@@ -12,9 +13,11 @@ import {
   isIsoDate,
   mapHealthConnectStatus,
   nightWindowFor,
+  nightWindowRange,
   parseStoredHealthConnectEnabled,
   SLEEP_STAGE,
   SDK_AVAILABILITY_STATUS,
+  sleepImportMatchesDraft,
   type SleepSessionLike,
 } from "../mobile/src/health/healthModel.ts";
 import {
@@ -222,6 +225,19 @@ test("nightWindowFor handles the year rollover and rejects malformed dates", () 
   assert.equal(nightWindowFor("not-a-date", 0), null);
 });
 
+test("nightWindowRange takes each edge's own offset across a DST switch", () => {
+  // EU spring-forward: 2024-03-30 is CET (UTC+1), 2024-03-31 is CEST (UTC+2).
+  // Local [Mar 30 20:00 CET, Mar 31 12:00 CEST] is UTC [Mar 30 19:00, Mar 31 10:00].
+  assert.deepEqual(nightWindowRange("2024-03-31", 60, 120), {
+    startMs: Date.UTC(2024, 2, 30, 19, 0),
+    endMs: Date.UTC(2024, 2, 31, 10, 0),
+  });
+  // Equal offsets degrade to the single-offset window.
+  assert.deepEqual(nightWindowRange("2024-03-31", 60, 60), nightWindowFor("2024-03-31", 60));
+  assert.equal(nightWindowRange("2026-13-01", 0, 0), null);
+  assert.equal(nightWindowRange("not-a-date", 0, 0), null);
+});
+
 /* ── aggregation rules ───────────────────────────────────────────── */
 
 test("aggregateSleepHours sums valid stages and excludes AWAKE/OUT_OF_BED", () => {
@@ -238,6 +254,7 @@ test("aggregateSleepHours sums valid stages and excludes AWAKE/OUT_OF_BED", () =
         ]),
       ],
       "2024-05-15",
+      0,
       0,
     ),
     { kind: "ok", hoursText: "8.3", totalMinutes: 495, sessionCount: 1 },
@@ -256,6 +273,7 @@ test("aggregateSleepHours counts UNKNOWN and skips OUT_OF_BED by the documented 
       ],
       "2024-05-15",
       0,
+      0,
     ),
     { kind: "ok", hoursText: "2.0", totalMinutes: 120, sessionCount: 1 },
   );
@@ -270,6 +288,7 @@ test("aggregateSleepHours sums every session of a fragmented night", () => {
       ],
       "2024-05-15",
       0,
+      0,
     ),
     { kind: "ok", hoursText: "7.0", totalMinutes: 420, sessionCount: 2 },
   );
@@ -277,7 +296,7 @@ test("aggregateSleepHours sums every session of a fragmented night", () => {
 
 test("aggregateSleepHours falls back to session duration without stages", () => {
   assert.deepEqual(
-    aggregateSleepHours([session("2024-05-14T23:00:00.000Z", "2024-05-15T07:00:00.000Z")], "2024-05-15", 0),
+    aggregateSleepHours([session("2024-05-14T23:00:00.000Z", "2024-05-15T07:00:00.000Z")], "2024-05-15", 0, 0),
     { kind: "ok", hoursText: "8.0", totalMinutes: 480, sessionCount: 1 },
   );
 });
@@ -287,6 +306,7 @@ test("aggregateSleepHours aggregates a session on the 2024 leap day", () => {
     aggregateSleepHours(
       [session("2024-02-28T21:00:00.000Z", "2024-02-29T05:00:00.000Z")],
       "2024-02-29",
+      0,
       0,
     ),
     { kind: "ok", hoursText: "8.0", totalMinutes: 480, sessionCount: 1 },
@@ -298,6 +318,7 @@ test("aggregateSleepHours aggregates across the 2026-02-28 → 2026-03-01 rollov
     aggregateSleepHours(
       [session("2026-02-28T21:00:00.000Z", "2026-03-01T02:00:00.000Z")],
       "2026-03-01",
+      0,
       0,
     ),
     { kind: "ok", hoursText: "5.0", totalMinutes: 300, sessionCount: 1 },
@@ -312,6 +333,7 @@ test("aggregateSleepHours converts UTC records through a non-zero device offset"
       [session("2026-02-28T14:00:00.000Z", "2026-02-28T22:00:00.000Z")],
       "2026-03-01",
       480,
+      480,
     ),
     { kind: "ok", hoursText: "8.0", totalMinutes: 480, sessionCount: 1 },
   );
@@ -321,6 +343,7 @@ test("aggregateSleepHours converts UTC records through a non-zero device offset"
       [session("2026-02-28T04:00:00.000Z", "2026-02-28T10:00:00.000Z")],
       "2026-03-01",
       480,
+      480,
     ).kind,
     "no-data",
   );
@@ -329,6 +352,7 @@ test("aggregateSleepHours converts UTC records through a non-zero device offset"
     aggregateSleepHours(
       [session("2026-03-01T05:00:00.000Z", "2026-03-01T09:00:00.000Z")],
       "2026-03-01",
+      480,
       480,
     ).kind,
     "no-data",
@@ -342,6 +366,7 @@ test("aggregateSleepHours treats the window as half-open at both boundaries", ()
       [session("2026-02-28T08:00:00.000Z", "2026-02-28T12:00:00.000Z")],
       "2026-03-01",
       480,
+      480,
     ).kind,
     "no-data",
   );
@@ -350,6 +375,7 @@ test("aggregateSleepHours treats the window as half-open at both boundaries", ()
     aggregateSleepHours(
       [session("2026-03-01T04:00:00.000Z", "2026-03-01T08:00:00.000Z")],
       "2026-03-01",
+      480,
       480,
     ).kind,
     "no-data",
@@ -365,6 +391,7 @@ test("aggregateSleepHours clips partially overlapping sessions to the window", (
       ],
       "2024-05-15",
       0,
+      0,
     ),
     { kind: "ok", hoursText: "8.0", totalMinutes: 480, sessionCount: 2 },
   );
@@ -377,8 +404,53 @@ test("aggregateSleepHours converts negative-offset (UTC-5) records", () => {
       [session("2024-05-15T02:00:00.000Z", "2024-05-15T10:00:00.000Z")],
       "2024-05-15",
       -300,
+      -300,
     ),
     { kind: "ok", hoursText: "8.0", totalMinutes: 480, sessionCount: 1 },
+  );
+});
+
+test("aggregateSleepHours hits a window that spans the 2024 EU spring-forward switch", () => {
+  // Workout date 2024-03-31 (CEST, UTC+2); its D-1 evening 2024-03-30 is CET
+  // (UTC+1). The mixed-offset window is UTC [Mar 30 19:00, Mar 31 10:00].
+  // A session fully inside contributes fully.
+  assert.deepEqual(
+    aggregateSleepHours(
+      [session("2024-03-30T20:00:00.000Z", "2024-03-31T02:00:00.000Z")],
+      "2024-03-31",
+      60, // D-1 evening edge: CET
+      120, // D noon edge: CEST
+    ),
+    { kind: "ok", hoursText: "6.0", totalMinutes: 360, sessionCount: 1 },
+  );
+});
+
+test("aggregateSleepHours clips both edges with their own offset on a DST switch day", () => {
+  // Start edge: a session beginning before local 20:00 on D-1 is clipped at
+  // Mar 30 20:00 CET (19:00 UTC) — not 18:00 UTC, which the old single-offset
+  // window (D's CEST for both edges) would have used and which would overcount
+  // the pre-window hour.
+  assert.deepEqual(
+    aggregateSleepHours(
+      [session("2024-03-30T16:00:00.000Z", "2024-03-31T02:00:00.000Z")],
+      "2024-03-31",
+      60,
+      120,
+    ),
+    { kind: "ok", hoursText: "7.0", totalMinutes: 420, sessionCount: 1 },
+  );
+  // End edge: a session spanning the whole window is clipped at
+  // Mar 31 12:00 CEST (10:00 UTC) — not 11:00 UTC, which the old single-offset
+  // window (D-1's CET for both edges) would have used and which would overcount
+  // the post-window hour.
+  assert.deepEqual(
+    aggregateSleepHours(
+      [session("2024-03-30T18:00:00.000Z", "2024-03-31T14:00:00.000Z")],
+      "2024-03-31",
+      60,
+      120,
+    ),
+    { kind: "ok", hoursText: "15.0", totalMinutes: 900, sessionCount: 1 },
   );
 });
 
@@ -392,6 +464,7 @@ test("aggregateSleepHours rejects totals beyond the core 24 h limit", () => {
     ],
     "2024-05-15",
     0,
+    0,
   );
   assert.equal(result.kind, "error");
   assert.ok(result.kind === "error" && /24 h/.test(result.message));
@@ -404,23 +477,24 @@ test("aggregateSleepHours rejects totals beyond the core 24 h limit", () => {
     ],
     "2024-05-15",
     0,
+    0,
   );
   assert.ok(exact.kind === "ok" && exact.hoursText === "24.0");
 });
 
 test("aggregateSleepHours reports no-data and errors for degenerate input", () => {
   assert.equal(
-    aggregateSleepHours([session("2024-05-14T22:00:00.000Z", "2024-05-15T06:00:00.000Z")], "2024-05-16", 0).kind,
+    aggregateSleepHours([session("2024-05-14T22:00:00.000Z", "2024-05-15T06:00:00.000Z")], "2024-05-16", 0, 0).kind,
     "no-data",
   );
-  assert.equal(aggregateSleepHours([], "2024-05-15", 0).kind, "no-data");
+  assert.equal(aggregateSleepHours([], "2024-05-15", 0, 0).kind, "no-data");
   // Inverted/malformed sessions are skipped, not fatal.
   assert.equal(
-    aggregateSleepHours([session("2024-05-15T06:00:00.000Z", "2024-05-14T22:00:00.000Z")], "2024-05-15", 0).kind,
+    aggregateSleepHours([session("2024-05-15T06:00:00.000Z", "2024-05-14T22:00:00.000Z")], "2024-05-15", 0, 0).kind,
     "no-data",
   );
   // Malformed workout dates are an error, not a crash.
-  assert.ok(aggregateSleepHours([], "2024-05", 0).kind === "error");
+  assert.ok(aggregateSleepHours([], "2024-05", 0, 0).kind === "error");
 });
 
 test("aggregateSleepHours handles a real Health Connect SleepSessionRecord shape", () => {
@@ -448,6 +522,7 @@ test("aggregateSleepHours handles a real Health Connect SleepSessionRecord shape
         },
       ],
       "2024-05-15",
+      0,
       0,
     ),
     { kind: "ok", hoursText: "8.3", totalMinutes: 495, sessionCount: 1 },
@@ -496,6 +571,111 @@ test("the device toggle state machine flips only through explicit true", () => {
   assert.equal(HEALTH_CONNECT_STORAGE_KEY, "agent-fit-trace:health-connect:v1");
 });
 
+/* ── sleep import → draft staleness rule ─────────────────────────── */
+
+test("sleepImportMatchesDraft applies only to the captured draft snapshot", () => {
+  const captured = { date: "2024-05-15", revision: 7 };
+  // Same date, same revision: the read was started for exactly this draft.
+  assert.equal(sleepImportMatchesDraft(captured, { date: "2024-05-15", revision: 7 }), true);
+  // The date was edited while the read was in flight: the result would fill
+  // the wrong night's sleep into the new date.
+  assert.equal(sleepImportMatchesDraft(captured, { date: "2024-05-16", revision: 8 }), false);
+  // Any edit bumps the revision, even of another field: a late result must
+  // never overwrite newer draft content.
+  assert.equal(sleepImportMatchesDraft(captured, { date: "2024-05-15", revision: 8 }), false);
+  // A cleared or switched draft (discard and owner loads bump the revision
+  // too): a late result must not resurrect the cleared editor.
+  assert.equal(sleepImportMatchesDraft(captured, { date: "2024-05-15", revision: 99 }), false);
+});
+
+/* ── device-local toggle state machine (memory-first, write rollback) ── */
+
+test("the toggle reads storage once, then serves the memory value", async () => {
+  const backing = new Map<string, string>();
+  let reads = 0;
+  const storage = {
+    async getItem(key: string): Promise<string | null> {
+      reads += 1;
+      return backing.get(key) ?? null;
+    },
+    async setItem(key: string, value: string): Promise<void> {
+      backing.set(key, value);
+    },
+  };
+  const toggle = createHealthConnectToggle(storage, HEALTH_CONNECT_STORAGE_KEY);
+
+  // First read hits storage (default off).
+  assert.equal(await toggle.read(), false);
+  assert.equal(reads, 1);
+  // A storage change behind the cache is ignored: memory wins.
+  backing.set(HEALTH_CONNECT_STORAGE_KEY, "true");
+  assert.equal(await toggle.read(), false);
+  assert.equal(reads, 1);
+  // A successful write updates memory first, so later reads see it without
+  // another storage round-trip — and storage actually holds the new value.
+  await toggle.write(true);
+  assert.equal(await toggle.read(), true);
+  assert.equal(reads, 1);
+  assert.equal(backing.get(HEALTH_CONNECT_STORAGE_KEY), "true");
+});
+
+test("a failed toggle write rolls the memory value back and rethrows", async () => {
+  const backing = new Map<string, string>([[HEALTH_CONNECT_STORAGE_KEY, "true"]]);
+  let failWrites = true;
+  const storage = {
+    async getItem(key: string): Promise<string | null> {
+      return backing.get(key) ?? null;
+    },
+    async setItem(key: string, value: string): Promise<void> {
+      if (failWrites) throw new Error("disk full");
+      backing.set(key, value);
+    },
+  };
+  const toggle = createHealthConnectToggle(storage, HEALTH_CONNECT_STORAGE_KEY);
+  assert.equal(await toggle.read(), true); // cached from storage
+
+  // The write must surface its failure, not swallow it: the Me screen reports
+  // it instead of showing a state storage never received.
+  await assert.rejects(toggle.write(false), /disk full/);
+  // The memory value rolled back to what storage actually holds, and storage
+  // is unchanged — a later read (the Log screen's) stays consistent.
+  assert.equal(await toggle.read(), true);
+  assert.equal(readsInStorage(backing), true);
+
+  // Once persistence recovers, the same write succeeds and sticks.
+  failWrites = false;
+  await toggle.write(false);
+  assert.equal(await toggle.read(), false);
+  assert.equal(readsInStorage(backing), false);
+});
+
+/** What the (fake) storage actually holds for the toggle key, parsed. */
+function readsInStorage(backing: Map<string, string>): boolean {
+  return parseStoredHealthConnectEnabled(backing.get(HEALTH_CONNECT_STORAGE_KEY) ?? null);
+}
+
+test("an unreadable storage read is off and is not cached", async () => {
+  let failReads = true;
+  let reads = 0;
+  const backing = new Map<string, string>([[HEALTH_CONNECT_STORAGE_KEY, "true"]]);
+  const storage = {
+    async getItem(key: string): Promise<string | null> {
+      reads += 1;
+      if (failReads) throw new Error("storage unavailable");
+      return backing.get(key) ?? null;
+    },
+    async setItem(key: string, value: string): Promise<void> {
+      backing.set(key, value);
+    },
+  };
+  const toggle = createHealthConnectToggle(storage, HEALTH_CONNECT_STORAGE_KEY);
+  assert.equal(await toggle.read(), false);
+  assert.equal(await toggle.read(), false);
+  assert.equal(reads, 2); // the failure is retried, not pinned in memory
+  failReads = false;
+  assert.equal(await toggle.read(), true);
+});
+
 /* ── Me status line projection ───────────────────────────────────── */
 
 test("healthConnectStatusKey resolves every Me status line state", () => {
@@ -517,5 +697,22 @@ test("healthConnectStatusKey resolves every Me status line state", () => {
   assert.equal(
     healthConnectStatusKey(true, { kind: "supported" }, { granted: ["SleepSession"], missing: ["RestingHeartRate"] }),
     "partial",
+  );
+  // The sleep read gates the whole import: a missing sleep grant is
+  // "no-permission" even when resting heart rate is granted (e.g. the grant
+  // was revoked in the system Health Connect settings), and so is a fully
+  // empty grant. A missing resting-heart-rate grant beside a granted sleep
+  // scope stays "partial" (asserted above).
+  assert.equal(
+    healthConnectStatusKey(true, { kind: "supported" }, { granted: ["RestingHeartRate"], missing: ["SleepSession"] }),
+    "no-permission",
+  );
+  assert.equal(
+    healthConnectStatusKey(
+      true,
+      { kind: "supported" },
+      { granted: [], missing: ["SleepSession", "RestingHeartRate"] },
+    ),
+    "no-permission",
   );
 });

@@ -6,6 +6,7 @@ import { authErrorMessage, useAuth } from "@/auth";
 import { getHealthConnectProvider } from "@/health/healthConnect";
 import {
   healthConnectStatusKey,
+  SLEEP_READ_SCOPE,
   type HealthAvailability,
   type HealthConnectStatusKey,
   type PermissionRequestResult,
@@ -82,6 +83,8 @@ const copy = {
   healthScopes: "Read-only scopes: sleep sessions and resting heart rate.",
   healthStatusOff: "Off. Enable it to import sleep into the Log form.",
   healthStatusSupported: "Connected. The Log form can import sleep for the night before a session.",
+  healthStatusNoPermission:
+    "Sleep access has been revoked. Go to the system Health Connect settings and re-grant the read permission.",
   healthStatusNeedsInstall:
     "Health Connect is not installed. Install it from the Google Play Store, then turn on “Sync with Health Connect” in Samsung Health settings.",
   healthStatusNeedsUpdate:
@@ -103,6 +106,7 @@ const copy = {
 const HEALTH_STATUS_COPY: Record<HealthConnectStatusKey, string> = {
   off: copy.healthStatusOff,
   supported: copy.healthStatusSupported,
+  "no-permission": copy.healthStatusNoPermission,
   "needs-install": copy.healthStatusNeedsInstall,
   "needs-update": copy.healthStatusNeedsUpdate,
   platform: copy.healthStatusPlatform,
@@ -148,7 +152,11 @@ export default function MeScreen() {
   const [healthNotice, setHealthNotice] = useState<string | null>(null);
   // True when hydration itself failed: the state falls back to safe defaults
   // and the status line shows the degraded "platform" copy instead of a
-  // misleading "off" (the toggle value was never actually read).
+  // misleading "off" (the toggle value was never actually read). The flag is
+  // sticky only until a later manual refresh succeeds — clearing it there lets
+  // the status line derive from the freshly read availability/grants again,
+  // so a successful enable is never permanently masked by an earlier
+  // hydration failure.
   const [healthHydrationFailed, setHealthHydrationFailed] = useState(false);
 
   useEffect(() => {
@@ -188,8 +196,11 @@ export default function MeScreen() {
   /**
    * Toggle the device-local opt-in. Enabling first checks availability, then
    * requests the read permissions; a denied sleep grant keeps the toggle off
-   * and shows guidance. Disabling is in-app only (Health Connect grants are
-   * revoked from the system settings, which the notice says).
+   * and shows guidance. The write is awaited: a failed persistence rethrows
+   * after rolling the toggle back, so the in-app state stays off and the
+   * catch reports the failure instead of the UI showing a state storage never
+   * received. Disabling is in-app only (Health Connect grants are revoked
+   * from the system settings, which the notice says).
    */
   async function handleToggleHealthConnect(): Promise<void> {
     if (healthBusy || healthEnabled === null) return;
@@ -197,13 +208,17 @@ export default function MeScreen() {
     setHealthNotice(null);
     try {
       if (healthEnabled) {
-        writeHealthConnectEnabled(false);
+        await writeHealthConnectEnabled(false);
         setHealthEnabled(false);
         setHealthNotice(t(copy.healthOffNote));
         return;
       }
       const availability = await healthProvider.availability();
       setHealthAvailability(availability);
+      // This availability read succeeded, so the degraded hydration-failure
+      // state is over: clear the flag so the status line derives from the
+      // fresh state instead of being stuck on the "platform" copy.
+      setHealthHydrationFailed(false);
       if (availability.kind !== "supported") {
         // Stay off; the status line and notice carry the install/update hint.
         const key =
@@ -217,11 +232,12 @@ export default function MeScreen() {
       }
       const grant = await healthProvider.requestReadPermissions();
       setHealthGrant(grant);
-      if (!grant.granted.includes("SleepSession")) {
+      setHealthHydrationFailed(false);
+      if (!grant.granted.includes(SLEEP_READ_SCOPE)) {
         setHealthNotice(t(copy.healthPermissionDenied));
         return;
       }
-      writeHealthConnectEnabled(true);
+      await writeHealthConnectEnabled(true);
       setHealthEnabled(true);
     } catch (cause) {
       setHealthNotice(t(copy.healthError, { message: healthErrorMessage(cause) }));

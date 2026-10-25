@@ -216,6 +216,8 @@ export const messages: Record<string, string> = {
   "Off. Enable it to import sleep into the Log form.": "已关闭。启用后可在记录表单中导入睡眠。",
   "Connected. The Log form can import sleep for the night before a session.":
     "已连接。记录表单可以导入训练前一晚的睡眠。",
+  "Sleep access has been revoked. Go to the system Health Connect settings and re-grant the read permission.":
+    "睡眠访问已被撤销，请去系统 Health Connect 重新授权。",
   "Health Connect is not installed. Install it from the Google Play Store first — see Me → Health Connect.":
     "尚未安装 Health Connect。请先从 Google Play 商店安装——参见“我的 → Health Connect”。",
   "Health Connect is not installed. Install it from the Google Play Store, then turn on “Sync with Health Connect” in Samsung Health settings.":

@@ -40,7 +40,11 @@ import { useAuth } from "@/auth";
 import { useWorkoutData } from "@/data/provider";
 import { LOCAL_GUEST_OWNER_ID } from "@/data/sessionDraftSchema";
 import { getHealthConnectProvider } from "@/health/healthConnect";
-import type { HealthImportUnavailableReason, SleepImportResult } from "@/health/healthModel";
+import {
+  sleepImportMatchesDraft,
+  type HealthImportUnavailableReason,
+  type SleepImportResult,
+} from "@/health/healthModel";
 import { useI18n } from "@/i18n";
 import { readHealthConnectEnabled } from "@/preferences/deviceHealth";
 import { SPACING } from "@/theme";
@@ -762,13 +766,30 @@ export default function LogScreen() {
    * Import the night's sleep for the draft date. Success fills `sleepHours`
    * directly; every failure kind surfaces its own message. The notice survives
    * the field edit so the user can see what was filled and from where.
+   *
+   * The draft snapshot (date + revision) is captured before the await and the
+   * result is only applied while both are unchanged: the date field is
+   * editable and the draft can be cleared (or another owner's draft loaded)
+   * while the native read is in flight, so a late result for a draft the user
+   * no longer holds is discarded instead of filling the wrong date's field or
+   * resurrecting a cleared draft. The staleness rule itself is the pure
+   * `sleepImportMatchesDraft` in the health model.
    */
   async function handleImportSleep(): Promise<void> {
     if (sleepImporting) return;
     setSleepImporting(true);
     setSleepImportNotice(null);
+    const captured = { date: draft.date, revision: draftRevisionRef.current };
     try {
-      const result = await healthProvider.sleepHoursForDate(draft.date);
+      const result = await healthProvider.sleepHoursForDate(captured.date);
+      if (
+        !sleepImportMatchesDraft(captured, {
+          date: draftRef.current.date,
+          revision: draftRevisionRef.current,
+        })
+      ) {
+        return;
+      }
       if (result.kind === "ok") {
         edit({ type: "setSleepHours", value: result.hoursText });
         setSleepImportNotice({

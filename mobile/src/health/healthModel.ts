@@ -67,11 +67,17 @@ export type HealthAvailability =
   | { kind: "unavailable"; reason: HealthUnavailableReason };
 
 /**
+ * The scope that gates the whole import: without the sleep read there is no
+ * sleep to import, no matter what else is granted.
+ */
+export const SLEEP_READ_SCOPE = "SleepSession";
+
+/**
  * The read scopes this app requests. Resting heart rate is requested and shown
  * in the Me status line but is not read yet (issue #50 scope: sleep only).
  */
 export const HEALTH_READ_SCOPES: readonly string[] = [
-  "SleepSession",
+  SLEEP_READ_SCOPE,
   "RestingHeartRate",
 ] as const;
 
@@ -215,23 +221,37 @@ interface NightWindow {
 }
 
 /**
- * Local night window for `workoutDate`: [D-1 20:00, D 12:00] in the device's
- * timezone.
+ * Local night window for `workoutDate`: [D-1 20:00, D 12:00], where each edge
+ * carries its own UTC offset.
  *
- * `tzOffsetMinutes` is the device offset in minutes east of UTC (UTC+8 → 480,
- * i.e. minus `Date#getTimezoneOffset`). The calendar math uses `Date.UTC` on
- * the date's numeric parts so month and leap-year rollovers are correct by
- * construction — never string arithmetic on the date itself.
+ * The two offsets are separate because the window can span a DST switch: the
+ * D-1 evening edge belongs to the previous day's offset, the D noon edge to
+ * the workout date's. With one offset for both edges the window drifts by the
+ * DST hour on switch days. `nightWindowFor` is the single-offset convenience
+ * for callers that know both edges share a timezone offset.
+ *
+ * Offsets are in minutes east of UTC (UTC+8 → 480, i.e. minus
+ * `Date#getTimezoneOffset`). The calendar math uses `Date.UTC` on the date's
+ * numeric parts so month and leap-year rollovers are correct by construction —
+ * never string arithmetic on the date itself.
  */
-export function nightWindowFor(workoutDate: string, tzOffsetMinutes: number): NightWindow | null {
+export function nightWindowRange(
+  workoutDate: string,
+  startOffsetMinutes: number,
+  endOffsetMinutes: number,
+): NightWindow | null {
   if (!isIsoDate(workoutDate)) return null;
   const [year, month, day] = workoutDate.split("-").map(Number);
-  const offsetMs = tzOffsetMinutes * 60_000;
   return {
     // `Date.UTC` normalizes day 0 / month overflow, so D-1 is rollover-safe.
-    startMs: Date.UTC(year, month - 1, day - 1, 20, 0, 0) - offsetMs,
-    endMs: Date.UTC(year, month - 1, day, 12, 0, 0) - offsetMs,
+    startMs: Date.UTC(year, month - 1, day - 1, 20, 0, 0) - startOffsetMinutes * 60_000,
+    endMs: Date.UTC(year, month - 1, day, 12, 0, 0) - endOffsetMinutes * 60_000,
   };
+}
+
+/** Single-offset form of `nightWindowRange` (both edges use the same offset). */
+export function nightWindowFor(workoutDate: string, tzOffsetMinutes: number): NightWindow | null {
+  return nightWindowRange(workoutDate, tzOffsetMinutes, tzOffsetMinutes);
 }
 
 /** One-decimal hours string, e.g. 451 minutes → "7.5". */
@@ -259,16 +279,18 @@ function overlapMs(
  * - Sessions with stage data sum their valid stages (everything except AWAKE
  *   and OUT_OF_BED); sessions without stages fall back to their duration.
  * - All instants are UTC epoch milliseconds; the window is local because the
- *   caller passes the device offset.
+ *   caller passes each edge's own device offset (they differ on DST switch
+ *   days — see `nightWindowRange`).
  * - A total beyond 24 h is the core domain's hard limit and returns an error
  *   kind instead of a value that the record build would reject.
  */
 export function aggregateSleepHours(
   sessions: readonly SleepSessionLike[],
   workoutDate: string,
-  tzOffsetMinutes: number,
+  startOffsetMinutes: number,
+  endOffsetMinutes: number,
 ): SleepImportResult {
-  const window = nightWindowFor(workoutDate, tzOffsetMinutes);
+  const window = nightWindowRange(workoutDate, startOffsetMinutes, endOffsetMinutes);
   if (window === null) {
     return { kind: "error", message: "Invalid workout date" };
   }
@@ -329,16 +351,103 @@ export function parseStoredHealthConnectEnabled(stored: string | null | undefine
   return stored === "true";
 }
 
+/** The draft identity a sleep import is started for. */
+export interface SleepImportDraftSnapshot {
+  /** The workout date the night window is computed from. */
+  date: string;
+  /** The editor's draft revision at capture time (bumped by every edit/clear). */
+  revision: number;
+}
+
+/**
+ * Whether a finished sleep-import result may still be applied to the editor's
+ * current draft.
+ *
+ * The native read is started for one draft snapshot, but the date field stays
+ * editable and the draft can be cleared (or a different owner's draft loaded)
+ * while the read is in flight. A result whose snapshot no longer matches the
+ * current draft must be discarded: otherwise a stale night's sleep lands in a
+ * newly edited date, or a late result resurrects a cleared draft.
+ */
+export function sleepImportMatchesDraft(
+  captured: SleepImportDraftSnapshot,
+  current: SleepImportDraftSnapshot,
+): boolean {
+  return captured.date === current.date && captured.revision === current.revision;
+}
+
+/** The storage surface the device-local opt-in persists through. */
+export interface HealthConnectToggleStorage {
+  getItem(key: string): Promise<string | null>;
+  setItem(key: string, value: string): Promise<void>;
+}
+
+/**
+ * Memory-first read/write state machine for the device-local Health Connect
+ * opt-in.
+ *
+ * `read` prefers the in-memory value and only falls back to storage on the
+ * first read (a miss, not a failure — a storage error reads as off and is not
+ * cached, so a later read retries). `write` applies the memory value first and
+ * only then persists; a failed persistence rolls the memory value back and
+ * rethrows, so memory and storage can never silently disagree. The Me screen's
+ * toggle handler surfaces the rejection and the Log screen's later reads stay
+ * consistent with what is actually durable.
+ */
+export interface HealthConnectToggle {
+  read(): Promise<boolean>;
+  write(enabled: boolean): Promise<void>;
+}
+
+export function createHealthConnectToggle(
+  storage: HealthConnectToggleStorage,
+  key: string,
+): HealthConnectToggle {
+  /** `null` until the first successful storage read populates the cache. */
+  let memoryEnabled: boolean | null = null;
+  return {
+    async read(): Promise<boolean> {
+      if (memoryEnabled !== null) return memoryEnabled;
+      try {
+        const enabled = parseStoredHealthConnectEnabled(await storage.getItem(key));
+        memoryEnabled = enabled;
+        return enabled;
+      } catch {
+        // Unreadable storage reads as off; the miss is not cached so a later
+        // read retries the storage instead of pinning the failure.
+        return false;
+      }
+    },
+    async write(enabled: boolean): Promise<void> {
+      const previous = memoryEnabled;
+      memoryEnabled = enabled;
+      try {
+        await storage.setItem(key, enabled ? "true" : "false");
+      } catch (cause) {
+        // Durability failed: roll the memory value back so the in-session
+        // state matches what storage actually holds, and let the caller
+        // report the failure instead of swallowing it.
+        memoryEnabled = previous;
+        throw cause;
+      }
+    },
+  };
+}
+
 /**
  * Status-line key for the Me screen's Health Connect section, resolved from
  * the device-local toggle, the runtime availability and the last grant.
  *
  * The toggle wins first (off hides everything else); then availability; then
- * the granular grant (some scopes granted, some missing → "partial").
+ * the granular grant: the sleep read gates the whole import, so a missing
+ * sleep grant is "no-permission" even when other scopes are granted, while a
+ * missing resting-heart-rate grant beside a granted sleep scope stays
+ * "partial".
  */
 export type HealthConnectStatusKey =
   | "off"
   | "supported"
+  | "no-permission"
   | "needs-install"
   | "needs-update"
   | "platform"
@@ -360,6 +469,9 @@ export function healthConnectStatusKey(
   }
   if (availability.kind === "needs-install") return "needs-install";
   if (availability.kind === "needs-update") return "needs-update";
-  if (grant !== null && grant.missing.length > 0 && grant.granted.length > 0) return "partial";
+  if (grant !== null) {
+    if (!grant.granted.includes(SLEEP_READ_SCOPE)) return "no-permission";
+    return grant.missing.length > 0 ? "partial" : "supported";
+  }
   return "supported";
 }
