@@ -23,7 +23,7 @@ Create a working branch from the latest version of the target branch. Suggested 
 
 Every commit message starts with a **Conventional Commits** header: `type(scope): summary in the imperative mood` (for example, `fix(mobile): keep a sync run alive across token refresh` or `feat(cli): add daemon health probe`). Omit the scope when no single package owns the change, as in `docs: document the desktop shell`. Use an `!` or a `BREAKING CHANGE:` footer for breaking changes.
 
-Allowed types: `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`, `revert`. Pick a scope from the module layout: `core`, `store`, `workout-session`, `api-contracts`, `cli`, `desktop`, `mcp`, `app`, `server`, `pi` (for `.pi/extensions/fit-trace`), `skill`, or `repo` for cross-cutting repository files.
+Allowed types: `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`, `revert`. Pick a scope from the module layout: `core`, `store`, `workout-session`, `api-contracts`, `cli`, `desktop`, `mcp`, `app`, `mobile`, `server`, `pi` (for `.pi/extensions/fit-trace`), `skill`, or `repo` for cross-cutting repository files.
 
 Beyond the header, every commit still follows the repository's **Lore protocol**: explain why the change is needed in the body, describe the context and approach, and add git-native trailers where useful. Avoid vague summaries such as “update code” or “fix issues.”
 
