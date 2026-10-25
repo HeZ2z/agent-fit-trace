@@ -126,6 +126,86 @@ export function importUnavailableReason(
   return availability.kind;
 }
 
+/* ── phone-brand gate (display-layer convention) ─────────────────── */
+
+/** The phone brands whose health platform the import copy names explicitly. */
+export type SupportedPhoneBrand = "samsung" | "apple";
+
+/** Lowercased `Platform.constants.Brand` value → the supported brand. */
+const SUPPORTED_PHONE_BRANDS: Readonly<Record<string, SupportedPhoneBrand>> = {
+  samsung: "samsung",
+  apple: "apple",
+};
+
+/**
+ * Map a device brand string (Android's `Platform.constants.Brand` —
+ * "samsung", "Xiaomi", "vivo", …) to the import button's supported brand.
+ * Matching is case-insensitive on purpose: the raw constants differ in casing
+ * across OEMs and firmwares. Anything else — unknown, empty — reads as an
+ * unsupported brand and the import area says so instead of offering a button.
+ */
+export function supportedPhoneBrand(brand: string): SupportedPhoneBrand | null {
+  return SUPPORTED_PHONE_BRANDS[brand.trim().toLowerCase()] ?? null;
+}
+
+/**
+ * The most recent `nights` wake-up dates, newest first: the D of each night
+ * window [D-1 20:00, D 12:00] for tonight, yesterday, … D-(nights-1).
+ *
+ * The calendar math uses `Date.UTC` on the date's numeric parts, so month,
+ * year and leap-day rollovers are correct by construction — never string
+ * arithmetic on the date itself. An invalid `endDate` (or a non-positive
+ * `nights`) yields an empty list, which the caller renders as no import at
+ * all rather than a crash.
+ */
+export function recentWakeDates(endDate: string, nights: number): string[] {
+  if (!isIsoDate(endDate) || !Number.isInteger(nights) || nights <= 0) return [];
+  const [year, month, day] = endDate.split("-").map(Number);
+  const dates: string[] = [];
+  for (let offset = 0; offset < nights; offset += 1) {
+    // `Date.UTC` normalizes day 0 / month overflow, so every back-step is
+    // rollover-safe; the ISO slice round-trips the UTC instant.
+    dates.push(new Date(Date.UTC(year, month - 1, day - offset)).toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+/** One night that a recent-nights import stored successfully. */
+export interface ImportedNight {
+  /** Wake-up date "YYYY-MM-DD" of the stored night. */
+  date: string;
+  /** The one-decimal hours string that was stored for it. */
+  hoursText: string;
+}
+
+/**
+ * The notice decision for a finished recent-nights import: at least one
+ * stored night summarizes into the success line driven by the latest night;
+ * none reads as the source-sync no-data guidance. Pure so the screen only
+ * picks the copy — the outcome rules stay testable without React.
+ */
+export type RecentNightsImportSummary =
+  | { kind: "imported"; count: number; latestDate: string; latestHoursText: string }
+  | { kind: "no-data" };
+
+export function summarizeRecentNightsImport(
+  imported: readonly ImportedNight[],
+): RecentNightsImportSummary {
+  if (imported.length === 0) return { kind: "no-data" };
+  // ISO dates sort lexicographically: scan for the newest stored night,
+  // independent of the order the loop happened to store them in.
+  let latest = imported[0];
+  for (const night of imported) {
+    if (night.date > latest.date) latest = night;
+  }
+  return {
+    kind: "imported",
+    count: imported.length,
+    latestDate: latest.date,
+    latestHoursText: latest.hoursText,
+  };
+}
+
 /**
  * Turn an idempotent `initialize` thunk into a single-flight guard.
  *

@@ -15,9 +15,12 @@ import {
   nightWindowFor,
   nightWindowRange,
   parseStoredHealthConnectEnabled,
+  recentWakeDates,
   SLEEP_STAGE,
   SDK_AVAILABILITY_STATUS,
   sleepImportMatchesDraft,
+  summarizeRecentNightsImport,
+  supportedPhoneBrand,
   type SleepSessionLike,
 } from "../mobile/src/health/healthModel.ts";
 import {
@@ -714,5 +717,100 @@ test("healthConnectStatusKey resolves every Me status line state", () => {
       { granted: [], missing: ["SleepSession", "RestingHeartRate"] },
     ),
     "no-permission",
+  );
+});
+
+/* ── phone-brand gate ─────────────────────────────────────────── */
+
+test("supportedPhoneBrand maps the supported OEM brands case-insensitively", () => {
+  // Android `Platform.constants.Brand` values, in the casings OEMs ship.
+  assert.equal(supportedPhoneBrand("samsung"), "samsung");
+  assert.equal(supportedPhoneBrand("SAMSUNG"), "samsung");
+  assert.equal(supportedPhoneBrand("Samsung"), "samsung");
+  assert.equal(supportedPhoneBrand("apple"), "apple");
+  assert.equal(supportedPhoneBrand("Apple"), "apple");
+  assert.equal(supportedPhoneBrand("APPLE"), "apple");
+});
+
+test("supportedPhoneBrand reads unsupported or empty brands as null", () => {
+  // Real other-brand constants (vivo, Xiaomi…) and junk must not map.
+  assert.equal(supportedPhoneBrand("vivo"), null);
+  assert.equal(supportedPhoneBrand("Xiaomi"), null);
+  assert.equal(supportedPhoneBrand("XIAOMI"), null);
+  assert.equal(supportedPhoneBrand("OnePlus"), null);
+  assert.equal(supportedPhoneBrand("google"), null);
+  assert.equal(supportedPhoneBrand(""), null);
+  assert.equal(supportedPhoneBrand("   "), null);
+  assert.equal(supportedPhoneBrand("samsungknox"), null);
+});
+
+/* ── recent-nights date sequence ──────────────────────────────── */
+
+test("recentWakeDates walks back seven nights newest-first across a month boundary", () => {
+  // 2026 is not a leap year: the walk crosses Feb → Mar.
+  assert.deepEqual(recentWakeDates("2026-03-01", 7), [
+    "2026-03-01",
+    "2026-02-28",
+    "2026-02-27",
+    "2026-02-26",
+    "2026-02-25",
+    "2026-02-24",
+    "2026-02-23",
+  ]);
+});
+
+test("recentWakeDates includes the 2024 leap day when the walk crosses it", () => {
+  // D-1 of 2024-03-01 is 2024-02-29 (2024 is a leap year).
+  assert.deepEqual(recentWakeDates("2024-03-01", 3), [
+    "2024-03-01",
+    "2024-02-29",
+    "2024-02-28",
+  ]);
+});
+
+test("recentWakeDates crosses the year boundary", () => {
+  assert.deepEqual(recentWakeDates("2024-01-03", 7), [
+    "2024-01-03",
+    "2024-01-02",
+    "2024-01-01",
+    "2023-12-31",
+    "2023-12-30",
+    "2023-12-29",
+    "2023-12-28",
+  ]);
+});
+
+test("recentWakeDates rejects malformed dates and non-positive night counts", () => {
+  assert.deepEqual(recentWakeDates("2026-13-01", 7), []);
+  assert.deepEqual(recentWakeDates("2026-02-29", 7), []); // 2026 is not a leap year
+  assert.deepEqual(recentWakeDates("not-a-date", 7), []);
+  assert.deepEqual(recentWakeDates("2026-03-01", 0), []);
+  assert.deepEqual(recentWakeDates("2026-03-01", -1), []);
+  assert.deepEqual(recentWakeDates("2026-03-01", 1.5), []);
+});
+
+/* ── recent-nights import summary decision ────────────────────── */
+
+test("summarizeRecentNightsImport decides the no-data guidance for zero nights", () => {
+  assert.deepEqual(summarizeRecentNightsImport([]), { kind: "no-data" });
+});
+
+test("summarizeRecentNightsImport summarizes multi-night imports by the latest night", () => {
+  // Stored order is not guaranteed to be date order (the loop stores whatever
+  // Health Connect had); the summary must key on the newest wake-up date.
+  assert.deepEqual(
+    summarizeRecentNightsImport([
+      { date: "2026-02-25", hoursText: "6.0" },
+      { date: "2026-03-01", hoursText: "7.5" },
+      { date: "2026-02-28", hoursText: "8.0" },
+    ]),
+    { kind: "imported", count: 3, latestDate: "2026-03-01", latestHoursText: "7.5" },
+  );
+});
+
+test("summarizeRecentNightsImport summarizes a single stored night", () => {
+  assert.deepEqual(
+    summarizeRecentNightsImport([{ date: "2024-02-29", hoursText: "8.3" }]),
+    { kind: "imported", count: 1, latestDate: "2024-02-29", latestHoursText: "8.3" },
   );
 });

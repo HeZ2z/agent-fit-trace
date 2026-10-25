@@ -247,3 +247,17 @@ export function getHealthConnectProvider(): HealthProvider {
   providerSingleton ??= createHealthConnectProvider();
   return providerSingleton;
 }
+
+/**
+ * The current device's phone brand, as the Health screen's import-button
+ * brand gate reads it: Android exposes `Platform.constants.Brand`
+ * ("samsung", "Xiaomi", "vivo", …). iOS constants carry no brand field, so an
+ * iOS device reads as "apple" directly — note that iOS (HealthKit) import is
+ * not implemented yet; the value only drives the button's copy, and the tap
+ * still goes through the existing availability flow, which reports the
+ * platform as unavailable there. Other shells read as an unknown brand.
+ */
+export function getCurrentPhoneBrand(): string {
+  if (Platform.OS === "android") return Platform.constants.Brand;
+  return Platform.OS === "ios" ? "apple" : "";
+}

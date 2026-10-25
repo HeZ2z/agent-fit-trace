@@ -203,14 +203,14 @@ export const messages: Record<string, string> = {
   "HEALTH CONNECT": "Health Connect",
   SLEEP: "睡眠",
   Sleep: "睡眠",
-  "Import sleep from Health Connect": "从 Health Connect 导入睡眠",
+  "Import health data from your Samsung phone": "从当前三星手机导入健康数据",
+  "Import health data from your Apple phone": "从当前苹果手机导入健康数据",
+  "Import from your phone brand is not supported yet": "暂不支持导入您的品牌",
   "Reading Health Connect…": "正在读取 Health Connect…",
-  "Imported {hours} h of sleep from 1 Health Connect session.":
-    "已从 Health Connect 的 1 段会话导入 {hours} 小时睡眠。",
-  "Imported {hours} h of sleep from {count} Health Connect sessions.":
-    "已从 Health Connect 的 {count} 段会话导入 {hours} 小时睡眠。",
-  "Health Connect has no records for that night. Check that your data source (such as Samsung Health) has turned on syncing with Health Connect in its own settings.":
-    "Health Connect 中没有那一晚的记录。请确认数据源（如三星健康）已在自身设置中开启与 Health Connect 的同步。",
+  "Imported {count} nights of sleep; latest night: {date} {hours} h":
+    "已导入 {count} 晚睡眠，最新一晚：{date} {hours} h",
+  "Health Connect has no records for the last 7 nights. Check that your data source (such as Samsung Health) has turned on syncing with Health Connect in its own settings.":
+    "Health Connect 中没有最近 7 晚的记录。请确认数据源（如三星健康）已在自身设置中开启与 Health Connect 的同步。",
   "Fit Trace has no Health Connect sleep access. Enable Health Connect above and grant the read permissions.":
     "Fit Trace 还没有 Health Connect 的睡眠读取权限。请在上方启用 Health Connect 并授予读取权限。",
   "Only some Health Connect read permissions were granted. Disable and enable Health Connect above to grant the missing ones.":
@@ -245,8 +245,8 @@ export const messages: Record<string, string> = {
   "Wake-up date": "醒来日期",
   "The night between the previous evening 20:00 and this date's 12:00.":
     "指前一晚 20:00 到当天 12:00 之间的那一夜。",
-  "Import the night behind the wake-up date, or type the hours yourself.":
-    "导入醒来日期对应的一晚睡眠，或手动输入时长。",
+  "Import your recent nights, or type the hours yourself.":
+    "一键导入最近 7 晚睡眠，或手动输入时长。",
   "Add sleep manually": "手动补录睡眠",
   "No Health Connect? Record the night here; saving a workout for that date attaches it the same way.":
     "没有 Health Connect？也可以在这里记录；保存该日期的训练时会以同样方式自动挂接。",

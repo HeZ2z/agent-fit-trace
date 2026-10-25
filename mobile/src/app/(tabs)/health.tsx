@@ -3,13 +3,17 @@ import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
-import { getHealthConnectProvider } from "@/health/healthConnect";
+import { getHealthConnectProvider, getCurrentPhoneBrand } from "@/health/healthConnect";
 import {
   healthConnectStatusKey,
+  recentWakeDates,
   SLEEP_READ_SCOPE,
+  summarizeRecentNightsImport,
+  supportedPhoneBrand,
   type HealthAvailability,
   type HealthConnectStatusKey,
   type HealthImportUnavailableReason,
+  type ImportedNight,
   type PermissionRequestResult,
 } from "@/health/healthModel";
 import {
@@ -46,11 +50,11 @@ import {
  * Health tab (bottom dock, issue #50 redesign).
  *
  * The screen owns everything Health Connect: the device-local opt-in with its
- * permission flow and status line (moved verbatim from the Me tab), the
- * wake-up-date sleep import, manual entry for devices without Health Connect,
- * and the delete-able history of recorded nights. The Log screen no longer
- * imports sleep itself; saving a workout attaches the recorded night for the
- * draft date through the sleep store.
+ * permission flow and status line, the one-tap import of the most recent
+ * seven nights (button copy follows the device brand), manual entry for
+ * devices without Health Connect, and the delete-able history of recorded
+ * nights. The Log screen no longer imports sleep itself; saving a workout
+ * attaches the recorded night for the draft date through the sleep store.
  */
 
 const copy = {
@@ -83,15 +87,15 @@ const copy = {
   healthError: "Health Connect error: {message}",
   sleepKicker: "SLEEP",
   sleepTitle: "Sleep",
-  sleepLede: "Import the night behind the wake-up date, or type the hours yourself.",
-  wakeDate: "Wake-up date",
-  wakeDateHint: "The night between the previous evening 20:00 and this date's 12:00.",
-  importButton: "Import sleep from Health Connect",
+  sleepLede: "Import your recent nights, or type the hours yourself.",
+  importButtonSamsung: "Import health data from your Samsung phone",
+  importButtonApple: "Import health data from your Apple phone",
+  brandUnsupported: "Import from your phone brand is not supported yet",
   importing: "Reading Health Connect…",
-  importOkOne: "Imported {hours} h of sleep from 1 Health Connect session.",
-  importOkMany: "Imported {hours} h of sleep from {count} Health Connect sessions.",
+  importOkNights:
+    "Imported {count} nights of sleep; latest night: {date} {hours} h",
   importNoData:
-    "Health Connect has no records for that night. Check that your data source (such as Samsung Health) has turned on syncing with Health Connect in its own settings.",
+    "Health Connect has no records for the last 7 nights. Check that your data source (such as Samsung Health) has turned on syncing with Health Connect in its own settings.",
   importNoPermission:
     "Fit Trace has no Health Connect sleep access. Enable Health Connect above and grant the read permissions.",
   importPartial:
@@ -100,6 +104,8 @@ const copy = {
   manualTitle: "Add sleep manually",
   manualLede:
     "No Health Connect? Record the night here; saving a workout for that date attaches it the same way.",
+  manualDate: "Wake-up date",
+  manualDateHint: "The night between the previous evening 20:00 and this date's 12:00.",
   manualHours: "Sleep (hours)",
   manualSave: "Save sleep entry",
   manualSaved: "Saved {hours} h of sleep for {date}.",
@@ -333,49 +339,71 @@ export default function HealthScreen() {
     }, [t]),
   );
 
-  // The wake-up date defaults to today: the D of the night window
-  // [D-1 20:00, D 12:00], i.e. the morning the user woke up.
-  const [wakeDate, setWakeDate] = useState(() => todayLocalDate());
+  // The device's phone brand, read once per mount: it decides whether the
+  // import area offers the one-tap button (and whose brand it names) or the
+  // unsupported-brand note. The brand string itself comes from the native
+  // adapter; the pure `supportedPhoneBrand` keeps the matching testable.
+  const phoneBrand = useMemo(() => supportedPhoneBrand(getCurrentPhoneBrand()), []);
 
   const [importing, setImporting] = useState(false);
   const [importNotice, setImportNotice] = useState<Notice | null>(null);
 
-  // Manual entry state (works without Health Connect).
+  // Manual entry state (works without Health Connect). Its wake-up date
+  // defaults to today: the D of the night window [D-1 20:00, D 12:00], i.e.
+  // the morning the user woke up.
+  const [manualDate, setManualDate] = useState(() => todayLocalDate());
   const [manualHoursText, setManualHoursText] = useState("");
   const [manualNotice, setManualNotice] = useState<Notice | null>(null);
 
   /**
-   * Import the chosen night from Health Connect and store it. Every outcome —
-   * including the common "Health Connect is empty" case — gets its own honest
-   * message; only an `ok` result writes a sleep entry (replace-on-reimport by
-   * wake-up date).
+   * Import the most recent seven nights (wake-up dates today, yesterday, …
+   * today-6) from Health Connect and store each recorded night. The button is
+   * busy for the whole run; every outcome — including the common "Health
+   * Connect is empty" case — gets its own honest message.
    *
-   * The write is guarded by a store-level optimistic lock that lives in the
-   * store itself (issue #50): manual saves and deletes stay available while
-   * an import runs (disabling the whole page for a slow Health Connect read
-   * would cost more usability than the rare race), so the import captures the
-   * store's revision at the start and hands it to `saveSleepEntryIfUnchanged`,
-   * which re-checks the revision and persists inside one serialized store
-   * step. A mismatch means the user saved, re-recorded or deleted that night
-   * meanwhile, and the late import result is discarded with a notice instead
-   * of overwriting the newer entry or resurrecting a deleted night. The lock
-   * is deliberately coarse: a change to an unrelated night also voids the
-   * import. That is conservative but safe — a false "superseded" notice costs
-   * one retry, while a per-night token cannot tell "never existed" from
-   * "deleted during the import" and would resurrect the deleted night.
+   * Only `ok` results write a sleep entry (replace-on-reimport by wake-up
+   * date); a `no-data` night is simply skipped — the other nights still
+   * import. Failure kinds (no permission, install/update needed, read error)
+   * stop the run and reuse the existing single-night copy, because the same
+   * failure would hit every remaining night.
+   *
+   * Each write is guarded by the store-level optimistic lock (issue #50):
+   * manual saves and deletes stay available while the import runs, so every
+   * night re-reads the store's revision immediately before its conditional
+   * `upsertIfUnchanged`, which re-checks the revision and persists inside one
+   * serialized store step. A mismatch means the user saved or deleted a night
+   * in that window; the late import result for that night is discarded (the
+   * user's newer entry wins) instead of overwriting or resurrecting it.
    */
   async function handleImportSleep(): Promise<void> {
     if (importing || !importReady) return;
     setImporting(true);
     setImportNotice(null);
-    const capturedDate = wakeDate;
     try {
-      const baselineRevision = await readSleepStoreRevision();
-      const result = await healthProvider.sleepHoursForDate(capturedDate);
-      if (result.kind === "ok") {
+      const imported: ImportedNight[] = [];
+      let supersededCount = 0;
+      for (const date of recentWakeDates(todayLocalDate(), 7)) {
+        const result = await healthProvider.sleepHoursForDate(date);
+        if (result.kind === "no-data") continue;
+        if (result.kind !== "ok") {
+          if (result.kind === "error") {
+            setImportNotice({
+              tone: "danger",
+              message: t(copy.importError, { message: result.message }),
+            });
+          } else if (result.kind === "no-permission") {
+            setImportNotice({ tone: "warn", message: t(copy.importNoPermission) });
+          } else if (result.kind === "partial-permission") {
+            setImportNotice({ tone: "warn", message: t(copy.importPartial) });
+          } else {
+            setImportNotice({ tone: "warn", message: t(UNAVAILABLE_COPY[result.reason]) });
+          }
+          return;
+        }
+        const baselineRevision = await readSleepStoreRevision();
         const stored = await saveSleepEntryIfUnchanged(
           {
-            date: capturedDate,
+            date,
             hours: Number(result.hoursText),
             hoursText: result.hoursText,
             sessionCount: result.sessionCount,
@@ -385,42 +413,29 @@ export default function HealthScreen() {
           baselineRevision,
         );
         if (stored === null) {
-          setImportNotice({ tone: "warn", message: t(copy.importSuperseded) });
-          return;
+          supersededCount += 1;
+          continue;
         }
+        imported.push({ date, hoursText: result.hoursText });
         setEntries(stored);
+      }
+      const summary = summarizeRecentNightsImport(imported);
+      if (summary.kind === "imported") {
         setImportNotice({
           tone: "info",
-          message: t(
-            result.sessionCount === 1 ? copy.importOkOne : copy.importOkMany,
-            { hours: result.hoursText, count: result.sessionCount },
-          ),
+          message: t(copy.importOkNights, {
+            count: summary.count,
+            date: summary.latestDate,
+            hours: summary.latestHoursText,
+          }),
         });
-        return;
-      }
-      if (result.kind === "error") {
-        setImportNotice({
-          tone: "danger",
-          message: t(copy.importError, { message: result.message }),
-        });
-        return;
-      }
-      if (result.kind === "no-data") {
+      } else if (supersededCount > 0) {
+        // Every read raced a user write and lost; the history keeps whatever
+        // the user saved, so say that instead of claiming empty Health Connect.
+        setImportNotice({ tone: "warn", message: t(copy.importSuperseded) });
+      } else {
         setImportNotice({ tone: "warn", message: t(copy.importNoData) });
-        return;
       }
-      if (result.kind === "no-permission") {
-        setImportNotice({ tone: "warn", message: t(copy.importNoPermission) });
-        return;
-      }
-      if (result.kind === "partial-permission") {
-        setImportNotice({ tone: "warn", message: t(copy.importPartial) });
-        return;
-      }
-      setImportNotice({
-        tone: "warn",
-        message: t(UNAVAILABLE_COPY[result.reason]),
-      });
     } catch (cause) {
       setImportNotice({
         tone: "danger",
@@ -431,7 +446,7 @@ export default function HealthScreen() {
     }
   }
 
-  /** Store a manually typed night for the wake-up date (no Health Connect). */
+  /** Store a manually typed night for the manual wake-up date (no Health Connect). */
   async function handleManualSave(): Promise<void> {
     setManualNotice(null);
     const parsed = parseManualSleepHours(manualHoursText);
@@ -441,7 +456,7 @@ export default function HealthScreen() {
     }
     try {
       const stored = await saveSleepEntry({
-        date: wakeDate,
+        date: manualDate,
         hours: parsed.hours,
         hoursText: parsed.hoursText,
         sessionCount: 0,
@@ -452,7 +467,7 @@ export default function HealthScreen() {
       setManualHoursText("");
       setManualNotice({
         tone: "info",
-        message: t(copy.manualSaved, { hours: parsed.hoursText, date: wakeDate }),
+        message: t(copy.manualSaved, { hours: parsed.hoursText, date: manualDate }),
       });
     } catch (cause) {
       setManualNotice({
@@ -514,40 +529,59 @@ export default function HealthScreen() {
         <Title>{t(copy.sleepTitle)}</Title>
         <Body>{t(copy.sleepLede)}</Body>
 
-        <DateField
-          accessibilityLabel={t(copy.wakeDate)}
-          doneLabel={t(copy.done)}
-          hint={t(copy.wakeDateHint)}
-          label={t(copy.wakeDate)}
-          onConfirm={setWakeDate}
-          testID="health-wake-date"
-          value={wakeDate}
-        />
-
+        {/*
+          * Display-layer brand convention (user-observed wording, issue #50):
+          * the button names the current device's brand even though the reader
+          * behind it is always Health Connect. On an Apple phone that means
+          * the label already shows the Apple copy while HealthKit import is
+          * not implemented yet — the tap simply runs the existing
+          * availability flow, which reports the "platform" status there.
+          */}
         {importReady ? (
-          <>
-            <Button
-              disabled={importing}
-              label={importing ? t(copy.importing) : t(copy.importButton)}
-              onPress={() => {
-                void handleImportSleep();
-              }}
-              testID="health-sleep-import"
-              variant="secondary"
-            />
-            {importNotice !== null ? (
-              <Banner
-                message={importNotice.message}
-                testID="health-import-notice"
-                tone={importNotice.tone}
+          phoneBrand === null ? (
+            <Body testID="health-brand-unsupported">{t(copy.brandUnsupported)}</Body>
+          ) : (
+            <>
+              <Button
+                disabled={importing}
+                label={
+                  importing
+                    ? t(copy.importing)
+                    : t(
+                        phoneBrand === "samsung"
+                          ? copy.importButtonSamsung
+                          : copy.importButtonApple,
+                      )
+                }
+                onPress={() => {
+                  void handleImportSleep();
+                }}
+                testID="health-sleep-import"
+                variant="secondary"
               />
-            ) : null}
-          </>
+              {importNotice !== null ? (
+                <Banner
+                  message={importNotice.message}
+                  testID="health-import-notice"
+                  tone={importNotice.tone}
+                />
+              ) : null}
+            </>
+          )
         ) : null}
 
         <View style={styles.manualBlock}>
           <Title>{t(copy.manualTitle)}</Title>
           <Body>{t(copy.manualLede)}</Body>
+          <DateField
+            accessibilityLabel={t(copy.manualDate)}
+            doneLabel={t(copy.done)}
+            hint={t(copy.manualDateHint)}
+            label={t(copy.manualDate)}
+            onConfirm={setManualDate}
+            testID="health-manual-date"
+            value={manualDate}
+          />
           <Field
             keyboardType="decimal-pad"
             label={t(copy.manualHours)}
