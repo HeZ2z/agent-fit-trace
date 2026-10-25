@@ -1,9 +1,20 @@
 import { useRouter } from "expo-router";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { authErrorMessage, useAuth } from "@/auth";
+import { getHealthConnectProvider } from "@/health/healthConnect";
+import {
+  healthConnectStatusKey,
+  type HealthAvailability,
+  type HealthConnectStatusKey,
+  type PermissionRequestResult,
+} from "@/health/healthModel";
 import { useI18n } from "@/i18n";
+import {
+  readHealthConnectEnabled,
+  writeHealthConnectEnabled,
+} from "@/preferences/deviceHealth";
 import { usePreferences } from "@/preferences";
 import { readSyncConfig } from "@/sync/syncClient";
 import { SPACING, TYPOGRAPHY } from "@/theme";
@@ -64,7 +75,47 @@ const copy = {
   languageEnglishBody: "Source language. Data and exports stay in English.",
   languageChineseBody:
     "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
+  healthKicker: "HEALTH",
+  healthTitle: "Health Connect",
+  healthLede:
+    "Optional, device-local and read-only. Used to import sleep into the Log form; nothing is uploaded.",
+  healthScopes: "Read-only scopes: sleep sessions and resting heart rate.",
+  healthStatusOff: "Off. Enable it to import sleep into the Log form.",
+  healthStatusSupported: "Connected. The Log form can import sleep for the night before a session.",
+  healthStatusNeedsInstall:
+    "Health Connect is not installed. Install it from the Google Play Store, then turn on “Sync with Health Connect” in Samsung Health settings.",
+  healthStatusNeedsUpdate:
+    "Health Connect needs an update from the Google Play Store before sleep import can be used.",
+  healthStatusPlatform: "Health Connect is only available on Android devices.",
+  healthStatusNotFound: "Health Connect is not available on this device.",
+  healthStatusPartial:
+    "Partially granted. Some Health Connect read permissions are missing; disable and enable again to grant them.",
+  healthEnable: "Enable Health Connect",
+  healthDisable: "Disable Health Connect",
+  healthPermissionDenied:
+    "Sleep import stays off. Grant Fit Trace read access to sleep and resting heart rate, and make sure Samsung Health has “Sync with Health Connect” turned on in its settings.",
+  healthOffNote:
+    "Off on this device. To revoke access entirely, remove Fit Trace from the Health Connect system settings.",
+  healthError: "Health Connect error: {message}",
 };
+
+/** Status-line copy per resolved key; keys come from the pure status model. */
+const HEALTH_STATUS_COPY: Record<HealthConnectStatusKey, string> = {
+  off: copy.healthStatusOff,
+  supported: copy.healthStatusSupported,
+  "needs-install": copy.healthStatusNeedsInstall,
+  "needs-update": copy.healthStatusNeedsUpdate,
+  platform: copy.healthStatusPlatform,
+  "not-found": copy.healthStatusNotFound,
+  partial: copy.healthStatusPartial,
+};
+
+/** Message for a Health Connect failure notice; never empty. */
+function healthErrorMessage(cause: unknown): string {
+  if (cause instanceof Error && cause.message.trim() !== "") return cause.message;
+  if (typeof cause === "string" && cause.trim() !== "") return cause;
+  return "Unknown error.";
+}
 
 export default function MeScreen() {
   const router = useRouter();
@@ -86,6 +137,80 @@ export default function MeScreen() {
       : preferencesStatus === "synced"
         ? copy.prefsSynced
         : copy.prefsSyncing;
+
+  // Device-local Health Connect state. `null` means "still hydrating"; the
+  // toggle and the status line render the off state until hydration lands.
+  const healthProvider = useMemo(() => getHealthConnectProvider(), []);
+  const [healthEnabled, setHealthEnabled] = useState<boolean | null>(null);
+  const [healthAvailability, setHealthAvailability] = useState<HealthAvailability | null>(null);
+  const [healthGrant, setHealthGrant] = useState<PermissionRequestResult | null>(null);
+  const [healthBusy, setHealthBusy] = useState(false);
+  const [healthNotice, setHealthNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [enabled, availability, grant] = await Promise.all([
+        readHealthConnectEnabled(),
+        healthProvider.availability(),
+        healthProvider.currentPermissions(),
+      ]);
+      if (cancelled) return;
+      setHealthEnabled(enabled);
+      setHealthAvailability(availability);
+      setHealthGrant(grant);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [healthProvider]);
+
+  const healthStatus = healthConnectStatusKey(healthEnabled, healthAvailability, healthGrant);
+
+  /**
+   * Toggle the device-local opt-in. Enabling first checks availability, then
+   * requests the read permissions; a denied sleep grant keeps the toggle off
+   * and shows guidance. Disabling is in-app only (Health Connect grants are
+   * revoked from the system settings, which the notice says).
+   */
+  async function handleToggleHealthConnect(): Promise<void> {
+    if (healthBusy || healthEnabled === null) return;
+    setHealthBusy(true);
+    setHealthNotice(null);
+    try {
+      if (healthEnabled) {
+        writeHealthConnectEnabled(false);
+        setHealthEnabled(false);
+        setHealthNotice(t(copy.healthOffNote));
+        return;
+      }
+      const availability = await healthProvider.availability();
+      setHealthAvailability(availability);
+      if (availability.kind !== "supported") {
+        // Stay off; the status line and notice carry the install/update hint.
+        const key =
+          availability.kind === "unavailable"
+            ? availability.reason === "platform"
+              ? "platform"
+              : "not-found"
+            : availability.kind;
+        setHealthNotice(t(HEALTH_STATUS_COPY[key]));
+        return;
+      }
+      const grant = await healthProvider.requestReadPermissions();
+      setHealthGrant(grant);
+      if (!grant.granted.includes("SleepSession")) {
+        setHealthNotice(t(copy.healthPermissionDenied));
+        return;
+      }
+      writeHealthConnectEnabled(true);
+      setHealthEnabled(true);
+    } catch (cause) {
+      setHealthNotice(t(copy.healthError, { message: healthErrorMessage(cause) }));
+    } finally {
+      setHealthBusy(false);
+    }
+  }
 
   return (
     <Screen testID="screen-me">
@@ -186,6 +311,34 @@ export default function MeScreen() {
           />
         </Card>
       ) : null}
+
+      <Card testID="me-health-section">
+        <Kicker>{t(copy.healthKicker)}</Kicker>
+        <Title>{t(copy.healthTitle)}</Title>
+        <Body>{t(copy.healthLede)}</Body>
+        <Body
+          testID="me-health-status"
+          tone={
+            healthStatus === "supported" || healthStatus === "off" ? "muted" : "warn"
+          }>
+          {t(HEALTH_STATUS_COPY[healthStatus])}
+        </Body>
+        <Body>{t(copy.healthScopes)}</Body>
+        {healthNotice !== null ? (
+          <Banner message={healthNotice} testID="me-health-notice" tone="info" />
+        ) : null}
+        <Button
+          accessibilityLabel={t(healthEnabled ? copy.healthDisable : copy.healthEnable)}
+          disabled={healthBusy || healthEnabled === null}
+          fullWidth
+          label={healthEnabled ? t(copy.healthDisable) : t(copy.healthEnable)}
+          onPress={() => {
+            void handleToggleHealthConnect();
+          }}
+          testID="me-health-toggle"
+          variant="secondary"
+        />
+      </Card>
 
       <View style={styles.section}>
         <Title>{t(copy.appearanceTitle)}</Title>

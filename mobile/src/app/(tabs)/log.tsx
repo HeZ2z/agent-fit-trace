@@ -20,7 +20,7 @@ import type {
   SessionDraft,
   SessionState,
 } from "@agent-fit-trace/workout-session";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   AppState,
@@ -37,7 +37,10 @@ import {
 import { useAuth } from "@/auth";
 import { useWorkoutData } from "@/data/provider";
 import { LOCAL_GUEST_OWNER_ID } from "@/data/sessionDraftSchema";
+import { getHealthConnectProvider } from "@/health/healthConnect";
+import type { HealthImportUnavailableReason, SleepImportResult } from "@/health/healthModel";
 import { useI18n } from "@/i18n";
+import { readHealthConnectEnabled } from "@/preferences/deviceHealth";
 import { SPACING } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
@@ -100,6 +103,21 @@ const copy = {
   removeExercise: "Remove exercise",
   duration: "Duration (minutes)",
   sleep: "Sleep (hours)",
+  sleepImport: "Import sleep from Health Connect",
+  sleepImporting: "Reading Health Connect…",
+  sleepImportOk: "Imported {hours} h of sleep from Health Connect.",
+  sleepImportNoData: "No sleep was recorded in Health Connect for that night.",
+  sleepImportNoPermission:
+    "Fit Trace has no Health Connect sleep access. Enable Health Connect under Me → Health Connect and grant the read permissions.",
+  sleepImportPlatform: "Health Connect is only available on Android devices.",
+  sleepImportNotFound: "Health Connect is not available on this device.",
+  sleepImportNeedsInstall:
+    "Health Connect is not installed. Install it from the Google Play Store first — see Me → Health Connect.",
+  sleepImportNeedsUpdate:
+    "Health Connect needs an update from the Google Play Store first — see Me → Health Connect.",
+  sleepImportPartial:
+    "Only some Health Connect read permissions were granted. Enable Health Connect under Me → Health Connect to grant the missing ones.",
+  sleepImportError: "Could not import sleep: {message}",
   notes: "Notes (optional)",
   pain: "Pain (optional)",
   painArea: "Pain {index} area",
@@ -195,6 +213,30 @@ function describeError(cause: unknown): string {
 function messageOf(cause: unknown): string {
   const message = describeError(cause).trim();
   return message === "" ? "Unknown error." : message;
+}
+
+/**
+ * Copy for a failed sleep import. `ok` (the field is filled) and `error` (the
+ * dynamic message) are handled by the caller.
+ */
+function sleepImportCopyKey(
+  result: Exclude<SleepImportResult, { kind: "ok" } | { kind: "error" }>,
+): string {
+  switch (result.kind) {
+    case "no-data":
+      return copy.sleepImportNoData;
+    case "no-permission":
+      return copy.sleepImportNoPermission;
+    case "partial-permission":
+      return copy.sleepImportPartial;
+    case "unavailable":
+      return {
+        platform: copy.sleepImportPlatform,
+        "not-found": copy.sleepImportNotFound,
+        "needs-install": copy.sleepImportNeedsInstall,
+        "needs-update": copy.sleepImportNeedsUpdate,
+      }[result.reason];
+  }
 }
 
 /**
@@ -329,6 +371,17 @@ export default function LogScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [success, setSuccess] = useState<SaveSuccess | null>(null);
+
+  // Health Connect sleep import. The device-local toggle and the runtime
+  // availability are read once on mount; the button only exists when both
+  // agree (opt-in on Android with Health Connect ready).
+  const healthProvider = useMemo(() => getHealthConnectProvider(), []);
+  const [healthImportReady, setHealthImportReady] = useState(false);
+  const [sleepImporting, setSleepImporting] = useState(false);
+  const [sleepImportNotice, setSleepImportNotice] = useState<{
+    tone: "info" | "warn" | "danger";
+    message: string;
+  } | null>(null);
 
   // Draft lifecycle state. `hydratedOwner` is the identity whose row was last
   // read; autosave only runs while it matches the current owner.
@@ -668,6 +721,59 @@ export default function LogScreen() {
     },
     [language, t],
   );
+
+  // Health Connect readiness for this mount: the device-local opt-in plus a
+  // supported runtime. Both reads fail soft; a failure keeps the button off.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [enabled, availability] = await Promise.all([
+        readHealthConnectEnabled(),
+        healthProvider.availability(),
+      ]);
+      if (!cancelled) setHealthImportReady(enabled && availability.kind === "supported");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [healthProvider]);
+
+  /**
+   * Import the night's sleep for the draft date. Success fills `sleepHours`
+   * directly; every failure kind surfaces its own message. The notice survives
+   * the field edit so the user can see what was filled and from where.
+   */
+  async function handleImportSleep(): Promise<void> {
+    if (sleepImporting) return;
+    setSleepImporting(true);
+    setSleepImportNotice(null);
+    try {
+      const result = await healthProvider.sleepHoursForDate(draft.date);
+      if (result.kind === "ok") {
+        edit({ type: "setSleepHours", value: result.hoursText });
+        setSleepImportNotice({
+          tone: "info",
+          message: t(copy.sleepImportOk, { hours: result.hoursText }),
+        });
+        return;
+      }
+      if (result.kind === "error") {
+        setSleepImportNotice({
+          tone: "danger",
+          message: t(copy.sleepImportError, { message: result.message }),
+        });
+        return;
+      }
+      setSleepImportNotice({ tone: "warn", message: t(sleepImportCopyKey(result)) });
+    } catch (cause) {
+      setSleepImportNotice({
+        tone: "danger",
+        message: t(copy.sleepImportError, { message: messageOf(cause) }),
+      });
+    } finally {
+      setSleepImporting(false);
+    }
+  }
 
   // The captured record is only valid while the form still builds the same
   // content at the same instant. Deriving staleness means no edit handler can
@@ -1315,6 +1421,29 @@ export default function LogScreen() {
           testID="log-sleep-hours"
           value={draft.sleepHours}
         />
+
+        {/* Sleep import: only rendered for an explicit device-local opt-in on
+            a device where Health Connect is supported. */}
+        {healthImportReady ? (
+          <>
+            <Button
+              disabled={sleepImporting}
+              label={sleepImporting ? t(copy.sleepImporting) : t(copy.sleepImport)}
+              onPress={() => {
+                void handleImportSleep();
+              }}
+              testID="log-sleep-import"
+              variant="secondary"
+            />
+            {sleepImportNotice !== null ? (
+              <Banner
+                message={sleepImportNotice.message}
+                testID="log-sleep-import-notice"
+                tone={sleepImportNotice.tone}
+              />
+            ) : null}
+          </>
+        ) : null}
 
         <Field
           inputStyle={styles.notesInput}

@@ -196,6 +196,46 @@ export const messages: Record<string, string> = {
     "此版本未配置云端同步。训练记录仍保存在此设备上。",
   "Open sync": "打开同步",
 
+  /* ── Health Connect (issue #50) ─────────────────────────────── */
+  HEALTH: "健康",
+  "Health Connect": "Health Connect",
+  "Import sleep from Health Connect": "从 Health Connect 导入睡眠",
+  "Reading Health Connect…": "正在读取 Health Connect…",
+  "Imported {hours} h of sleep from Health Connect.":
+    "已从 Health Connect 导入 {hours} 小时睡眠。",
+  "No sleep was recorded in Health Connect for that night.":
+    "Health Connect 中没有那一晚的睡眠记录。",
+  "Fit Trace has no Health Connect sleep access. Enable Health Connect under Me → Health Connect and grant the read permissions.":
+    "Fit Trace 还没有 Health Connect 的睡眠读取权限。请在“我的 → Health Connect”中启用并授予读取权限。",
+  "Only some Health Connect read permissions were granted. Enable Health Connect under Me → Health Connect to grant the missing ones.":
+    "只授予了部分 Health Connect 读取权限。请在“我的 → Health Connect”中启用并补齐缺失的权限。",
+  "Could not import sleep: {message}": "无法导入睡眠：{message}",
+  "Optional, device-local and read-only. Used to import sleep into the Log form; nothing is uploaded.":
+    "可选、仅限本机且只读。用于向记录表单导入睡眠；不会上传任何内容。",
+  "Read-only scopes: sleep sessions and resting heart rate.": "只读范围：睡眠会话与静息心率。",
+  "Off. Enable it to import sleep into the Log form.": "已关闭。启用后可在记录表单中导入睡眠。",
+  "Connected. The Log form can import sleep for the night before a session.":
+    "已连接。记录表单可以导入训练前一晚的睡眠。",
+  "Health Connect is not installed. Install it from the Google Play Store first — see Me → Health Connect.":
+    "尚未安装 Health Connect。请先从 Google Play 商店安装——参见“我的 → Health Connect”。",
+  "Health Connect is not installed. Install it from the Google Play Store, then turn on “Sync with Health Connect” in Samsung Health settings.":
+    "尚未安装 Health Connect。请先从 Google Play 商店安装，然后在三星健康设置中打开“与 Health Connect 同步”。",
+  "Health Connect needs an update from the Google Play Store before sleep import can be used.":
+    "需要先从 Google Play 商店更新 Health Connect，才能使用睡眠导入。",
+  "Health Connect needs an update from the Google Play Store first — see Me → Health Connect.":
+    "Health Connect 需要先从 Google Play 商店更新——参见“我的 → Health Connect”。",
+  "Health Connect is only available on Android devices.": "Health Connect 仅在 Android 设备上可用。",
+  "Health Connect is not available on this device.": "此设备上没有可用的 Health Connect。",
+  "Partially granted. Some Health Connect read permissions are missing; disable and enable again to grant them.":
+    "部分授权。缺少部分 Health Connect 读取权限；请先关闭再重新开启以补齐授权。",
+  "Enable Health Connect": "启用 Health Connect",
+  "Disable Health Connect": "停用 Health Connect",
+  "Sleep import stays off. Grant Fit Trace read access to sleep and resting heart rate, and make sure Samsung Health has “Sync with Health Connect” turned on in its settings.":
+    "睡眠导入保持关闭。请授予 Fit Trace 对睡眠与静息心率的读取权限，并确认三星健康设置中已打开“与 Health Connect 同步”。",
+  "Off on this device. To revoke access entirely, remove Fit Trace from the Health Connect system settings.":
+    "已在此设备上关闭。如需彻底撤销访问，请在系统 Health Connect 设置中移除 Fit Trace。",
+  "Health Connect error: {message}": "Health Connect 错误：{message}",
+
   /*
    * Proper names. The identity values are intentional: language endonyms are
    * shown in their own language (the same as the web switcher), and the skin
