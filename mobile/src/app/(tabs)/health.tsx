@@ -1,6 +1,6 @@
 import { todayLocalDate } from "@agent-fit-trace/workout-session";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { getHealthConnectProvider } from "@/health/healthConnect";
@@ -169,13 +169,22 @@ export default function HealthScreen() {
   // True when hydration itself failed: the state falls back to safe defaults
   // and the status line shows the degraded "platform" copy instead of a
   // misleading "off" (the toggle value was never actually read). The flag is
-  // sticky only until a later manual refresh succeeds — clearing it there lets
-  // the status line derive from the freshly read availability/grants again,
-  // so a successful enable is never permanently masked by an earlier
-  // hydration failure.
+  // sticky only until a later successful read (a focus re-read or the enable
+  // flow) clears it — clearing it there lets the status line derive from the
+  // freshly read availability/grants again, so a successful enable is never
+  // permanently masked by an earlier hydration failure.
   const [healthHydrationFailed, setHealthHydrationFailed] = useState(false);
 
-  useEffect(() => {
+  // The Health tab lives in the bottom dock, so it stays mounted after the
+  // first visit and a mount-time read alone would go stale: the user can grant
+  // or revoke the Health Connect permissions in the system settings and switch
+  // back, and the status line would keep claiming the outdated connected or
+  // revoked state indefinitely. Re-read the opt-in, availability and grants on
+  // every focus instead (the log.tsx precedent); useFocusEffect also fires on
+  // the first focus, so this covers the mount-time hydration too. A read that
+  // lands after a newer focus loses to it via `cancelled`, so a stale grant can
+  // never overwrite the fresh one.
+  const refreshHealthConnect = useCallback(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -190,9 +199,10 @@ export default function HealthScreen() {
         setHealthAvailability(availability);
         setHealthGrant(grant);
       } catch {
-        // Hydration must never reject into the effect: land on safe defaults
-        // (off, unavailable, nothing granted) so the toggle stays usable and
-        // can never wedge behind a permanent `null` (the on-device QA deadlock).
+        // A failed read must never reject into the effect: land on safe
+        // defaults (off, unavailable, nothing granted) so the toggle stays
+        // usable and can never wedge behind a permanent `null` (the on-device
+        // QA deadlock).
         if (cancelled) return;
         setHealthHydrationFailed(true);
         setHealthEnabled(false);
@@ -204,6 +214,8 @@ export default function HealthScreen() {
       cancelled = true;
     };
   }, [healthProvider]);
+
+  useFocusEffect(refreshHealthConnect);
 
   const healthStatus = healthHydrationFailed
     ? "platform"
