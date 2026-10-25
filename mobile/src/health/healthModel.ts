@@ -121,6 +121,29 @@ export function importUnavailableReason(
 }
 
 /**
+ * Turn an idempotent `initialize` thunk into a single-flight guard.
+ *
+ * The returned function shares one in-flight promise across concurrent
+ * callers, so the wrapped work runs at most once while it succeeds. A rejected
+ * run is never cached — the promise is dropped before the rejection propagates
+ * so the next caller retries from scratch. The Health Connect adapter wraps
+ * the native `initialize()` with this, because every native call except
+ * `getSdkStatus` needs an initialized client.
+ */
+export function createSingleFlightInit(
+  initialize: () => Promise<void>,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+  return () => {
+    inFlight ??= initialize().catch((cause: unknown) => {
+      inFlight = null;
+      throw cause;
+    });
+    return inFlight;
+  };
+}
+
+/**
  * The device-local Health Connect provider. Implementations must be usable
  * without React; the native adapter is the only implementation in the app.
  */

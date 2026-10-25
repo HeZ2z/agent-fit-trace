@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 
 import {
   aggregateSleepHours,
+  createSingleFlightInit,
   evaluatePermissionGrant,
   importUnavailableReason,
   mapHealthConnectStatus,
@@ -93,6 +94,37 @@ function toSleepSessionLike(record: Record<string, unknown>): SleepSessionLike |
 }
 
 function createHealthConnectProvider(): HealthProvider {
+  /**
+   * Idempotent initialize guard for every native call that needs a client. In
+   * react-native-health-connect 4.1.3 `requestPermission`,
+   * `getGrantedPermissions` and `readRecords` reject with `ClientNotInitialized`
+   * until `initialize()` has resolved (only `getSdkStatus` is safe before).
+   * `loadNativeHealthConnect()` returns the same module on every Android call,
+   * so the thunk below always initializes the same native client.
+   */
+  const ensureInitialized = createSingleFlightInit(async (): Promise<void> => {
+    const native = loadNativeHealthConnect();
+    if (native === null) {
+      throw new Error("Health Connect native module is unavailable");
+    }
+    const initialized = await native.initialize();
+    if (initialized !== true) {
+      throw new Error("Health Connect failed to initialize");
+    }
+  });
+
+  /** Read the granted set; a native failure reads as "nothing granted". */
+  async function grantedReadScopes(native: HealthConnectNative): Promise<string[]> {
+    try {
+      return grantedRecordTypes(await native.getGrantedPermissions());
+    } catch (cause) {
+      // The permission state must surface as unauthorized, never reject into
+      // the UI mount chain (a stale or uninitialized client is not fatal here).
+      console.warn("[healthConnect] getGrantedPermissions failed; treating as unauthorized", cause);
+      return [];
+    }
+  }
+
   return {
     async availability(): Promise<HealthAvailability> {
       // The platform gate comes first and never touches the native module.
@@ -110,7 +142,7 @@ function createHealthConnectProvider(): HealthProvider {
       if (Platform.OS !== "android") return { granted: [], missing: [...HEALTH_READ_SCOPES] };
       const native = loadNativeHealthConnect();
       if (native === null) return { granted: [], missing: [...HEALTH_READ_SCOPES] };
-      await native.initialize();
+      await ensureInitialized();
       const granted = grantedRecordTypes(await native.requestPermission(readPermissions()));
       return evaluatePermissionGrant(HEALTH_READ_SCOPES, granted);
     },
@@ -119,7 +151,8 @@ function createHealthConnectProvider(): HealthProvider {
       if (Platform.OS !== "android") return { granted: [], missing: [...HEALTH_READ_SCOPES] };
       const native = loadNativeHealthConnect();
       if (native === null) return { granted: [], missing: [...HEALTH_READ_SCOPES] };
-      const granted = grantedRecordTypes(await native.getGrantedPermissions());
+      await ensureInitialized();
+      const granted = await grantedReadScopes(native);
       return evaluatePermissionGrant(HEALTH_READ_SCOPES, granted);
     },
 
@@ -140,19 +173,29 @@ function createHealthConnectProvider(): HealthProvider {
         return { kind: "error", message: "Invalid workout date" };
       }
 
-      await native.initialize();
-      const granted = grantedRecordTypes(await native.getGrantedPermissions());
+      await ensureInitialized();
+      const granted = await grantedReadScopes(native);
       const grant = evaluatePermissionGrant(HEALTH_READ_SCOPES, granted);
       // Only sleep gates the import; resting heart rate is not read yet.
       if (!grant.granted.includes("SleepSession")) return { kind: "no-permission" };
 
-      const result = await native.readRecords("SleepSession", {
-        timeRangeFilter: {
-          operator: "between",
-          startTime: new Date(window.startMs).toISOString(),
-          endTime: new Date(window.endMs).toISOString(),
-        },
-      });
+      let result: { records: Array<Record<string, unknown>> };
+      try {
+        result = await native.readRecords("SleepSession", {
+          timeRangeFilter: {
+            operator: "between",
+            startTime: new Date(window.startMs).toISOString(),
+            endTime: new Date(window.endMs).toISOString(),
+          },
+        });
+      } catch (cause) {
+        // The Log screen renders this as a dismissable danger notice; a native
+        // read failure must not escape the adapter as a rejection.
+        return {
+          kind: "error",
+          message: cause instanceof Error && cause.message !== "" ? cause.message : "Sleep read failed",
+        };
+      }
       const sessions = result.records
         .map(toSleepSessionLike)
         .filter((session): session is SleepSessionLike => session !== null);

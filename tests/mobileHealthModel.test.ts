@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
   aggregateSleepHours,
+  createSingleFlightInit,
   evaluatePermissionGrant,
   formatSleepHours,
   healthConnectStatusKey,
@@ -54,6 +55,52 @@ test("healthModel.ts stays free of native/platform dependencies", () => {
 });
 
 /* ── SDK status mapping ──────────────────────────────────────────── */
+
+test("createSingleFlightInit runs one initialize for concurrent and later callers", async () => {
+  let calls = 0;
+  const guard = createSingleFlightInit(async () => {
+    calls += 1;
+    await Promise.resolve(); // simulate the native round-trip
+  });
+  // Concurrent callers share the in-flight promise: one native initialize.
+  await Promise.all([guard(), guard(), guard()]);
+  assert.equal(calls, 1);
+  // A caller after success reuses the cached result; initialize is not re-run.
+  await guard();
+  assert.equal(calls, 1);
+});
+
+test("createSingleFlightInit retries after a failed initialize instead of caching it", async () => {
+  let calls = 0;
+  const guard = createSingleFlightInit(async () => {
+    calls += 1;
+    await Promise.resolve();
+    if (calls === 1) throw new Error("client not initialized");
+  });
+  await assert.rejects(guard(), /client not initialized/);
+  // The rejection is not cached: the next caller retries from scratch.
+  await guard();
+  assert.equal(calls, 2);
+});
+
+test("createSingleFlightInit surfaces one failure to every concurrent caller and recovers", async () => {
+  let calls = 0;
+  const guard = createSingleFlightInit(async () => {
+    calls += 1;
+    await Promise.resolve();
+    if (calls === 1) throw new Error("first attempt fails");
+  });
+  const results = await Promise.allSettled([guard(), guard(), guard()]);
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["rejected", "rejected", "rejected"],
+  );
+  assert.equal(calls, 1); // one shared attempt, not one per caller
+  // The retry after the shared failure is single-flight again.
+  await Promise.all([guard(), guard()]);
+  assert.equal(calls, 2);
+});
+
 
 test("mapHealthConnectStatus maps every SDK status", () => {
   assert.deepEqual(mapHealthConnectStatus(SDK_AVAILABILITY_STATUS.SDK_AVAILABLE), {

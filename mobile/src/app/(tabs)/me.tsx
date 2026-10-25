@@ -146,26 +146,44 @@ export default function MeScreen() {
   const [healthGrant, setHealthGrant] = useState<PermissionRequestResult | null>(null);
   const [healthBusy, setHealthBusy] = useState(false);
   const [healthNotice, setHealthNotice] = useState<string | null>(null);
+  // True when hydration itself failed: the state falls back to safe defaults
+  // and the status line shows the degraded "platform" copy instead of a
+  // misleading "off" (the toggle value was never actually read).
+  const [healthHydrationFailed, setHealthHydrationFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [enabled, availability, grant] = await Promise.all([
-        readHealthConnectEnabled(),
-        healthProvider.availability(),
-        healthProvider.currentPermissions(),
-      ]);
-      if (cancelled) return;
-      setHealthEnabled(enabled);
-      setHealthAvailability(availability);
-      setHealthGrant(grant);
+      try {
+        const [enabled, availability, grant] = await Promise.all([
+          readHealthConnectEnabled(),
+          healthProvider.availability(),
+          healthProvider.currentPermissions(),
+        ]);
+        if (cancelled) return;
+        setHealthHydrationFailed(false);
+        setHealthEnabled(enabled);
+        setHealthAvailability(availability);
+        setHealthGrant(grant);
+      } catch {
+        // Hydration must never reject into the effect: land on safe defaults
+        // (off, unavailable, nothing granted) so the toggle stays usable and
+        // can never wedge behind a permanent `null` (the on-device QA deadlock).
+        if (cancelled) return;
+        setHealthHydrationFailed(true);
+        setHealthEnabled(false);
+        setHealthAvailability({ kind: "unavailable", reason: "platform" });
+        setHealthGrant({ granted: [], missing: [] });
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [healthProvider]);
 
-  const healthStatus = healthConnectStatusKey(healthEnabled, healthAvailability, healthGrant);
+  const healthStatus = healthHydrationFailed
+    ? "platform"
+    : healthConnectStatusKey(healthEnabled, healthAvailability, healthGrant);
 
   /**
    * Toggle the device-local opt-in. Enabling first checks availability, then
