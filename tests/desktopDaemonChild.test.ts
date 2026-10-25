@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -17,6 +19,7 @@ import { after, test } from "node:test";
 const require = createRequire(import.meta.url);
 const daemonChild = require("../packages/fit-trace-desktop/main/daemonChild.cjs") as {
   URL_TIMEOUT_MS: number;
+  STALE_JOURNAL_LOCK_EXIT_CODE: number;
   parseDaemonUrl: (text: string) => string | null;
   nextRestartDelay: (attempt: number) => number;
   healthCheck: (url: string) => Promise<boolean>;
@@ -29,6 +32,7 @@ const daemonChild = require("../packages/fit-trace-desktop/main/daemonChild.cjs"
     urlTimeoutMs?: number;
   }) => { child: import("node:child_process").ChildProcess; url: Promise<string> };
   stopDaemonChild: (child: import("node:child_process").ChildProcess | null) => Promise<void>;
+  reclaimStaleJournalLock: (dataDir: string | undefined) => number | false;
 };
 
 const CLI_PATH = join(import.meta.dirname, "..", "packages", "fit-trace-cli", "src", "cli.ts");
@@ -179,6 +183,37 @@ test("spawnDaemon rejects when no listening line ever arrives (timeout path)", a
   await daemonChild.stopDaemonChild(child);
 });
 
+test("spawnDaemon stops the child when the URL timeout rejects", async () => {
+  const dir = await trackDir();
+  // A program that starts fine but never prints a listening line and never
+  // exits: the url promise must reject at the (short) timeout AND the child
+  // must have been stopped by spawnDaemon itself (SIGTERM → SIGKILL), not be
+  // left running for a caller's stopDaemonChild to clean up.
+  const silentCli = join(dir, "silent-forever.cjs");
+  await writeFile(silentCli, "setTimeout(() => {}, 100000);\n");
+  const { child, url } = daemonChild.spawnDaemon({
+    nodePath: process.execPath,
+    cliPath: silentCli,
+    dataDir: dir,
+    port: 0,
+    env: childEnv(),
+    urlTimeoutMs: 300,
+  });
+  await assert.rejects(url, /did not report a listen URL within 300ms/);
+  // Guard rail: gone within ~1s. Node has no SIGTERM handler here, so the
+  // graceful phase alone should terminate it long before SIGKILL.
+  let gone = false;
+  for (let i = 0; i < 20 && !gone; i++) {
+    gone = child.exitCode !== null || child.signalCode !== null;
+    if (!gone) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  assert.ok(gone, "child process was terminated after the URL timeout");
+  // A caller-level stop afterwards must stay safe (idempotent, no hang).
+  await daemonChild.stopDaemonChild(child);
+});
+
 test("spawnDaemon rejects when the node binary itself is missing (bad nodePath)", async () => {
   const dir = await trackDir();
   // A path that does not exist: spawn emits ENOENT via the child's "error"
@@ -212,4 +247,42 @@ test("stopDaemonChild resolves for a child that never successfully spawned", asy
   ]);
   assert.equal(outcome, "resolved", "stopDaemonChild must not hang on a never-spawned child");
   await stop;
+});
+
+/** Spawn a child that exits immediately and return its confirmed-dead pid. */
+function confirmedDeadPid(): number {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const child = spawnSync(process.execPath, ["-e", ""], { timeout: 5_000 });
+    const pid = child.pid;
+    if (pid === undefined) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return pid;
+    }
+  }
+  throw new Error("could not obtain a confirmed-dead pid");
+}
+
+test("reclaimStaleJournalLock removes only a lock owned by a confirmed-dead pid", async () => {
+  assert.equal(daemonChild.STALE_JOURNAL_LOCK_EXIT_CODE, 3, "mirrors the CLI's stale-lock exit code");
+  const dir = await trackDir();
+  const lockPath = join(dir, "coaching-journal.json.lock");
+
+  // Dead owner (an exited child, like a SIGKILLed daemon): reclaimed.
+  const deadPid = confirmedDeadPid();
+  await writeFile(lockPath, `${JSON.stringify({ pid: deadPid, token: "dead-owner" })}\n`);
+  assert.equal(daemonChild.reclaimStaleJournalLock(dir), deadPid, "a dead owner's lock is reclaimed");
+  assert.equal(existsSync(lockPath), false, "the stale lock file is gone");
+
+  // Live owner (this test process): left strictly alone.
+  const liveLock = `${JSON.stringify({ pid: process.pid, token: "live-owner" })}\n`;
+  await writeFile(lockPath, liveLock);
+  assert.equal(daemonChild.reclaimStaleJournalLock(dir), false, "a live owner's lock is not reclaimed");
+  assert.equal(existsSync(lockPath), true, "the live lock file is untouched");
+  assert.equal(await readFile(lockPath, "utf8"), liveLock, "the live lock file content is untouched");
+
+  // No lock file at all: nothing to do.
+  await rm(lockPath);
+  assert.equal(daemonChild.reclaimStaleJournalLock(dir), false);
 });

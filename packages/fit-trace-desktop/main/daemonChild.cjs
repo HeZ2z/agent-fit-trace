@@ -18,6 +18,8 @@
 
 const { spawn } = require("node:child_process");
 const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
 
 /** The daemon prints exactly one of these on startup (`packages/fit-trace-cli/src/cli.ts`). */
 const LISTEN_LINE_RE = /listening at (https?:\/\/[^\s]+)/;
@@ -30,6 +32,11 @@ const URL_TIMEOUT_MS = 15_000;
 const STOP_GRACE_MS = 3_000;
 /** Per-request timeout for health checks. */
 const HEALTH_TIMEOUT_MS = 2_000;
+/**
+ * Daemon exit code for a fail-closed stale coaching-journal lock. Mirrors
+ * `STALE_JOURNAL_LOCK_EXIT_CODE` in server/coaching/coachingJournal.ts.
+ */
+const STALE_JOURNAL_LOCK_EXIT_CODE = 3;
 
 /**
  * Extract a daemon URL from accumulated stdout text.
@@ -122,6 +129,11 @@ function spawnDaemon({ nodePath, cliPath, dataDir, port = 0, env, urlTimeoutMs =
         if (parsed) {
           resolve(parsed);
         } else {
+          // Never leave a possibly-live child behind: stop it (SIGTERM →
+          // SIGKILL) before rejecting. Fire-and-forget on purpose — the url
+          // promise must reject immediately, not wait out the 3s grace
+          // period; a later stopDaemonChild() call remains safe (idempotent).
+          void stopDaemonChild(child);
           reject(new Error(`daemon did not report a listen URL within ${urlTimeoutMs}ms`));
         }
       }
@@ -154,7 +166,14 @@ function spawnDaemon({ nodePath, cliPath, dataDir, port = 0, env, urlTimeoutMs =
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        reject(new Error(`daemon exited before listening (code ${code ?? "signal"})`));
+        const error = new Error(`daemon exited before listening (code ${code ?? "signal"})`);
+        // Carry the numeric exit code (if any) so the supervisor (main.cjs)
+        // can react to specific daemon exit codes, e.g. the stale journal
+        // lock reclaim path for STALE_JOURNAL_LOCK_EXIT_CODE.
+        if (typeof code === "number") {
+          error.exitCode = code;
+        }
+        reject(error);
       }
     });
   });
@@ -210,15 +229,73 @@ function stopDaemonChild(child) {
   });
 }
 
+/**
+ * Reclaim a coaching-journal lock left behind by a confirmed-dead daemon
+ * (e.g. one the shell SIGKILLed or that was killed externally). The journal
+ * lock itself fail-closes on a dead owner (see
+ * server/coaching/coachingJournal.ts `acquireCoachingJournalLock`); the shell
+ * owns the daemon process tree, so it is the one component allowed to remove
+ * the stale file out of band.
+ *
+ * Lock path mirrors the daemon exactly: daemonServer.ts joins
+ * `coaching-journal.json` under the data dir and
+ * `acquireCoachingJournalLock` appends `.lock`.
+ *
+ * Fails closed: only a readable lock whose pid is confirmed dead via
+ * `process.kill(pid, 0)` throwing ESRCH is reclaimed. A live owner, an
+ * unreadable/absent lock file, an unconfirmable pid (EPERM), or a missing
+ * data dir all leave the filesystem untouched.
+ *
+ * @param {string | undefined} dataDir daemon data directory (must be known;
+ *   the daemon's own default dir is unknowable here, so undefined is a no-op)
+ * @returns {number | false} the dead owner's pid when the lock was removed,
+ *   false otherwise (the pid feeds the retry log line)
+ */
+function reclaimStaleJournalLock(dataDir) {
+  if (!dataDir) {
+    return false;
+  }
+  const lockPath = path.join(dataDir, "coaching-journal.json.lock");
+  let owner = null;
+  try {
+    owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  } catch {
+    // Missing or unreadable: nothing safely reclaimable.
+    return false;
+  }
+  const pid = owner !== null && typeof owner === "object" ? owner.pid : null;
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    // Owner is alive (or unconfirmable without an error): not ours to remove.
+    return false;
+  } catch (error) {
+    if ((error ?? {}).code !== "ESRCH") {
+      // EPERM etc: pid exists but death is not confirmed — fail closed.
+      return false;
+    }
+  }
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    return false;
+  }
+  return pid;
+}
+
 module.exports = {
   LISTEN_LINE_RE,
   LOOPBACK_URL_RE,
   URL_TIMEOUT_MS,
   STOP_GRACE_MS,
   HEALTH_TIMEOUT_MS,
+  STALE_JOURNAL_LOCK_EXIT_CODE,
   parseDaemonUrl,
   nextRestartDelay,
   healthCheck,
   spawnDaemon,
   stopDaemonChild,
+  reclaimStaleJournalLock,
 };

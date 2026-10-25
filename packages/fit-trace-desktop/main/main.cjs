@@ -23,11 +23,25 @@
  *      the window once a daemon URL exists (bootShell);
  *   6. window-all-closed / app quit → daemon.stop() (SIGTERM → SIGKILL);
  *      before-quit defers the quit until the daemon is actually stopped.
+ *
+ * Testing trade-off: the startup/recovery/retry/give-up orchestration in this
+ * file is coupled to electron (app, BrowserWindow, dialog) and is deliberately
+ * NOT extracted behind injection seams for automated tests — the pure helpers
+ * it uses are covered by tests/desktopDaemonChild.test.ts, while the
+ * orchestration itself is covered by reproducible manual verification
+ * (documented in the PR description).
  */
 
 const path = require("node:path");
 const { app, BrowserWindow, dialog } = require("electron");
-const { healthCheck, nextRestartDelay, spawnDaemon, stopDaemonChild } = require("./daemonChild.cjs");
+const {
+  STALE_JOURNAL_LOCK_EXIT_CODE,
+  healthCheck,
+  nextRestartDelay,
+  reclaimStaleJournalLock,
+  spawnDaemon,
+  stopDaemonChild,
+} = require("./daemonChild.cjs");
 
 const REPO_ROOT = path.join(__dirname, "..", "..", "..");
 const CLI_PATH = path.join(REPO_ROOT, "packages", "fit-trace-cli", "src", "cli.ts");
@@ -99,6 +113,29 @@ function startDaemon() {
   });
 }
 
+/**
+ * Safe stale-lock reclaim for a daemon that failed to start. The daemon exits
+ * with STALE_JOURNAL_LOCK_EXIT_CODE (3, from
+ * server/coaching/coachingJournal.ts via daemonChild.cjs) when the
+ * coaching-journal lock fail-closed on a dead owner — e.g. a daemon that was
+ * SIGKILLed. The shell owns the daemon process tree, so it may remove the
+ * stale lock file — but only when the data dir is actually known: DATA_DIR
+ * comes from FIT_TRACE_DATA_DIR (dev.cjs passes it through), and when it is
+ * unset the daemon resolved its own default dir whose path is unknowable
+ * here, so reclaiming is skipped and the failure stands.
+ */
+function reclaimStaleJournalLockAndRetry() {
+  if (DATA_DIR === undefined) {
+    return false;
+  }
+  const deadPid = reclaimStaleJournalLock(DATA_DIR);
+  if (deadPid === false) {
+    return false;
+  }
+  console.log(`[desktop] reclaimed stale journal lock (dead pid ${deadPid}), retrying`);
+  return true;
+}
+
 async function restartDaemon() {
   if (restarting || stopping) {
     return;
@@ -132,8 +169,35 @@ async function restartDaemon() {
   } catch (error) {
     console.error(`[desktop] daemon restart failed: ${error instanceof Error ? error.message : String(error)}`);
     if (attempt >= MAX_RESTARTS) {
-      givingUp();
+      await givingUp();
       return;
+    }
+    // A daemon killed while holding the journal lock fails closed forever
+    // until the lock file is gone. If it exited with the stale-lock code and
+    // the data dir is known, reclaim the lock and retry once inside this
+    // same attempt budget; a failed retry falls through to the ordinary
+    // failure path below.
+    if (
+      error !== null &&
+      typeof error === "object" &&
+      error.exitCode === STALE_JOURNAL_LOCK_EXIT_CODE &&
+      reclaimStaleJournalLockAndRetry()
+    ) {
+      try {
+        await startDaemon();
+        consecutiveFailures = 0;
+        restartAttempts = 0;
+        await bootShell();
+        console.log(`[desktop] daemon recovered on attempt ${attempt} (stale journal lock reclaimed)`);
+        restarting = false;
+        return;
+      } catch (retryError) {
+        console.error(
+          `[desktop] daemon restart failed after lock reclaim: ${
+            retryError instanceof Error ? retryError.message : String(retryError)
+          }`,
+        );
+      }
     }
     // Nothing else re-triggers us from here (the health timer only fires
     // once a daemon URL exists), so schedule the next attempt ourselves.
@@ -144,12 +208,15 @@ async function restartDaemon() {
   restarting = false;
 }
 
-function givingUp() {
+async function givingUp() {
   dialog.showErrorBox(
     "fit-trace daemon",
     "The local fit-trace daemon failed to start after 3 restart attempts.\n\n" +
       "Check the terminal output for details, then relaunch: pnpm desktop:dev",
   );
+  // Last exit path: the final child must not survive the shell. stop is
+  // idempotent, so an already-stopped (or never-spawned) child is a no-op.
+  await stopDaemonChild(daemon === null ? null : daemon.child);
   app.exit(1);
 }
 
