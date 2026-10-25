@@ -1,6 +1,6 @@
 import { todayLocalDate } from "@agent-fit-trace/workout-session";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { getHealthConnectProvider } from "@/health/healthConnect";
@@ -175,6 +175,18 @@ export default function HealthScreen() {
   // permanently masked by an earlier hydration failure.
   const [healthHydrationFailed, setHealthHydrationFailed] = useState(false);
 
+  // Generation token for focus-driven Health Connect refreshes. The toggle is
+  // deliberately never disabled while a refresh is in flight (disabling it for
+  // every slow read would cost more usability than the race is worth), so a
+  // refresh that read the persisted opt-in before a toggle write landed could
+  // otherwise apply the older value over the toggle's fresh state: the user
+  // turns Health Connect off (the write succeeds), a late focus refresh that
+  // had already read enabled=true applies it back, and the page would show
+  // connected and offer sleep import while storage actually says off. Every
+  // refresh captures the generation when it starts and drops its whole batch
+  // of state writes if a toggle has bumped the generation in the meantime.
+  const refreshGenerationRef = useRef(0);
+
   // The Health tab lives in the bottom dock, so it stays mounted after the
   // first visit and a mount-time read alone would go stale: the user can grant
   // or revoke the Health Connect permissions in the system settings and switch
@@ -182,9 +194,11 @@ export default function HealthScreen() {
   // revoked state indefinitely. Re-read the opt-in, availability and grants on
   // every focus instead (the log.tsx precedent); useFocusEffect also fires on
   // the first focus, so this covers the mount-time hydration too. A read that
-  // lands after a newer focus loses to it via `cancelled`, so a stale grant can
-  // never overwrite the fresh one.
+  // lands after a newer focus loses to it via `cancelled`, and one that lands
+  // after a toggle loses via the generation check, so a stale grant can never
+  // overwrite the fresh one.
   const refreshHealthConnect = useCallback(() => {
+    const generation = refreshGenerationRef.current;
     let cancelled = false;
     void (async () => {
       try {
@@ -193,7 +207,7 @@ export default function HealthScreen() {
           healthProvider.availability(),
           healthProvider.currentPermissions(),
         ]);
-        if (cancelled) return;
+        if (cancelled || refreshGenerationRef.current !== generation) return;
         setHealthHydrationFailed(false);
         setHealthEnabled(enabled);
         setHealthAvailability(availability);
@@ -203,7 +217,7 @@ export default function HealthScreen() {
         // defaults (off, unavailable, nothing granted) so the toggle stays
         // usable and can never wedge behind a permanent `null` (the on-device
         // QA deadlock).
-        if (cancelled) return;
+        if (cancelled || refreshGenerationRef.current !== generation) return;
         setHealthHydrationFailed(true);
         setHealthEnabled(false);
         setHealthAvailability({ kind: "unavailable", reason: "platform" });
@@ -232,6 +246,11 @@ export default function HealthScreen() {
    */
   async function handleToggleHealthConnect(): Promise<void> {
     if (healthBusy || healthEnabled === null) return;
+    // Both toggle directions invalidate every in-flight focus refresh: each
+    // pending refresh captured the pre-toggle generation and will drop its
+    // whole batch instead of applying the opt-in value it read before this
+    // write landed (see refreshGenerationRef above).
+    refreshGenerationRef.current += 1;
     setHealthBusy(true);
     setHealthNotice(null);
     try {
