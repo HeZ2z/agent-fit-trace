@@ -261,6 +261,9 @@ export const messages: Record<string, string> = {
   Delete: "删除",
   "Sleep entry for {date} deleted.": "已删除 {date} 的睡眠记录。",
   "Could not update the sleep history: {message}": "无法更新睡眠历史：{message}",
+  "Could not read the sleep history: {message}": "无法读取睡眠历史：{message}",
+  "That night's sleep changed while the import was running; the imported value was discarded to keep your newer entry.":
+    "导入期间那一晚的睡眠发生了变化；为保留你更新的记录，已丢弃导入的值。",
 
   /* ── Me: Health entry row ───────────────────────────────────── */
   "Sleep import, connection status, and history live on their own page.":

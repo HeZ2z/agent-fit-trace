@@ -218,17 +218,47 @@ function storageErrorMessage(cause: unknown): string {
  * `upsert`/`remove` apply the memory value first and only then persist; a
  * failed persistence rolls the memory value back and rethrows, so callers can
  * surface the failure instead of the UI showing a state storage never
- * received.
+ * received. Mutations run single-flight: each completes its read, transform
+ * and memory swap before the next mutation starts, so a conditional write
+ * such as `upsertIfUnchanged` can never have its check and its write split by
+ * an interleaved mutation.
  */
 export interface SleepStore {
   read(): Promise<SleepEntry[]>;
   upsert(entry: SleepEntry): Promise<SleepEntry[]>;
   remove(date: string): Promise<SleepEntry[]>;
+  /**
+   * Conditional upsert guarded by a per-night optimistic lock: `expected`
+   * is the `importedAt` version token the caller captured for this night —
+   * or `null` for "no entry existed". The token is re-checked against the
+   * current history inside the same single-flight step that writes, closing
+   * the check-then-write race; a mismatch (the night was saved, re-recorded
+   * or deleted meanwhile) returns `null` and writes nothing.
+   */
+  upsertIfUnchanged(
+    entry: SleepEntry,
+    expectedImportedAt: string | null,
+  ): Promise<SleepEntry[] | null>;
 }
 
 export function createSleepStore(storage: SleepStorageLike, key: string): SleepStore {
   /** `null` until the first successful storage read populates the cache. */
   let memoryEntries: SleepEntry[] | null = null;
+
+  /**
+   * The single-flight chain: every mutation is appended after the previous
+   * one settles (rejections included), so at most one mutation is between
+   * its read and its memory swap at any time.
+   */
+  let mutationTail: Promise<unknown> = Promise.resolve();
+  function exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = mutationTail.then(task, task);
+    mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
   /**
    * The current history, hydrating the cache from storage on first touch.
@@ -269,10 +299,24 @@ export function createSleepStore(storage: SleepStorageLike, key: string): SleepS
       return current();
     },
     upsert(entry: SleepEntry): Promise<SleepEntry[]> {
-      return apply((entries) => upsertSleepEntry(entries, entry));
+      return exclusive(() => apply((entries) => upsertSleepEntry(entries, entry)));
     },
     remove(date: string): Promise<SleepEntry[]> {
-      return apply((entries) => removeSleepEntry(entries, date));
+      return exclusive(() => apply((entries) => removeSleepEntry(entries, date)));
+    },
+    upsertIfUnchanged(
+      entry: SleepEntry,
+      expectedImportedAt: string | null,
+    ): Promise<SleepEntry[] | null> {
+      return exclusive(async () => {
+        const entries = await current();
+        const currentToken =
+          entries.find((night) => night.date === entry.date)?.importedAt ?? null;
+        // The night moved on since the caller captured its token: the late
+        // write is discarded, never persisted.
+        if (currentToken !== expectedImportedAt) return null;
+        return apply(() => upsertSleepEntry(entries, entry));
+      });
     },
   };
 }
@@ -299,6 +343,19 @@ export function readSleepEntries(): Promise<SleepEntry[]> {
 /** Insert or replace one night; resolves with the updated history. */
 export function saveSleepEntry(entry: SleepEntry): Promise<SleepEntry[]> {
   return store.upsert(entry);
+}
+
+/**
+ * Conditional save guarded by the per-night optimistic lock: writes only when
+ * the night's current `importedAt` still equals `expectedImportedAt` (`null`
+ * meaning "no entry for this night"); otherwise resolves `null` with the
+ * stored history untouched.
+ */
+export function saveSleepEntryIfUnchanged(
+  entry: SleepEntry,
+  expectedImportedAt: string | null,
+): Promise<SleepEntry[] | null> {
+  return store.upsertIfUnchanged(entry, expectedImportedAt);
 }
 
 /** Delete the entry for one wake-up date; resolves with the updated history. */
