@@ -1,12 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { analyzeProgress } from "@agent-fit-trace/core";
-import type { WorkoutStore } from "@agent-fit-trace/store";
+
+import type { FitTraceStore } from "./store.ts";
 
 /**
  * MCP resources exposing read-only snapshots of the store. Every read queries
  * the store live — there is no cache — so results always reflect the current
- * JSON file. Read failures propagate to the SDK, which answers the request
- * with a protocol-level error.
+ * store contents. Read failures propagate to the SDK, which answers the
+ * request with a protocol-level error.
  */
 
 const RECENT_URI = "fit-trace://workouts/recent";
@@ -14,7 +15,7 @@ const ANALYSIS_URI = "fit-trace://analysis/summary";
 const RECENT_RECORD_COUNT = 10;
 
 /** Register the fit-trace read-only resources on an MCP server. */
-export function registerFitTraceResources(server: McpServer, store: WorkoutStore): void {
+export function registerFitTraceResources(server: McpServer, store: FitTraceStore): void {
   server.registerResource(
     "recent-workouts",
     RECENT_URI,

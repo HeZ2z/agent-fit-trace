@@ -25,8 +25,10 @@
  *   prompt-template/command dispatch surface in either mode.
  * - This module reads exactly two env keys (`PI_FIT_TRACE_STORE`,
  *   `PI_FIT_TRACE_COACHED`) and never reads other `PI_*` config, settings
- *   dirs, or packages. In coached mode the `ctx.cwd`-derived default store
- *   is unreachable (missing snapshot throws first).
+ *   dirs, or packages. In coached mode the default per-identity store is
+ *   unreachable (missing snapshot throws first). In normal mode, store
+ *   resolution additionally consults `FIT_TRACE_PRINCIPAL`/`FIT_TRACE_DATA_DIR`
+ *   through `@agent-fit-trace/store`'s shared resolver — see below.
  * - Allowed-tools startup probe: in coached mode, when the host launched us
  *   with an explicit `--tools` argv flag, its value must equal exactly the
  *   coached allowlist or registration throws `COACHED_TOOL_PROBE_FAILED`.
@@ -41,11 +43,20 @@
  * necessarily sees the model-provider credentials and pi auth config it
  * needs to call the model — this transport is cwd+env/flag isolation, NOT
  * a security sandbox.
+ *
+ * Normal-mode store sharing (issue #40): with no `PI_FIT_TRACE_STORE`
+ * override, the extension opens the same per-identity SQLite database as the
+ * daemon, the desktop app, and the MCP server — resolved by the store
+ * package's `resolveActiveStore` (`FIT_TRACE_PRINCIPAL`/`FIT_TRACE_DATA_DIR`,
+ * then the active principal in `identity.json`, then guest), so switching
+ * identity in the app propagates to independently launched pi sessions.
+ * `PI_FIT_TRACE_STORE` still selects an explicit file (`.json` keeps the
+ * JSON backend, anything else opens as SQLite) — which is exactly the
+ * coached mode's per-run snapshot, so coached behavior is unchanged.
  */
-import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, defineTool } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import {
@@ -58,7 +69,13 @@ import {
 
 import { COACHED_TOOL_NAMES } from "@agent-fit-trace/api-contracts";
 
-import { JsonFileStorage, WorkoutStore } from "@agent-fit-trace/store";
+import {
+  JsonFileStorage,
+  SqliteWorkoutStore,
+  WorkoutStore,
+  resolveActiveStore,
+  resolveDataDir,
+} from "@agent-fit-trace/store";
 
 /** Read-only tools exposed to coached runs (shared, browser-safe single source). */
 export { COACHED_TOOL_NAMES };
@@ -95,16 +112,56 @@ export function assertCoachedToolProbe(argv: readonly string[] = process.argv): 
   }
 }
 
-/** `PI_FIT_TRACE_STORE` overrides the default project-local store location. */
-function resolveStorePath(cwd: string): string {
+/**
+ * Minimal store surface the four tools call. Both backends in
+ * `@agent-fit-trace/store` satisfy it structurally — the JSON `WorkoutStore`
+ * and the SQLite `SqliteWorkoutStore` (same Promise-based `all`/`import`/
+ * `query` and error contract) — so the tools never need to know which one
+ * is live.
+ */
+type FitTraceStore = Pick<WorkoutStore, "all" | "import" | "query">;
+
+/** Which storage backend backs the resolved store path. */
+type StoreKind = "json" | "sqlite";
+
+/** `.json` keeps the JSON backend; anything else opens as a SQLite database. */
+function storeKindForPath(path: string): StoreKind {
+  return path.endsWith(".json") ? "json" : "sqlite";
+}
+
+/**
+ * Store location for this extension load, resolved lazily on first tool use:
+ *
+ * - `PI_FIT_TRACE_STORE` set (the coached run snapshot or an explicit
+ *   override) wins: the path is used as-is and `.json` keeps the JSON
+ *   backend, so coached snapshots behave exactly as before.
+ * - Unset (normal mode) resolves the shared per-identity database through
+ *   `resolveActiveStore` — `FIT_TRACE_PRINCIPAL`/`FIT_TRACE_DATA_DIR`, then
+ *   the active principal recorded in `identity.json`, then guest — the same
+ *   resolution the daemon, app, and MCP server use.
+ */
+async function resolveStorePath(): Promise<{ path: string; kind: StoreKind }> {
   const override = process.env.PI_FIT_TRACE_STORE;
-  if (override !== undefined && override.trim() !== "") return override;
+  if (override !== undefined && override.trim() !== "") {
+    return { path: override, kind: storeKindForPath(override) };
+  }
   if (isCoachedMode()) {
     throw new Error(
       "COACHED_STORE_MISSING: coached runs require PI_FIT_TRACE_STORE to point at the run snapshot; refusing to fall back to the default store",
     );
   }
-  return join(cwd, CONFIG_DIR_NAME, "fit-trace", "workouts.json");
+  const path = await resolveActiveStore({
+    env: process.env,
+    dataDir: resolveDataDir(process.env),
+  });
+  return { path, kind: storeKindForPath(path) };
+}
+
+/** Build the backend the resolved kind calls for. */
+function openStore(path: string, kind: StoreKind): FitTraceStore {
+  return kind === "json"
+    ? new WorkoutStore(new JsonFileStorage(path))
+    : new SqliteWorkoutStore(path);
 }
 
 function rethrow(error: unknown): never {
@@ -128,7 +185,7 @@ const dateRangeFields = {
   to: Type.Optional(Type.String({ description: "Inclusive ISO 8601 end date" })),
 } as const;
 
-type StoreOf = (ctx: ExtensionContext) => WorkoutStore;
+type StoreOf = () => Promise<FitTraceStore>;
 
 const setSchema = Type.Object({
   weight: Type.Optional(Type.Number({ minimum: 0, description: "Weight in kilograms" })),
@@ -170,10 +227,11 @@ function importWorkoutTool(getStore: StoreOf) {
       "Use import_workout again with the same id to retry safely; identical content is a no-op.",
     ],
     parameters: Type.Object({ record: recordSchema }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate) {
       try {
         const { record, warnings } = validateWorkoutRecord(params.record);
-        const result = await getStore(ctx).import(record);
+        const store = await getStore();
+        const result = await store.import(record);
         const text = result.duplicate
           ? `Record ${record.id} is already stored with identical content; no change made.`
           : `Imported record ${record.id}.${warnings.length > 0 ? ` ${warnings.length} warning(s).` : ""}`;
@@ -209,9 +267,10 @@ function trainingHistoryTool(getStore: StoreOf, options?: { coached?: boolean })
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
       offset: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate) {
       try {
-        const result = await getStore(ctx).query(params);
+        const store = await getStore();
+        const result = await store.query(params);
         return textResult(
           `Returned ${result.records.length} of ${result.total} matching record(s).`,
           result,
@@ -244,9 +303,10 @@ function analyzeProgressTool(getStore: StoreOf, options?: { coached?: boolean })
       ...dateRangeFields,
       exercises: Type.Optional(Type.Array(Type.String(), { description: "Restrict to these exercises" })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate) {
       try {
-        const records = await getStore(ctx).all();
+        const store = await getStore();
+        const records = await store.all();
         const analysis = analyzeProgress(records, params);
         return textResult(
           `Analyzed ${analysis.metrics.sessions} session(s): volume ${analysis.metrics.volume_kg} kg, avg RPE ${analysis.metrics.avg_rpe ?? "n/a"}, ${analysis.flags.length} flag(s).`,
@@ -276,9 +336,10 @@ function generateNextPlanTool(getStore: StoreOf) {
       equipment: Type.Optional(Type.Array(Type.String())),
       constraints: Type.Optional(Type.Array(Type.String())),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate) {
       try {
-        const records = await getStore(ctx).all();
+        const store = await getStore();
+        const records = await store.all();
         const draft = generateNextPlan(records, params);
         return textResult(
           `Generated a draft plan with ${draft.recommendations.length} recommendation(s). This is a draft and requires user confirmation.`,
@@ -292,13 +353,23 @@ function generateNextPlanTool(getStore: StoreOf) {
 }
 
 export default function fitTraceExtension(pi: ExtensionAPI): void {
-  let store: WorkoutStore | null = null;
+  // Lazily-resolved singleton: SqliteWorkoutStore holds a long-lived
+  // connection, so one live store is opened per extension load and a
+  // concurrent first tool call shares the in-flight resolution instead of
+  // opening a second database handle. Later calls hit the cache and reuse the
+  // same resolved store. A rejected attempt is forgotten so the
+  // next tool call retries opening instead of replaying a stale transient
+  // failure (e.g. a momentary SQLite lock) forever.
+  let storePromise: Promise<FitTraceStore> | null = null;
 
-  const getStore = (ctx: ExtensionContext): WorkoutStore => {
-    if (store === null) {
-      store = new WorkoutStore(new JsonFileStorage(resolveStorePath(ctx.cwd)));
-    }
-    return store;
+  const getStore = (): Promise<FitTraceStore> => {
+    if (storePromise !== null) return storePromise;
+    const attempt = resolveStorePath().then((resolved) => openStore(resolved.path, resolved.kind));
+    storePromise = attempt;
+    attempt.catch(() => {
+      if (storePromise === attempt) storePromise = null;
+    });
+    return attempt;
   };
 
   if (isCoachedMode()) {

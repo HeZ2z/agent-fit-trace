@@ -9,7 +9,7 @@ import {
   generateNextPlan,
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
-import type { WorkoutStore } from "@agent-fit-trace/store";
+import type { FitTraceStore } from "./store.ts";
 
 /**
  * MCP tool registrations mirroring the pi extension's four tools
@@ -90,7 +90,7 @@ function errorResult(error: unknown): CallToolResult {
 }
 
 /** Register the four fit-trace tools on an MCP server. */
-export function registerFitTraceTools(server: McpServer, store: WorkoutStore): void {
+export function registerFitTraceTools(server: McpServer, store: FitTraceStore): void {
   server.registerTool(
     "import_workout",
     {

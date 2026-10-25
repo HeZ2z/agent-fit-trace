@@ -40,7 +40,9 @@ Behavior:
   plane keeps working.
 - Startup writes `<dataDir>/identity.json` with
   `active_principal: "guest"` (idempotent, atomic temp-file + rename) so
-  followers can resolve the same active principal (see #40 below).
+  followers can resolve the same active principal (see #40 below). That
+  purpose is now live: the MCP server and the pi extension's normal mode read
+  this file at startup and open the same per-identity database.
 - Coaching state persists to `<dataDir>/coaching-journal.json` under the
   same process lock the launcher uses.
 - Startup checks Node >= 24 and reports `pi --version` presence. Missing
@@ -138,18 +140,21 @@ is native app support now, not a curl-only data plane.
   gate (plus the advertised guest path) when a Supabase project is
   configured (`auth_configured: true`). No build variables are involved —
   the surface is negotiated from this endpoint at boot.
-- **#40 (MCP/pi followers):** `identity.json` names the active principal
-  the daemon serves; `@agent-fit-trace/store`'s
-  `resolveActiveStore`/`principalDbPath` read the same file and db layout,
-  so MCP and pi followers can resolve the guest database without their own
-  state. Whether `start` aliases the daemon, and how followers signal
-  principal switches, is decided in #40 — nothing in this slice reads
-  identity back or supports switching yet.
+- **#40 (MCP/pi followers): implemented.** `identity.json` names the active
+  principal the daemon serves; `@agent-fit-trace/store`'s
+  `resolveActiveStore`/`principalDbPath` read the same file and db layout, and
+  both followers — the MCP server (`docs/mcp.md`, Storage) and the pi
+  extension's normal mode — now resolve and open that database by default
+  (JSON files remain selectable as a one-release escape hatch). Since the
+  daemon records `guest` at startup, all local surfaces share `guest.db`
+  today; a principal switch propagates to newly launched followers only once
+  the daemon starts recording a switched principal into `identity.json`.
 
 ## Limitations (current slice)
 
 - Guest login upgrading, per-principal switching through the daemon, and
-  cross-process principal negotiation are not implemented (#40).
+  cross-process principal negotiation are not implemented; #40 delivered the
+  follower side only (MCP/pi read `identity.json`), not a switch writer.
 - The daemon registers only the local pi coaching backend; the launcher's
   experimental Codex/OpenCode gates are not wired here.
 - Cloud coaching stays unqualified for every principal (no trusted

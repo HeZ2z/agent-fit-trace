@@ -1,15 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { WorkoutStore } from "@agent-fit-trace/store";
 
 import { registerFitTraceResources } from "./resources.ts";
 import { registerFitTraceTools } from "./tools.ts";
+import type { FitTraceStore } from "./store.ts";
 
 /** Identity reported in the MCP initialize handshake. */
 export const MCP_SERVER_NAME = "agent-fit-trace";
 export const MCP_SERVER_VERSION = "0.1.0";
 
 export interface FitTraceMcpServerOptions {
-  store: WorkoutStore;
+  /** Either store backend: the JSON `WorkoutStore` or the SQLite `SqliteWorkoutStore`. */
+  store: FitTraceStore;
   /** Training-coach skill body (frontmatter already stripped) served as the `training-coach` prompt. */
   skillText: string;
 }

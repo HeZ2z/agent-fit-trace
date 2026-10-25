@@ -1,17 +1,19 @@
 # ADR 0005: SQLite backend for the local workout store
 
-- **Status:** Accepted. `SqliteWorkoutStore` and per-identity store resolution
-  are implemented in `@agent-fit-trace/store` and covered by the shared store
-  contract suite. The server side of #38 has landed as well: per-principal
-  `FitTraceClient`s over these databases
-  (`server/sqlitePrincipalStores.ts`). Wiring the `daemon` command, the MCP
-  server, and pi to the resolved stores is issue #38/#40 work and is
-  intentionally out of scope here.
+- **Status:** Accepted, and wired into production consumers. `SqliteWorkoutStore`
+  and per-identity store resolution are implemented in `@agent-fit-trace/store`
+  and covered by the shared store contract suite. The server side of #38 has
+  landed as per-principal `FitTraceClient`s over these databases
+  (`server/sqlitePrincipalStores.ts`), and issue #40 has since connected the
+  remaining surfaces: the MCP server
+  (`packages/fit-trace-mcp/src/config.ts` `resolveMcpStore`) and the pi
+  extension's normal mode (`.pi/extensions/fit-trace/index.ts`) both resolve
+  and open the per-identity databases by default, with a JSON escape hatch
+  kept for one release. Coached runs intentionally keep their per-run JSON
+  snapshots.
 - **Date:** 2026-10-24
 - **Scope:** issue #37. This ADR records the engine choice, the multi-process
-  posture, and the per-identity file layout for the local workout store. It is
-  not a claim that any consumer other than the test suite opens the SQLite
-  store in production yet.
+  posture, and the per-identity file layout for the local workout store.
 - **Related:** [`0001-agent-execution-backends.md`](0001-agent-execution-backends.md),
   [`../mcp.md`](../mcp.md), parent epic #42, store resolution precedence #40.
 
@@ -149,6 +151,6 @@ tests and per-run coaching snapshots.
   that snapshots or syncs the data directory must account for them.
 - Per-identity files mean there is no cross-principal query surface; a user
   with several principals runs several databases.
-- Production consumers (daemon, MCP, pi) still resolve the JSON store; wiring
-  `resolveActiveStore` into them is #40/#38 and must land before this backend
-  is anything more than tested code.
+- Consumers of the JSON escape hatch (`--store <path>.json` /
+  `PI_FIT_TRACE_STORE`) get no WAL concurrency guarantees; the hatch is a
+  compatibility path scheduled to shrink after one release.

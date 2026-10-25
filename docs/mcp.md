@@ -24,31 +24,57 @@ fit-trace without the pi extension or the launcher.
 ## Run
 
 ```sh
-node packages/fit-trace-mcp/src/main.ts [--store PATH] [--skill PATH]
+node packages/fit-trace-mcp/src/main.ts [--store PATH] [--principal NAME] [--skill PATH]
 ```
 
 Requires Node >= 24. Node 24 runs TypeScript entrypoints with type stripping
 by default, so no `--experimental-strip-types` flag is needed. `--help` prints
-usage; `--version` prints `agent-fit-trace-mcp 0.1.0`.
+usage (including the store-resolution precedence); `--version` prints
+`agent-fit-trace-mcp 0.1.0`.
 
 ## Storage
 
-| Precedence | Source |
-| --- | --- |
-| 1 | `--store PATH` flag |
-| 2 | `PI_FIT_TRACE_STORE` environment variable |
-| 3 | `$HOME/.fit-trace/workouts.json` (default) |
+By default the server opens the **shared per-identity SQLite database** — the
+same file the daemon, the desktop app, and the pi extension's normal mode use —
+via `@agent-fit-trace/store`'s `resolveActiveStore`
+(`packages/fit-trace-store/src/identity.ts`). Databases live under the data
+directory (`$FIT_TRACE_DATA_DIR`, default `~/.fit-trace/data`) as
+`<principal>.db`. Principal resolution, in order:
 
-Blank flag/env values count as unset. The pi extension keeps its own default
-(`<cwd>/.pi/fit-trace/workouts.json`); the MCP server default is independent
-of it. To point both clients at one dataset, either export the same
-`PI_FIT_TRACE_STORE` for both processes, or pass
-`--store <repo>/.pi/fit-trace/workouts.json` to the MCP server. The store is
-one JSON file written atomically (temp file + rename) with no cross-process
-lock, so two concurrent writers can lose records; shared use should stay
-light. The same rules apply to whichever file is opened: records are
-re-validated on load (`CORRUPT_STORE`), and re-importing an id with changed
-content is a `CONFLICT`, never an overwrite.
+| Level | Source |
+| --- | --- |
+| 1 | `--store PATH` — an explicit absolute path, used as-is (bypasses principal handling entirely) |
+| 2 | `--principal NAME` flag / `FIT_TRACE_PRINCIPAL` env (flag wins) — `<dataDir>/<NAME>.db`, created on first run |
+| 3 | `identity.json`'s `active_principal` — used **only when the record exists and its database file exists** |
+| 4 | no `identity.json` (first run) — the `guest.db` store |
+
+A `identity.json` naming a principal whose database file is missing fails
+startup loudly with `STALE_IDENTITY` (naming the identity file, the missing db,
+and both override methods) instead of silently falling back to guest — a silent
+fallback would fragment the dataset.
+
+**JSON compatibility escape hatch (kept for one release):** a JSON store file
+is still selectable with `--store <path>.json` or the legacy
+`PI_FIT_TRACE_STORE=<path>.json` env, which sits between `--store` and
+principal resolution as an explicit file choice. An explicit `.json` path keeps
+the JSON backend; any other explicit path opens as SQLite. A blank flag or env
+value counts as unset.
+
+Because followers resolve `identity.json` at startup, the desktop app's active
+principal propagates to independently launched MCP sessions: switching identity
+in the app (recorded by the daemon into `identity.json`) is picked up by the
+next MCP server start with no extra arguments. Today the daemon records
+`guest` at startup (`docs/local-daemon.md`), so all local surfaces share
+`guest.db`; the resolution seam above is what makes a later principal switch
+follow automatically.
+
+Multi-process sharing is safe by construction: the SQLite backend opens the
+database in WAL mode with a 5 s `busy_timeout`, so the daemon, MCP servers, and
+pi sessions read and write the same file concurrently (multiple readers, one
+writer at a time; lock waits instead of lost records). The same rules apply to
+whichever backend is opened: records are re-validated on load
+(`CORRUPT_STORE`), and re-importing an id with changed content is a `CONFLICT`,
+never an overwrite.
 
 ## Prompt and skill file
 
@@ -98,7 +124,9 @@ Claude Desktop (`claude_desktop_config.json`, Developer → Edit Config):
 }
 ```
 
-Cursor (`~/.cursor/mcp.json`), here with a shared store override:
+Cursor (`~/.cursor/mcp.json`) — with no extra configuration the server follows
+`identity.json` and shares the daemon's per-identity database. To pin an
+explicit store instead, pass the JSON escape hatch as an env var:
 
 ```json
 {
@@ -112,8 +140,8 @@ Cursor (`~/.cursor/mcp.json`), here with a shared store override:
 }
 ```
 
-`--store PATH` / `--skill PATH` can be passed as extra `args` entries instead
-of env vars.
+`--store PATH` / `--principal NAME` / `--skill PATH` can be passed as extra
+`args` entries instead of env vars.
 
 ## Verify
 
@@ -132,13 +160,41 @@ three `{readOnlyHint:true}`), `tools/call` for `analyze_progress`
 `prompts/get --prompt-name training-coach` returns the skill body with the
 YAML frontmatter stripped. Drop `--cli` for the interactive inspector UI.
 
+To verify the shared per-identity store across surfaces, point a scratch data
+directory at both the daemon and the MCP server and confirm one import is
+visible from both sides:
+
+```sh
+FIT_TRACE_DATA_DIR=/tmp/fit-trace-shared pnpm daemon &
+sleep 1
+curl -s -X POST -H "Authorization: Bearer fit-trace-local-daemon" \
+  -H "Content-Type: application/json" \
+  -d @fixtures/valid-strength.json \
+  http://127.0.0.1:5199/api/v1/workouts > /dev/null
+npx @modelcontextprotocol/inspector --cli node "$PWD/packages/fit-trace-mcp/src/main.ts" \
+  -e FIT_TRACE_DATA_DIR=/tmp/fit-trace-shared \
+  --method tools/call --tool-name analyze_progress
+# The inspector does not inherit shell environment variables, so the data dir
+# must be passed to the MCP child process with `-e` (as above). The
+# default-resolution startup line on stderr then names the same
+# /tmp/fit-trace-shared/guest.db the daemon wrote, and the analysis counts
+# the record the daemon imported.
+```
+
+The same check runs the other direction (`tests/mcpSharedStore.test.ts` /
+`tests/piSharedStore.test.ts` cover it in-process): records imported through a
+plain `SqliteWorkoutStore` connection are visible to MCP `analyze_progress` and
+to the pi extension's normal-mode tools against the same `guest.db`.
+
 ## Limitations
 
 - stdio only; no HTTP/SSE transport is wired.
 - No packaged `npx` distribution; the server runs from source like the
   launcher.
 - The server is unauthenticated and local-first: it reads and writes whatever
-  file the store resolution lands on. Point `--store` at a file you intend the
-  host agent to modify.
+  store the resolution lands on — by default the per-identity database shared
+  with the daemon, app, and pi. Point `--store` at a file you intend the host
+  agent to modify.
 - Real-host QA (Claude Desktop, Cursor) is outstanding; verification today is
-  the MCP inspector CLI and the `node:test` suite (`tests/mcpServer.test.ts`).
+  the MCP inspector CLI and the `node:test` suite (`tests/mcpServer.test.ts`,
+  `tests/mcpSharedStore.test.ts`).
