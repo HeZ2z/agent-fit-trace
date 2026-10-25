@@ -79,7 +79,7 @@ const copy = {
   healthKicker: "HEALTH",
   healthTitle: "Health Connect",
   healthLede:
-    "Optional, device-local and read-only. Used to import sleep into the Log form; nothing is uploaded.",
+    "Optional and read-only. Reads from Health Connect happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.",
   healthScopes: "Read-only scopes: sleep sessions and resting heart rate.",
   healthStatusOff: "Off. Enable it to import sleep into the Log form.",
   healthStatusSupported: "Connected. The Log form can import sleep for the night before a session.",

@@ -352,17 +352,17 @@ message. The runner never logs tokens or workout content.
 Samsung Health (and other wearables) sync sleep into Android Health Connect. The
 Log form can import that night's sleep into `sleep_hours` instead of typing it.
 
-The feature is **opt-in and device-local**. The toggle lives in AsyncStorage
-(`agent-fit-trace:health-connect:v1`), not in the account-preferences layer:
-health-data access is a per-device grant that is never mirrored, restored or
-synced across devices, so a guest device stays safe by construction. It is
-reached from Me → Health Connect, which shows the runtime status
-(supported / needs install / needs update / off / platform unavailable /
-partially granted), the read-only scopes (sleep sessions and resting heart rate)
-and the toggle. Enabling first requests the Health Connect read permissions; a
-denied sleep grant keeps the toggle off and shows guidance. Disabling is
-in-app only — Health Connect grants are revoked from the system Health Connect
-settings, which the notice says.
+The feature is **opt-in**, and the opt-in toggle is device-local: it lives in
+AsyncStorage (`agent-fit-trace:health-connect:v1`), not in the
+account-preferences layer. Health-data access is a per-device grant that is
+never mirrored, restored or synced across devices, so a guest device stays safe
+by construction. It is reached from Me → Health Connect, which shows the
+runtime status (supported / needs install / needs update / off / platform
+unavailable / sleep access revoked / partially granted), the read-only scopes
+(sleep sessions and resting heart rate) and the toggle. Enabling first requests
+the Health Connect read permissions; a denied sleep grant keeps the toggle off
+and shows guidance. Disabling is in-app only — Health Connect grants are
+revoked from the system Health Connect settings, which the notice says.
 
 Data flow: wearable sleep reaches Health Connect only when its source app syncs
 with it, so Samsung Health users must turn on "Sync with Health Connect" in
@@ -377,12 +377,15 @@ build or a prebuild (`expo prebuild` applies the config plugin and manifest
 permissions). In Expo Go the availability check reports the platform as
 unavailable and the import button never renders.
 
-Privacy: read-only end to end. The app requests only
+Privacy: read-only towards Health Connect. The app requests only
 `android.permission.health.READ_SLEEP` and
 `android.permission.health.READ_RESTING_HEART_RATE`, never writes health data,
-and every aggregation happens on the device; sleep values land in the local
-workout log and nothing is uploaded, shared or read by a server. No account is
-required — the opt-in lives entirely on the device.
+and every aggregation happens on the device — the Health Connect read itself
+never leaves the device. An imported sleep value does not stay quarantined,
+though: it becomes part of the workout record it was filled into, and like a
+manually entered value it is stored in the local log and syncs to the cloud
+only when the user starts a manual sync. No account is required to import —
+the opt-in lives entirely on the device.
 
 Slice boundary: this slice aggregates sleep only. Resting heart rate is
 requested and shown in the status line but is not read or displayed yet.
@@ -398,7 +401,8 @@ Runtime and permissions:
   rate is requested for status display but not read yet).
 - `mobile/src/health/healthModel.ts` is the pure, node-testable model: the
   night window `[D-1 20:00, D 12:00]` in the device timezone (calendar-safe
-  `Date.UTC` math; UTC records are converted with the device offset), aggregation
+  `Date.UTC` math; each window edge converts with its own day's device offset,
+  so a window spanning a DST switch does not drift), aggregation
   of **all** sessions in the window (fragmented nights are summed, never
   dropped), valid stages = everything except AWAKE/OUT_OF_BED, session-duration
   fallback when a session has no stages, a >24 h error guard (the core domain

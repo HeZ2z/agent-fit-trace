@@ -210,8 +210,8 @@ export const messages: Record<string, string> = {
   "Only some Health Connect read permissions were granted. Enable Health Connect under Me → Health Connect to grant the missing ones.":
     "只授予了部分 Health Connect 读取权限。请在“我的 → Health Connect”中启用并补齐缺失的权限。",
   "Could not import sleep: {message}": "无法导入睡眠：{message}",
-  "Optional, device-local and read-only. Used to import sleep into the Log form; nothing is uploaded.":
-    "可选、仅限本机且只读。用于向记录表单导入睡眠；不会上传任何内容。",
+  "Optional and read-only. Reads from Health Connect happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.":
+    "可选且只读。从 Health Connect 的读取只发生在本机；导入的睡眠会成为训练记录的一部分，与你手动输入的值一样随记录同步。",
   "Read-only scopes: sleep sessions and resting heart rate.": "只读范围：睡眠会话与静息心率。",
   "Off. Enable it to import sleep into the Log form.": "已关闭。启用后可在记录表单中导入睡眠。",
   "Connected. The Log form can import sleep for the night before a session.":
