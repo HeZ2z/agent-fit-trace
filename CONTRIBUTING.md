@@ -21,10 +21,14 @@ You can start work on a clearly scoped bug fix or documentation correction direc
 
 Create a working branch from the latest version of the target branch. Suggested names are `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, and `refactor/<topic>`. Include an issue number when useful, such as `fix/123-import-conflict`.
 
-Every commit follows the repository's **Lore protocol**: explain why the change is needed in the first line, describe the context and approach in the body, and add git-native trailers where useful. Avoid vague messages such as “update code” or “fix issues.”
+Every commit message starts with a **Conventional Commits** header: `type(scope): summary in the imperative mood` (for example, `fix(mobile): keep a sync run alive across token refresh` or `feat(cli): add daemon health probe`). Omit the scope when no single package owns the change, as in `docs: document the desktop shell`. Use an `!` or a `BREAKING CHANGE:` footer for breaking changes.
+
+Allowed types: `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`, `revert`. Pick a scope from the module layout: `core`, `store`, `workout-session`, `api-contracts`, `cli`, `desktop`, `mcp`, `app`, `mobile`, `server`, `pi` (for `.pi/extensions/fit-trace`), `skill`, or `repo` for cross-cutting repository files.
+
+Beyond the header, every commit still follows the repository's **Lore protocol**: explain why the change is needed in the body, describe the context and approach, and add git-native trailers where useful. Avoid vague summaries such as “update code” or “fix issues.”
 
 ```text
-Prevent repeated imports from overwriting existing workouts
+fix(store): reject conflicting imports instead of overwriting workouts
 
 Users may upload a record with the same id more than once. Treat identical
 content as a no-op and reject conflicting content to preserve the original.
@@ -44,11 +48,11 @@ Trailers are optional. Record only useful information. Common fields include `Co
 
 Use a title that states the concrete problem or resulting behavior, for example:
 
-- `Prevent duplicate imports from overwriting existing workouts`
-- `Add date range filtering to workout history`
-- `Clarify local development steps for HTTP mode`
+- `fix(store): prevent duplicate imports from overwriting existing workouts`
+- `feat(app): add date range filtering to workout history`
+- `docs: clarify local development steps for HTTP mode`
 
-Avoid vague titles such as “improvements” or “miscellaneous fixes.” Conventional Commits prefixes are not required for PR titles.
+Avoid vague titles such as “improvements” or “miscellaneous fixes.” PR titles follow the same Conventional Commits header as commit messages.
 
 Use the [PR template](.github/pull_request_template.md). Summary and test evidence are required; include risk details when relevant. Give reviewers enough context without requiring them to read prior discussions:
 
@@ -96,12 +100,12 @@ For bug fixes, add a regression test that fails without the fix and passes with 
 - Open a Draft PR while implementation, verification, or design questions remain. Mark it ready for review when those are resolved.
 - Respond to each review comment with the change location or the reason for retaining the approach. Rerun affected checks after edits.
 - Before merging, confirm that CI passes on the final revision, required verification is complete, conflicts are resolved, and blocking review comments are addressed. Follow the repository's actual branch protection rules.
-- When using squash merge, ensure the final commit message follows the Lore protocol and preserves important decisions and verification gaps.
+- When using squash merge, ensure the final commit message starts with the Conventional Commits header and preserves important decisions and verification gaps.
 - Submitting a PR does not authorize deployment or publication. Follow the authorization scope of the task for those actions.
 
 ## References
 
-The structure and review guidance draw on these upstream resources, adapted to this repository's commands and Lore protocol:
+The structure and review guidance draw on these upstream resources, adapted to this repository's commands, [Conventional Commits](https://www.conventionalcommits.org/) headers, and Lore protocol:
 
 - [React PR template](https://github.com/facebook/react/blob/main/.github/PULL_REQUEST_TEMPLATE.md): motivation and concrete test evidence.
 - [Vite contributing guide](https://github.com/vitejs/vite/blob/main/CONTRIBUTING.md#pull-request-guidelines) and [PR template](https://github.com/vitejs/vite/blob/main/.github/PULL_REQUEST_TEMPLATE.md): focused changes, regression tests, related work, and reviewer attention.
