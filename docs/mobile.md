@@ -347,6 +347,74 @@ A failed or postponed sync does not block local use. Failures are classified as
 offline, auth, conflict or other, and the screen reports the corresponding
 message. The runner never logs tokens or workout content.
 
+## Health Connect sleep import (Android)
+
+Samsung Health (and other wearables) sync sleep into Android Health Connect. The
+Log form can import that night's sleep into `sleep_hours` instead of typing it.
+
+The feature is **opt-in and device-local**. The toggle lives in AsyncStorage
+(`agent-fit-trace:health-connect:v1`), not in the account-preferences layer:
+health-data access is a per-device grant that is never mirrored, restored or
+synced across devices, so a guest device stays safe by construction. It is
+reached from Me → Health Connect, which shows the runtime status
+(supported / needs install / needs update / off / platform unavailable /
+partially granted), the read-only scopes (sleep sessions and resting heart rate)
+and the toggle. Enabling first requests the Health Connect read permissions; a
+denied sleep grant keeps the toggle off and shows guidance. Disabling is
+in-app only — Health Connect grants are revoked from the system Health Connect
+settings, which the notice says.
+
+Data flow: wearable sleep reaches Health Connect only when its source app syncs
+with it, so Samsung Health users must turn on "Sync with Health Connect" in
+Samsung Health's own settings; the in-app guidance for the needs-install /
+needs-update states and a denied permission request repeats this (Google Play
+Store for the Health Connect install/update, Samsung Health settings for the
+sync switch).
+
+**Android only and a custom development build is required.** The native module
+is not part of Expo Go: the import works only in a dev-client / EAS development
+build or a prebuild (`expo prebuild` applies the config plugin and manifest
+permissions). In Expo Go the availability check reports the platform as
+unavailable and the import button never renders.
+
+Privacy: read-only end to end. The app requests only
+`android.permission.health.READ_SLEEP` and
+`android.permission.health.READ_RESTING_HEART_RATE`, never writes health data,
+and every aggregation happens on the device; sleep values land in the local
+workout log and nothing is uploaded, shared or read by a server. No account is
+required — the opt-in lives entirely on the device.
+
+Slice boundary: this slice aggregates sleep only. Resting heart rate is
+requested and shown in the status line but is not read or displayed yet.
+
+Runtime and permissions:
+
+- `react-native-health-connect` 4.1.3 provides the native bridge; its Expo config
+  plugin wires the privacy-rationale intent routing (no props), and
+  `expo-build-properties` raises `minSdkVersion` to 26 as the library requires.
+  The manifest declares only two health permissions:
+  `android.permission.health.READ_SLEEP` and
+  `android.permission.health.READ_RESTING_HEART_RATE` (read-only; resting heart
+  rate is requested for status display but not read yet).
+- `mobile/src/health/healthModel.ts` is the pure, node-testable model: the
+  night window `[D-1 20:00, D 12:00]` in the device timezone (calendar-safe
+  `Date.UTC` math; UTC records are converted with the device offset), aggregation
+  of **all** sessions in the window (fragmented nights are summed, never
+  dropped), valid stages = everything except AWAKE/OUT_OF_BED, session-duration
+  fallback when a session has no stages, a >24 h error guard (the core domain
+  limit) and one-decimal `hoursText` that fills `draft.sleepHours` directly.
+  Stage/SDK status codes are plain const objects — the library's enums are never
+  imported.
+- `mobile/src/health/healthConnect.ts` is the thin native adapter (never
+  imported by tests): platform gate first (non-Android → unavailable without
+  touching the native module), lazily required SDK, availability mapping,
+  granular permission bookkeeping and `SleepSessionRecord` normalization.
+
+The Log screen shows the import button only when the device-local toggle is on
+**and** Health Connect reports supported; success fills the field, and every
+failure kind (no data, no permission, partial, unavailable, error) renders its
+own message.
+
 ## Hosted coach
 
 Mobile coaching uses the hosted cloud coach only. The Coach tab requires a
@@ -592,6 +660,12 @@ not live service checks.
   screens have not had a recorded device pass yet.
 - **Token drift is manual.** The sRGB palette has no automated check against the
   web oklch tokens; a CSS color change must update both sides.
+- **Health Connect sleep import is not device-verified.** The pure aggregation,
+  window math and status mappings are covered by the root `node:test` suite, but
+  the native permission flow, Samsung Health sync and a real import have not run
+  on a device with Health Connect installed; the native adapter is deliberately
+  thin so the pure coverage is the contract. Resting heart rate is requested and
+  shown in the status line but not read yet.
 - **EAS builds are manual.** Builds require an authenticated Expo account and
   are not triggered per commit.
 
