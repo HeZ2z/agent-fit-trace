@@ -18,8 +18,11 @@
  *   4. health poll every 5s: two consecutive failures trigger a daemon
  *      restart with exponential backoff; the window shows a retry page until
  *      the daemon is back, then reloads it;
- *   5. three restarts without recovery → error dialog and quit;
- *   6. window-all-closed / app quit → daemon.stop() (SIGTERM → SIGKILL).
+ *   5. three restarts without recovery → error dialog and quit; a failed
+ *      first boot goes through the same restart/backoff path and only builds
+ *      the window once a daemon URL exists (bootShell);
+ *   6. window-all-closed / app quit → daemon.stop() (SIGTERM → SIGKILL);
+ *      before-quit defers the quit until the daemon is actually stopped.
  */
 
 const path = require("node:path");
@@ -48,6 +51,8 @@ let consecutiveFailures = 0;
 let restartAttempts = 0;
 let stopping = false;
 let restarting = false;
+/** True once a quit has been deferred pending daemon cleanup (before-quit). */
+let quitRequested = false;
 
 const RETRY_PAGE_URL =
   "data:text/html;charset=utf-8," +
@@ -112,12 +117,17 @@ async function restartDaemon() {
     return;
   }
   await stopDaemonChild(daemon === null ? null : daemon.child);
+  if (stopping) {
+    restarting = false;
+    return;
+  }
   try {
     await startDaemon();
     consecutiveFailures = 0;
-    if (mainWindow !== null && !mainWindow.isDestroyed() && daemonUrl !== null) {
-      await mainWindow.loadURL(daemonUrl);
-    }
+    // A recovery must not carry failure counts across incidents: every
+    // incident gets the full attempt budget again.
+    restartAttempts = 0;
+    await bootShell();
     console.log(`[desktop] daemon recovered on attempt ${attempt}`);
   } catch (error) {
     console.error(`[desktop] daemon restart failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -125,6 +135,11 @@ async function restartDaemon() {
       givingUp();
       return;
     }
+    // Nothing else re-triggers us from here (the health timer only fires
+    // once a daemon URL exists), so schedule the next attempt ourselves.
+    restarting = false;
+    setTimeout(() => restartDaemon(), nextRestartDelay(attempt + 1));
+    return;
   }
   restarting = false;
 }
@@ -175,6 +190,24 @@ function createWindow() {
   }
 }
 
+/**
+ * Bring the shell UI up: create the window if it does not exist yet, point it
+ * at the daemon URL, and make sure the health poll is running. Used by the
+ * first successful boot AND every successful daemon recovery — the recovery
+ * path cannot assume a window exists (a failed first boot never created one)
+ * or that the health timer is alive.
+ */
+async function bootShell() {
+  if (mainWindow === null || mainWindow.isDestroyed()) {
+    createWindow();
+  } else if (daemonUrl !== null) {
+    await mainWindow.loadURL(daemonUrl).catch(() => {});
+  }
+  if (healthTimer === null) {
+    healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
+  }
+}
+
 async function shutdown() {
   if (stopping) {
     return;
@@ -203,10 +236,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     startDaemon()
-      .then(() => {
-        createWindow();
-        healthTimer = setInterval(pollHealth, HEALTH_POLL_MS);
-      })
+      .then(() => bootShell())
       .catch((error) => {
         console.error(`[desktop] daemon failed to start: ${error instanceof Error ? error.message : String(error)}`);
         restartDaemon();
@@ -218,11 +248,21 @@ if (!gotLock) {
     // platform, so every platform stops the daemon and quits (non-darwin
     // would quit directly regardless; darwin deliberately does not stay
     // resident in v1 — a daemon-only background shell has no user value).
-    void shutdown().finally(() => app.quit());
+    // Quitting routes through before-quit, the single exit that waits for
+    // daemon cleanup.
+    app.quit();
   });
 
-  app.on("before-quit", () => {
-    void shutdown();
+  app.on("before-quit", (event) => {
+    if (quitRequested) {
+      // Cleanup already ran (or is running); let this quit proceed.
+      return;
+    }
+    quitRequested = true;
+    // Quit must wait for the daemon to actually stop (SIGTERM → SIGKILL),
+    // otherwise the child is orphaned mid-shutdown.
+    event.preventDefault();
+    void shutdown().finally(() => app.quit());
   });
 
   app.on("activate", () => {

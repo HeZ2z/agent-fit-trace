@@ -141,6 +141,9 @@ function spawnDaemon({ nodePath, cliPath, dataDir, port = 0, env, urlTimeoutMs =
       }
     });
     child.once("error", (error) => {
+      // Covers spawn failures (e.g. a bad nodePath emits ENOENT here, not an
+      // exception from spawn()) — surface it and fail the url promise.
+      console.error(`[desktop] daemon spawn error: ${error instanceof Error ? error.message : String(error)}`);
       if (!settled) {
         settled = true;
         clearTimeout(timer);
@@ -163,12 +166,22 @@ function spawnDaemon({ nodePath, cliPath, dataDir, port = 0, env, urlTimeoutMs =
  * Stop the daemon: SIGTERM, then SIGKILL after the grace period if it is
  * still alive. Resolves once the child is gone. Safe to call twice.
  *
+ * A child that never successfully spawned (e.g. a bad nodePath: `pid` is
+ * undefined and no "exit" event will ever fire) counts as already stopped,
+ * and a kill-phase "error" event resolves instead of hanging the promise.
+ *
  * @param {import("node:child_process").ChildProcess | null} child
  * @returns {Promise<void>}
  */
 function stopDaemonChild(child) {
   return new Promise((resolve) => {
-    if (child === null || child.exitCode !== null || child.signalCode !== null) {
+    if (
+      child === null ||
+      child.pid == null ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      // Never spawned or already gone: nothing to kill.
       resolve();
       return;
     }
@@ -180,6 +193,11 @@ function stopDaemonChild(child) {
       }
     }, STOP_GRACE_MS);
     child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    // A kill-phase error (e.g. EPERM) must not leave the promise pending.
+    child.once("error", () => {
       clearTimeout(timer);
       resolve();
     });

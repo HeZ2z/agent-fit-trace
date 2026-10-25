@@ -134,7 +134,8 @@ test("spawnDaemon again after stop yields a fresh healthy daemon (restart path)"
     port: 0,
     env: childEnv(),
   });
-  const firstUrl = await first.url;
+  // Wait for the first daemon to be up before tearing it down.
+  await first.url;
   await daemonChild.stopDaemonChild(first.child);
 
   const second = daemonChild.spawnDaemon({
@@ -147,7 +148,8 @@ test("spawnDaemon again after stop yields a fresh healthy daemon (restart path)"
   const secondUrl = await second.url;
   try {
     assert.match(secondUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
-    assert.notEqual(secondUrl, firstUrl, "a fresh port was bound after the restart");
+    // No assertion that the second URL differs from the first: the OS is
+    // free to hand back the port the previous daemon just released.
     assert.equal(await daemonChild.healthCheck(secondUrl), true);
   } finally {
     await daemonChild.stopDaemonChild(second.child);
@@ -175,4 +177,39 @@ test("spawnDaemon rejects when no listening line ever arrives (timeout path)", a
   });
   await assert.rejects(url, /did not report a listen URL within 300ms/);
   await daemonChild.stopDaemonChild(child);
+});
+
+test("spawnDaemon rejects when the node binary itself is missing (bad nodePath)", async () => {
+  const dir = await trackDir();
+  // A path that does not exist: spawn emits ENOENT via the child's "error"
+  // event (never an exception from spawn()), so the url promise must reject.
+  const { url } = daemonChild.spawnDaemon({
+    nodePath: join(dir, "not-a-real-node-binary"),
+    cliPath: CLI_PATH,
+    dataDir: dir,
+    port: 0,
+    env: childEnv(),
+  });
+  await assert.rejects(url);
+});
+
+test("stopDaemonChild resolves for a child that never successfully spawned", async () => {
+  const dir = await trackDir();
+  // No pid and no future "exit" event: stop must treat it as already gone
+  // and resolve instead of hanging (previously it waited on "exit" forever).
+  const { child, url } = daemonChild.spawnDaemon({
+    nodePath: join(dir, "not-a-real-node-binary"),
+    cliPath: CLI_PATH,
+    dataDir: dir,
+    port: 0,
+    env: childEnv(),
+  });
+  url.catch(() => {}); // rejection is asserted in the companion test
+  const stop = daemonChild.stopDaemonChild(child);
+  const outcome = await Promise.race([
+    stop.then(() => "resolved" as const),
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1_000)),
+  ]);
+  assert.equal(outcome, "resolved", "stopDaemonChild must not hang on a never-spawned child");
+  await stop;
 });
