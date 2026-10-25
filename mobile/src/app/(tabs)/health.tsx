@@ -88,8 +88,8 @@ const copy = {
   sleepKicker: "SLEEP",
   sleepTitle: "Sleep",
   sleepLede: "Import your recent nights, or type the hours yourself.",
-  importButtonSamsung: "Import health data from your Samsung phone",
-  importButtonApple: "Import health data from your Apple phone",
+  importButtonSamsung: "Import from Samsung Health",
+  importButtonApple: "Import from Apple Health",
   brandUnsupported: "Import from your phone brand is not supported yet",
   importing: "Reading Health Connect…",
   importOkNights:
