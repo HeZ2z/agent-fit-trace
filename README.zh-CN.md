@@ -23,6 +23,10 @@ App JSON → `import_workout` → 确定性分析 → `generate_next_plan` 草�
 
 `packages/fit-trace-mcp/` 通过 Model Context Protocol（stdio）暴露与 pi 扩展相同的四个工具，外加两个只读资源和 `training-coach` prompt，任何 MCP 宿主都可以基于同一份本地存储工作。存储、宿主配置与验证方式见 [docs/mcp.md](docs/mcp.md)。
 
+## 桌面壳
+
+`pnpm desktop:dev` 在 Electron 窗口中打开 App，窗口背后是它自己拉起的本地 daemon——一条命令、一份数据、零自定义 IPC（仅 dev 模式；见 [docs/local-daemon.md](docs/local-daemon.md)）。
+
 ## 开发
 
 需要 Node >= 24 和 pnpm。
@@ -38,4 +42,5 @@ pnpm typecheck
 - [PR 提交规范](CONTRIBUTING.md)
 - [MVP 设计](docs/mvp-design.md)
 - [pi 集成规范](docs/extension-skill-spec.md)
+- [本地 daemon 与桌面壳](docs/local-daemon.md)
 - [MCP 服务器](docs/mcp.md)

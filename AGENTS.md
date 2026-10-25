@@ -18,6 +18,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - `packages/fit-trace-workout-session/` (`@agent-fit-trace/workout-session`) — browser-safe pure session draft/timing/build/persistence model shared by the web editor and the mobile Log screen (no pi/typebox/React/expo/Node built-ins). Rest is transient runtime state and is never persisted.
 - `packages/fit-trace-api-contracts/` (`@agent-fit-trace/api-contracts`) — the shared app/pi client contract (shapes, errors, contract suite) both clients satisfy.
 - `packages/fit-trace-cli/` (`@agent-fit-trace/cli`) — source-run `agent-fit-trace` bin: `start` (same-origin launcher proxying a fixed authenticated upstream; `docs/local-launcher.md`) and `daemon` (resident local data plane: loopback `/api/v1` over per-principal SQLite stores, the same coaching server, optional App shell; `docs/local-daemon.md`).
+- `packages/fit-trace-desktop/` (`@agent-fit-trace/desktop`) — Electron thin shell over the daemon, dev-mode only (no installer/signing/auto-update; `docs/local-daemon.md` "Desktop shell"). Pure-JS `.cjs`, no build chain, not in tsconfig: `main/daemonChild.cjs` (electron-free daemon spawn/health/restart plumbing), `main/main.cjs` (single-instance lock, window over the daemon's loopback URL, zero custom IPC), `scripts/dev.cjs` (dev entry). Electron is this package's only dependency (a devDependency) — it must not appear in any other package.
 - `packages/fit-trace-mcp/` (`@agent-fit-trace/mcp`) — standalone stdio MCP server (`@modelcontextprotocol/sdk`): the four tools, two read-only resources, and the `training-coach` prompt for any MCP host. Default store is the shared per-identity SQLite database resolved like the daemon/app/pi (`--store` > `--principal`/`FIT_TRACE_PRINCIPAL` > `identity.json` > guest); a JSON file stays selectable via `--store <path>.json` or `PI_FIT_TRACE_STORE=<path>.json` (compat escape hatch, one release); see `docs/mcp.md`.
 - `app/` — React+Vite UI, fixture/client-driven; provider default client is mode-aware (`VITE_FIT_TRACE_MODE=http` → HTTP client, else local). The app also negotiates the daemon guest-local surface from `GET /api/v1/public-config` (`daemon: true` + `auth_configured: false` boots signed-in as the daemon's local guest over the fixed guest bearer, no Supabase configuration or build variables; `docs/app-dev-modes.md`).
 - `server/` — loopback dev API (`pnpm dev:api`; in-memory store, clears on restart) that HTTP mode reaches via the Vite `/api` proxy. The SQLite-backed per-principal stores (`sqlitePrincipalStores.ts`) and the guest local verifier (`auth/localVerifier.ts`) are the foundation of the daemon data plane.
@@ -31,6 +32,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - `pnpm typecheck` — root `tsc --noEmit` + app typecheck.
 - `pnpm dev:api` — run the loopback dev API (`127.0.0.1:5199`).
 - `pnpm daemon` — run the resident local daemon (loopback `127.0.0.1:5199`, SQLite data plane; see `docs/local-daemon.md`).
+- `pnpm desktop:dev` — open the desktop shell (Electron window over its own daemon child; see `docs/local-daemon.md` "Desktop shell"). Requires a built `app/dist` (`pnpm build`); the first run also prepares the electron binary once.
 - `pnpm build` — production build of the app.
 
 ## Hard rules
@@ -47,6 +49,7 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 - Requires Node >= 24 and pnpm (`packageManager: pnpm@10.34.5`).
 - Core modules use `.ts` extensions in relative imports (Node type-stripping) and must stay erasable: no `enum`, no parameter properties.
 - Persistence is local JSON at `<cwd>/.pi/fit-trace/workouts.json` only when `PI_FIT_TRACE_STORE` pins it (or in coached snapshots); the pi extension's normal mode and the MCP server now default to the shared per-identity SQLite database under `FIT_TRACE_DATA_DIR` (default `~/.fit-trace/data`), resolved from `identity.json` (`guest.db` on first run).
+- Electron is confined to `packages/fit-trace-desktop` (devDependency only); pnpm 10 skips unapproved postinstall scripts, so a root `pnpm install` does not download the electron binary — CI never fetches it, and the first `pnpm desktop:dev` runs electron's `install.js` once (`tests/desktopPackageIsolation.test.ts` guards the boundary).
 - Tests mock `ExtensionAPI`, so the adapter is exercised without a pi runtime.
 
 ## Planned Agent integration

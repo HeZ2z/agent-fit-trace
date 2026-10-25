@@ -5,8 +5,10 @@ local data plane). The daemon is the standalone counterpart to the
 launcher: ONE loopback listener that **owns the data itself** — the same
 `/api/v1` contract the app's HTTP client speaks, backed by per-principal
 SQLite stores — plus the same reviewed loopback coaching server and an
-optional same-origin App shell. It runs headless (no Electron, no
-browser) and survives client disconnects.
+optional same-origin App shell. The daemon itself runs headless (no
+browser, no window of its own) and survives client disconnects; the
+Electron desktop shell below is an optional consumer that spawns and
+owns it, not part of the daemon process.
 
 `agent-fit-trace start` is unchanged in this slice: it keeps its current
 meaning (fixed upstream authenticated API proxy + foreground composite,
@@ -129,6 +131,54 @@ variables, no Supabase configuration) negotiates guest-local from
 workouts, imports, analysis, plan drafts — as the daemon's local guest
 (see `docs/app-dev-modes.md`, "Daemon mode"). The app-shell relationship
 is native app support now, not a curl-only data plane.
+
+## Desktop shell (`pnpm desktop:dev`)
+
+One command, one window, same daemon:
+
+```sh
+pnpm desktop:dev
+```
+
+`packages/fit-trace-desktop/` is an Electron **thin shell** over this
+daemon — the desktop app is a carrier, not a second application. The
+entry script (`scripts/dev.cjs`) checks that the electron binary exists
+(running `electron`'s `install.js` once if not) and that `app/dist` has
+been built; without a build it prints `pnpm build` and exits instead of
+building behind your back. Then it spawns Electron, and the main process
+(`main/main.cjs`) owns everything else:
+
+- **The main process owns the daemon child.** It spawns
+  `node packages/fit-trace-cli/src/cli.ts daemon --port 0` (plus
+  `--data` when `FIT_TRACE_DATA_DIR` is set), reads the listening URL
+  from the daemon's stdout, and pipes daemon output through prefixed
+  `[daemon]` lines. There are **zero custom IPC channels** — on purpose:
+  the renderer is the ordinary web app, no bridge, no boot injection.
+- **The window is a pure web client.** `BrowserWindow` runs with
+  `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`
+  and loads the daemon's loopback URL; the same web build keeps serving
+  the browser/Vercel deployment.
+- **Health polling and restart with backoff.** The main process
+  health-checks `/api/v1/public-config` every 5s; two consecutive
+  failures restart the daemon (exponential 1s/2s/4s, capped at 4s) while
+  the window shows a retry page, then reloads the new URL. Three failed
+  restarts surface an error dialog and quit.
+- **Single instance, clean shutdown.** A second launch focuses the
+  existing window instead of spawning a second daemon. Closing the last
+  window (or quitting) stops the daemon with SIGTERM → 3s → SIGKILL, so
+  the daemon's own shutdown semantics (`SIGINT`/`SIGTERM` above) are
+  preserved.
+
+Child-process plumbing lives in `main/daemonChild.cjs` — plain Node, no
+electron import — and is covered by `tests/desktopDaemonChild.test.ts`;
+`tests/desktopPackageIsolation.test.ts` guards the dependency boundary.
+
+Scope (v1): **dev-mode only**. No installer, no code signing, no
+auto-update. Electron is a devDependency of
+`packages/fit-trace-desktop` alone; pnpm 10 does not run unapproved
+postinstall scripts, so a plain root `pnpm install` does **not** download
+the ~100MB electron binary (CI stays lean) — the first
+`pnpm desktop:dev` prepares it automatically.
 
 ## Relationships to #39 and #40
 

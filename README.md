@@ -23,6 +23,10 @@ App JSON → `import_workout` → deterministic analysis → `generate_next_plan
 
 `packages/fit-trace-mcp/` exposes the same four tools as the pi extension over the Model Context Protocol (stdio), plus two read-only resources and the `training-coach` prompt, so any MCP host can work against the same local store. See [docs/mcp.md](docs/mcp.md) for storage, host configuration, and verification.
 
+## Desktop shell
+
+`pnpm desktop:dev` opens the App in an Electron window over its own local daemon — one command, one dataset, zero custom IPC (dev-mode only; see [docs/local-daemon.md](docs/local-daemon.md)).
+
 ## Development
 
 Requires Node >= 24 and pnpm.
@@ -38,4 +42,5 @@ pnpm typecheck
 - [Pull request guidelines](CONTRIBUTING.md)
 - [MVP design](docs/mvp-design.md)
 - [pi integration spec](docs/extension-skill-spec.md)
+- [Local daemon & desktop shell](docs/local-daemon.md)
 - [MCP server](docs/mcp.md)
