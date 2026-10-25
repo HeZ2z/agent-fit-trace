@@ -8,10 +8,12 @@ import {
   listSleepEntriesDesc,
   parseManualSleepHours,
   parseSleepStore,
+  parseSleepStorePayload,
   removeSleepEntry,
   resolveAttachableSleep,
   SLEEP_STORAGE_KEY,
   serializeSleepStore,
+  serializeSleepStorePayload,
   upsertSleepEntry,
   type SleepEntry,
   type SleepStorageLike,
@@ -135,9 +137,47 @@ test("parseSleepStore round-trips through serializeSleepStore", () => {
   assert.deepEqual(parseSleepStore(serializeSleepStore(stored)), stored);
 });
 
+test("parseSleepStorePayload tolerates a missing revision as 0 and upgrades it", () => {
+  // Legacy v1 payloads were bare arrays: they parse at revision 0 and the
+  // next write persists the wrapped { revision, entries } shape.
+  const legacy = JSON.stringify([entry({ date: "2026-10-25" })]);
+  const upgraded = parseSleepStorePayload(legacy);
+  assert.equal(upgraded.revision, 0);
+  assert.deepEqual(upgraded.entries, [entry({ date: "2026-10-25" })]);
+  // An object payload written before the revision field existed reads the
+  // same way instead of being treated as corrupt.
+  const unwrapped = parseSleepStorePayload(
+    JSON.stringify({ entries: [entry({ date: "2026-10-25" })] }),
+  );
+  assert.equal(unwrapped.revision, 0);
+  assert.deepEqual(unwrapped.entries, [entry({ date: "2026-10-25" })]);
+  // A revision that is present survives a serialize/parse round-trip.
+  const stored = { revision: 7, entries: [entry({ date: "2026-10-25" })] };
+  assert.deepEqual(parseSleepStorePayload(serializeSleepStorePayload(stored)), stored);
+  assert.deepEqual(parseSleepStore(serializeSleepStorePayload(stored)), stored.entries);
+});
+
+test("parseSleepStorePayload rejects a malformed revision", () => {
+  const withRevision = (revision: unknown): string =>
+    JSON.stringify({ revision, entries: [entry({ date: "2026-10-25" })] });
+  assert.throws(
+    () => parseSleepStorePayload(withRevision(-1)),
+    /revision must be a non-negative integer/,
+  );
+  assert.throws(
+    () => parseSleepStorePayload(withRevision(1.5)),
+    /revision must be a non-negative integer/,
+  );
+  assert.throws(
+    () => parseSleepStorePayload(withRevision("3")),
+    /revision must be a non-negative integer/,
+  );
+});
+
 test("parseSleepStore throws with the entry index on malformed payloads", () => {
   assert.throws(() => parseSleepStore("{ not json"), /not valid JSON/);
-  assert.throws(() => parseSleepStore("{}"), /expected an array/);
+  assert.throws(() => parseSleepStore("{}"), /entries must be an array/);
+  assert.throws(() => parseSleepStore("42"), /expected a \{ revision, entries \} payload/);
   assert.throws(
     () => parseSleepStore(JSON.stringify([{ ...entry({ date: "2026-10-25" }), date: "2026-2-5" }])),
     /entry 0.*YYYY-MM-DD/,
@@ -300,12 +340,18 @@ test("createSleepStore reads empty from missing storage and persists upserts", a
   const fake = memoryStorage();
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
   assert.deepEqual(await store.read(), []);
+  assert.equal(await store.readRevision(), 0);
   const stored = await store.upsert(entry({ date: "2026-10-25" }));
   assert.deepEqual(stored.map((night) => night.date), ["2026-10-25"]);
   assert.equal(fake.writes.length, 1);
-  assert.deepEqual(JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!), stored);
+  // Every mutation bumps the storage-level revision: one upsert over an empty
+  // store lands at revision 1.
+  const persisted = parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!);
+  assert.equal(persisted.revision, 1);
+  assert.deepEqual(persisted.entries, stored);
   // The memory cache answers later reads without another storage round-trip.
   assert.deepEqual(await store.read(), stored);
+  assert.equal(await store.readRevision(), 1);
 });
 
 test("createSleepStore upsert replaces an existing night in storage", async () => {
@@ -314,9 +360,9 @@ test("createSleepStore upsert replaces an existing night in storage", async () =
   });
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
   await store.upsert(entry({ date: "2026-10-25", hours: 8 }));
-  const persisted = JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!) as SleepEntry[];
-  assert.equal(persisted.length, 1);
-  assert.equal(persisted[0]!.hours, 8);
+  const persisted = parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!);
+  assert.equal(persisted.entries.length, 1);
+  assert.equal(persisted.entries[0]!.hours, 8);
 });
 
 test("createSleepStore.remove persists the deletion", async () => {
@@ -329,7 +375,9 @@ test("createSleepStore.remove persists the deletion", async () => {
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
   const stored = await store.remove("2026-10-24");
   assert.deepEqual(stored.map((night) => night.date), ["2026-10-25"]);
-  assert.deepEqual(JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!), stored);
+  const persisted = parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!);
+  assert.deepEqual(persisted.entries, stored);
+  assert.equal(persisted.revision, 1);
 });
 
 test("a failed persistence rolls the memory value back and rethrows", async () => {
@@ -391,17 +439,19 @@ test("a failing storage read propagates a diagnostic error and the write path re
   const stored = await store.upsert(entry({ date: "2026-10-25" }));
   assert.deepEqual(stored.map((night) => night.date), ["2026-10-25"]);
   assert.equal(writes.length, 1);
+  assert.deepEqual(parseSleepStorePayload(writes[0]!).entries, stored);
 });
 
 /* ── store-level optimistic lock (upsertIfUnchanged) ─────────────── */
 
-test("upsertIfUnchanged writes when the captured token still matches", async () => {
+test("upsertIfUnchanged writes when the captured revision still matches", async () => {
   const baseline = entry({ date: "2026-10-25", hours: 7.5 });
   const fake = memoryStorage({ [SLEEP_STORAGE_KEY]: serializeSleepStore([baseline]) });
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
+  const capturedRevision = await store.readRevision();
   const stored = await store.upsertIfUnchanged(
     entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T09:00:00.000Z" }),
-    baseline.importedAt,
+    capturedRevision,
   );
   assert.ok(stored !== null);
   assert.deepEqual(
@@ -409,12 +459,12 @@ test("upsertIfUnchanged writes when the captured token still matches", async () 
     [8],
   );
   assert.equal(fake.writes.length, 1);
-  assert.deepEqual(JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!), stored);
-  // `null` is the token of an absent night: with nothing stored for the date
-  // the conditional write goes through the same way.
+  assert.deepEqual(parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!).entries, stored);
+  // A revision captured fresh, for a night that is absent, goes through the
+  // same way — "no entry for this night" is just the current revision.
   const absent = await store.upsertIfUnchanged(
     entry({ date: "2026-10-26", hours: 6.5, importedAt: "2026-10-26T09:00:00.000Z" }),
-    null,
+    await store.readRevision(),
   );
   assert.ok(absent !== null);
   assert.deepEqual(
@@ -427,11 +477,12 @@ test("upsertIfUnchanged writes when the captured token still matches", async () 
 test("upsertIfUnchanged returns null and writes nothing when the night changed meanwhile", async () => {
   // Both "changed meanwhile" shapes run against one store, exactly how the
   // Health page's import races a manual action: the caller captures the
-  // token, the night moves on through the same store, then the conditional
-  // write runs.
+  // revision, the night moves on through the same store, then the conditional
+  // write runs against the stale revision.
   const baseline = entry({ date: "2026-10-25", hours: 7.5 });
   const fake = memoryStorage({ [SLEEP_STORAGE_KEY]: serializeSleepStore([baseline]) });
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
+  const capturedRevision = await store.readRevision();
 
   // Re-saved meanwhile: the night's importedAt moved on.
   await store.upsert(
@@ -439,49 +490,99 @@ test("upsertIfUnchanged returns null and writes nothing when the night changed m
   );
   const resaved = await store.upsertIfUnchanged(
     entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T11:00:00.000Z" }),
-    baseline.importedAt,
+    capturedRevision,
   );
   assert.equal(resaved, null);
   assert.equal(fake.writes.length, 1); // only the manual re-save persisted
   assert.deepEqual(
-    (JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!) as SleepEntry[]).map((night) => night.importedAt),
+    parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!).entries.map(
+      (night) => night.importedAt,
+    ),
     ["2026-10-25T10:00:00.000Z"],
   );
 
-  // Deleted and rebuilt meanwhile: the token differs from the captured one
+  // Deleted and rebuilt meanwhile: the revision differs from the captured one
   // even though a night exists again.
   await store.remove("2026-10-25");
   const rebuilt = entry({ date: "2026-10-25", hours: 5.5, importedAt: "2026-10-25T12:00:00.000Z" });
   await store.upsert(rebuilt);
   const staleAfterRebuild = await store.upsertIfUnchanged(
     entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T13:00:00.000Z" }),
-    baseline.importedAt,
+    capturedRevision,
   );
   assert.equal(staleAfterRebuild, null);
   assert.deepEqual(
-    (JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!) as SleepEntry[]).filter(
+    parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!).entries.filter(
       (night) => night.date === "2026-10-25",
     ),
     [rebuilt],
   );
 });
 
+test("upsertIfUnchanged does not resurrect a night deleted during the import", async () => {
+  // The failure shape a per-night token could not cover (issue #50): the
+  // caller captured the revision while the night existed, the night was
+  // deleted during the slow import, and the late write must stay dead instead
+  // of resurrecting it. With a token of "the night's importedAt or null" the
+  // deletion looked exactly like "never existed"; the storage revision moves
+  // on across the delete, so the stale revision is refused.
+  const baseline = entry({ date: "2026-10-25", hours: 7.5 });
+  const fake = memoryStorage({ [SLEEP_STORAGE_KEY]: serializeSleepStore([baseline]) });
+  const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
+  const capturedRevision = await store.readRevision();
+  await store.remove("2026-10-25");
+  const stored = await store.upsertIfUnchanged(
+    entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T09:00:00.000Z" }),
+    capturedRevision,
+  );
+  assert.equal(stored, null);
+  assert.deepEqual(parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!).entries, []);
+});
+
+test("upsertIfUnchanged is voided by a change to an unrelated night (conservatively)", async () => {
+  // The store-level lock is deliberately coarse: any mutation bumps the
+  // revision, so the late import is discarded even though the night it writes
+  // never moved. Conservative but safe — a false "superseded" costs one
+  // retry, while a finer token could resurrect a deleted night.
+  const target = entry({ date: "2026-10-25", hours: 7.5 });
+  const fake = memoryStorage({
+    [SLEEP_STORAGE_KEY]: serializeSleepStore([target, entry({ date: "2026-10-24", hours: 6 })]),
+  });
+  const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
+  const capturedRevision = await store.readRevision();
+  await store.upsert(entry({ date: "2026-10-23", hours: 8, importedAt: "2026-10-23T09:00:00.000Z" }));
+  const stored = await store.upsertIfUnchanged(
+    entry({ date: "2026-10-25", hours: 9, importedAt: "2026-10-25T09:00:00.000Z" }),
+    capturedRevision,
+  );
+  assert.equal(stored, null);
+  const persisted = parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!).entries;
+  // The target night still holds its original value.
+  assert.deepEqual(
+    persisted.filter((night) => night.date === "2026-10-25"),
+    [target],
+  );
+});
+
 test("upsertIfUnchanged returns null when an absent night was created meanwhile", async () => {
   const fake = memoryStorage();
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
-  // The captured token says "no entry for this night"; a manual save during
-  // the import creates one, so the late import must not resurrect over it.
+  // The captured revision says "nothing happened to this store yet"; a manual
+  // save during the import bumps it, so the late import must not land over it.
+  const capturedRevision = await store.readRevision();
   await store.upsert(
     entry({ date: "2026-10-25", hours: 6, sessionCount: 0, source: "manual", importedAt: "2026-10-25T10:00:00.000Z" }),
   );
   const stored = await store.upsertIfUnchanged(
     entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T11:00:00.000Z" }),
-    null,
+    capturedRevision,
   );
   assert.equal(stored, null);
   assert.equal(fake.writes.length, 1);
   assert.deepEqual(
-    (JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!) as SleepEntry[]).map((night) => night.source),
+    parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!).entries.map(
+      (night) => night.source,
+    ),
     ["manual"],
   );
 });
@@ -505,14 +606,14 @@ test("mutations run single-flight: a conditional write checks at write time, not
   };
   const store = createSleepStore(gated, SLEEP_STORAGE_KEY);
   const first = store.upsert(entry({ date: "2026-10-25", importedAt: "2026-10-25T09:00:00.000Z" }));
-  // The caller captured `null` for a night that does not exist yet — but by
-  // the time the queued conditional write runs, the first mutation has
-  // created it. The check happens inside the same single-flight step as the
-  // write, so it sees the created night and refuses, instead of writing on
-  // the stale "absent" observation.
+  // The caller captured revision 0 — the empty store — but by the time the
+  // queued conditional write runs, the first mutation has created the night
+  // and bumped the revision. The check happens inside the same single-flight
+  // step as the write, so it sees the newer revision and refuses, instead of
+  // writing on the stale "untouched store" observation.
   const second = store.upsertIfUnchanged(
     entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T11:00:00.000Z" }),
-    null,
+    0,
   );
   await new Promise((resolve) => setTimeout(resolve, 0));
   // The first mutation's persist is held open and the second is still queued
@@ -524,7 +625,31 @@ test("mutations run single-flight: a conditional write checks at write time, not
   assert.equal(await second, null);
   assert.equal(writes.length, 1);
   assert.deepEqual(
-    (JSON.parse(writes[0]!) as SleepEntry[]).map((night) => night.importedAt),
+    parseSleepStorePayload(writes[0]!).entries.map((night) => night.importedAt),
     ["2026-10-25T09:00:00.000Z"],
+  );
+});
+
+test("a store over a legacy revision-less payload reads revision 0 and upgrades it on write", async () => {
+  // The strict parse tolerates the missing revision as 0 (issue #50): the
+  // optimistic lock starts from 0, and the first write persists the wrapped
+  // { revision, entries } shape.
+  const baseline = entry({ date: "2026-10-25", hours: 7.5 });
+  const fake = memoryStorage({
+    [SLEEP_STORAGE_KEY]: JSON.stringify([baseline]), // bare v1 array
+  });
+  const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
+  assert.equal(await store.readRevision(), 0);
+  assert.deepEqual(await store.read(), [baseline]);
+  const stored = await store.upsertIfUnchanged(
+    entry({ date: "2026-10-25", hours: 8, importedAt: "2026-10-25T09:00:00.000Z" }),
+    0,
+  );
+  assert.ok(stored !== null);
+  const persisted = parseSleepStorePayload(fake.dump(SLEEP_STORAGE_KEY)!);
+  assert.equal(persisted.revision, 1);
+  assert.deepEqual(
+    persisted.entries.filter((night) => night.date === "2026-10-25").map((night) => night.hours),
+    [8],
   );
 });

@@ -17,6 +17,7 @@ import {
   listSleepEntriesDesc,
   parseManualSleepHours,
   readSleepEntries,
+  readSleepStoreRevision,
   saveSleepEntry,
   saveSleepEntryIfUnchanged,
   type SleepEntry,
@@ -321,16 +322,19 @@ export default function HealthScreen() {
    * message; only an `ok` result writes a sleep entry (replace-on-reimport by
    * wake-up date).
    *
-   * The write is guarded by a per-night optimistic lock that lives in the
+   * The write is guarded by a store-level optimistic lock that lives in the
    * store itself (issue #50): manual saves and deletes stay available while
    * an import runs (disabling the whole page for a slow Health Connect read
    * would cost more usability than the rare race), so the import captures the
-   * night's version token — its `importedAt`, or the absence of an entry — at
-   * the start and hands it to `saveSleepEntryIfUnchanged`, which re-checks the
-   * token and persists inside one serialized store step. A mismatch means the
-   * user saved, re-recorded or deleted that night meanwhile, and the late
-   * import result is discarded with a notice instead of overwriting the newer
-   * entry or resurrecting a deleted one.
+   * store's revision at the start and hands it to `saveSleepEntryIfUnchanged`,
+   * which re-checks the revision and persists inside one serialized store
+   * step. A mismatch means the user saved, re-recorded or deleted that night
+   * meanwhile, and the late import result is discarded with a notice instead
+   * of overwriting the newer entry or resurrecting a deleted night. The lock
+   * is deliberately coarse: a change to an unrelated night also voids the
+   * import. That is conservative but safe — a false "superseded" notice costs
+   * one retry, while a per-night token cannot tell "never existed" from
+   * "deleted during the import" and would resurrect the deleted night.
    */
   async function handleImportSleep(): Promise<void> {
     if (importing || !importReady) return;
@@ -338,9 +342,7 @@ export default function HealthScreen() {
     setImportNotice(null);
     const capturedDate = wakeDate;
     try {
-      const snapshot = entries ?? (await readSleepEntries());
-      const baselineToken =
-        snapshot.find((night) => night.date === capturedDate)?.importedAt ?? null;
+      const baselineRevision = await readSleepStoreRevision();
       const result = await healthProvider.sleepHoursForDate(capturedDate);
       if (result.kind === "ok") {
         const stored = await saveSleepEntryIfUnchanged(
@@ -352,7 +354,7 @@ export default function HealthScreen() {
             importedAt: new Date().toISOString(),
             source: "health-connect",
           },
-          baselineToken,
+          baselineRevision,
         );
         if (stored === null) {
           setImportNotice({ tone: "warn", message: t(copy.importSuperseded) });

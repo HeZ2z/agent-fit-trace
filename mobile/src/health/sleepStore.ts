@@ -134,26 +134,82 @@ function parseSleepEntry(candidate: unknown, index: number): SleepEntry {
 }
 
 /**
- * Strict parse of the stored payload: a missing value is an empty history;
- * anything present but malformed throws instead of losing data silently.
+ * The stored payload: the night history plus a storage-level revision. The
+ * revision exists so a caller can take an optimistic lock over the whole
+ * history — the Health page's import captures it before its slow Health
+ * Connect read and hands it back for a conditional write (see
+ * `upsertIfUnchanged`). Unlike a per-night token, it also covers a deletion of
+ * the locked night itself: "never existed" and "existed and was deleted since"
+ * are distinguishable, so a late import can no longer resurrect a deleted
+ * night (issue #50). Every `upsert`/`remove` increments it.
  */
-export function parseSleepStore(raw: string | null | undefined): SleepEntry[] {
-  if (raw === null || raw === undefined) return [];
+export interface SleepStorePayload {
+  revision: number;
+  entries: SleepEntry[];
+}
+
+/**
+ * Strict parse of the stored payload: a missing value is an empty history at
+ * revision 0; anything present but malformed throws instead of losing data
+ * silently. The one tolerated gap is `revision` itself — a payload without it
+ * (a v1 bare array of entries, or an object written before the field existed)
+ * reads as revision 0 and upgrades to the wrapped shape on the next write.
+ */
+export function parseSleepStorePayload(raw: string | null | undefined): SleepStorePayload {
+  if (raw === null || raw === undefined) return { revision: 0, entries: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error("Corrupt sleep store: payload is not valid JSON");
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error("Corrupt sleep store: expected an array of entries");
+  // A v1 payload was a bare array of entries: upgrade it in place.
+  if (Array.isArray(parsed)) {
+    return {
+      revision: 0,
+      entries: parsed.map((candidate, index) => parseSleepEntry(candidate, index)),
+    };
   }
-  return parsed.map((candidate, index) => parseSleepEntry(candidate, index));
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Corrupt sleep store: expected a { revision, entries } payload");
+  }
+  const payload = parsed as Record<string, unknown>;
+  const rawRevision = payload.revision;
+  let revision = 0;
+  if (rawRevision !== undefined) {
+    if (typeof rawRevision !== "number" || !Number.isInteger(rawRevision) || rawRevision < 0) {
+      throw new Error("Corrupt sleep store: revision must be a non-negative integer");
+    }
+    revision = rawRevision;
+  }
+  if (!Array.isArray(payload.entries)) {
+    throw new Error("Corrupt sleep store: entries must be an array of entries");
+  }
+  return {
+    revision,
+    entries: payload.entries.map((candidate, index) => parseSleepEntry(candidate, index)),
+  };
 }
 
-/** Canonical serialized form of the history. */
+/**
+ * Entries-only parse view, kept for callers that just need the history. The
+ * revision is dropped; use `parseSleepStorePayload` for the optimistic lock.
+ */
+export function parseSleepStore(raw: string | null | undefined): SleepEntry[] {
+  return parseSleepStorePayload(raw).entries;
+}
+
+/** Canonical serialized form of the stored payload. */
+export function serializeSleepStorePayload(payload: SleepStorePayload): string {
+  return JSON.stringify({ revision: payload.revision, entries: payload.entries });
+}
+
+/**
+ * Serialized form of a bare history, at revision 0 — a fixture/compat helper
+ * for callers that only hold entries and do not need to pin a revision.
+ */
 export function serializeSleepStore(entries: readonly SleepEntry[]): string {
-  return JSON.stringify(entries);
+  return serializeSleepStorePayload({ revision: 0, entries: [...entries] });
 }
 
 /**
@@ -225,25 +281,31 @@ function storageErrorMessage(cause: unknown): string {
  */
 export interface SleepStore {
   read(): Promise<SleepEntry[]>;
+  /**
+   * The current storage-level revision — the token callers capture for the
+   * optimistic lock in `upsertIfUnchanged`. Every mutation bumps it by one.
+   */
+  readRevision(): Promise<number>;
   upsert(entry: SleepEntry): Promise<SleepEntry[]>;
   remove(date: string): Promise<SleepEntry[]>;
   /**
-   * Conditional upsert guarded by a per-night optimistic lock: `expected`
-   * is the `importedAt` version token the caller captured for this night —
-   * or `null` for "no entry existed". The token is re-checked against the
-   * current history inside the same single-flight step that writes, closing
-   * the check-then-write race; a mismatch (the night was saved, re-recorded
-   * or deleted meanwhile) returns `null` and writes nothing.
+   * Conditional upsert guarded by a store-level optimistic lock: `expected`
+   * is the revision the caller captured before its slow work. The revision is
+   * re-checked against the current payload inside the same single-flight step
+   * that writes, closing the check-then-write race; a mismatch returns `null`
+   * and writes nothing. The lock is deliberately coarse: any mutation since
+   * the capture — including one to an unrelated night — voids the write.
+   * That is conservative (a slow import can be discarded over an unrelated
+   * save, costing one retry), but it is the only token that distinguishes
+   * "the night never existed" from "the night was deleted during the work",
+   * so a late write can never resurrect a deleted night (issue #50).
    */
-  upsertIfUnchanged(
-    entry: SleepEntry,
-    expectedImportedAt: string | null,
-  ): Promise<SleepEntry[] | null>;
+  upsertIfUnchanged(entry: SleepEntry, expectedRevision: number): Promise<SleepEntry[] | null>;
 }
 
 export function createSleepStore(storage: SleepStorageLike, key: string): SleepStore {
   /** `null` until the first successful storage read populates the cache. */
-  let memoryEntries: SleepEntry[] | null = null;
+  let memoryPayload: SleepStorePayload | null = null;
 
   /**
    * The single-flight chain: every mutation is appended after the previous
@@ -261,61 +323,70 @@ export function createSleepStore(storage: SleepStorageLike, key: string): SleepS
   }
 
   /**
-   * The current history, hydrating the cache from storage on first touch.
+   * The current payload, hydrating the cache from storage on first touch.
    * Failures propagate (diagnostic storage error, or the strict parse's
    * corrupt-store error naming the entry) and leave the cache untouched, so a
    * later read retries instead of pinning the failure.
    */
-  async function current(): Promise<SleepEntry[]> {
-    if (memoryEntries !== null) return memoryEntries;
+  async function currentPayload(): Promise<SleepStorePayload> {
+    if (memoryPayload !== null) return memoryPayload;
     let raw: string | null;
     try {
       raw = await storage.getItem(key);
     } catch (cause) {
       throw new Error(`Could not read the sleep store: ${storageErrorMessage(cause)}`);
     }
-    memoryEntries = parseSleepStore(raw);
-    return memoryEntries;
+    memoryPayload = parseSleepStorePayload(raw);
+    return memoryPayload;
   }
 
-  /** Apply one transform memory-first, persisting with rollback on failure. */
+  /**
+   * Apply one transform memory-first, persisting with rollback on failure.
+   * Every mutation bumps the storage-level revision, so captured revisions
+   * go stale across any write.
+   */
   async function apply(
-    transform: (entries: SleepEntry[]) => SleepEntry[],
+    transform: (payload: SleepStorePayload) => SleepEntry[],
   ): Promise<SleepEntry[]> {
-    const previous = memoryEntries;
-    const next = transform(await current());
-    memoryEntries = next;
+    const previous = memoryPayload;
+    const payload = await currentPayload();
+    const next: SleepStorePayload = {
+      revision: payload.revision + 1,
+      entries: transform(payload),
+    };
+    memoryPayload = next;
     try {
-      await storage.setItem(key, serializeSleepStore(next));
+      await storage.setItem(key, serializeSleepStorePayload(next));
     } catch (cause) {
-      memoryEntries = previous;
+      memoryPayload = previous;
       throw cause;
     }
-    return next;
+    return next.entries;
   }
 
   return {
     read(): Promise<SleepEntry[]> {
-      return current();
+      return currentPayload().then((payload) => payload.entries);
+    },
+    readRevision(): Promise<number> {
+      return currentPayload().then((payload) => payload.revision);
     },
     upsert(entry: SleepEntry): Promise<SleepEntry[]> {
-      return exclusive(() => apply((entries) => upsertSleepEntry(entries, entry)));
+      return exclusive(() => apply((payload) => upsertSleepEntry(payload.entries, entry)));
     },
     remove(date: string): Promise<SleepEntry[]> {
-      return exclusive(() => apply((entries) => removeSleepEntry(entries, date)));
+      return exclusive(() => apply((payload) => removeSleepEntry(payload.entries, date)));
     },
     upsertIfUnchanged(
       entry: SleepEntry,
-      expectedImportedAt: string | null,
+      expectedRevision: number,
     ): Promise<SleepEntry[] | null> {
       return exclusive(async () => {
-        const entries = await current();
-        const currentToken =
-          entries.find((night) => night.date === entry.date)?.importedAt ?? null;
-        // The night moved on since the caller captured its token: the late
+        const payload = await currentPayload();
+        // The store moved on since the caller captured the revision: the late
         // write is discarded, never persisted.
-        if (currentToken !== expectedImportedAt) return null;
-        return apply(() => upsertSleepEntry(entries, entry));
+        if (payload.revision !== expectedRevision) return null;
+        return apply((current) => upsertSleepEntry(current.entries, entry));
       });
     },
   };
@@ -340,22 +411,32 @@ export function readSleepEntries(): Promise<SleepEntry[]> {
   return store.read();
 }
 
+/**
+ * Read the current storage-level revision (memory-first): the token to capture
+ * before slow work and hand back to `saveSleepEntryIfUnchanged`.
+ */
+export function readSleepStoreRevision(): Promise<number> {
+  return store.readRevision();
+}
+
 /** Insert or replace one night; resolves with the updated history. */
 export function saveSleepEntry(entry: SleepEntry): Promise<SleepEntry[]> {
   return store.upsert(entry);
 }
 
 /**
- * Conditional save guarded by the per-night optimistic lock: writes only when
- * the night's current `importedAt` still equals `expectedImportedAt` (`null`
- * meaning "no entry for this night"); otherwise resolves `null` with the
- * stored history untouched.
+ * Conditional save guarded by the store-level optimistic lock: writes only
+ * when the store's current revision still equals `expectedRevision` (the value
+ * captured from `readSleepStoreRevision` before the slow work); otherwise
+ * resolves `null` with the stored history untouched. The lock is coarse — a
+ * mutation to any night voids the write — which is conservative but the only
+ * way to never resurrect a night deleted during the work (issue #50).
  */
 export function saveSleepEntryIfUnchanged(
   entry: SleepEntry,
-  expectedImportedAt: string | null,
+  expectedRevision: number,
 ): Promise<SleepEntry[] | null> {
-  return store.upsertIfUnchanged(entry, expectedImportedAt);
+  return store.upsertIfUnchanged(entry, expectedRevision);
 }
 
 /** Delete the entry for one wake-up date; resolves with the updated history. */

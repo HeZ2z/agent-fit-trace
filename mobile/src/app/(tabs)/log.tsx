@@ -813,19 +813,22 @@ export default function LogScreen() {
   }
 
   /**
-   * Date changes invalidate an auto-attached sleep (issue #50): the value was
-   * recorded for the previous wake-up date, and the next save would otherwise
-   * skip the attach (the field is no longer empty) and silently store the old
-   * night's sleep under the new date. Only machine-attached values are
-   * cleared — a restored draft's own sleep value (never attached here, the
-   * ref is null for it) survives date edits untouched.
+   * Date changes invalidate the draft's sleep value unconditionally (issue
+   * #50). After the redesign the Log screen has no sleep input of its own, so
+   * a non-empty `sleepHours` can only come from this session's save-time
+   * auto-attach (tracked by `sleepAttachedDateRef`) or from a draft restored
+   * out of an older version's persisted row (the ref is null for it). Both
+   * were recorded for the previous wake-up date: under the new date the next
+   * save would skip the attach (the field is no longer empty) and silently
+   * store the old night's sleep, and there is no input path to correct a
+   * wrong-night value — so clearing it is the only safe behavior, regardless
+   * of where it came from. Saving for the same date without a date change
+   * does not pass through here and is unaffected.
    */
   function handleDateConfirm(isoDate: string): void {
-    if (sleepAttachedDateRef.current !== null && isoDate !== sleepAttachedDateRef.current) {
+    if (sleepAttachedDateRef.current !== isoDate && draft.sleepHours.trim() !== "") {
       sleepAttachedDateRef.current = null;
-      if (draft.sleepHours.trim() !== "") {
-        edit({ type: "setSleepHours", value: "" });
-      }
+      edit({ type: "setSleepHours", value: "" });
     }
     edit({ type: "setDate", date: isoDate });
   }
