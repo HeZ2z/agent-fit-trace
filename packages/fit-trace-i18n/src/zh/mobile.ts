@@ -33,7 +33,7 @@ export const messages: Record<string, string> = {
   "Capture sets, reps, load, and how the session felt while it is still fresh.":
     "趁记忆还新鲜，记录组数、次数、负重以及这堂课的感受。",
   Date: "日期",
-  "Date format: YYYY-MM-DD": "日期格式：YYYY-MM-DD",
+  "Tap to choose the date.": "点按选择日期。",
   Exercises: "动作",
   "Set {set}": "第 {set} 组",
   Reps: "次数",
@@ -198,34 +198,37 @@ export const messages: Record<string, string> = {
 
   /* ── Health Connect (issue #50) ─────────────────────────────── */
   HEALTH: "健康",
+  Health: "健康",
   "Health Connect": "Health Connect",
+  "HEALTH CONNECT": "Health Connect",
+  SLEEP: "睡眠",
+  Sleep: "睡眠",
   "Import sleep from Health Connect": "从 Health Connect 导入睡眠",
   "Reading Health Connect…": "正在读取 Health Connect…",
-  "Imported {hours} h of sleep from Health Connect.":
-    "已从 Health Connect 导入 {hours} 小时睡眠。",
-  "No sleep was recorded in Health Connect for that night.":
-    "Health Connect 中没有那一晚的睡眠记录。",
-  "Fit Trace has no Health Connect sleep access. Enable Health Connect under Me → Health Connect and grant the read permissions.":
-    "Fit Trace 还没有 Health Connect 的睡眠读取权限。请在“我的 → Health Connect”中启用并授予读取权限。",
-  "Only some Health Connect read permissions were granted. Enable Health Connect under Me → Health Connect to grant the missing ones.":
-    "只授予了部分 Health Connect 读取权限。请在“我的 → Health Connect”中启用并补齐缺失的权限。",
+  "Imported {hours} h of sleep from 1 Health Connect session.":
+    "已从 Health Connect 的 1 段会话导入 {hours} 小时睡眠。",
+  "Imported {hours} h of sleep from {count} Health Connect sessions.":
+    "已从 Health Connect 的 {count} 段会话导入 {hours} 小时睡眠。",
+  "Health Connect has no records for that night. Check that your data source (such as Samsung Health) has turned on syncing with Health Connect in its own settings.":
+    "Health Connect 中没有那一晚的记录。请确认数据源（如三星健康）已在自身设置中开启与 Health Connect 的同步。",
+  "Fit Trace has no Health Connect sleep access. Enable Health Connect above and grant the read permissions.":
+    "Fit Trace 还没有 Health Connect 的睡眠读取权限。请在上方启用 Health Connect 并授予读取权限。",
+  "Only some Health Connect read permissions were granted. Disable and enable Health Connect above to grant the missing ones.":
+    "只授予了部分 Health Connect 读取权限。请在上方先关闭再重新开启 Health Connect，以补齐缺失的权限。",
   "Could not import sleep: {message}": "无法导入睡眠：{message}",
   "Optional and read-only. Reads from Health Connect happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.":
     "可选且只读。从 Health Connect 的读取只发生在本机；导入的睡眠会成为训练记录的一部分，与你手动输入的值一样随记录同步。",
   "Read-only scopes: sleep sessions and resting heart rate.": "只读范围：睡眠会话与静息心率。",
-  "Off. Enable it to import sleep into the Log form.": "已关闭。启用后可在记录表单中导入睡眠。",
-  "Connected. The Log form can import sleep for the night before a session.":
-    "已连接。记录表单可以导入训练前一晚的睡眠。",
+  "Off. Enable it to import sleep here; saving a workout for that date attaches it automatically.":
+    "已关闭。启用后可在此导入睡眠；保存该日期的训练时会自动挂接。",
+  "Connected. Saving a workout attaches that night's sleep automatically when it is recorded here.":
+    "已连接。保存训练时会自动挂接这里记录的那一晚睡眠。",
   "Sleep access has been revoked. Go to the system Health Connect settings and re-grant the read permission.":
     "睡眠访问已被撤销，请去系统 Health Connect 重新授权。",
-  "Health Connect is not installed. Install it from the Google Play Store first — see Me → Health Connect.":
-    "尚未安装 Health Connect。请先从 Google Play 商店安装——参见“我的 → Health Connect”。",
   "Health Connect is not installed. Install it from the Google Play Store, then turn on “Sync with Health Connect” in Samsung Health settings.":
     "尚未安装 Health Connect。请先从 Google Play 商店安装，然后在三星健康设置中打开“与 Health Connect 同步”。",
   "Health Connect needs an update from the Google Play Store before sleep import can be used.":
     "需要先从 Google Play 商店更新 Health Connect，才能使用睡眠导入。",
-  "Health Connect needs an update from the Google Play Store first — see Me → Health Connect.":
-    "Health Connect 需要先从 Google Play 商店更新——参见“我的 → Health Connect”。",
   "Health Connect is only available on Android devices.": "Health Connect 仅在 Android 设备上可用。",
   "Health Connect is not available on this device.": "此设备上没有可用的 Health Connect。",
   "Partially granted. Some Health Connect read permissions are missing; disable and enable again to grant them.":
@@ -237,6 +240,32 @@ export const messages: Record<string, string> = {
   "Off on this device. To revoke access entirely, remove Fit Trace from the Health Connect system settings.":
     "已在此设备上关闭。如需彻底撤销访问，请在系统 Health Connect 设置中移除 Fit Trace。",
   "Health Connect error: {message}": "Health Connect 错误：{message}",
+
+  /* ── Health page: sleep import, manual entry, history ───────── */
+  "Wake-up date": "醒来日期",
+  "The night between the previous evening 20:00 and this date's 12:00.":
+    "指前一晚 20:00 到当天 12:00 之间的那一夜。",
+  "Import the night behind the wake-up date, or type the hours yourself.":
+    "导入醒来日期对应的一晚睡眠，或手动输入时长。",
+  "Add sleep manually": "手动补录睡眠",
+  "No Health Connect? Record the night here; saving a workout for that date attaches it the same way.":
+    "没有 Health Connect？也可以在这里记录；保存该日期的训练时会以同样方式自动挂接。",
+  "Save sleep entry": "保存睡眠记录",
+  "Saved {hours} h of sleep for {date}.": "已保存 {date} 的 {hours} 小时睡眠。",
+  "Enter the sleep hours as a number between 0 and 24.": "请输入 0 到 24 之间的睡眠小时数。",
+  "Sleep history": "睡眠历史",
+  "No sleep recorded yet. Import a night or add one manually.":
+    "还没有睡眠记录。可以导入一晚，或手动补录。",
+  Manual: "手动",
+  "Recorded {when}": "记录于 {when}",
+  Delete: "删除",
+  "Sleep entry for {date} deleted.": "已删除 {date} 的睡眠记录。",
+  "Could not update the sleep history: {message}": "无法更新睡眠历史：{message}",
+
+  /* ── Me: Health entry row ───────────────────────────────────── */
+  "Sleep import, connection status, and history live on their own page.":
+    "睡眠导入、连接状态与历史已移至独立页面。",
+  "Open Health": "打开健康",
 
   /*
    * Proper names. The identity values are intentional: language endonyms are

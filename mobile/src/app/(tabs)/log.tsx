@@ -20,7 +20,7 @@ import type {
   SessionDraft,
   SessionState,
 } from "@agent-fit-trace/workout-session";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   AppState,
@@ -39,18 +39,13 @@ import { useFocusEffect } from "expo-router";
 import { useAuth } from "@/auth";
 import { useWorkoutData } from "@/data/provider";
 import { LOCAL_GUEST_OWNER_ID } from "@/data/sessionDraftSchema";
-import { getHealthConnectProvider } from "@/health/healthConnect";
-import {
-  sleepImportMatchesDraft,
-  type HealthImportUnavailableReason,
-  type SleepImportResult,
-} from "@/health/healthModel";
+import { readSleepEntries, resolveAttachableSleep, type SleepEntry } from "@/health/sleepStore";
 import { useI18n } from "@/i18n";
-import { readHealthConnectEnabled } from "@/preferences/deviceHealth";
 import { SPACING } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
   Banner,
+  DateField,
   Kicker,
   Body,
   Button,
@@ -74,9 +69,14 @@ import { useRestCue, vibrateRestEnded, vibrateSetChecked } from "@/workout/liveF
  *
  * Save policy is unchanged: the draft is built and validated with the shared
  * core bridge before any write, suspicious-but-valid input requires an explicit
- * "Save anyway", and the local SQLite repository derives the content id. Success
- * keeps the banner on this screen; History refreshes on focus when the user
- * switches tabs. A failed save retains the form for retry.
+ * "Save anyway", and the local SQLite repository derives the content id. One
+ * addition (issue #50 redesign): the save flow starts by auto-attaching the
+ * recorded night's sleep from the device-local sleep store — through the same
+ * draft-edit path as a keystroke, and only into an empty sleep field. The date
+ * is chosen with the native picker (default today); sleep itself is imported
+ * or recorded on the Health page, not here. Success keeps the banner on this
+ * screen; History refreshes on focus when the user switches tabs. A failed
+ * save retains the form for retry.
  *
  * The unfinished draft is owner-scoped in SQLite (one row per signed-in account,
  * or the local guest identity). It is loaded before edits are enabled and
@@ -87,7 +87,7 @@ const copy = {
   title: "Log a session",
   lede: "Capture sets, reps, load, and how the session felt while it is still fresh.",
   date: "Date",
-  dateHint: "Date format: YYYY-MM-DD",
+  datePickHint: "Tap to choose the date.",
   sessionType: "Session type",
   exercises: "Exercises",
   exercise: "Exercise {index}",
@@ -108,22 +108,6 @@ const copy = {
   addExercise: "Add exercise",
   removeExercise: "Remove exercise",
   duration: "Duration (minutes)",
-  sleep: "Sleep (hours)",
-  sleepImport: "Import sleep from Health Connect",
-  sleepImporting: "Reading Health Connect…",
-  sleepImportOk: "Imported {hours} h of sleep from Health Connect.",
-  sleepImportNoData: "No sleep was recorded in Health Connect for that night.",
-  sleepImportNoPermission:
-    "Fit Trace has no Health Connect sleep access. Enable Health Connect under Me → Health Connect and grant the read permissions.",
-  sleepImportPlatform: "Health Connect is only available on Android devices.",
-  sleepImportNotFound: "Health Connect is not available on this device.",
-  sleepImportNeedsInstall:
-    "Health Connect is not installed. Install it from the Google Play Store first — see Me → Health Connect.",
-  sleepImportNeedsUpdate:
-    "Health Connect needs an update from the Google Play Store first — see Me → Health Connect.",
-  sleepImportPartial:
-    "Only some Health Connect read permissions were granted. Enable Health Connect under Me → Health Connect to grant the missing ones.",
-  sleepImportError: "Could not import sleep: {message}",
   notes: "Notes (optional)",
   pain: "Pain (optional)",
   painArea: "Pain {index} area",
@@ -219,30 +203,6 @@ function describeError(cause: unknown): string {
 function messageOf(cause: unknown): string {
   const message = describeError(cause).trim();
   return message === "" ? "Unknown error." : message;
-}
-
-/**
- * Copy for a failed sleep import. `ok` (the field is filled) and `error` (the
- * dynamic message) are handled by the caller.
- */
-function sleepImportCopyKey(
-  result: Exclude<SleepImportResult, { kind: "ok" } | { kind: "error" }>,
-): string {
-  switch (result.kind) {
-    case "no-data":
-      return copy.sleepImportNoData;
-    case "no-permission":
-      return copy.sleepImportNoPermission;
-    case "partial-permission":
-      return copy.sleepImportPartial;
-    case "unavailable":
-      return {
-        platform: copy.sleepImportPlatform,
-        "not-found": copy.sleepImportNotFound,
-        "needs-install": copy.sleepImportNeedsInstall,
-        "needs-update": copy.sleepImportNeedsUpdate,
-      }[result.reason];
-  }
 }
 
 /**
@@ -378,17 +338,12 @@ export default function LogScreen() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [success, setSuccess] = useState<SaveSuccess | null>(null);
 
-  // Health Connect sleep import. The device-local toggle and the runtime
-  // availability are re-read on every tab focus (the toggle lives on the Me
-  // tab, which stays mounted next to this one); the button only exists when
-  // both agree (opt-in on Android with Health Connect ready).
-  const healthProvider = useMemo(() => getHealthConnectProvider(), []);
-  const [healthImportReady, setHealthImportReady] = useState(false);
-  const [sleepImporting, setSleepImporting] = useState(false);
-  const [sleepImportNotice, setSleepImportNotice] = useState<{
-    tone: "info" | "warn" | "danger";
-    message: string;
-  } | null>(null);
+  // Recorded sleep nights, re-read from the device-local sleep store on every
+  // tab focus (the Health page owns imports/deletes and tabs stay mounted, so
+  // a mount-time snapshot would go stale). This snapshot feeds only the
+  // save-time auto-attach decision; the read never rejects (failures read as
+  // empty) so it cannot block a save.
+  const [sleepNights, setSleepNights] = useState<SleepEntry[]>([]);
 
   // Draft lifecycle state. `hydratedOwner` is the identity whose row was last
   // read; autosave only runs while it matches the current owner.
@@ -729,93 +684,6 @@ export default function LogScreen() {
     [language, t],
   );
 
-  /**
-   * Re-read Health Connect readiness: the device-local opt-in plus a
-   * supported runtime. Both reads fail soft; a failure keeps the button off.
-   * The toggle lives on the Me tab and tabs stay mounted, so a mount-time
-   * snapshot would keep a disabled import alive for the whole session —
-   * instead, focus re-reads it (both reads are lightweight and never need an
-   * initialized client; getSdkStatus is safe before initialize()).
-   */
-  const refreshHealthImportReady = useCallback((): Promise<boolean> => {
-    return Promise.all([readHealthConnectEnabled(), healthProvider.availability()]).then(
-      ([enabled, availability]) => enabled && availability.kind === "supported",
-    );
-  }, [healthProvider]);
-
-  // Focus re-reads the readiness; a toggle turned off mid-session also clears
-  // any leftover import notice, so nothing about the import survives a
-  // disabled state. useFocusEffect fires on the first focus too, so this
-  // covers the mount-time read as well. A stale read (the toggle flipping
-  // while one is in flight) loses to the newer focus via `cancelled`.
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      void refreshHealthImportReady().then((ready) => {
-        if (cancelled) return;
-        setHealthImportReady(ready);
-        if (!ready) setSleepImportNotice(null);
-      });
-      return () => {
-        cancelled = true;
-      };
-    }, [refreshHealthImportReady]),
-  );
-
-  /**
-   * Import the night's sleep for the draft date. Success fills `sleepHours`
-   * directly; every failure kind surfaces its own message. The notice survives
-   * the field edit so the user can see what was filled and from where.
-   *
-   * The draft snapshot (date + revision) is captured before the await and the
-   * result is only applied while both are unchanged: the date field is
-   * editable and the draft can be cleared (or another owner's draft loaded)
-   * while the native read is in flight, so a late result for a draft the user
-   * no longer holds is discarded instead of filling the wrong date's field or
-   * resurrecting a cleared draft. The staleness rule itself is the pure
-   * `sleepImportMatchesDraft` in the health model.
-   */
-  async function handleImportSleep(): Promise<void> {
-    if (sleepImporting) return;
-    setSleepImporting(true);
-    setSleepImportNotice(null);
-    const captured = { date: draft.date, revision: draftRevisionRef.current };
-    try {
-      const result = await healthProvider.sleepHoursForDate(captured.date);
-      if (
-        !sleepImportMatchesDraft(captured, {
-          date: draftRef.current.date,
-          revision: draftRevisionRef.current,
-        })
-      ) {
-        return;
-      }
-      if (result.kind === "ok") {
-        edit({ type: "setSleepHours", value: result.hoursText });
-        setSleepImportNotice({
-          tone: "info",
-          message: t(copy.sleepImportOk, { hours: result.hoursText }),
-        });
-        return;
-      }
-      if (result.kind === "error") {
-        setSleepImportNotice({
-          tone: "danger",
-          message: t(copy.sleepImportError, { message: result.message }),
-        });
-        return;
-      }
-      setSleepImportNotice({ tone: "warn", message: t(sleepImportCopyKey(result)) });
-    } catch (cause) {
-      setSleepImportNotice({
-        tone: "danger",
-        message: t(copy.sleepImportError, { message: messageOf(cause) }),
-      });
-    } finally {
-      setSleepImporting(false);
-    }
-  }
-
   // The captured record is only valid while the form still builds the same
   // content at the same instant. Deriving staleness means no edit handler can
   // forget to invalidate a pending confirmation.
@@ -882,6 +750,42 @@ export default function LogScreen() {
     }
   }
 
+  // Focus re-reads the sleep-night snapshot; useFocusEffect fires on the
+  // first focus too, so this covers the mount-time read as well. A stale read
+  // (the store changing while one is in flight) loses to the newer focus via
+  // `cancelled`.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void readSleepEntries().then((stored) => {
+        if (cancelled) return;
+        setSleepNights(stored);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
+
+  /**
+   * Auto-attach the recorded night's sleep at the start of the save flow
+   * (issue #50 redesign). When the draft's sleep field is empty and the sleep
+   * store holds a night for the draft date, the value is written through the
+   * same `edit()` path a keystroke uses — never by mutating the built
+   * candidate — so autosave, pending-warning staleness and the persisted
+   * draft all see exactly what a manual entry would have produced. The
+   * shared reducer is pure, so applying the same action to the current state
+   * yields the draft the editor is about to render.
+   */
+  function attachSleepForDraft(): SessionDraft {
+    if (draft.sleepHours.trim() !== "") return draft;
+    const night = resolveAttachableSleep(draft.date, sleepNights);
+    if (night === undefined) return draft;
+    const action = { type: "setSleepHours", value: night.hoursText } as const;
+    edit(action);
+    return reduceSessionState(state, action).draft;
+  }
+
   function handleSubmit(): void {
     if (saving || repository === null || draftProtectedRef.current) return;
 
@@ -892,10 +796,14 @@ export default function LogScreen() {
     setSuccess(null);
 
     const nowMs = Date.now();
+    // Auto-attach first, then build and validate the draft the user actually
+    // sees (the attached value went through `edit()`, so the render state and
+    // the revision below are already the attached ones).
+    const effectiveDraft = attachSleepForDraft();
     // Build before validation: the repository derives the content id from the
     // submitted content, matching the web editor's pre-normalization build.
-    const candidate = buildWorkoutRecord(draft, nowMs);
-    const validated = validateSessionDraft(draft, nowMs);
+    const candidate = buildWorkoutRecord(effectiveDraft, nowMs);
+    const validated = validateSessionDraft(effectiveDraft, nowMs);
 
     if (!validated.ok) {
       setIssues(validated.issues);
@@ -907,14 +815,14 @@ export default function LogScreen() {
       setPendingSave({
         record: candidate,
         nowMs,
-        draft,
+        draft: effectiveDraft,
         ownerId,
         draftRevision: draftRevisionRef.current,
       });
       return;
     }
 
-    void persist(candidate, draft, ownerId, draftRevisionRef.current);
+    void persist(candidate, effectiveDraft, ownerId, draftRevisionRef.current);
   }
 
   function handleConfirmSave(): void {
@@ -1209,12 +1117,11 @@ export default function LogScreen() {
           ) : null}
         </Card>
 
-        <Field
-          autoCapitalize="none"
-          autoCorrect={false}
-          hint={t(copy.dateHint)}
+        <DateField
+          accessibilityLabel={t(copy.date)}
+          hint={t(copy.datePickHint)}
           label={t(copy.date)}
-          onChangeText={(value) => edit({ type: "setDate", date: value })}
+          onConfirm={(isoDate) => edit({ type: "setDate", date: isoDate })}
           testID="log-date"
           value={draft.date}
         />
@@ -1455,36 +1362,9 @@ export default function LogScreen() {
           />
         ) : null}
 
-        <Field
-          keyboardType="decimal-pad"
-          label={t(copy.sleep)}
-          onChangeText={(value) => edit({ type: "setSleepHours", value })}
-          testID="log-sleep-hours"
-          value={draft.sleepHours}
-        />
-
-        {/* Sleep import: only rendered for an explicit device-local opt-in on
-            a device where Health Connect is supported. */}
-        {healthImportReady ? (
-          <>
-            <Button
-              disabled={sleepImporting}
-              label={sleepImporting ? t(copy.sleepImporting) : t(copy.sleepImport)}
-              onPress={() => {
-                void handleImportSleep();
-              }}
-              testID="log-sleep-import"
-              variant="secondary"
-            />
-            {sleepImportNotice !== null ? (
-              <Banner
-                message={sleepImportNotice.message}
-                testID="log-sleep-import-notice"
-                tone={sleepImportNotice.tone}
-              />
-            ) : null}
-          </>
-        ) : null}
+        {/* Sleep is no longer entered here: the Health page imports or records
+            it, and the save flow above attaches the recorded night for the
+            draft date through the same edit path. */}
 
         <Field
           inputStyle={styles.notesInput}
