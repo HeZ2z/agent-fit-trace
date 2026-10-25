@@ -172,8 +172,11 @@ curl -s -X POST -H "Authorization: Bearer fit-trace-local-daemon" \
   -d @fixtures/valid-strength.json \
   http://127.0.0.1:5199/api/v1/workouts > /dev/null
 npx @modelcontextprotocol/inspector --cli node "$PWD/packages/fit-trace-mcp/src/main.ts" \
+  -e FIT_TRACE_DATA_DIR=/tmp/fit-trace-shared \
   --method tools/call --tool-name analyze_progress
-# The default-resolution startup line on stderr names the same
+# The inspector does not inherit shell environment variables, so the data dir
+# must be passed to the MCP child process with `-e` (as above). The
+# default-resolution startup line on stderr then names the same
 # /tmp/fit-trace-shared/guest.db the daemon wrote, and the analysis counts
 # the record the daemon imported.
 ```

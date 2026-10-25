@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -111,6 +111,57 @@ test("normal mode without PI_FIT_TRACE_STORE opens the shared guest db under FIT
         } finally {
           check.close();
         }
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed store open is not cached: the next tool call retries once the env is fixed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-pi-retry-"));
+  try {
+    // A plain file where a directory component should be: opening a store
+    // under `<blocker>/data` fails with ENOTDIR (mkdir/readFile through a file).
+    const blocker = join(dir, "blocker");
+    await writeFile(blocker, "");
+    const record = await loadFixture<Record<string, unknown>>("valid-strength.json");
+
+    // The store singleton lives in the closure built by each fitTraceExtension
+    // call, so one harness covers both attempts of the same extension instance.
+    const tools = createHarness();
+
+    await withEnv(
+      {
+        PI_FIT_TRACE_STORE: undefined,
+        PI_FIT_TRACE_COACHED: undefined,
+        FIT_TRACE_PRINCIPAL: undefined,
+        FIT_TRACE_DATA_DIR: join(blocker, "data"),
+      },
+      async () => {
+        await assert.rejects(
+          () =>
+            tools.get("import_workout")!.execute("call", { record }, undefined, undefined, ctx),
+          /ENOTDIR/,
+        );
+      },
+    );
+
+    // With the data dir repaired, the same harness must succeed: the rejected
+    // storePromise was forgotten instead of being replayed forever.
+    await withEnv(
+      {
+        PI_FIT_TRACE_STORE: undefined,
+        PI_FIT_TRACE_COACHED: undefined,
+        FIT_TRACE_PRINCIPAL: undefined,
+        FIT_TRACE_DATA_DIR: join(dir, "data"),
+      },
+      async () => {
+        const imported = await tools
+          .get("import_workout")!
+          .execute("call", { record }, undefined, undefined, ctx);
+        assert.equal(imported.details.accepted, true);
+        assert.equal(imported.details.duplicate, false);
       },
     );
   } finally {
