@@ -823,9 +823,18 @@ export default function LogScreen() {
    * store the old night's sleep, and there is no input path to correct a
    * wrong-night value — so clearing it is the only safe behavior, regardless
    * of where it came from. Saving for the same date without a date change
-   * does not pass through here and is unaffected.
+   * does not pass through here and is unaffected. Android date pickers fire
+   * their confirm callback even when the picked date is unchanged, and a
+   * restored draft has no attached-date reference at all — so an unchanged
+   * date must return before any clearing, or confirming the picker as-is
+   * would wipe a pre-redesign sleep value that no Health page entry can
+   * restore.
    */
   function handleDateConfirm(isoDate: string): void {
+    // Same-date confirm (Android fires onConfirm even without a change):
+    // no side effects at all, so a restored draft's pre-redesign sleepHours
+    // survives.
+    if (isoDate === draft.date) return;
     if (sleepAttachedDateRef.current !== isoDate && draft.sleepHours.trim() !== "") {
       sleepAttachedDateRef.current = null;
       edit({ type: "setSleepHours", value: "" });
