@@ -1,0 +1,291 @@
+import AsyncStorageModule from "@react-native-async-storage/async-storage";
+
+import { isIsoDate } from "./healthModel.ts";
+
+/**
+ * Device-local sleep history (issue #50 redesign).
+ *
+ * One versioned AsyncStorage key holds the nights this app recorded — from the
+ * Health page's Health Connect import or from a manual entry. The Log screen
+ * reads a snapshot of it and, when saving a workout whose draft has no sleep
+ * hours, attaches the recorded night through the same draft-edit path a
+ * keystroke uses (`resolveAttachableSleep` is the pure attach decision).
+ *
+ * Like the Health Connect opt-in (`deviceHealth.ts`), the data is a per-device
+ * record that must never be mirrored, restored or synced across devices, so it
+ * lives in AsyncStorage, not in the account-preferences layer. The storage
+ * pattern follows `deviceHealth.ts`: one versioned key over a memory-first
+ * store — reads prefer the cached value, and a write applies the memory value
+ * first, so a failed persistence rolls back and rethrows instead of leaving
+ * the UI showing a state storage never received. The pure rules (validation,
+ * dedupe, sort, attach decision, manual-hours parsing) sit above the shell so
+ * the root `node:test` suite can load them through Node's type stripping.
+ */
+
+/** Where one stored night came from. */
+export type SleepSource = "health-connect" | "manual";
+
+/** One recorded night, keyed by its wake-up date. */
+export interface SleepEntry {
+  /**
+   * Wake-up date "YYYY-MM-DD" — the D of the night window [D-1 20:00, D 12:00]
+   * the sleep was read from.
+   */
+  date: string;
+  /** Sleep hours rounded to one decimal; 0 < hours <= 24 (the core domain limit). */
+  hours: number;
+  /** One-decimal rendering of `hours`, ready for the Log draft's `sleepHours`. */
+  hoursText: string;
+  /** Health Connect sessions summed into this night (0 for a manual entry). */
+  sessionCount: number;
+  /** ISO timestamp of the write that stored this entry. */
+  importedAt: string;
+  source: SleepSource;
+}
+
+/** Versioned key so a future migration can coexist with v1. */
+export const SLEEP_STORAGE_KEY = "agent-fit-trace.health.sleep.v1";
+
+/** The stored sources, mirrored as a plain list for strict parsing. */
+const SLEEP_SOURCES: readonly SleepSource[] = ["health-connect", "manual"];
+
+/** One-decimal hours string, e.g. 7.5166… → "7.5". */
+export function formatSleepHoursText(hours: number): string {
+  return (Math.round(hours * 10) / 10).toFixed(1);
+}
+
+/** Result of parsing one manual sleep-hours input. */
+export type ManualSleepHoursParse =
+  | { ok: true; hours: number; hoursText: string }
+  | { ok: false };
+
+/**
+ * Parse a manual sleep-hours input strictly: a finite number in (0, 24] (the
+ * core domain limit), rounded to one decimal. Blank, unparsable, out-of-bounds
+ * and round-to-zero inputs fail; everything else yields the canonical
+ * `hours`/`hoursText` pair.
+ */
+export function parseManualSleepHours(text: string): ManualSleepHoursParse {
+  const trimmed = text.trim();
+  if (trimmed === "") return { ok: false };
+  const hours = Number(trimmed);
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 24) return { ok: false };
+  const rounded = Math.round(hours * 10) / 10;
+  if (rounded <= 0) return { ok: false };
+  return { ok: true, hours: rounded, hoursText: formatSleepHoursText(rounded) };
+}
+
+/**
+ * Validate one parsed entry and fail loudly, naming the entry index — the
+ * stored history is re-validated on every read, so a malformed entry is a
+ * corrupt store, never silently dropped data.
+ */
+function parseSleepEntry(candidate: unknown, index: number): SleepEntry {
+  const where = `sleep store entry ${index}`;
+  if (typeof candidate !== "object" || candidate === null) {
+    throw new Error(`Corrupt ${where}: expected an object`);
+  }
+  const entry = candidate as Record<string, unknown>;
+  const date = entry.date;
+  if (typeof date !== "string" || !isIsoDate(date)) {
+    throw new Error(`Corrupt ${where}: date is not a valid YYYY-MM-DD string`);
+  }
+  const hours = entry.hours;
+  if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours > 24) {
+    throw new Error(`Corrupt ${where}: hours must be a number in (0, 24]`);
+  }
+  const hoursText = entry.hoursText;
+  if (typeof hoursText !== "string" || hoursText !== formatSleepHoursText(hours)) {
+    throw new Error(`Corrupt ${where}: hoursText must be the one-decimal form of hours`);
+  }
+  const sessionCount = entry.sessionCount;
+  if (
+    typeof sessionCount !== "number" ||
+    !Number.isInteger(sessionCount) ||
+    sessionCount < 0
+  ) {
+    throw new Error(`Corrupt ${where}: sessionCount must be a non-negative integer`);
+  }
+  const importedAt = entry.importedAt;
+  if (typeof importedAt !== "string" || Number.isNaN(Date.parse(importedAt))) {
+    throw new Error(`Corrupt ${where}: importedAt must be an ISO timestamp string`);
+  }
+  const source = entry.source;
+  if (source !== "health-connect" && source !== "manual") {
+    throw new Error(`Corrupt ${where}: source must be "health-connect" or "manual"`);
+  }
+  return {
+    date,
+    hours,
+    hoursText,
+    sessionCount,
+    importedAt,
+    source,
+  };
+}
+
+/**
+ * Strict parse of the stored payload: a missing value is an empty history;
+ * anything present but malformed throws instead of losing data silently.
+ */
+export function parseSleepStore(raw: string | null | undefined): SleepEntry[] {
+  if (raw === null || raw === undefined) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Corrupt sleep store: payload is not valid JSON");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("Corrupt sleep store: expected an array of entries");
+  }
+  return parsed.map((candidate, index) => parseSleepEntry(candidate, index));
+}
+
+/** Canonical serialized form of the history. */
+export function serializeSleepStore(entries: readonly SleepEntry[]): string {
+  return JSON.stringify(entries);
+}
+
+/**
+ * Insert or replace one night, deduped by wake-up date: re-importing (or
+ * manually re-saving) a night replaces the earlier entry for the same date,
+ * never appends a duplicate.
+ */
+export function upsertSleepEntry(
+  entries: readonly SleepEntry[],
+  entry: SleepEntry,
+): SleepEntry[] {
+  return [...entries.filter((existing) => existing.date !== entry.date), entry];
+}
+
+/** Remove the entry for one wake-up date (a no-op when the date is not stored). */
+export function removeSleepEntry(
+  entries: readonly SleepEntry[],
+  date: string,
+): SleepEntry[] {
+  return entries.filter((existing) => existing.date !== date);
+}
+
+/** The history newest night first; ISO dates sort lexicographically. */
+export function listSleepEntriesDesc(entries: readonly SleepEntry[]): SleepEntry[] {
+  return [...entries].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+}
+
+/**
+ * The attach decision behind the Log screen's auto-attach: the recorded night
+ * for `date`, or undefined when the date is invalid or no night was recorded.
+ * Whether the draft's own sleep field is empty is the caller's decision — the
+ * stored value only ever fills an empty field, never overrides a typed one.
+ */
+export function resolveAttachableSleep(
+  date: string,
+  entries: readonly SleepEntry[],
+): SleepEntry | undefined {
+  if (!isIsoDate(date)) return undefined;
+  return entries.find((entry) => entry.date === date);
+}
+
+/** The storage surface this module uses (same shape as `deviceHealth.ts`). */
+export interface SleepStorageLike {
+  getItem(key: string): Promise<string | null>;
+  setItem(key: string, value: string): Promise<void>;
+}
+
+/**
+ * Memory-first sleep store over one storage key. `read` prefers the cached
+ * value and only falls back to storage once (an unreadable store reads as
+ * empty and is not cached, so a later read retries). `upsert`/`remove` apply
+ * the memory value first and only then persist; a failed persistence rolls
+ * the memory value back and rethrows, so callers can surface the failure
+ * instead of the UI showing a state storage never received.
+ */
+export interface SleepStore {
+  read(): Promise<SleepEntry[]>;
+  upsert(entry: SleepEntry): Promise<SleepEntry[]>;
+  remove(date: string): Promise<SleepEntry[]>;
+}
+
+export function createSleepStore(storage: SleepStorageLike, key: string): SleepStore {
+  /** `null` until the first successful storage read populates the cache. */
+  let memoryEntries: SleepEntry[] | null = null;
+
+  /** The current history, hydrating the cache from storage on first touch. */
+  async function current(): Promise<SleepEntry[]> {
+    if (memoryEntries !== null) return memoryEntries;
+    try {
+      memoryEntries = parseSleepStore(await storage.getItem(key));
+    } catch {
+      // An unreadable or corrupt store reads as empty for the pending write;
+      // the write itself then replaces the payload with a valid one.
+      memoryEntries = [];
+    }
+    return memoryEntries;
+  }
+
+  /** Apply one transform memory-first, persisting with rollback on failure. */
+  async function apply(
+    transform: (entries: SleepEntry[]) => SleepEntry[],
+  ): Promise<SleepEntry[]> {
+    const previous = memoryEntries;
+    const next = transform(await current());
+    memoryEntries = next;
+    try {
+      await storage.setItem(key, serializeSleepStore(next));
+    } catch (cause) {
+      memoryEntries = previous;
+      throw cause;
+    }
+    return next;
+  }
+
+  return {
+    async read(): Promise<SleepEntry[]> {
+      if (memoryEntries !== null) return memoryEntries;
+      try {
+        const entries = parseSleepStore(await storage.getItem(key));
+        memoryEntries = entries;
+        return entries;
+      } catch {
+        // Unreadable storage reads as empty; the miss is not cached so a later
+        // read retries the storage instead of pinning the failure.
+        return [];
+      }
+    },
+    upsert(entry: SleepEntry): Promise<SleepEntry[]> {
+      return apply((entries) => upsertSleepEntry(entries, entry));
+    },
+    remove(date: string): Promise<SleepEntry[]> {
+      return apply((entries) => removeSleepEntry(entries, date));
+    },
+  };
+}
+
+/**
+ * The AsyncStorage instance, unwrapped once — same Metro/NodeNext interop shim
+ * as `deviceHealth.ts`.
+ */
+const AsyncStorage: SleepStorageLike = (() => {
+  const candidate = AsyncStorageModule as unknown as SleepStorageLike & {
+    default?: SleepStorageLike;
+  };
+  return candidate.default ?? candidate;
+})();
+
+/** The app-wide sleep store (one memory cache per launch). */
+const store = createSleepStore(AsyncStorage, SLEEP_STORAGE_KEY);
+
+/** Read the stored history (memory-first; a failed read reads as empty). */
+export function readSleepEntries(): Promise<SleepEntry[]> {
+  return store.read();
+}
+
+/** Insert or replace one night; resolves with the updated history. */
+export function saveSleepEntry(entry: SleepEntry): Promise<SleepEntry[]> {
+  return store.upsert(entry);
+}
+
+/** Delete the entry for one wake-up date; resolves with the updated history. */
+export function deleteSleepEntry(date: string): Promise<SleepEntry[]> {
+  return store.remove(date);
+}

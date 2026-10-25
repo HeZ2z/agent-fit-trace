@@ -47,7 +47,8 @@
             "minSdkVersion": 26
           }
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true,
