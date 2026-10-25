@@ -17,7 +17,11 @@ import { isIsoDate } from "./healthModel.ts";
  * pattern follows `deviceHealth.ts`: one versioned key over a memory-first
  * store — reads prefer the cached value, and a write applies the memory value
  * first, so a failed persistence rolls back and rethrows instead of leaving
- * the UI showing a state storage never received. The pure rules (validation,
+ * the UI showing a state storage never received. A failed read is never turned
+ * into an empty history: it propagates with a diagnostic message, and the
+ * write path refuses to persist before the existing history was actually read
+ * (a transient `getItem` failure plus one save must not delete the history).
+ * The pure rules (validation,
  * dedupe, sort, attach decision, manual-hours parsing) sit above the shell so
  * the root `node:test` suite can load them through Node's type stripping.
  */
@@ -32,7 +36,12 @@ export interface SleepEntry {
    * the sleep was read from.
    */
   date: string;
-  /** Sleep hours rounded to one decimal; 0 < hours <= 24 (the core domain limit). */
+  /**
+   * Sleep hours rounded to one decimal; 0 <= hours <= 24. 0.0 is a legal
+   * "fully awake" night (`aggregateSleepHours` can legitimately yield it when
+   * a night holds only awake stages), so both the write and the read side
+   * accept it — a read that rejected zero hours would hide the entry.
+   */
   hours: number;
   /** One-decimal rendering of `hours`, ready for the Log draft's `sleepHours`. */
   hoursText: string;
@@ -91,8 +100,8 @@ function parseSleepEntry(candidate: unknown, index: number): SleepEntry {
     throw new Error(`Corrupt ${where}: date is not a valid YYYY-MM-DD string`);
   }
   const hours = entry.hours;
-  if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours > 24) {
-    throw new Error(`Corrupt ${where}: hours must be a number in (0, 24]`);
+  if (typeof hours !== "number" || !Number.isFinite(hours) || hours < 0 || hours > 24) {
+    throw new Error(`Corrupt ${where}: hours must be a number in [0, 24]`);
   }
   const hoursText = entry.hoursText;
   if (typeof hoursText !== "string" || hoursText !== formatSleepHoursText(hours)) {
@@ -192,13 +201,24 @@ export interface SleepStorageLike {
   setItem(key: string, value: string): Promise<void>;
 }
 
+/** Message for a storage failure; never empty. */
+function storageErrorMessage(cause: unknown): string {
+  if (cause instanceof Error && cause.message.trim() !== "") return cause.message;
+  if (typeof cause === "string" && cause.trim() !== "") return cause;
+  return "unknown storage error";
+}
+
 /**
  * Memory-first sleep store over one storage key. `read` prefers the cached
- * value and only falls back to storage once (an unreadable store reads as
- * empty and is not cached, so a later read retries). `upsert`/`remove` apply
- * the memory value first and only then persist; a failed persistence rolls
- * the memory value back and rethrows, so callers can surface the failure
- * instead of the UI showing a state storage never received.
+ * value and only falls back to storage once. A failed read (storage error or
+ * corrupt payload) propagates with a diagnostic message instead of reading as
+ * an empty history — the write path reads through the same function, so it
+ * refuses to persist before the existing history was actually confirmed, and
+ * a transient read failure can never be followed by an overwriting save.
+ * `upsert`/`remove` apply the memory value first and only then persist; a
+ * failed persistence rolls the memory value back and rethrows, so callers can
+ * surface the failure instead of the UI showing a state storage never
+ * received.
  */
 export interface SleepStore {
   read(): Promise<SleepEntry[]>;
@@ -210,16 +230,21 @@ export function createSleepStore(storage: SleepStorageLike, key: string): SleepS
   /** `null` until the first successful storage read populates the cache. */
   let memoryEntries: SleepEntry[] | null = null;
 
-  /** The current history, hydrating the cache from storage on first touch. */
+  /**
+   * The current history, hydrating the cache from storage on first touch.
+   * Failures propagate (diagnostic storage error, or the strict parse's
+   * corrupt-store error naming the entry) and leave the cache untouched, so a
+   * later read retries instead of pinning the failure.
+   */
   async function current(): Promise<SleepEntry[]> {
     if (memoryEntries !== null) return memoryEntries;
+    let raw: string | null;
     try {
-      memoryEntries = parseSleepStore(await storage.getItem(key));
-    } catch {
-      // An unreadable or corrupt store reads as empty for the pending write;
-      // the write itself then replaces the payload with a valid one.
-      memoryEntries = [];
+      raw = await storage.getItem(key);
+    } catch (cause) {
+      throw new Error(`Could not read the sleep store: ${storageErrorMessage(cause)}`);
     }
+    memoryEntries = parseSleepStore(raw);
     return memoryEntries;
   }
 
@@ -240,17 +265,8 @@ export function createSleepStore(storage: SleepStorageLike, key: string): SleepS
   }
 
   return {
-    async read(): Promise<SleepEntry[]> {
-      if (memoryEntries !== null) return memoryEntries;
-      try {
-        const entries = parseSleepStore(await storage.getItem(key));
-        memoryEntries = entries;
-        return entries;
-      } catch {
-        // Unreadable storage reads as empty; the miss is not cached so a later
-        // read retries the storage instead of pinning the failure.
-        return [];
-      }
+    read(): Promise<SleepEntry[]> {
+      return current();
     },
     upsert(entry: SleepEntry): Promise<SleepEntry[]> {
       return apply((entries) => upsertSleepEntry(entries, entry));
@@ -275,7 +291,7 @@ const AsyncStorage: SleepStorageLike = (() => {
 /** The app-wide sleep store (one memory cache per launch). */
 const store = createSleepStore(AsyncStorage, SLEEP_STORAGE_KEY);
 
-/** Read the stored history (memory-first; a failed read reads as empty). */
+/** Read the stored history (memory-first; a failed read rejects — surface it). */
 export function readSleepEntries(): Promise<SleepEntry[]> {
   return store.read();
 }

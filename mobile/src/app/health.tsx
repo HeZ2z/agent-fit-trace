@@ -111,6 +111,9 @@ const copy = {
   entryDelete: "Delete",
   entryDeleted: "Sleep entry for {date} deleted.",
   sleepStoreError: "Could not update the sleep history: {message}",
+  sleepStoreReadError: "Could not read the sleep history: {message}",
+  importSuperseded:
+    "That night's sleep changed while the import was running; the imported value was discarded to keep your newer entry.",
 };
 
 /** Status-line copy per resolved key; keys come from the pure status model. */
@@ -270,21 +273,34 @@ export default function HealthScreen() {
   // Sleep history. `null` until the first read lands, so the empty-state copy
   // never flashes before the store answered.
   const [entries, setEntries] = useState<SleepEntry[] | null>(null);
+  const [historyNotice, setHistoryNotice] = useState<Notice | null>(null);
 
   // Re-read the history on every focus: only this screen writes the store,
   // and this keeps imports and deletes visible after a round trip through
-  // another screen without reloading the Health Connect hydration above.
+  // another screen without reloading the Health Connect hydration above. A
+  // failed read is surfaced as a notice, never turned into an empty history —
+  // the store's own writes refuse to run against a history they could not
+  // read (issue #50).
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      void readSleepEntries().then((stored) => {
-        if (cancelled) return;
-        setEntries(stored);
-      });
+      void readSleepEntries().then(
+        (stored) => {
+          if (cancelled) return;
+          setEntries(stored);
+        },
+        (cause: unknown) => {
+          if (cancelled) return;
+          setHistoryNotice({
+            tone: "danger",
+            message: t(copy.sleepStoreReadError, { message: sleepStoreErrorMessage(cause) }),
+          });
+        },
+      );
       return () => {
         cancelled = true;
       };
-    }, []),
+    }, [t]),
   );
 
   // The wake-up date defaults to today: the D of the night window
@@ -297,13 +313,22 @@ export default function HealthScreen() {
   // Manual entry state (works without Health Connect).
   const [manualHoursText, setManualHoursText] = useState("");
   const [manualNotice, setManualNotice] = useState<Notice | null>(null);
-  const [historyNotice, setHistoryNotice] = useState<Notice | null>(null);
 
   /**
    * Import the chosen night from Health Connect and store it. Every outcome —
    * including the common "Health Connect is empty" case — gets its own honest
    * message; only an `ok` result writes a sleep entry (replace-on-reimport by
    * wake-up date).
+   *
+   * The write is guarded by a per-night optimistic lock (issue #50): manual
+   * saves and deletes stay available while an import runs (disabling the whole
+   * page for a slow Health Connect read would cost more usability than the
+   * rare race), so the import captures the night's version token — its
+   * `importedAt`, or the absence of an entry — at the start and re-checks it
+   * against a fresh read just before the write. A mismatch means the user
+   * saved, re-recorded or deleted that night meanwhile, and the late import
+   * result is discarded with a notice instead of overwriting the newer entry
+   * or resurrecting a deleted one.
    */
   async function handleImportSleep(): Promise<void> {
     if (importing || !importReady) return;
@@ -311,8 +336,18 @@ export default function HealthScreen() {
     setImportNotice(null);
     const capturedDate = wakeDate;
     try {
+      const snapshot = entries ?? (await readSleepEntries());
+      const baselineToken =
+        snapshot.find((night) => night.date === capturedDate)?.importedAt ?? null;
       const result = await healthProvider.sleepHoursForDate(capturedDate);
       if (result.kind === "ok") {
+        const current = await readSleepEntries();
+        const currentToken =
+          current.find((night) => night.date === capturedDate)?.importedAt ?? null;
+        if (currentToken !== baselineToken) {
+          setImportNotice({ tone: "warn", message: t(copy.importSuperseded) });
+          return;
+        }
         const stored = await saveSleepEntry({
           date: capturedDate,
           hours: Number(result.hoursText),

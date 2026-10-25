@@ -341,8 +341,8 @@ export default function LogScreen() {
   // Recorded sleep nights, re-read from the device-local sleep store on every
   // tab focus (the Health page owns imports/deletes and tabs stay mounted, so
   // a mount-time snapshot would go stale). This snapshot feeds only the
-  // save-time auto-attach decision; the read never rejects (failures read as
-  // empty) so it cannot block a save.
+  // save-time auto-attach decision; a failed read keeps the previous snapshot
+  // (the attach is best-effort and must never block a save).
   const [sleepNights, setSleepNights] = useState<SleepEntry[]>([]);
 
   // Draft lifecycle state. `hydratedOwner` is the identity whose row was last
@@ -379,6 +379,14 @@ export default function LogScreen() {
   // Bumped by every edit that can change the persisted draft, so a save that
   // resolves late can tell whether the editor still shows the submitted draft.
   const draftRevisionRef = useRef(0);
+  // The wake-up date the current `sleepHours` value was auto-attached for, or
+  // null when the field was not filled by the save-time auto-attach. The Log
+  // screen has no sleep field of its own, so a value this ref knows about is
+  // always machine-attached and safe to clear when the date moves to another
+  // night (issue #50: a failed save attempt fills the field; without this the
+  // next save would silently store the old night's sleep under the new date,
+  // with no field to correct it).
+  const sleepAttachedDateRef = useRef<string | null>(null);
   // Late autosave completions must not set state after the screen unmounts.
   const mountedRef = useRef(true);
   // Writes are chained so a burst of autosaves cannot interleave in the store.
@@ -524,6 +532,7 @@ export default function LogScreen() {
     autosaveEnabledRef.current = true;
     persistedBaselineRef.current = blank.draft;
     draftRevisionRef.current += 1;
+    sleepAttachedDateRef.current = null;
     setHydratedOwner(null);
     setAutosaveEnabled(true);
     setState(blank);
@@ -548,6 +557,7 @@ export default function LogScreen() {
         persistedBaselineRef.current = failedBlank.draft;
         autosaveEnabledRef.current = false;
         draftProtectedRef.current = true;
+        sleepAttachedDateRef.current = null;
         setAutosaveEnabled(false);
         setState(failedBlank);
         // Either failure keeps the stored row protected; the only way out is an
@@ -710,11 +720,15 @@ export default function LogScreen() {
       setSuccess(result.created ? "created" : "duplicate");
       // Clear the saved draft only when this editor still shows the submitted
       // session for the same owner. Edits during the write (or an owner switch)
-      // leave the newer draft in storage so it can be resumed.
+      // leave the newer draft in storage so it can be resumed. The match is by
+      // revision plus content, not object identity: the save-time auto-attach
+      // submits the reducer-computed draft, which is structurally identical to
+      // the one React is about to render but a distinct object — an identity
+      // check would never clear the draft after an auto-attached save.
       const stillCurrent =
         ownerIdRef.current === submittedOwner &&
-        draftRef.current === submittedDraft &&
-        draftRevisionRef.current === submittedRevision;
+        draftRevisionRef.current === submittedRevision &&
+        stableStringify(draftRef.current) === stableStringify(submittedDraft);
       if (stillCurrent) {
         const blank = blankSessionState();
         // Block debounce/flush writes before resetting and clearing, so a timer
@@ -724,6 +738,8 @@ export default function LogScreen() {
         setAutosaveEnabled(false);
         persistedBaselineRef.current = blank.draft;
         autosaveFailedRef.current = false;
+        // The submitted session is gone; a machine-attached sleep goes with it.
+        sleepAttachedDateRef.current = null;
         setState(blank);
         setRestoredNotice(null);
         setDiscardedNotice(false);
@@ -753,14 +769,20 @@ export default function LogScreen() {
   // Focus re-reads the sleep-night snapshot; useFocusEffect fires on the
   // first focus too, so this covers the mount-time read as well. A stale read
   // (the store changing while one is in flight) loses to the newer focus via
-  // `cancelled`.
+  // `cancelled`. A failed read keeps the previous snapshot: auto-attach is a
+  // best-effort convenience fed by the Health page's store, and a transient
+  // storage failure must never block a save (the store itself now refuses to
+  // write over a history it could not read).
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      void readSleepEntries().then((stored) => {
-        if (cancelled) return;
-        setSleepNights(stored);
-      });
+      void readSleepEntries().then(
+        (stored) => {
+          if (cancelled) return;
+          setSleepNights(stored);
+        },
+        () => undefined,
+      );
       return () => {
         cancelled = true;
       };
@@ -775,7 +797,10 @@ export default function LogScreen() {
    * candidate — so autosave, pending-warning staleness and the persisted
    * draft all see exactly what a manual entry would have produced. The
    * shared reducer is pure, so applying the same action to the current state
-   * yields the draft the editor is about to render.
+   * yields a draft structurally identical to the one the editor is about to
+   * render (a distinct object — `persist` matches by revision plus content,
+   * not identity). The attached night's date is remembered so a later date
+   * change can clear the machine-attached value.
    */
   function attachSleepForDraft(): SessionDraft {
     if (draft.sleepHours.trim() !== "") return draft;
@@ -783,7 +808,26 @@ export default function LogScreen() {
     if (night === undefined) return draft;
     const action = { type: "setSleepHours", value: night.hoursText } as const;
     edit(action);
+    sleepAttachedDateRef.current = draft.date;
     return reduceSessionState(state, action).draft;
+  }
+
+  /**
+   * Date changes invalidate an auto-attached sleep (issue #50): the value was
+   * recorded for the previous wake-up date, and the next save would otherwise
+   * skip the attach (the field is no longer empty) and silently store the old
+   * night's sleep under the new date. Only machine-attached values are
+   * cleared — a restored draft's own sleep value (never attached here, the
+   * ref is null for it) survives date edits untouched.
+   */
+  function handleDateConfirm(isoDate: string): void {
+    if (sleepAttachedDateRef.current !== null && isoDate !== sleepAttachedDateRef.current) {
+      sleepAttachedDateRef.current = null;
+      if (draft.sleepHours.trim() !== "") {
+        edit({ type: "setSleepHours", value: "" });
+      }
+    }
+    edit({ type: "setDate", date: isoDate });
   }
 
   function handleSubmit(): void {
@@ -941,6 +985,7 @@ export default function LogScreen() {
     autosaveBlockedRef.current = false;
     autosaveFailedRef.current = false;
     autosaveEnabledRef.current = true;
+    sleepAttachedDateRef.current = null;
     setAutosaveEnabled(true);
     setState(blank);
     setDraftProblem(null);
@@ -1121,7 +1166,7 @@ export default function LogScreen() {
           accessibilityLabel={t(copy.date)}
           hint={t(copy.datePickHint)}
           label={t(copy.date)}
-          onConfirm={(isoDate) => edit({ type: "setDate", date: isoDate })}
+          onConfirm={handleDateConfirm}
           testID="log-date"
           value={draft.date}
         />

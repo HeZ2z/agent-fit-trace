@@ -143,7 +143,7 @@ test("parseSleepStore throws with the entry index on malformed payloads", () => 
     /entry 0.*YYYY-MM-DD/,
   );
   assert.throws(
-    () => parseSleepStore(JSON.stringify([{ ...entry({ date: "2026-10-25" }), hours: 0 }])),
+    () => parseSleepStore(JSON.stringify([{ ...entry({ date: "2026-10-25" }), hours: -1 }])),
     /entry 0.*hours/,
   );
   assert.throws(
@@ -200,6 +200,18 @@ test("parseSleepStore names the index of an entry missing a field", () => {
   );
   assert.throws(() => parseSleepStore(withMissingField("importedAt")), /entry 1.*importedAt/);
   assert.throws(() => parseSleepStore(withMissingField("source")), /entry 1.*source/);
+});
+
+test("parseSleepStore accepts a 0.0 fully-awake night and round-trips it", () => {
+  // aggregateSleepHours can legitimately yield 0.0 (a night of only awake
+  // stages, or a floor to zero), so [0, 24] is the stored domain on both the
+  // write and the read side — a read that rejected zero hours would hide the
+  // entry from the history and the Log auto-attach.
+  const awake = entry({ date: "2026-10-25", hours: 0, sessionCount: 1 });
+  assert.equal(awake.hoursText, "0.0");
+  assert.deepEqual(parseSleepStore(serializeSleepStore([awake])), [awake]);
+  // The 0.0 night is a first-class attach candidate too.
+  assert.equal(resolveAttachableSleep("2026-10-25", [awake])?.hoursText, "0.0");
 });
 
 test("upsertSleepEntry replaces by wake-up date and never duplicates", () => {
@@ -338,18 +350,45 @@ test("a failed persistence rolls the memory value back and rethrows", async () =
   assert.deepEqual(await store.read(), []);
 });
 
-test("a corrupt stored payload reads as empty and is replaced by the next write", async () => {
+test("a corrupt stored payload surfaces on read and a write refuses to overwrite it", async () => {
   const fake = memoryStorage({ [SLEEP_STORAGE_KEY]: "{ not json" });
   const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
-  assert.deepEqual(await store.read(), []);
-  const stored = await store.upsert(entry({ date: "2026-10-25", hours: 6 }));
-  assert.deepEqual(JSON.parse(fake.dump(SLEEP_STORAGE_KEY)!), stored);
+  // The read propagates the corruption instead of reading as empty history.
+  await assert.rejects(store.read(), /Corrupt sleep store/);
+  // The write path confirms the existing history first, so a failed read can
+  // never be followed by an overwriting save (one bad read + one save must
+  // not delete the history).
+  await assert.rejects(store.upsert(entry({ date: "2026-10-25" })), /Corrupt sleep store/);
+  await assert.rejects(store.remove("2026-10-25"), /Corrupt sleep store/);
+  assert.equal(fake.writes.length, 0);
+  assert.equal(fake.dump(SLEEP_STORAGE_KEY), "{ not json");
 });
 
-test("an unreadable store reads as empty on the write path instead of losing data twice", async () => {
-  const fake = memoryStorage({ [SLEEP_STORAGE_KEY]: "{ not json" });
-  const store = createSleepStore(fake.storage, SLEEP_STORAGE_KEY);
+test("a failing storage read propagates a diagnostic error and the write path refuses to write blind", async () => {
+  const writes: string[] = [];
+  let failReads = true;
+  const flaky: SleepStorageLike = {
+    async getItem() {
+      if (failReads) throw new Error("transient getItem failure");
+      return null;
+    },
+    async setItem(_key, value) {
+      writes.push(value);
+    },
+  };
+  const store = createSleepStore(flaky, SLEEP_STORAGE_KEY);
+  await assert.rejects(
+    store.read(),
+    /Could not read the sleep store: transient getItem failure/,
+  );
+  // The upsert throws (and writes nothing) instead of treating the failed
+  // read as an empty history and overwriting the stored payload.
+  await assert.rejects(store.upsert(entry({ date: "2026-10-25" })), /transient getItem failure/);
+  assert.equal(writes.length, 0);
+  // The failure was never cached: once the read succeeds the store behaves
+  // normally.
+  failReads = false;
   const stored = await store.upsert(entry({ date: "2026-10-25" }));
-  // The corrupt payload was replaced by a valid one-entry history.
-  assert.equal(stored.length, 1);
+  assert.deepEqual(stored.map((night) => night.date), ["2026-10-25"]);
+  assert.equal(writes.length, 1);
 });
