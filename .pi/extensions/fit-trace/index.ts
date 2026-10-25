@@ -356,12 +356,14 @@ export default function fitTraceExtension(pi: ExtensionAPI): void {
   // Lazily-resolved singleton: SqliteWorkoutStore holds a long-lived
   // connection, so one live store is opened per extension load and a
   // concurrent first tool call shares the in-flight resolution instead of
-  // opening a second database handle. A rejected attempt is forgotten so the
+  // opening a second database handle. Later calls hit the cache and reuse the
+  // same resolved store. A rejected attempt is forgotten so the
   // next tool call retries opening instead of replaying a stale transient
   // failure (e.g. a momentary SQLite lock) forever.
   let storePromise: Promise<FitTraceStore> | null = null;
 
   const getStore = (): Promise<FitTraceStore> => {
+    if (storePromise !== null) return storePromise;
     const attempt = resolveStorePath().then((resolved) => openStore(resolved.path, resolved.kind));
     storePromise = attempt;
     attempt.catch(() => {
