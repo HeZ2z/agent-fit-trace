@@ -27,7 +27,8 @@ import {
  * `mobile/src/health/healthModel.ts` and `mobile/src/preferences/deviceHealth.ts`
  * are imported — no React, React Native, native module or storage backend runs
  * here, so the root `node:test` suite never needs an Android device. The thin
- * native adapter (`healthConnect.ts`) is deliberately never imported.
+ * native adapter (`healthConnect.ts`) is deliberately never imported; its
+ * source text is only read to guard the read-only contract.
  */
 
 /** Session builder: instants are UTC ISO strings, as Health Connect returns. */
@@ -52,6 +53,23 @@ test("healthModel.ts stays free of native/platform dependencies", () => {
   );
   assert.ok(!/\breact-native-health-connect\b/.test(source));
   assert.ok(!/\bexpo\b/.test(source));
+});
+
+test("health adapter never writes back to Health Connect", () => {
+  // Product contract: the Health Connect integration is read-only — data
+  // flows from Health Connect into the app, never the other way. Guard the
+  // adapter's source text so a write call cannot creep in unnoticed. Word
+  // boundaries keep the guard from tripping on `readRecords` in comments.
+  const source = readFileSync(
+    new URL("../mobile/src/health/healthConnect.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(!/\b(insertRecords|deleteRecords|updateRecords|writeRecords)\b/.test(source));
+  // The one requestPermission call passes the read-only permission bodies
+  // (readPermissions() builds only accessType "read"); the SDK's own
+  // `"read" | "write"` signature shape in the interface type is not a call.
+  assert.ok(/\brequestPermission\(readPermissions\(\)\)/.test(source));
+  assert.ok(/accessType: "read" as const/.test(source));
 });
 
 /* ── SDK status mapping ──────────────────────────────────────────── */

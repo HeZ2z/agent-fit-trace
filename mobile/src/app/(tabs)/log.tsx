@@ -34,6 +34,8 @@ import {
   type TextInputProps,
 } from "react-native";
 
+import { useFocusEffect } from "expo-router";
+
 import { useAuth } from "@/auth";
 import { useWorkoutData } from "@/data/provider";
 import { LOCAL_GUEST_OWNER_ID } from "@/data/sessionDraftSchema";
@@ -373,8 +375,9 @@ export default function LogScreen() {
   const [success, setSuccess] = useState<SaveSuccess | null>(null);
 
   // Health Connect sleep import. The device-local toggle and the runtime
-  // availability are read once on mount; the button only exists when both
-  // agree (opt-in on Android with Health Connect ready).
+  // availability are re-read on every tab focus (the toggle lives on the Me
+  // tab, which stays mounted next to this one); the button only exists when
+  // both agree (opt-in on Android with Health Connect ready).
   const healthProvider = useMemo(() => getHealthConnectProvider(), []);
   const [healthImportReady, setHealthImportReady] = useState(false);
   const [sleepImporting, setSleepImporting] = useState(false);
@@ -722,21 +725,38 @@ export default function LogScreen() {
     [language, t],
   );
 
-  // Health Connect readiness for this mount: the device-local opt-in plus a
-  // supported runtime. Both reads fail soft; a failure keeps the button off.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const [enabled, availability] = await Promise.all([
-        readHealthConnectEnabled(),
-        healthProvider.availability(),
-      ]);
-      if (!cancelled) setHealthImportReady(enabled && availability.kind === "supported");
-    })();
-    return () => {
-      cancelled = true;
-    };
+  /**
+   * Re-read Health Connect readiness: the device-local opt-in plus a
+   * supported runtime. Both reads fail soft; a failure keeps the button off.
+   * The toggle lives on the Me tab and tabs stay mounted, so a mount-time
+   * snapshot would keep a disabled import alive for the whole session —
+   * instead, focus re-reads it (both reads are lightweight and never need an
+   * initialized client; getSdkStatus is safe before initialize()).
+   */
+  const refreshHealthImportReady = useCallback((): Promise<boolean> => {
+    return Promise.all([readHealthConnectEnabled(), healthProvider.availability()]).then(
+      ([enabled, availability]) => enabled && availability.kind === "supported",
+    );
   }, [healthProvider]);
+
+  // Focus re-reads the readiness; a toggle turned off mid-session also clears
+  // any leftover import notice, so nothing about the import survives a
+  // disabled state. useFocusEffect fires on the first focus too, so this
+  // covers the mount-time read as well. A stale read (the toggle flipping
+  // while one is in flight) loses to the newer focus via `cancelled`.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void refreshHealthImportReady().then((ready) => {
+        if (cancelled) return;
+        setHealthImportReady(ready);
+        if (!ready) setSleepImportNotice(null);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [refreshHealthImportReady]),
+  );
 
   /**
    * Import the night's sleep for the draft date. Success fills `sleepHours`

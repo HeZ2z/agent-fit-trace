@@ -20,6 +20,10 @@ import {
  * `healthModel`. Everything domain-shaped happens in the model; this file only
  * checks the platform, calls the SDK and normalizes its records.
  *
+ * Read-only by contract: data flows from Health Connect into the app, never
+ * the other way. A guarded node:test case pins this invariant against the
+ * source text.
+ *
  * Tests never import this module: the native side only exists on an Android
  * device build, and `getHealthConnectProvider()` keeps one provider instance
  * for the app's lifetime.
