@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -32,7 +33,10 @@ import type {
   RuntimeLaunchOptions,
 } from "../server/coaching/coachingService.ts";
 import { createCoachingRuntimeRegistry } from "../server/coaching/runtimeRegistry.ts";
-import { CoachingJournalCorruptError } from "../server/coaching/coachingJournal.ts";
+import {
+  CoachingJournalCorruptError,
+  StaleJournalLockError,
+} from "../server/coaching/coachingJournal.ts";
 import { writeSnapshotDir } from "../server/coaching/snapshotFile.ts";
 import type { SnapshotDir } from "../server/coaching/snapshotFile.ts";
 import {
@@ -590,12 +594,14 @@ test("a dead-owner stale lock fails closed and never deletes a replacement lock"
   const deadLock = `${JSON.stringify({ pid: deadPid, token: "dead-owner" })}\n`;
   try {
     // A crashed launcher leaves its lock behind. It is never reclaimed by
-    // deleting/racing another process's file; the operator removes it.
+    // deleting/racing another process's file; the supervisor that owns the
+    // dead launcher's process tree removes it (typed as StaleJournalLockError
+    // so the desktop shell can recognize the failure and reclaim).
     writeFileSync(lockPath, deadLock, { encoding: "utf8", mode: 0o600 });
     assert.throws(
       () => acquireCoachingJournalLock(path),
       (error: unknown) =>
-        error instanceof CoachingJournalCorruptError && /stale journal lock/i.test(error.message),
+        error instanceof StaleJournalLockError && /stale journal lock/i.test(error.message),
     );
     assert.equal(readFileSync(lockPath, "utf8"), deadLock, "a stale lock is never auto-removed");
 
@@ -819,6 +825,50 @@ test("a failed second pre-launch journal write rolls back the queued run and fre
   } finally {
     await service?.shutdown().catch(() => undefined);
     cleanupCaptures(captures);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Spawn a child that exits immediately and return its confirmed-dead pid. */
+function confirmedDeadPid(): number {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const child = spawnSync(process.execPath, ["-e", ""], { timeout: 5_000 });
+    const pid = child.pid;
+    if (pid === undefined) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return pid;
+    }
+  }
+  throw new Error("could not obtain a confirmed-dead pid");
+}
+
+test("a stale lock raises StaleJournalLockError (typed, with lockPath) and acquire still never reclaims it", () => {
+  const { dir, path } = makeJournal();
+  const lockPath = `${path}.lock`;
+  // A real, genuinely dead pid (an exited child), like a SIGKILLed daemon
+  // leaves behind — safer than a fabricated pid that the OS could reuse.
+  const deadPid = confirmedDeadPid();
+  const staleLock = `${JSON.stringify({ pid: deadPid, token: "sigkilled-daemon" })}\n`;
+  try {
+    writeFileSync(lockPath, staleLock, { encoding: "utf8", mode: 0o600 });
+    assert.throws(
+      () => acquireCoachingJournalLock(path),
+      (error: unknown) => {
+        if (!(error instanceof StaleJournalLockError)) return false;
+        assert.equal(error.code, "STALE_JOURNAL_LOCK");
+        assert.equal(error.lockPath, lockPath);
+        assert.match(error.message, /stale journal lock left by dead launcher/);
+        return true;
+      },
+    );
+    assert.equal(
+      existsSync(lockPath),
+      true,
+      "acquire fail-closes on a stale lock; reclaim stays the supervisor's job",
+    );
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

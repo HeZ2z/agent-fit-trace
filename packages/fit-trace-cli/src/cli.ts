@@ -16,6 +16,10 @@ import { BIND_HOST, checkNodeRuntime, checkPiCli, isSafeOpenUrl, resolveLauncher
 import type { LauncherFlags } from "./config.ts";
 import { startLauncherServer } from "./launcherServer.ts";
 import { startDaemonServer } from "./daemonServer.ts";
+import {
+  STALE_JOURNAL_LOCK_EXIT_CODE,
+  StaleJournalLockError,
+} from "../../../server/coaching/coachingJournal.ts";
 import { resolveDataDir } from "@agent-fit-trace/store";
 
 function printUsage(): void {
@@ -207,5 +211,11 @@ try {
   await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
+  // Distinct exit code so a supervisor that owns this process tree (the
+  // desktop shell) can recognize a stale journal lock, reclaim the lock
+  // file, and retry — every other failure keeps the generic exit code.
+  if (error instanceof StaleJournalLockError) {
+    process.exit(STALE_JOURNAL_LOCK_EXIT_CODE);
+  }
   process.exit(2);
 }

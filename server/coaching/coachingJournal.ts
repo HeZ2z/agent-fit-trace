@@ -67,6 +67,27 @@ export class CoachingJournalCorruptError extends Error {
   }
 }
 
+/** Process exit code the CLI uses when acquire fails closed on a stale lock. */
+export const STALE_JOURNAL_LOCK_EXIT_CODE = 3;
+
+/**
+ * Raised when acquire finds a lock whose owner pid is confirmed dead. The
+ * lock file is deliberately NOT removed here (see
+ * `acquireCoachingJournalLock`); a supervisor that owns the dead launcher's
+ * process tree (e.g. the desktop shell) may reclaim it out of band.
+ */
+export class StaleJournalLockError extends Error {
+  readonly code = "STALE_JOURNAL_LOCK";
+  readonly lockPath: string;
+  constructor(lockPath: string, pid: number) {
+    super(
+      `stale journal lock left by dead launcher (pid ${String(pid)}); remove it manually after confirming no launcher is running`,
+    );
+    this.name = "StaleJournalLockError";
+    this.lockPath = lockPath;
+  }
+}
+
 export interface CoachingJournalSession {
   id: string;
   accountId: string;
@@ -790,11 +811,9 @@ export function acquireCoachingJournalLock(path: string): CoachingJournalLock {
       fail(lockPath, `another launcher (pid ${String(current.pid)}) already owns this journal`);
     }
     // Never unlink here: the dead-owner file may already have been replaced by
-    // a live launcher's lock since we read it.
-    fail(
-      lockPath,
-      `stale journal lock left by dead launcher (pid ${String(current.pid)}); remove it manually after confirming no launcher is running`,
-    );
+    // a live launcher's lock since we read it. Throwing the typed error lets a
+    // supervisor that owns the dead process tree reclaim the lock out of band.
+    throw new StaleJournalLockError(lockPath, current.pid);
   }
   let released = false;
   return {

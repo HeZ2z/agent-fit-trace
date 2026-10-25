@@ -15,6 +15,7 @@
     "dev:api": "node server/devApiServer.ts",
     "start": "node packages/fit-trace-cli/src/cli.ts start",
     "daemon": "node packages/fit-trace-cli/src/cli.ts daemon",
+    "desktop:dev": "pnpm --filter @agent-fit-trace/desktop run dev",
     "coach:local": "node packages/fit-trace-cli/src/cli.ts start",
     "build": "pnpm build:server && pnpm --filter @agent-fit-trace/app build",
     "build:server": "pnpm --filter @agent-fit-trace/app exec vite build --config vite.server.config.ts",
