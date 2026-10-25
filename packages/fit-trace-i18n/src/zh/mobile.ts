@@ -205,6 +205,7 @@ export const messages: Record<string, string> = {
   Sleep: "睡眠",
   "Import from Samsung Health": "导入您的三星健康",
   "Import from Apple Health": "导入您的苹果健康",
+  "Import from Mi Fitness": "导入您的小米运动健康",
   "Import from your phone brand is not supported yet": "暂不支持导入您的品牌",
   "Reading Health Connect…": "正在读取 Health Connect…",
   "Imported {count} nights of sleep; latest night: {date} {hours} h":

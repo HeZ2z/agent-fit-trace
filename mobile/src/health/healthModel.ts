@@ -129,12 +129,18 @@ export function importUnavailableReason(
 /* ── phone-brand gate (display-layer convention) ─────────────────── */
 
 /** The phone brands whose health platform the import copy names explicitly. */
-export type SupportedPhoneBrand = "samsung" | "apple";
+export type SupportedPhoneBrand = "samsung" | "apple" | "xiaomi";
 
-/** Lowercased `Platform.constants.Brand` value → the supported brand. */
+/**
+ * Lowercased `Platform.constants.Brand` value → the supported brand. Some Redmi
+ * firmware reports the brand as "Redmi"; it is the same Mi Fitness path, so it
+ * folds into the xiaomi brand.
+ */
 const SUPPORTED_PHONE_BRANDS: Readonly<Record<string, SupportedPhoneBrand>> = {
   samsung: "samsung",
   apple: "apple",
+  xiaomi: "xiaomi",
+  redmi: "xiaomi",
 };
 
 /**

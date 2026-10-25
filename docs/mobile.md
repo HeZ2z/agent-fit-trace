@@ -378,7 +378,17 @@ and the toggle. Enabling first requests the Health Connect read permissions; a
 denied sleep grant keeps the toggle off and shows guidance. Disabling is in-app
 only — Health Connect grants are revoked from the system Health Connect settings,
 which the notice says. The import button only renders when the toggle is on **and**
-Health Connect reports supported.
+Health Connect reports supported. The button names the health app of the device's
+brand (`supportedPhoneBrand` on the native `Platform.constants.Brand`):
+
+| Device brand | Button copy | How sleep reaches Health Connect |
+| --- | --- | --- |
+| Samsung | "Import from Samsung Health" (zh: 导入您的三星健康) | Samsung Health syncs into Health Connect (sync switch above) |
+| Xiaomi / Redmi | "Import from Mi Fitness" (zh: 导入您的小米运动健康) | Mi Fitness (小米运动健康) writes Health Connect natively; after a device reboot the connection may need to be re-established before data flows again |
+| Apple | "Import from Apple Health" (zh: 导入您的苹果健康) | iOS has no Health Connect; the tap reports the platform as unavailable |
+
+Vendor-direct SDKs (the Samsung Data SDK, the vivo open platform) would each
+require a vendor partnership approval; this project does not evaluate them.
 
 Data-source sync dependency, and what to check when an import finds nothing.
 Wearable sleep reaches Health Connect only when its source app syncs with it, and

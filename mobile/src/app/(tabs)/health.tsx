@@ -90,6 +90,7 @@ const copy = {
   sleepLede: "Import your recent nights, or type the hours yourself.",
   importButtonSamsung: "Import from Samsung Health",
   importButtonApple: "Import from Apple Health",
+  importButtonXiaomi: "Import from Mi Fitness",
   brandUnsupported: "Import from your phone brand is not supported yet",
   importing: "Reading Health Connect…",
   importOkNights:
@@ -550,7 +551,9 @@ export default function HealthScreen() {
                     : t(
                         phoneBrand === "samsung"
                           ? copy.importButtonSamsung
-                          : copy.importButtonApple,
+                          : phoneBrand === "xiaomi"
+                            ? copy.importButtonXiaomi
+                            : copy.importButtonApple,
                       )
                 }
                 onPress={() => {

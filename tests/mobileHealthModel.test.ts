@@ -730,13 +730,17 @@ test("supportedPhoneBrand maps the supported OEM brands case-insensitively", () 
   assert.equal(supportedPhoneBrand("apple"), "apple");
   assert.equal(supportedPhoneBrand("Apple"), "apple");
   assert.equal(supportedPhoneBrand("APPLE"), "apple");
+  // Xiaomi writes Health Connect through Mi Fitness; some Redmi firmware
+  // reports the brand as "Redmi" and folds into the same xiaomi brand.
+  assert.equal(supportedPhoneBrand("Xiaomi"), "xiaomi");
+  assert.equal(supportedPhoneBrand("XIAOMI"), "xiaomi");
+  assert.equal(supportedPhoneBrand("Redmi"), "xiaomi");
+  assert.equal(supportedPhoneBrand("redmi"), "xiaomi");
 });
 
 test("supportedPhoneBrand reads unsupported or empty brands as null", () => {
-  // Real other-brand constants (vivo, Xiaomi…) and junk must not map.
+  // Real other-brand constants (vivo, OnePlus…) and junk must not map.
   assert.equal(supportedPhoneBrand("vivo"), null);
-  assert.equal(supportedPhoneBrand("Xiaomi"), null);
-  assert.equal(supportedPhoneBrand("XIAOMI"), null);
   assert.equal(supportedPhoneBrand("OnePlus"), null);
   assert.equal(supportedPhoneBrand("google"), null);
   assert.equal(supportedPhoneBrand(""), null);
