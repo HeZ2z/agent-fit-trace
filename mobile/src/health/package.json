@@ -1,0 +1,4 @@
+{
+  "//": "Marks mobile/src/health as an ES module for the root tsc/node:test project; Metro bundles these files directly.",
+  "type": "module"
+}

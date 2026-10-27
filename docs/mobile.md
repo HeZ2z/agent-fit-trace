@@ -18,7 +18,7 @@ not written. Android is the only configured native target.
 
 | Area | Implemented now | Planned |
 | --- | --- | --- |
-| App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; six-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
+| App and shell | Expo SDK 58, React Native 0.88, Expo Router, TypeScript strict; seven-tab Pixel/Glass shell; shared UI primitives | Bundled fonts and full Glass polish |
 | Local data | SQLite workout store plus the owner-scoped `session_draft` table (migration v2), migrations, validation on read and write; History, on-device Analysis and read-only Plan draft | Import/export parity; applying a draft plan |
 | Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, compact per-set rows (set number, kg, reps, RPE, completion check), per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
@@ -67,10 +67,11 @@ service-role key; privileged work stays on the server and worker in
 
 The root layout nests `SafeAreaProvider`, `I18nProvider`, `SkinProvider`,
 `WorkoutDataProvider`, `AuthProvider` and `PreferencesProvider`, in that order.
-`index.tsx` opens History. The six tabs are History, Log, Analysis, Plan, Coach
-and Me; Me hosts account, appearance, language, sign-out and the manual sync
-entry. The sign-in and sync screens are stack routes outside the dock. There are
-no placeholder tabs left.
+`index.tsx` opens History. The seven tabs are History, Log, Analysis, Plan,
+Coach, Health and Me; Health owns the Health Connect sleep import (below) and Me
+hosts account, appearance, language, sign-out and the manual sync entry. The
+sign-in and sync screens are stack routes outside the dock. There are no
+placeholder tabs left.
 
 ## Data model
 
@@ -128,7 +129,9 @@ CREATE TABLE IF NOT EXISTS session_draft (
   `@agent-fit-trace/workout-session` (`encodeSessionDraft`/`decodeSessionDraft`),
   containing the date, session type, duration/sleep/notes, exercises, multiple
   pain reports and the persisted timing. Rest is transient runtime state and is
-  never serialized, so a restart restores no countdown.
+  never serialized, so a restart restores no countdown. (Sleep stays a draft
+  field: it is filled by the Health page's import/manual entry and the Log
+  screen's save-time auto-attach, not by a Log form field.)
 - **Migration is one-way.** Upgrading applies v2 once under `PRAGMA
   user_version`; the `workouts` table is untouched. Rolling back to an older
   build means forward-fixing or clearing app data. The payload version is a
@@ -206,7 +209,7 @@ The Log tab is the single editor for a session recorded after the fact or while
 training. It renders the shared `SessionState` from
 `@agent-fit-trace/workout-session`: the fields are aligned with the web editor
 (date, session type, exercises/sets, per-exercise rest, duration only while
-untimed, sleep, notes and multiple pain reports), and the same reducer drives
+untimed, notes and multiple pain reports), and the same reducer drives
 Start/Pause/Resume/Finish timing with an injected clock, per-set check-off, a
 rest countdown with ±15 s/Skip, and prefilled next sets. Each set is one compact
 row — set number, kg, reps, RPE, completion check, and an options menu — and the
@@ -347,6 +350,163 @@ A failed or postponed sync does not block local use. Failures are classified as
 offline, auth, conflict or other, and the screen reports the corresponding
 message. The runner never logs tokens or workout content.
 
+## Health page: Health Connect sleep import and sleep history (Android)
+
+Samsung Health (and other wearables) sync sleep into Android Health Connect. Sleep
+lives on its own **Health page** — a bottom dock tab (the seventh, between Coach
+and Me) — which owns the Health Connect status, the per-night import, manual entry for
+devices without Health Connect, and the device-local sleep history. The Log form no
+longer enters or imports sleep: its date is chosen with the same native picker
+(default today) instead of typed, and saving a workout attaches the recorded night
+for the draft date automatically (below).
+
+The Health page's wake-up date is the `D` of the night window `[D-1 20:00, D 12:00]`
+— the morning the user woke up — so "the night behind a session on the 8th" is
+labelled as wake-up date 2026-10-08, never "one night earlier" by accident. It is
+picked with the native date picker (`@react-native-community/datetimepicker`,
+installed at its SDK 58 version via `npx expo install`; Android opens the
+`DateTimePickerAndroid` imperative dialog), defaulting to today; no manual typing.
+
+The feature is **opt-in**, and the opt-in toggle is device-local: it lives in
+AsyncStorage (`agent-fit-trace:health-connect:v1`), not in the
+account-preferences layer. Health-data access is a per-device grant that is
+never mirrored, restored or synced across devices, so a guest device stays safe
+by construction. The Health page shows the runtime status (supported / needs
+install / needs update / off / platform unavailable / sleep access revoked /
+partially granted), the read-only scopes (sleep sessions and resting heart rate)
+and the toggle. Enabling first requests the Health Connect read permissions; a
+denied sleep grant keeps the toggle off and shows guidance. Disabling is in-app
+only — Health Connect grants are revoked from the system Health Connect settings,
+which the notice says. The import button only renders when the toggle is on **and**
+Health Connect reports supported. The button names the health app of the device's
+brand (`supportedPhoneBrand` on the native `Platform.constants.Brand`):
+
+| Device brand | Button copy | How sleep reaches Health Connect |
+| --- | --- | --- |
+| Samsung | "Import from Samsung Health" (zh: 导入您的三星健康) | Samsung Health syncs into Health Connect (sync switch above) |
+| Xiaomi / Redmi | "Import from Mi Fitness" (zh: 导入您的小米运动健康) | Mi Fitness (小米运动健康) writes Health Connect natively; after a device reboot the connection may need to be re-established before data flows again |
+| Apple | "Import from Apple Health" (zh: 导入您的苹果健康) | iOS has no Health Connect; the tap reports the platform as unavailable |
+
+Vendor-direct SDKs (the Samsung Data SDK, the vivo open platform) would each
+require a vendor partnership approval; this project does not evaluate them.
+
+Data-source sync dependency, and what to check when an import finds nothing.
+Wearable sleep reaches Health Connect only when its source app syncs with it, and
+real-device diagnosis showed the most common failure shape by far: **Health
+Connect's store is entirely empty** — the app, the grant and the aggregation are
+all fine, there is simply nothing to read. Samsung Health is the usual source,
+and it only pushes data when "Sync with Health Connect" is turned on in Samsung
+Health's **own** settings — a switch outside this app, whose name and location
+differ between Samsung Health / One UI versions (it has lived under Samsung
+Health's settings menu as well as under individual data-type pages), so the
+in-app copy can only point at it, never toggle it. When an import returns "no
+records for that night", check in this order:
+
+1. **Health Connect itself.** Open the system Health Connect app → Data and
+   access → Sleep. If there is no sleep data here at all, the failure is
+   upstream of Fit Trace — continue with step 2.
+2. **The source app's sync switch.** In Samsung Health's own settings, find and
+   enable "Sync with Health Connect" (name and location vary by version), then
+   let the watch sync once and give it a minute.
+3. **The night window.** The import reads `[D-1 20:00, D 12:00]` local time for
+   the picked wake-up date; a nap outside the window, a wrong wake-up date, or a
+   device clock that is off will not appear. Re-check the date on the Health
+   page.
+4. **The app's grant.** The Health page status line reports a revoked sleep
+   read; re-grant it in the system Health Connect settings.
+5. **Re-import.** If Health Connect's own app shows sleep for that night but the
+   import still returns no data, that is a Fit Trace bug — report it with the
+   wake-up date and what Health Connect displays for that night.
+
+The needs-install / needs-update guidance and a denied permission request repeat
+the same pointers (Google Play Store for the Health Connect install/update,
+Samsung Health settings for the sync switch).
+
+**Manual entry needs no Health Connect.** Anyone can pick a wake-up date, type
+sleep hours (strictly parsed: a number in (0, 24], one decimal) and save it into
+the same history; the import button is simply absent on devices without a usable
+Health Connect.
+
+**Android only and a custom development build is required** (for the import; the
+rest of the page works everywhere). The native module
+is not part of Expo Go: the import works only in a dev-client / EAS development
+build or a prebuild (`expo prebuild` applies the config plugin and manifest
+permissions). In Expo Go the availability check reports the platform as
+unavailable and the import button never renders.
+
+**Sleep history** lists the stored nights newest-first (wake-up date, hours,
+source `Health Connect`/`Manual`, recorded-at timestamp) with a per-row delete.
+Re-importing or re-saving a night replaces the entry for the same wake-up date —
+one entry per night, never a duplicate.
+
+**Auto-attach at save time.** When a workout is saved for date `D` and the sleep
+store holds night `D`, the Log screen fills `sleep_hours` from it at the start of
+the save flow — through the same draft `edit()` path a keystroke uses, and only
+into an **empty** sleep field (a typed value is never overridden). Attaching via
+the draft path (never by mutating the built candidate) keeps autosave, the
+pending-warning staleness check and the persisted draft consistent: everything
+sees exactly what a manual entry would have produced. No recorded night →
+`sleep_hours` stays empty and the existing `MISSING_RECOVERY_DATA` logic is
+unchanged. Two honest boundaries follow from record immutability:
+
+- Workouts saved **before** the night was recorded (or before this feature
+  existed) are never backfilled — a stored record cannot be rewritten.
+- Deleting a sleep-history entry does not touch workouts that already attached
+  it — the attached value is part of the saved record, not a live reference.
+
+Privacy: read-only towards Health Connect. The app requests only
+`android.permission.health.READ_SLEEP` and
+`android.permission.health.READ_RESTING_HEART_RATE`, never writes health data,
+and every aggregation happens on the device — the Health Connect read itself
+never leaves the device. An imported sleep value does not stay quarantined,
+though: it becomes part of the workout record it was filled into, and like a
+manually entered value it is stored in the local log and syncs to the cloud
+only when the user starts a manual sync. No account is required to import —
+the opt-in lives entirely on the device. The sleep history itself is
+device-local AsyncStorage (`agent-fit-trace.health.sleep.v1`) and is never
+mirrored, restored or synced across devices.
+
+Slice boundary: this slice aggregates sleep only. Resting heart rate is
+requested and shown in the status line but is not read or displayed yet.
+
+Runtime and permissions:
+
+- `react-native-health-connect` 4.1.3 provides the native bridge; its Expo config
+  plugin wires the privacy-rationale intent routing (no props), and
+  `expo-build-properties` raises `minSdkVersion` to 26 as the library requires.
+  The manifest declares only two health permissions:
+  `android.permission.health.READ_SLEEP` and
+  `android.permission.health.READ_RESTING_HEART_RATE` (read-only; resting heart
+  rate is requested for status display but not read yet).
+- `mobile/src/health/healthModel.ts` is the pure, node-testable model: the
+  night window `[D-1 20:00, D 12:00]` in the device timezone (calendar-safe
+  `Date.UTC` math; each window edge converts with its own day's device offset,
+  so a window spanning a DST switch does not drift), aggregation
+  of **all** sessions in the window (fragmented nights are summed, never
+  dropped), valid stages = everything except AWAKE/OUT_OF_BED, session-duration
+  fallback when a session has no stages, a >24 h error guard (the core domain
+  limit) and one-decimal `hoursText` that fills `draft.sleepHours` directly.
+  Stage/SDK status codes are plain const objects — the library's enums are never
+  imported.
+- `mobile/src/health/sleepStore.ts` is the pure sleep-history model plus its
+  AsyncStorage shell: one versioned key of `{ date, hours, hoursText,
+  sessionCount, importedAt, source }` entries, deduped by wake-up date
+  (replace-on-reimport), strict parsing on load (missing → empty, malformed →
+  error naming the entry index), newest-first listing, the manual-hours parser
+  and the `resolveAttachableSleep(date, snapshot)` attach decision. The shell
+  follows `deviceHealth.ts`: memory-first reads, memory-applied-first writes
+  with rollback-and-rethrow on persistence failure.
+- `mobile/src/health/healthConnect.ts` is the thin native adapter (never
+  imported by tests): platform gate first (non-Android → unavailable without
+  touching the native module), lazily required SDK, availability mapping,
+  granular permission bookkeeping and `SleepSessionRecord` normalization.
+
+On the Health page every import outcome renders its own message — imported
+(hours + session count), no data (with the Samsung Health sync-pointer copy), no
+permission, partial permission, unavailable (install/update/platform/not found)
+and error — and manual saves/deletes surface storage failures instead of
+silently showing state the store never received.
+
 ## Hosted coach
 
 Mobile coaching uses the hosted cloud coach only. The Coach tab requires a
@@ -416,7 +576,7 @@ stream without cancelling the run.
 ## Navigation and design system
 
 Screens live as Expo Router files under `mobile/src/app/`, with reusable
-components under `mobile/src/ui/`. Six bottom tabs use a token-driven dock with a
+components under `mobile/src/ui/`. Seven bottom tabs use a token-driven dock with a
 blurred Glass variant, following [`docs/ui-design.md`](ui-design.md); Me holds
 account, skin, language and sign-out controls plus the manual sync entry. Sign-in
 and sync are stack routes.
@@ -592,6 +752,14 @@ not live service checks.
   screens have not had a recorded device pass yet.
 - **Token drift is manual.** The sRGB palette has no automated check against the
   web oklch tokens; a CSS color change must update both sides.
+- **Health Connect sleep import is not device-verified after the Health page
+  redesign.** The pure aggregation, window math, status mappings and the sleep
+  store are covered by the root `node:test` suite, but
+  the native permission flow, Samsung Health sync, a real import and the
+  redesigned Health page have not been re-run
+  on a device with Health Connect installed; the native adapter is deliberately
+  thin so the pure coverage is the contract. Resting heart rate is requested and
+  shown in the status line but not read yet.
 - **EAS builds are manual.** Builds require an authenticated Expo account and
   are not triggered per commit.
 

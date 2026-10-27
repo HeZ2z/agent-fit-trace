@@ -2,7 +2,7 @@ import { StyleSheet, View } from "react-native";
 
 import type { SkinTokens } from "@/theme";
 
-export type TabIconName = "history" | "log" | "analysis" | "plan" | "coach" | "me";
+export type TabIconName = "history" | "log" | "analysis" | "plan" | "coach" | "health" | "me";
 
 type Rect = readonly [x: number, y: number, width: number, height: number];
 
@@ -43,6 +43,13 @@ const GLYPHS: Record<TabIconName, readonly Rect[]> = {
   coach: [
     [3, 4, 18, 13],
     [7, 17, 5, 4],
+  ],
+  // A pulse rule with a heartbeat spike.
+  health: [
+    [3, 12, 5, 3],
+    [8, 6, 3, 6],
+    [11, 4, 3, 15],
+    [14, 12, 7, 3],
   ],
   // A square-headed figure.
   me: [
