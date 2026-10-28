@@ -236,6 +236,210 @@ export function createSingleFlightInit(
 }
 
 /**
+ * The device-local health-store platform this app runs on, resolved from
+ * `Platform.OS`. Anything that is neither Android nor iOS (a web bundle, a test
+ * shell) reads as "other" and offers no import at all, instead of guessing.
+ */
+export type HealthPlatform = "android" | "ios" | "other";
+
+/** Map a `Platform.OS` value to the platform whose health store to read. */
+export function healthPlatformFor(os: string): HealthPlatform {
+  if (os === "android") return "android";
+  if (os === "ios") return "ios";
+  return "other";
+}
+
+/**
+ * Which device health store a provider reads. It doubles as the sleep-store
+ * source recorded with every imported night, so a stored entry always names the
+ * store it came from.
+ */
+export type HealthSourceKind = "health-connect" | "apple-health";
+
+/**
+ * Read authorization as each platform can actually observe it.
+ *
+ * Android Health Connect answers with granular per-scope grants, so a denied
+ * sleep read is a fact the UI can state. HealthKit deliberately does not: for
+ * read types it reports neither a grant nor a denial (its `AuthorizationStatus`
+ * covers sharing — write — access, and `getRequestStatusForAuthorization` only
+ * says whether the sheet was already shown). The iOS arm is therefore
+ * `unknown`: the request was made (`requested`) or not, and the app must never
+ * translate that into "denied", nor read an empty result as a revoked
+ * permission.
+ */
+export type HealthAuthorization =
+  | { kind: "granted"; granted: string[]; missing: string[] }
+  | { kind: "unknown"; requested: boolean };
+
+/**
+ * Whether a sleep read may proceed.
+ *
+ * Android: the sleep scope must be in the granted set. iOS: the authorization
+ * sheet must already have been shown — the answer is `unknown` either way, so
+ * the read goes ahead and an empty result is reported as no data. Treating
+ * "not yet requested" as unusable is what keeps the first attempt from reading
+ * before the sheet, which the HealthKit bridge treats as a crash.
+ */
+export function sleepReadUsable(authorization: HealthAuthorization): boolean {
+  if (authorization.kind === "granted") return authorization.granted.includes(SLEEP_READ_SCOPE);
+  return authorization.requested;
+}
+
+/**
+ * Status-line key for the iOS Health section. Deliberately a different set from
+ * `HealthConnectStatusKey`: there is no install/update path and no observable
+ * revocation, so a "no-permission" state would be a claim the platform cannot
+ * support.
+ */
+export type AppleHealthStatusKey =
+  | "off"
+  | "supported"
+  | "authorization-unknown"
+  | "platform"
+  | "not-found";
+
+/**
+ * Resolve the iOS status line. Toggle first (off hides the rest), then
+ * availability, then the authorization fact: a completed request reads as
+ * "authorization-unknown" — *not* granted — because HealthKit hides read
+ * grants. "Unknown" describes what this app knows, never what the user chose.
+ */
+export function appleHealthStatusKey(
+  enabled: boolean | null,
+  availability: HealthAvailability | null,
+  authorization: HealthAuthorization | null,
+): AppleHealthStatusKey {
+  if (enabled !== true) return "off";
+  if (availability === null) return "off";
+  if (availability.kind === "unavailable") {
+    return availability.reason === "platform" ? "platform" : "not-found";
+  }
+  // HealthKit has no Health Connect-style install/update state; a provider that
+  // reports one is misconfigured, and "not-found" is the honest fallback.
+  if (availability.kind === "needs-install" || availability.kind === "needs-update") {
+    return "not-found";
+  }
+  if (authorization?.kind === "unknown" && authorization.requested) {
+    return "authorization-unknown";
+  }
+  return "supported";
+}
+
+/**
+ * `HKAuthorizationRequestStatus` values from
+ * `@react-native-healthkit/core`'s `AuthorizationRequestStatus`, mirrored as a
+ * plain const object: the pure layer must stay erasable and must not import
+ * the native library's TypeScript enum.
+ *
+ * This is the only authorization fact HealthKit exposes for read types. It
+ * says whether the request sheet was already shown — `unnecessary` means shown,
+ * `shouldRequest` means not yet, `unknown` means the platform could not tell.
+ * None of the three is a grant or a denial.
+ */
+export const HEALTHKIT_AUTHORIZATION_REQUEST_STATUS = {
+  unknown: 0,
+  shouldRequest: 1,
+  unnecessary: 2,
+} as const;
+
+/**
+ * Normalize `getRequestStatusForAuthorization`'s answer into the neutral
+ * authorization model. `unnecessary` is the only state in which the read may
+ * proceed without prompting; anything else — including a `null` the adapter
+ * passes after a failed read — reads as "not requested yet", never as a grant
+ * and never as a denial. That conservatism is what keeps a query from running
+ * before the sheet has been shown, which the HealthKit bridge treats as a
+ * crash.
+ */
+export function healthKitAuthorizationFromStatus(status: number | null): HealthAuthorization {
+  return {
+    kind: "unknown",
+    requested: status === HEALTHKIT_AUTHORIZATION_REQUEST_STATUS.unnecessary,
+  };
+}
+
+/**
+ * Whether the adapter must show the authorization sheet before reading.
+ *
+ * Only `unnecessary` proves the sheet was already shown. `shouldRequest`,
+ * `unknown` and a failed status read (`null`) all require the request first:
+ * re-showing the sheet is harmless (the system does not prompt twice for the
+ * same types), while querying before it exists crashes the bridge.
+ */
+export function needsHealthKitAuthorizationRequest(status: number | null): boolean {
+  return status !== HEALTHKIT_AUTHORIZATION_REQUEST_STATUS.unnecessary;
+}
+
+/**
+ * The UTC offset (minutes east of UTC) in effect at local noon of `date`
+ * ("YYYY-MM-DD", validated by the caller through `isIsoDate`).
+ *
+ * Noon is sampled because DST transitions happen in the early morning, so the
+ * offset at noon is the offset that date's evening and daytime hours use — the
+ * offset each night-window edge must carry on a DST switch day. A malformed
+ * date yields `NaN`, which the caller rejects via the window check.
+ *
+ * Shared by both platform adapters (`healthConnect.ts`, `healthKit.ts`) so the
+ * night window is computed by one rule, not two drifting copies.
+ */
+export function tzOffsetMinutesForDate(date: string): number {
+  const [year, month, day] = date.split("-").map(Number);
+  const localNoon = new Date(year, month - 1, day, 12, 0, 0);
+  return -localNoon.getTimezoneOffset();
+}
+
+/** The calendar day before `workoutDate` ("YYYY-MM-DD"), rollover-safe. */
+export function previousIsoDate(workoutDate: string): string | null {
+  if (!isIsoDate(workoutDate)) return null;
+  const [year, month, day] = workoutDate.split("-").map(Number);
+  // `Date.UTC` normalizes day 0 / month overflow; the ISO slice round-trips.
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
+}
+
+/**
+ * One status-line decision, already resolved for the current platform, so the
+ * Health screen renders a key instead of branching on `Platform.OS` itself.
+ */
+export type HealthStatusView =
+  | { platform: "android"; key: HealthConnectStatusKey }
+  | { platform: "ios"; key: AppleHealthStatusKey }
+  | { platform: "other"; key: "platform" };
+
+/**
+ * Resolve the status line for whichever health store this platform has.
+ *
+ * The Android arm delegates to `healthConnectStatusKey` with the granular grant
+ * (or `null` while hydrating), so the existing Android status behavior is
+ * untouched by the iOS addition. An iOS `unknown` authorization carries no
+ * grant, so the Android rule must never see it.
+ */
+export function healthStatusView(
+  platform: HealthPlatform,
+  enabled: boolean | null,
+  availability: HealthAvailability | null,
+  authorization: HealthAuthorization | null,
+): HealthStatusView {
+  if (platform === "android") {
+    const grant =
+      authorization !== null && authorization.kind === "granted"
+        ? { granted: authorization.granted, missing: authorization.missing }
+        : null;
+    return {
+      platform: "android",
+      key: healthConnectStatusKey(enabled, availability, grant),
+    };
+  }
+  if (platform === "ios") {
+    return {
+      platform: "ios",
+      key: appleHealthStatusKey(enabled, availability, authorization),
+    };
+  }
+  return { platform: "other", key: "platform" };
+}
+
+/**
  * The device-local Health Connect provider. Implementations must be usable
  * without React; the native adapter is the only implementation in the app.
  */
