@@ -3,19 +3,22 @@ import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
-import { getHealthConnectProvider, getCurrentPhoneBrand } from "@/health/healthConnect";
+import { getCurrentPhoneBrand } from "@/health/healthConnect";
 import {
-  healthConnectStatusKey,
+  healthStatusView,
   recentWakeDates,
-  SLEEP_READ_SCOPE,
+  sleepReadUsable,
   summarizeRecentNightsImport,
   supportedPhoneBrand,
+  type AppleHealthStatusKey,
+  type HealthAuthorization,
   type HealthAvailability,
   type HealthConnectStatusKey,
   type HealthImportUnavailableReason,
+  type HealthPlatform,
   type ImportedNight,
-  type PermissionRequestResult,
 } from "@/health/healthModel";
+import { currentHealthPlatform, getHealthProvider } from "@/health/healthProvider";
 import {
   deleteSleepEntry,
   listSleepEntriesDesc,
@@ -61,6 +64,8 @@ const copy = {
   done: "Done",
   title: "Health",
   lede: "Optional and read-only. Reads from Health Connect happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.",
+  ledeIos:
+    "Optional and read-only. Reads from Apple Health happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.",
   connectKicker: "HEALTH CONNECT",
   connectTitle: "Health Connect",
   healthScopes: "Read-only scopes: sleep sessions and resting heart rate.",
@@ -92,7 +97,9 @@ const copy = {
   importButtonApple: "Import from Apple Health",
   importButtonXiaomi: "Import from Mi Fitness",
   brandUnsupported: "Import from your phone brand is not supported yet",
+  importButtonIos: "Import from Apple Health",
   importing: "Reading Health Connect…",
+  importingIos: "Reading Apple Health…",
   importOkNights:
     "Imported {count} nights of sleep; latest night: {date} {hours} h",
   importNoData:
@@ -105,6 +112,8 @@ const copy = {
   manualTitle: "Add sleep manually",
   manualLede:
     "No Health Connect? Record the night here; saving a workout for that date attaches it the same way.",
+  manualLedeIos:
+    "No Apple Health data? Record the night here; saving a workout for that date attaches it the same way.",
   manualDate: "Wake-up date",
   manualDateHint: "The night between the previous evening 20:00 and this date's 12:00.",
   manualHours: "Sleep (hours)",
@@ -121,9 +130,43 @@ const copy = {
   sleepStoreReadError: "Could not read the sleep history: {message}",
   importSuperseded:
     "That night's sleep changed while the import was running; the imported value was discarded to keep your newer entry.",
+
+  /* iOS / Apple Health (issue #51) */
+  appleKicker: "APPLE HEALTH",
+  appleTitle: "Apple Health",
+  appleScopes:
+    "Read-only: sleep analysis and resting heart rate. Apple Health never tells an app whether read access was granted, so an empty import may mean limited access or simply no recorded sleep.",
+  appleEnable: "Enable Apple Health",
+  appleDisable: "Disable Apple Health",
+  appleStatusOff:
+    "Off. Enable it to import sleep here; saving a workout for that date attaches it automatically.",
+  appleStatusSupported:
+    "Enabled. Import your recent nights below; saving a workout attaches that night's sleep automatically when it is recorded here.",
+  appleStatusAuthorizationUnknown:
+    "Permissions requested. Apple Health does not reveal whether read access was granted; if an import comes back empty, check Settings › Health › Data Access & Devices › Fit Trace.",
+  appleStatusPlatform: "Apple Health is only available on iOS devices.",
+  appleStatusNotFound: "Apple Health is not available on this device.",
+  applePermissionRequested:
+    "The permission sheet was shown. Apple Health does not report read grants, so the import will tell you if there is no data to read.",
+  appleImportNoData:
+    "Apple Health has no sleep recorded for the last 7 nights. If you expect data, check Settings › Health › Data Access & Devices › Fit Trace and make sure your watch has synced.",
+  appleOffNote:
+    "Off on this device. To revoke access entirely, remove Fit Trace under Settings › Health › Data Access & Devices.",
+  appleError: "Apple Health error: {message}",
+  /*
+   * The recovery read is surfaced with the limit stated in the same breath:
+   * `WorkoutRecord` has only `sleep_hours`, so there is no field to persist a
+   * resting heart rate in. Showing it as "imported" would be a claim the record
+   * cannot back, so the line says exactly what was done and what was not.
+   */
+  restingHeartRateReadOnly:
+    "Resting heart rate last night: {bpm} bpm. Read from Apple Health, not saved to the workout record.",
+  appleRecoveryNote:
+    "Resting heart rate is read for the same night window but not saved to the workout record yet.",
+  sourceAppleHealth: "Apple Health",
 };
 
-/** Status-line copy per resolved key; keys come from the pure status model. */
+/** Status-line copy per resolved Android key; keys come from the pure model. */
 const HEALTH_STATUS_COPY: Record<HealthConnectStatusKey, string> = {
   off: copy.statusOff,
   supported: copy.statusSupported,
@@ -135,6 +178,38 @@ const HEALTH_STATUS_COPY: Record<HealthConnectStatusKey, string> = {
   partial: copy.statusPartial,
 };
 
+/**
+ * Status-line copy per resolved iOS key. The set is deliberately smaller: there
+ * is no install/update path and no observable revocation, so no key claims one.
+ */
+const APPLE_STATUS_COPY: Record<AppleHealthStatusKey, string> = {
+  off: copy.appleStatusOff,
+  supported: copy.appleStatusSupported,
+  "authorization-unknown": copy.appleStatusAuthorizationUnknown,
+  platform: copy.appleStatusPlatform,
+  "not-found": copy.appleStatusNotFound,
+};
+
+/**
+ * The status line's text for whichever platform this build runs on.
+ *
+ * `view.key` is resolved by the pure `healthStatusView`, so a key from one
+ * platform's table can never be looked up in the other's — the fallback for a
+ * cross-platform mix-up is the platform copy, which is true either way.
+ */
+function statusCopyFor(
+  platform: HealthPlatform,
+  viewKey: HealthConnectStatusKey | AppleHealthStatusKey | "platform",
+): string {
+  if (platform === "ios") {
+    return APPLE_STATUS_COPY[viewKey as AppleHealthStatusKey] ?? copy.appleStatusPlatform;
+  }
+  if (platform === "android") {
+    return HEALTH_STATUS_COPY[viewKey as HealthConnectStatusKey] ?? copy.statusPlatform;
+  }
+  return copy.statusPlatform;
+}
+
 /** Copy for an import blocked by the runtime, not by permissions or data. */
 const UNAVAILABLE_COPY: Record<HealthImportUnavailableReason, string> = {
   platform: copy.statusPlatform,
@@ -143,7 +218,18 @@ const UNAVAILABLE_COPY: Record<HealthImportUnavailableReason, string> = {
   "needs-update": copy.statusNeedsUpdate,
 };
 
-/** Message for a Health Connect failure notice; never empty. */
+/**
+ * The history row's source label. Each stored source names its own store, so an
+ * imported night always says whether Health Connect or Apple Health produced
+ * it — never a generic "imported".
+ */
+function sourceLabelFor(source: SleepEntry["source"]): string {
+  if (source === "manual") return copy.sourceManual;
+  if (source === "apple-health") return copy.sourceAppleHealth;
+  return copy.connectTitle;
+}
+
+/** Message for a health-store failure notice; never empty. */
 function healthErrorMessage(cause: unknown): string {
   if (cause instanceof Error && cause.message.trim() !== "") return cause.message;
   if (typeof cause === "string" && cause.trim() !== "") return cause;
@@ -164,13 +250,16 @@ export default function HealthScreen() {
   const { t } = useI18n();
   const { tokens } = useSkin();
 
-  // Device-local Health Connect state, moved from the Me tab. `null` means
-  // "still hydrating"; the toggle and the status line render the off state
-  // until hydration lands.
-  const healthProvider = useMemo(() => getHealthConnectProvider(), []);
+  // Device-local health-store state. The provider is resolved per platform
+  // (Health Connect on Android, Apple Health on iOS, nothing elsewhere), so this
+  // screen never branches on `Platform.OS` itself. `null` means "still
+  // hydrating"; the toggle and the status line render the off state until
+  // hydration lands.
+  const platform = useMemo(() => currentHealthPlatform(), []);
+  const healthProvider = useMemo(() => getHealthProvider(), []);
   const [healthEnabled, setHealthEnabled] = useState<boolean | null>(null);
   const [healthAvailability, setHealthAvailability] = useState<HealthAvailability | null>(null);
-  const [healthGrant, setHealthGrant] = useState<PermissionRequestResult | null>(null);
+  const [healthAuthorization, setHealthAuthorization] = useState<HealthAuthorization | null>(null);
   const [healthBusy, setHealthBusy] = useState(false);
   const [healthNotice, setHealthNotice] = useState<string | null>(null);
   // True when hydration itself failed: the state falls back to safe defaults
@@ -209,7 +298,7 @@ export default function HealthScreen() {
     let cancelled = false;
     void (async () => {
       try {
-        const [enabled, availability, grant] = await Promise.all([
+        const [enabled, availability, authorization] = await Promise.all([
           readHealthConnectEnabled(),
           healthProvider.availability(),
           healthProvider.currentPermissions(),
@@ -218,7 +307,7 @@ export default function HealthScreen() {
         setHealthHydrationFailed(false);
         setHealthEnabled(enabled);
         setHealthAvailability(availability);
-        setHealthGrant(grant);
+        setHealthAuthorization(authorization);
       } catch {
         // A failed read must never reject into the effect: land on safe
         // defaults (off, unavailable, nothing granted) so the toggle stays
@@ -228,7 +317,7 @@ export default function HealthScreen() {
         setHealthHydrationFailed(true);
         setHealthEnabled(false);
         setHealthAvailability({ kind: "unavailable", reason: "platform" });
-        setHealthGrant({ granted: [], missing: [] });
+        setHealthAuthorization({ kind: "granted", granted: [], missing: [] });
       }
     })();
     return () => {
@@ -238,9 +327,14 @@ export default function HealthScreen() {
 
   useFocusEffect(refreshHealthConnect);
 
-  const healthStatus = healthHydrationFailed
+  // One status-line decision, resolved per platform by the pure model, so the
+  // render below looks up copy instead of branching. A failed hydration shows
+  // the platform copy (the toggle value was never actually read) — the same
+  // degraded state the Android-only version showed.
+  const healthStatusLine = healthHydrationFailed
     ? "platform"
-    : healthConnectStatusKey(healthEnabled, healthAvailability, healthGrant);
+    : healthStatusView(platform, healthEnabled, healthAvailability, healthAuthorization).key;
+  const healthStatusText = statusCopyFor(platform, healthStatusLine);
 
   /**
    * Toggle the device-local opt-in. Enabling first checks availability, then
@@ -284,17 +378,27 @@ export default function HealthScreen() {
         setHealthNotice(t(HEALTH_STATUS_COPY[key]));
         return;
       }
-      const grant = await healthProvider.requestReadPermissions();
-      setHealthGrant(grant);
+      const authorization = await healthProvider.requestReadPermissions();
+      setHealthAuthorization(authorization);
       setHealthHydrationFailed(false);
-      if (!grant.granted.includes(SLEEP_READ_SCOPE)) {
-        setHealthNotice(t(copy.healthPermissionDenied));
+      if (!sleepReadUsable(authorization)) {
+        // Android: the sleep scope was refused, so say so and stay off.
+        // iOS: the sheet could not be shown at all (a throwing request reads as
+        // `requested: false`), which is a failure to *ask* — never a denial.
+        setHealthNotice(t(platform === "ios" ? copy.applePermissionRequested : copy.healthPermissionDenied));
         return;
       }
       await writeHealthConnectEnabled(true);
       setHealthEnabled(true);
+      // iOS can only report that the sheet was shown, so say that and point at
+      // Settings for the case where the user actually limited access.
+      if (platform === "ios") setHealthNotice(t(copy.applePermissionRequested));
     } catch (cause) {
-      setHealthNotice(t(copy.healthError, { message: healthErrorMessage(cause) }));
+      setHealthNotice(
+        t(platform === "ios" ? copy.appleError : copy.healthError, {
+          message: healthErrorMessage(cause),
+        }),
+      );
     } finally {
       setHealthBusy(false);
     }
@@ -383,6 +487,9 @@ export default function HealthScreen() {
     try {
       const imported: ImportedNight[] = [];
       let supersededCount = 0;
+      // The recovery read is report-only (no persistence contract), so it is
+      // collected for the notice, not stored: the newest imported night's value.
+      let recoveryBpm: number | null = null;
       for (const date of recentWakeDates(todayLocalDate(), 7)) {
         const result = await healthProvider.sleepHoursForDate(date);
         if (result.kind === "no-data") continue;
@@ -396,6 +503,13 @@ export default function HealthScreen() {
             setImportNotice({ tone: "warn", message: t(copy.importNoPermission) });
           } else if (result.kind === "partial-permission") {
             setImportNotice({ tone: "warn", message: t(copy.importPartial) });
+          } else if (platform === "ios") {
+            // iOS can only read "unavailable" here; its details differ enough
+            // (no install/update path) to keep their own copy.
+            setImportNotice({
+              tone: "warn",
+              message: t(result.reason === "platform" ? copy.appleStatusPlatform : copy.appleStatusNotFound),
+            });
           } else {
             setImportNotice({ tone: "warn", message: t(UNAVAILABLE_COPY[result.reason]) });
           }
@@ -409,7 +523,9 @@ export default function HealthScreen() {
             hoursText: result.hoursText,
             sessionCount: result.sessionCount,
             importedAt: new Date().toISOString(),
-            source: "health-connect",
+            // The provider names the store it read, so a stored night always
+            // records whether it came from Health Connect or Apple Health.
+            source: healthProvider.sourceKind,
           },
           baselineRevision,
         );
@@ -419,28 +535,46 @@ export default function HealthScreen() {
         }
         imported.push({ date, hoursText: result.hoursText });
         setEntries(stored);
+        // Only on iOS, and only for the first (newest) night that imported: a
+        // recovery signal is per-night, and mixing nights would mislabel it.
+        if (platform === "ios" && recoveryBpm === null) {
+          recoveryBpm = await healthProvider.restingHeartRateForDate(date);
+        }
       }
       const summary = summarizeRecentNightsImport(imported);
       if (summary.kind === "imported") {
+        // The recovery line is appended only when a value was actually read, and
+        // it states in the same breath that nothing was saved — the record has
+        // no field for it (see the gap in docs/mobile.md).
+        const recovery =
+          recoveryBpm === null ? "" : ` ${t(copy.restingHeartRateReadOnly, { bpm: recoveryBpm })}`;
         setImportNotice({
           tone: "info",
-          message: t(copy.importOkNights, {
-            count: summary.count,
-            date: summary.latestDate,
-            hours: summary.latestHoursText,
-          }),
+          message:
+            t(copy.importOkNights, {
+              count: summary.count,
+              date: summary.latestDate,
+              hours: summary.latestHoursText,
+            }) + recovery,
         });
       } else if (supersededCount > 0) {
         // Every read raced a user write and lost; the history keeps whatever
         // the user saved, so say that instead of claiming empty Health Connect.
         setImportNotice({ tone: "warn", message: t(copy.importSuperseded) });
       } else {
-        setImportNotice({ tone: "warn", message: t(copy.importNoData) });
+        // An empty read on iOS has three possible causes the platform will not
+        // distinguish (denied, limited, or no samples), so its copy says that.
+        setImportNotice({
+          tone: "warn",
+          message: t(platform === "ios" ? copy.appleImportNoData : copy.importNoData),
+        });
       }
     } catch (cause) {
       setImportNotice({
         tone: "danger",
-        message: t(copy.importError, { message: healthErrorMessage(cause) }),
+        message: t(platform === "ios" ? copy.appleError : copy.importError, {
+          message: healthErrorMessage(cause),
+        }),
       });
     } finally {
       setImporting(false);
@@ -495,34 +629,57 @@ export default function HealthScreen() {
 
   const historyDesc = entries === null ? [] : listSleepEntriesDesc(entries);
 
+  /** The opt-in button's label, naming this platform's health app. */
+  const toggleLabel = t(
+    platform === "ios"
+      ? healthEnabled
+        ? copy.appleDisable
+        : copy.appleEnable
+      : healthEnabled
+        ? copy.healthDisable
+        : copy.healthEnable,
+  );
+
   return (
     <Screen bottomInset testID="screen-health">
       <Display>{t(copy.title)}</Display>
-      <Body>{t(copy.lede)}</Body>
+      <Body>{t(platform === "ios" ? copy.ledeIos : copy.lede)}</Body>
 
       <Card testID="health-connect-section">
-        <Kicker>{t(copy.connectKicker)}</Kicker>
-        <Title>{t(copy.connectTitle)}</Title>
+        <Kicker>{t(platform === "ios" ? copy.appleKicker : copy.connectKicker)}</Kicker>
+        <Title>{t(platform === "ios" ? copy.appleTitle : copy.connectTitle)}</Title>
         <Body
           testID="health-status"
-          tone={healthStatus === "supported" || healthStatus === "off" ? "muted" : "warn"}>
-          {t(HEALTH_STATUS_COPY[healthStatus])}
+          tone={
+            healthStatusLine === "supported" ||
+            healthStatusLine === "off" ||
+            healthStatusLine === "authorization-unknown"
+              ? "muted"
+              : "warn"
+          }>
+          {t(healthStatusText)}
         </Body>
-        <Body>{t(copy.healthScopes)}</Body>
+        <Body>{t(platform === "ios" ? copy.appleScopes : copy.healthScopes)}</Body>
         {healthNotice !== null ? (
           <Banner message={healthNotice} testID="health-notice" tone="info" />
         ) : null}
         <Button
-          accessibilityLabel={t(healthEnabled ? copy.healthDisable : copy.healthEnable)}
+          accessibilityLabel={toggleLabel}
           disabled={healthBusy || healthEnabled === null}
           fullWidth
-          label={healthEnabled ? t(copy.healthDisable) : t(copy.healthEnable)}
+          label={toggleLabel}
           onPress={() => {
             void handleToggleHealthConnect();
           }}
           testID="health-toggle"
           variant="secondary"
         />
+        {/*
+          * The recovery read has no persistence contract yet (WorkoutRecord has
+          * only sleep_hours), so it is surfaced as read-only and never claimed
+          * as imported. Shown only where the platform can read it at all.
+          */}
+        {platform === "ios" ? <Body testID="health-recovery-note">{t(copy.appleRecoveryNote)}</Body> : null}
       </Card>
 
       <Card testID="health-sleep-section">
@@ -531,15 +688,32 @@ export default function HealthScreen() {
         <Body>{t(copy.sleepLede)}</Body>
 
         {/*
-          * Display-layer brand convention (user-observed wording, issue #50):
-          * the button names the current device's brand even though the reader
-          * behind it is always Health Connect. On an Apple phone that means
-          * the label already shows the Apple copy while HealthKit import is
-          * not implemented yet — the tap simply runs the existing
-          * availability flow, which reports the "platform" status there.
+          * Import copy per platform. iOS has exactly one health store, so the
+          * button says "Apple Health" with no brand matching at all. Android
+          * keeps the display-layer brand convention (issue #50): the button
+          * names the device brand while the reader behind it is Health Connect.
           */}
         {importReady ? (
-          phoneBrand === null ? (
+          platform === "ios" ? (
+            <>
+              <Button
+                disabled={importing}
+                label={t(importing ? copy.importingIos : copy.importButtonIos)}
+                onPress={() => {
+                  void handleImportSleep();
+                }}
+                testID="health-sleep-import"
+                variant="secondary"
+              />
+              {importNotice !== null ? (
+                <Banner
+                  message={importNotice.message}
+                  testID="health-import-notice"
+                  tone={importNotice.tone}
+                />
+              ) : null}
+            </>
+          ) : phoneBrand === null ? (
             <Body testID="health-brand-unsupported">{t(copy.brandUnsupported)}</Body>
           ) : (
             <>
@@ -575,7 +749,7 @@ export default function HealthScreen() {
 
         <View style={styles.manualBlock}>
           <Title>{t(copy.manualTitle)}</Title>
-          <Body>{t(copy.manualLede)}</Body>
+          <Body>{t(platform === "ios" ? copy.manualLedeIos : copy.manualLede)}</Body>
           <DateField
             accessibilityLabel={t(copy.manualDate)}
             doneLabel={t(copy.done)}
@@ -620,8 +794,7 @@ export default function HealthScreen() {
             <View key={entry.date} style={styles.historyRow} testID="health-history-row">
               <View style={styles.historyCopy}>
                 <Body tone="default" style={styles.historyDate}>
-                  {entry.date} · {entry.hoursText} h ·{" "}
-                  {t(entry.source === "manual" ? copy.sourceManual : copy.connectTitle)}
+                  {entry.date} · {entry.hoursText} h · {t(sourceLabelFor(entry.source))}
                 </Body>
                 <Body>
                   {t(copy.entryRecorded, {

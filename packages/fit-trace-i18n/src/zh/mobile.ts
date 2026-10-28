@@ -266,6 +266,36 @@ export const messages: Record<string, string> = {
   "That night's sleep changed while the import was running; the imported value was discarded to keep your newer entry.":
     "导入期间那一晚的睡眠发生了变化；为保留你更新的记录，已丢弃导入的值。",
 
+  /* ── Health page: Apple Health (issue #51) ──────────────────── */
+  "Optional and read-only. Reads from Apple Health happen only on this device; imported sleep becomes part of the workout record and syncs with it like a manually entered value.":
+    "可选且只读。从 Apple Health 的读取只发生在本机；导入的睡眠会成为训练记录的一部分，与你手动输入的值一样随记录同步。",
+  "No Apple Health data? Record the night here; saving a workout for that date attaches it the same way.":
+    "没有 Apple Health 数据？也可以在这里记录；保存该日期的训练时会以同样方式自动挂接。",
+  "APPLE HEALTH": "Apple 健康",
+  "Apple Health": "Apple 健康",
+  "Read-only: sleep analysis and resting heart rate. Apple Health never tells an app whether read access was granted, so an empty import may mean limited access or simply no recorded sleep.":
+    "只读：睡眠分析与静息心率。Apple 健康不会告诉 App 是否获得了读取权限，因此导入为空可能意味着权限受限，也可能只是没有记录到睡眠。",
+  "Enable Apple Health": "启用 Apple 健康",
+  "Disable Apple Health": "停用 Apple 健康",
+  "Enabled. Import your recent nights below; saving a workout attaches that night's sleep automatically when it is recorded here.":
+    "已启用。可在下方导入最近几晚睡眠；保存训练时会自动挂接这里记录的那一晚。",
+  "Permissions requested. Apple Health does not reveal whether read access was granted; if an import comes back empty, check Settings › Health › Data Access & Devices › Fit Trace.":
+    "已请求权限。Apple 健康不会透露是否授予了读取权限；如果导入结果为空，请检查“设置 › 健康 › 数据访问与设备 › Fit Trace”。",
+  "Apple Health is only available on iOS devices.": "Apple 健康仅在 iOS 设备上可用。",
+  "Apple Health is not available on this device.": "此设备上没有可用的 Apple 健康。",
+  "The permission sheet was shown. Apple Health does not report read grants, so the import will tell you if there is no data to read.":
+    "已显示权限请求面板。Apple 健康不会告知读取授权结果，因此若没有可读取的数据，导入会如实提示。",
+  "Apple Health has no sleep recorded for the last 7 nights. If you expect data, check Settings › Health › Data Access & Devices › Fit Trace and make sure your watch has synced.":
+    "Apple 健康中没有最近 7 晚的睡眠记录。如果你预期有数据，请检查“设置 › 健康 › 数据访问与设备 › Fit Trace”，并确认手表已完成同步。",
+  "Off on this device. To revoke access entirely, remove Fit Trace under Settings › Health › Data Access & Devices.":
+    "已在此设备上关闭。如需彻底撤销访问，请在“设置 › 健康 › 数据访问与设备”中移除 Fit Trace。",
+  "Apple Health error: {message}": "Apple 健康错误：{message}",
+  "Resting heart rate last night: {bpm} bpm. Read from Apple Health, not saved to the workout record.":
+    "昨晚静息心率：{bpm} bpm。已从 Apple 健康读取，但尚未保存到训练记录。",
+  "Resting heart rate is read for the same night window but not saved to the workout record yet.":
+    "静息心率会按同一夜间窗口读取，但尚未保存到训练记录。",
+  "Reading Apple Health…": "正在读取 Apple 健康…",
+
   /*
    * Proper names. The identity values are intentional: language endonyms are
    * shown in their own language (the same as the web switcher), and the skin

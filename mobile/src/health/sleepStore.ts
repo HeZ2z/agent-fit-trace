@@ -26,8 +26,14 @@ import { isIsoDate } from "./healthModel.ts";
  * the root `node:test` suite can load them through Node's type stripping.
  */
 
-/** Where one stored night came from. */
-export type SleepSource = "health-connect" | "manual";
+/**
+ * Where one stored night came from: the Android Health Connect store, the iOS
+ * Apple Health store, or a value the user typed. The source is recorded with
+ * every night so the history can name it, and it is deliberately its own axis
+ * from the platform: an imported night keeps saying which store produced it even
+ * when the history is read on another device.
+ */
+export type SleepSource = "health-connect" | "apple-health" | "manual";
 
 /** One recorded night, keyed by its wake-up date. */
 export interface SleepEntry {
@@ -55,8 +61,18 @@ export interface SleepEntry {
 /** Versioned key so a future migration can coexist with v1. */
 export const SLEEP_STORAGE_KEY = "agent-fit-trace.health.sleep.v1";
 
-/** The stored sources, mirrored as a plain list for strict parsing. */
-const SLEEP_SOURCES: readonly SleepSource[] = ["health-connect", "manual"];
+/**
+ * The stored sources, mirrored as a plain list for strict parsing. Adding a
+ * source is additive: a payload written before `apple-health` existed still
+ * parses, and an unknown string is still a corrupt store (never silently
+ * coerced to a known source).
+ */
+const SLEEP_SOURCES: readonly SleepSource[] = ["health-connect", "apple-health", "manual"];
+
+/** Narrow an arbitrary stored string to a known source (strict, no coercion). */
+export function isSleepSource(value: string): value is SleepSource {
+  return (SLEEP_SOURCES as readonly string[]).includes(value);
+}
 
 /** One-decimal hours string, e.g. 7.5166… → "7.5". */
 export function formatSleepHoursText(hours: number): string {
@@ -119,10 +135,15 @@ function parseSleepEntry(candidate: unknown, index: number): SleepEntry {
   if (typeof importedAt !== "string" || Number.isNaN(Date.parse(importedAt))) {
     throw new Error(`Corrupt ${where}: importedAt must be an ISO timestamp string`);
   }
-  const source = entry.source;
-  if (source !== "health-connect" && source !== "manual") {
-    throw new Error(`Corrupt ${where}: source must be "health-connect" or "manual"`);
+  // The stored string must name a known source. An unknown one is a corrupt
+  // store (never silently coerced to a known source), and a payload written
+  // before `apple-health` existed keeps parsing unchanged.
+  if (typeof entry.source !== "string" || !isSleepSource(entry.source)) {
+    throw new Error(
+      `Corrupt ${where}: source must be one of ${SLEEP_SOURCES.map((name) => `"${name}"`).join(", ")}`,
+    );
   }
+  const source: SleepSource = entry.source;
   return {
     date,
     hours,

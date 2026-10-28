@@ -653,3 +653,78 @@ test("a store over a legacy revision-less payload reads revision 0 and upgrades 
     [8],
   );
 });
+
+/* ── Apple Health source (issue #51) ─────────────────────────────── */
+
+test("an apple-health entry round-trips through the strict store", () => {
+  const apple = entry({ date: "2026-10-25", hours: 7.4, sessionCount: 5, source: "apple-health" });
+  const payload = serializeSleepStorePayload({ revision: 3, entries: [apple] });
+  const parsed = parseSleepStorePayload(payload);
+  assert.equal(parsed.revision, 3);
+  // The new source is a first-class value: it survives validation unchanged.
+  assert.equal(parsed.entries[0].source, "apple-health");
+  assert.equal(parsed.entries[0].sessionCount, 5);
+});
+
+test("a payload written before apple-health existed still parses unchanged", () => {
+  // Regression for the additive source: records stored by the Android-only
+  // release carry only "health-connect"/"manual", and must keep loading after
+  // the union grew. The strict parse is unchanged for those values.
+  const legacy = JSON.stringify({
+    revision: 2,
+    entries: [
+      entry({ date: "2026-10-24", source: "health-connect" }),
+      entry({ date: "2026-10-25", hours: 6, sessionCount: 0, source: "manual" }),
+    ],
+  });
+  const parsed = parseSleepStorePayload(legacy);
+  assert.equal(parsed.revision, 2);
+  assert.deepEqual(
+    parsed.entries.map((night) => [night.date, night.source]),
+    [
+      ["2026-10-24", "health-connect"],
+      ["2026-10-25", "manual"],
+    ],
+  );
+  // A v1 bare array of legacy entries upgrades in place, sources intact.
+  const legacyArray = JSON.stringify([entry({ date: "2026-10-24", source: "health-connect" })]);
+  assert.equal(parseSleepStorePayload(legacyArray).entries[0].source, "health-connect");
+});
+
+test("an unknown source is still a corrupt store, never coerced", () => {
+  // Growing the union is additive, not permissive: a source string this build
+  // does not know stays an error naming the entry, so data is never silently
+  // relabeled to a known store.
+  assert.throws(
+    () => parseSleepStore(JSON.stringify([entry({ date: "2026-10-25", source: "google-fit" as never })])),
+    /entry 0.*source/,
+  );
+});
+
+test("all three sources coexist and each keeps its own label", () => {
+  const stored = upsertSleepEntry(
+    upsertSleepEntry(
+      upsertSleepEntry([], entry({ date: "2026-10-23", source: "health-connect" })),
+      entry({ date: "2026-10-24", source: "apple-health" }),
+    ),
+    entry({ date: "2026-10-25", hours: 6, sessionCount: 0, source: "manual" }),
+  );
+  assert.deepEqual(
+    listSleepEntriesDesc(stored).map((night) => [night.date, night.source]),
+    [
+      ["2026-10-25", "manual"],
+      ["2026-10-24", "apple-health"],
+      ["2026-10-23", "health-connect"],
+    ],
+  );
+  // The strict round-trip keeps every source distinct.
+  assert.deepEqual(parseSleepStore(serializeSleepStore(stored)), stored);
+});
+
+test("an imported apple-health night still auto-attaches to its Log date", () => {
+  // The Log's auto-attach is source-agnostic: it fills an empty draft field for
+  // the recorded night whatever store produced it.
+  const stored = [entry({ date: "2026-10-25", source: "apple-health" })];
+  assert.equal(resolveAttachableSleep("2026-10-25", stored)?.source, "apple-health");
+  assert.equal(resolveAttachableSleep("2026-10-26", stored), undefined);
+});

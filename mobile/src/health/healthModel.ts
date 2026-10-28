@@ -440,21 +440,44 @@ export function healthStatusView(
 }
 
 /**
- * The device-local Health Connect provider. Implementations must be usable
- * without React; the native adapter is the only implementation in the app.
+ * The device-local health provider contract.
+ *
+ * Every implementation must be usable without React; the two native adapters
+ * (`healthConnect.ts` on Android, `healthKit.ts` on iOS) are the only
+ * implementations in the app, and `healthProvider.ts` picks one per platform.
+ *
+ * `HealthProvider` is kept as the historical name for the same contract: the
+ * Android adapter was the only implementer before issue #51, and call sites may
+ * still import either name.
  */
-export interface HealthProvider {
+export interface PlatformHealthProvider {
+  /**
+   * The store this provider reads. Recorded as the sleep entry's source, so a
+   * stored night always names the health store it came from, and the UI can
+   * label the import without asking the platform separately.
+   */
+  readonly sourceKind: HealthSourceKind;
   availability(): Promise<HealthAvailability>;
   /**
-   * Request the read scopes. Returns the granular outcome; a rejection of one
-   * scope never hides the grant of the other.
+   * Request the read scopes. Android returns the granular arm (a rejection of
+   * one scope never hides the grant of the other); iOS returns the `unknown`
+   * arm, because HealthKit does not disclose read grants.
    */
-  requestReadPermissions(): Promise<PermissionRequestResult>;
-  /** Currently granted read scopes, without showing any system dialog. */
-  currentPermissions(): Promise<PermissionRequestResult>;
+  requestReadPermissions(): Promise<HealthAuthorization>;
+  /** The current read authorization, without showing any system dialog. */
+  currentPermissions(): Promise<HealthAuthorization>;
   /** Aggregate the sleep behind `workoutDate` ("YYYY-MM-DD") into a draft value. */
   sleepHoursForDate(workoutDate: string): Promise<SleepImportResult>;
+  /**
+   * The resting heart rate this store recorded for `workoutDate`'s night
+   * window, or `null` when the platform cannot read it, none was recorded, or
+   * the record contract has nowhere to persist it.
+   */
+  restingHeartRateForDate(workoutDate: string): Promise<number | null>;
 }
+
+/** Historical name for `PlatformHealthProvider`; same contract. */
+export type HealthProvider = PlatformHealthProvider;
 
 /**
  * Map the native SDK status number to a neutral availability.
