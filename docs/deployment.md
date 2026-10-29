@@ -77,6 +77,160 @@ error. A full release additionally requires authenticated API tests,
 ownership/RLS tests, database persistence tests, login/session tests, and
 default pi coaching integration tests.
 
+## Remote MCP endpoint (`/api/mcp`)
+
+The remote MCP endpoint is an OAuth 2.1 resource server for hosted MCP clients.
+It is **not** production-verified: the design is implemented and unit-tested, but
+no live Supabase project has ever issued a token carrying the binding claim, and
+the migration below has **not been applied** anywhere. Apply this section only
+when you intend to test it, and do not advertise remote MCP as working until
+[`docs/mcp.md`](mcp.md#verification-status)'s unverified rows are actually run.
+The design rationale (why the claim instead of `aud`, why the hook never
+raises) lives in that document; this section is only the operator procedure.
+
+### 1. Migration order
+
+Apply through the normal Supabase migration tooling, after the existing ones:
+
+1. `20261010000000_workouts.sql`
+2. `20261011000000_workouts_pagination.sql`
+3. `20261017000000_imported_artifacts.sql`
+4. `20261017000100_signup_gate.sql`
+5. `20261017000200_coaching_cloud.sql`
+6. `20261017000300_cloud_execution_guards.sql`
+7. **`20261029000000_mcp_oauth_resource.sql`** ← new; additive and forward-only
+
+It creates `public.mcp_oauth_client_resources` and
+`public.hook_stamp_mcp_resource(jsonb)`. It is safe to apply at any time: with no
+rows and the hook disabled it changes no runtime behavior at all. There is no
+Supabase CLI in the agent environments for this repo, so this file was **not**
+applied or executed during the change that added it — it received a syntax
+review only. Never reset a shared local stack just to apply it.
+
+### 2. Enable the hook (separate step — applying is not enabling)
+
+Applying the migration alone changes **nothing**; token issuance is unaffected
+until the hook is turned on. On the hosted project: Authentication → Hooks →
+Custom Access Token → select `public.hook_stamp_mcp_resource`. Locally that is
+the `[auth.hook.custom_access_token]` block in `supabase/config.toml`.
+
+Enable the hook only **after** the migration is applied — the function must
+exist, or every login and token refresh fails. Once enabled with an empty
+mapping table the hook is inert in the safe direction: no token carries the
+claim, so `/api/mcp` rejects everything while the rest of the app behaves
+exactly as before.
+
+### 3. Register the MCP client and bind it to this resource
+
+Dynamic client registration is OFF on this project (verified: no
+`registration_endpoint` in the discovery document), so a client cannot register
+itself. Create it in the dashboard (Authentication → OAuth Server), then bind it
+in **both** places — the hook reads the table, the server checks the env list:
+
+```sql
+-- Service role / SQL editor only. client_id is the OAuth client's uuid, the
+-- same value GoTrue puts in the token's client_id claim.
+insert into public.mcp_oauth_client_resources (client_id, resource)
+values ('<oauth client uuid>', 'https://agent-fit-trace.vercel.app/api/mcp')
+on conflict (client_id) do update
+  set resource = excluded.resource, enabled = true, updated_at = now();
+```
+
+```dotenv
+FIT_TRACE_MCP_CLIENT_IDS=<oauth client uuid>
+FIT_TRACE_MCP_RESOURCE=https://agent-fit-trace.vercel.app/api/mcp
+```
+
+Set the resource URL exactly: origin + `/api/mcp`, no trailing slash, no query.
+It is compared for exact equality against both the env var and the claim, so a
+typo rejects every token with `invalid_token` and no useful diagnostic.
+
+### 4. Authorization Path
+
+Set Authentication → OAuth Server → Authorization Path to `/oauth/consent` (Site
+URL is `https://agent-fit-trace.vercel.app`). That path is served by this app's
+consent screen; without it users are redirected to a 404 and can never approve a
+client.
+
+### 5. Environment (Vercel)
+
+In addition to the shared `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY`:
+
+```dotenv
+FIT_TRACE_MCP_RESOURCE=https://agent-fit-trace.vercel.app/api/mcp
+FIT_TRACE_MCP_CLIENT_IDS=<comma-separated oauth client uuids>
+```
+
+Missing, blank, or malformed values make the endpoint return `503` rather than
+serve unauthenticated requests. There is no default resource and no wildcard
+client list.
+
+**`SUPABASE_SERVICE_ROLE_KEY` must never be provided to the MCP path.** The
+endpoint authorizes with the caller's own access token plus the publishable key
+so PostgREST RLS applies; a service-role key on this path would bypass RLS and
+turn any authorization bug into full-database access. The worker process (a
+separate host, above) is the only place that key belongs, and it is rejected
+outright if it resembles the publishable key.
+
+### 6. Rollback
+
+Ordered so each step is independently safe:
+
+1. **Disable the hook first** — dashboard toggle off, `enabled = false` locally.
+   This stops claim stamping at the next token mint and cannot break logins.
+2. `drop function if exists public.hook_stamp_mcp_resource(jsonb);`
+3. `delete from public.mcp_oauth_client_resources where client_id = '<uuid>';`
+   (or `drop table` if abandoning the feature). Deleting a row alone already
+   stops stamping for that client and leaves the claim absent → rejected.
+4. Remove the MCP route: delete `api/mcp.mjs` (and its `.well-known` metadata
+   route) and redeploy. Without the route the endpoint returns 404 for everyone.
+5. Remove `FIT_TRACE_MCP_RESOURCE` / `FIT_TRACE_MCP_CLIENT_IDS` from Vercel.
+
+Revoking one user's access to a client (rather than the whole feature) is a
+user-side action: `DELETE /auth/v1/user/oauth/grants?client_id=<uuid>` with that
+user's own token. Rollback never touches `auth.oauth_clients` (Auth's own table)
+or any user workout data.
+
+### 7. Verification before claiming it works
+
+Run `pnpm typecheck`, `pnpm test`, and `pnpm build`. Those alone are **not**
+evidence about a live deployment.
+
+A local round of this checklist has been executed (2026-10-30): GoTrue
+v2.197.0 + PostgREST v16.4 against a fresh database with the repo migrations
+applied in order, the hook enabled, and the built `build/server/vercel.mjs`
+driven through `handleVercelApi`. It passed 34/34 assertions, covering: the
+migration applying cleanly, the hook stamping the exact resource, `aud` staying
+`authenticated`, the stamped token still working against `GET /auth/v1/user`
+and PostgREST, a browser token being rejected, real two-account RLS isolation,
+the full PKCE → consent → token → `/api/mcp` session, `import_workout`
+conflict/idempotency, and a plan draft writing nothing.
+
+What that local run does **not** cover, and still needs a disposable hosted
+project:
+
+- Apply the migration there, then confirm the hook is listed as enabled.
+- With a bound client, complete PKCE + consent and confirm the issued token
+  contains `fit_trace_mcp_resource` with the exact resource URL, and that `aud`
+  is still `authenticated`.
+- Confirm a real MCP client product (not a script) completes discovery, consent,
+  and all four tools.
+- Confirm Vercel Preview (not just Production) serves `/api/mcp` and the
+  `.well-known` metadata with the configured resource.
+
+Two constraints found while running it, which apply to any deployment:
+
+- **Consent must load details first.** `POST …/authorizations/{id}/consent`
+  requires the authorization to already belong to the caller;
+  `GET …/authorizations/{id}` is what associates the signed-in user. Posting
+  consent directly returns `404 oauth_authorization_not_found`. The bundled
+  consent screen already does the GET first.
+- **Do not request the `openid` scope while the project signs JWTs with HS256.**
+  The token exchange fails with `500 "HS256 is not supported for ID token
+  signing"` before any MCP request is made. This resource therefore advertises
+  only `email`; enabling `openid` requires asymmetric signing keys (which
+  Supabase recommends for OAuth regardless).
+
 ## Durable cloud coaching (server-side slice)
 
 The durable cloud path is opt-in and currently unverified against a real
