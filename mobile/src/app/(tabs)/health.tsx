@@ -360,7 +360,12 @@ export default function HealthScreen() {
       if (healthEnabled) {
         await writeHealthConnectEnabled(false);
         setHealthEnabled(false);
-        setHealthNotice(t(copy.healthOffNote));
+        // Disabling is in-app only — neither platform revokes the native grant
+        // from here — so the note must point at this platform's settings.
+        // Android revokes under Health Connect; iOS under Health › Data Access
+        // & Devices. Using the Android note on iOS would send the user to a
+        // screen that does not exist on their device.
+        setHealthNotice(t(platform === "ios" ? copy.appleOffNote : copy.healthOffNote));
         return;
       }
       const availability = await healthProvider.availability();

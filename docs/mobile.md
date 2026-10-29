@@ -378,7 +378,9 @@ partially granted), the read-only scopes (sleep sessions and resting heart rate)
 and the toggle. Enabling first requests the Health Connect read permissions; a
 denied sleep grant keeps the toggle off and shows guidance. Disabling is in-app
 only — Health Connect grants are revoked from the system Health Connect settings,
-which the notice says. The import button only renders when the toggle is on **and**
+which the notice says. Each platform's notice points at its own settings (Health
+Connect on Android, Health › Data Access & Devices on iOS); neither claims a
+revocation the app cannot perform. The import button only renders when the toggle is on **and**
 Health Connect reports supported. The button names the health app of the device's
 brand (`supportedPhoneBrand` on the native `Platform.constants.Brand`):
 

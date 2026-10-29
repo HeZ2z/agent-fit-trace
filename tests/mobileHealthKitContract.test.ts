@@ -359,3 +359,29 @@ test("the enable flow never shows Android Health Connect copy on iOS", () => {
   assert.ok(/if \(platform === "android"\) \{/.test(source));
   assert.ok(/return copy\.statusPlatform;/.test(source));
 });
+
+test("the disable note points at the current platform's settings", () => {
+  // Regression for the fourth review finding: the disable branch always showed
+  // the Android note, so an iOS user was told to revoke access in Health
+  // Connect. Disabling is in-app only on both platforms, so the note has to
+  // name the store this device actually has.
+  const source = readFileSync(
+    new URL("../mobile/src/app/(tabs)/health.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /setHealthNotice\(t\(platform === "ios" \? copy\.appleOffNote : copy\.healthOffNote\)\);/.test(
+      source,
+    ),
+    "the disable note must be selected per platform",
+  );
+  assert.ok(
+    !/setHealthNotice\(t\(copy\.healthOffNote\)\)/.test(source),
+    "the Android note must not be shown unconditionally",
+  );
+  // Both notes exist and are distinct: Android names Health Connect, iOS names
+  // Health › Data Access & Devices.
+  assert.ok(/healthOffNote:/.test(source) && /appleOffNote:/.test(source));
+  assert.ok(/remove Fit Trace from the Health Connect system settings/.test(source));
+  assert.ok(/Settings › Health › Data Access & Devices/.test(source));
+});
