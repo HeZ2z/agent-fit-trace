@@ -62,7 +62,7 @@ export class MemoryStorage implements StorageAdapter {
 }
 
 export type { QueryResult } from "./filter.ts";
-export { filterRecordsPage } from "./filter.ts";
+export { assertValidHistoryFilter, filterRecordsPage } from "./filter.ts";
 
 /**
  * Append-only, idempotent workout store.
