@@ -371,13 +371,16 @@ export default function HealthScreen() {
       setHealthHydrationFailed(false);
       if (availability.kind !== "supported") {
         // Stay off; the status line and notice carry the install/update hint.
+        // The copy must come from this platform's table: iOS has no
+        // install/update path, so borrowing the Android table here would tell
+        // an iOS user to install Health Connect.
         const key =
           availability.kind === "unavailable"
             ? availability.reason === "platform"
               ? "platform"
               : "not-found"
             : availability.kind;
-        setHealthNotice(t(HEALTH_STATUS_COPY[key]));
+        setHealthNotice(t(statusCopyFor(platform, key)));
         return;
       }
       const authorization = await healthProvider.requestReadPermissions();

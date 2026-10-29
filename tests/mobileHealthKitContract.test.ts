@@ -327,3 +327,35 @@ test("a failed enable-flow request is not reported as a shown sheet", () => {
     /if \(platform === "ios"\) setHealthNotice\(t\(copy\.applePermissionRequested\)\);/.test(source),
   );
 });
+
+test("the enable flow never shows Android Health Connect copy on iOS", () => {
+  // The same class of bug as the review findings: a platform-shaped message
+  // reaching the wrong platform. The unavailable-availability branch used the
+  // Android status table directly, so an iOS build without the native module
+  // would tell the user to install Health Connect. Both branches that render
+  // status copy must go through `statusCopyFor`, which picks the platform's
+  // own table.
+  const source = readFileSync(
+    new URL("../mobile/src/app/(tabs)/health.tsx", import.meta.url),
+    "utf8",
+  );
+  // The notice in the unavailable branch resolves through the helper.
+  const branch = source.slice(
+    source.indexOf('if (availability.kind !== "supported")'),
+    source.indexOf("const authorization = await healthProvider.requestReadPermissions()"),
+  );
+  assert.ok(branch.length > 0);
+  assert.ok(
+    branch.includes("statusCopyFor(platform, key)"),
+    "unavailable copy must be resolved per platform",
+  );
+  assert.ok(
+    !/setHealthNotice\(t\(HEALTH_STATUS_COPY\[key\]\)\)/.test(source),
+    "no branch may index the Android table directly",
+  );
+  // The status line itself already went through the helper (issue #51).
+  assert.ok(/const healthStatusText = statusCopyFor\(platform, healthStatusLine\);/.test(source));
+  // The helper's Android fallback keeps today's copy for the unchanged platform.
+  assert.ok(/if \(platform === "android"\) \{/.test(source));
+  assert.ok(/return copy\.statusPlatform;/.test(source));
+});
