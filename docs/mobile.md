@@ -562,7 +562,11 @@ authorization as `{ kind: "unknown", requested }` and has no
   The copy points at Settings › Health › Data Access & Devices › Fit Trace.
 
 Queries always ensure the sheet was shown first (`ensureAuthorizationRequested`
-before each read), because querying before authorization crashes the bridge.
+before each read), because querying before authorization crashes the bridge. If
+the sheet is still needed and the request itself fails, the read stops: the
+sleep import returns an error naming the authorization request rather than
+reporting `no-data` (which would hide a failure to *ask* behind "nothing
+recorded"), and the optional recovery read yields no value.
 
 **Sleep aggregation.** HealthKit reports sleep as a flat stream of category
 samples — one per stage, often written by several sources — so summing raw
@@ -589,6 +593,13 @@ persistence contract for it**: `WorkoutRecord` carries only `sleep_hours`, so
 the value is surfaced as read-only information and the Health page says so in
 the same breath. Nothing claims a recovery warning is resolved by it —
 `MISSING_RECOVERY_DATA` follows from `sleep_hours` alone, exactly as before.
+
+The reading is attributed to exactly one night: the newest night that actually
+imported. The attempt is tracked separately from its nullable result, so a
+newest night with no sample does not let an older night's value stand in, and
+the notice names the date the reading belongs to (`Resting heart rate for
+{date}`) alongside a sleep summary that describes the latest night. The two
+lines deliberately do not imply they came from the same night.
 
 **Sleep history sources.** `SleepSource` grew to
 `"health-connect" | "apple-health" | "manual"`. The change is additive: a

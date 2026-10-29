@@ -160,7 +160,7 @@ const copy = {
    * cannot back, so the line says exactly what was done and what was not.
    */
   restingHeartRateReadOnly:
-    "Resting heart rate last night: {bpm} bpm. Read from Apple Health, not saved to the workout record.",
+    "Resting heart rate for {date}: {bpm} bpm. Read from Apple Health, not saved to the workout record.",
   appleRecoveryNote:
     "Resting heart rate is read for the same night window but not saved to the workout record yet.",
   sourceAppleHealth: "Apple Health",
@@ -488,8 +488,14 @@ export default function HealthScreen() {
       const imported: ImportedNight[] = [];
       let supersededCount = 0;
       // The recovery read is report-only (no persistence contract), so it is
-      // collected for the notice, not stored: the newest imported night's value.
+      // collected for the notice, not stored. It is attempted exactly once, for
+      // the newest night that imported — tracked by this flag rather than by
+      // `recoveryBpm === null`, because a night with no sample also leaves the
+      // value null and must not make the loop fall through to an older night
+      // whose sample would then be labelled "last night".
+      let recoveryAttempted = false;
       let recoveryBpm: number | null = null;
+      let recoveryDate: string | null = null;
       for (const date of recentWakeDates(todayLocalDate(), 7)) {
         const result = await healthProvider.sleepHoursForDate(date);
         if (result.kind === "no-data") continue;
@@ -537,17 +543,25 @@ export default function HealthScreen() {
         setEntries(stored);
         // Only on iOS, and only for the first (newest) night that imported: a
         // recovery signal is per-night, and mixing nights would mislabel it.
-        if (platform === "ios" && recoveryBpm === null) {
+        // The attempt flag is set before the await so a rejected/empty read
+        // still counts as "asked for this night".
+        if (platform === "ios" && !recoveryAttempted) {
+          recoveryAttempted = true;
+          recoveryDate = date;
           recoveryBpm = await healthProvider.restingHeartRateForDate(date);
         }
       }
       const summary = summarizeRecentNightsImport(imported);
       if (summary.kind === "imported") {
         // The recovery line is appended only when a value was actually read, and
-        // it states in the same breath that nothing was saved — the record has
-        // no field for it (see the gap in docs/mobile.md).
+        // it names the night it describes — the summary above it is about the
+        // latest night, which is not necessarily the night that had a reading.
+        // It also states in the same breath that nothing was saved: the record
+        // has no field for it (see the gap in docs/mobile.md).
         const recovery =
-          recoveryBpm === null ? "" : ` ${t(copy.restingHeartRateReadOnly, { bpm: recoveryBpm })}`;
+          recoveryBpm === null || recoveryDate === null
+            ? ""
+            : ` ${t(copy.restingHeartRateReadOnly, { bpm: recoveryBpm, date: recoveryDate })}`;
         setImportNotice({
           tone: "info",
           message:

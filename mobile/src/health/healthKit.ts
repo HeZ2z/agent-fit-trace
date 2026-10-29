@@ -6,6 +6,7 @@ import {
   needsHealthKitAuthorizationRequest,
   nightWindowRange,
   previousIsoDate,
+  sleepReadUsable,
   tzOffsetMinutesForDate,
   type HealthAuthorization,
   type HealthAvailability,
@@ -189,17 +190,27 @@ function createHealthKitProvider(): PlatformHealthProvider {
    * library crashes when a read runs first (its README states this). A failed
    * status read is treated as "not yet requested", so the sheet is shown again
    * rather than risking the crash.
+   *
+   * Returns whether querying is now safe. The boolean is deliberately not
+   * `void`: when the sheet was still required and the request itself failed,
+   * the read must stop. Proceeding would query without satisfying the
+   * library's prerequisite (a crash risk) and would then report the empty
+   * answer as `no-data`, hiding a failure to *ask* behind "nothing recorded".
+   * A sheet that was already shown (`unnecessary`) needs no request and stays
+   * safe, so only a genuinely failed request blocks the read.
    */
-  async function ensureAuthorizationRequested(native: HealthKitNative): Promise<void> {
+  async function ensureAuthorizationRequested(native: HealthKitNative): Promise<boolean> {
     let status: number | null = null;
     try {
       status = await native.getRequestStatusForAuthorization({ toRead: HEALTHKIT_READ_SCOPES });
     } catch (cause) {
       console.warn("[healthKit] getRequestStatusForAuthorization failed; requesting first", cause);
     }
-    if (needsHealthKitAuthorizationRequest(status)) {
-      await requestReadAuthorization(native);
-    }
+    if (!needsHealthKitAuthorizationRequest(status)) return true;
+    // Reuse the same tested rule the screen's enable flow uses rather than
+    // restating it: `requested: false` (a failed request) is not usable, and a
+    // completed request is usable even though it is not a grant.
+    return sleepReadUsable(await requestReadAuthorization(native));
   }
 
   return {
@@ -258,7 +269,15 @@ function createHealthKitProvider(): PlatformHealthProvider {
       const window = nightWindowForDate(workoutDate);
       if (window === null) return { kind: "error", message: "Invalid workout date" };
 
-      await ensureAuthorizationRequested(native);
+      // The query must not run before the sheet exists, and a request that
+      // failed is reported as its own error — not as "no sleep recorded".
+      if (!(await ensureAuthorizationRequested(native))) {
+        return {
+          kind: "error",
+          message:
+            "Apple Health authorization could not be requested. Open the Health app or Settings once, then try again.",
+        };
+      }
 
       let samples: readonly HealthKitCategorySample[];
       try {
@@ -323,7 +342,9 @@ function createHealthKitProvider(): PlatformHealthProvider {
       const window = nightWindowForDate(workoutDate);
       if (window === null) return null;
 
-      await ensureAuthorizationRequested(native);
+      // The recovery read is optional: a failed authorization request reads as
+      // "no value", never as a reason to fail the night's sleep import.
+      if (!(await ensureAuthorizationRequested(native))) return null;
 
       let samples: readonly HealthKitQuantitySample[];
       try {

@@ -229,3 +229,70 @@ test("healthPlatformFor is the single platform decision the picker uses", () => 
   assert.equal(healthPlatformFor("android"), "android");
   assert.equal(healthPlatformFor("web"), "other");
 });
+
+/* ── review regressions (PR #54) ─────────────────────────────────── */
+
+test("a failed authorization request stops the read instead of reporting no-data", () => {
+  // Regression for the review finding: `ensureAuthorizationRequested` used to
+  // discard the request outcome, so both query paths proceeded after a failed
+  // request and an empty answer was reported as `no-data` — hiding a failure to
+  // *ask* behind "nothing recorded". The gate must be a boolean the caller
+  // checks, and the sleep path must return an error when it is false.
+  const source = readSource(HEALTH_KIT_SOURCE);
+  // The helper resolves a boolean, not void.
+  assert.ok(
+    /async function ensureAuthorizationRequested\(native: HealthKitNative\): Promise<boolean>/.test(
+      source,
+    ),
+    "the authorization gate must resolve whether querying is safe",
+  );
+  // A sheet that was already shown needs no request.
+  assert.ok(/if \(!needsHealthKitAuthorizationRequest\(status\)\) return true;/.test(source));
+  // The request outcome is judged by the shared, tested rule.
+  assert.ok(/return sleepReadUsable\(await requestReadAuthorization\(native\)\);/.test(source));
+  // The sleep path refuses to query on a failed request and says why.
+  const sleepGate = /if \(!\(await ensureAuthorizationRequested\(native\)\)\) \{\s*\n\s*return \{\s*\n\s*kind: "error"/;
+  assert.ok(sleepGate.test(source), "a failed request must fail the sleep read, not fall through");
+  // The recovery path stays optional: it returns no value rather than failing.
+  assert.ok(
+    /if \(!\(await ensureAuthorizationRequested\(native\)\)\) return null;/.test(source),
+    "a failed request must make the optional recovery read yield no value",
+  );
+  // Neither query may run before the gate.
+  for (const query of ["native.queryCategorySamples(", "native.queryQuantitySamples("]) {
+    const gateIndex = source.indexOf("await ensureAuthorizationRequested(native)");
+    const queryIndex = source.indexOf(query);
+    assert.ok(gateIndex > 0 && gateIndex < queryIndex, `${query} must follow the gate`);
+  }
+});
+
+test("the recovery value is tied to the newest imported night, not the first that has one", () => {
+  // Regression for the review finding: the loop used `recoveryBpm === null` as
+  // its stop condition, so a newest night with no sample left the slot open and
+  // an older night's value was later labelled "last night". The attempt must be
+  // tracked separately from its nullable result, and the notice must name the
+  // night it describes.
+  const source = readFileSync(
+    new URL("../mobile/src/app/(tabs)/health.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /let recoveryAttempted = false;/.test(source),
+    "the attempt needs its own flag, separate from the nullable value",
+  );
+  // The stop condition is the attempt flag, never the value.
+  assert.ok(
+    /if \(platform === "ios" && !recoveryAttempted\) \{/.test(source),
+    "only one night may be queried, whatever the result",
+  );
+  assert.ok(
+    !/recoveryBpm === null\)\s*\{\s*\n\s*recoveryBpm = await/.test(source),
+    "a null result must not allow a fall-through to an older night",
+  );
+  // The value is only shown together with the night it came from.
+  assert.ok(
+    /recoveryBpm === null \|\| recoveryDate === null/.test(source),
+    "a value without its night must not be rendered",
+  );
+  assert.ok(/\{ bpm: recoveryBpm, date: recoveryDate \}/.test(source));
+});

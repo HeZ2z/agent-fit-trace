@@ -290,8 +290,8 @@ export const messages: Record<string, string> = {
   "Off on this device. To revoke access entirely, remove Fit Trace under Settings › Health › Data Access & Devices.":
     "已在此设备上关闭。如需彻底撤销访问，请在“设置 › 健康 › 数据访问与设备”中移除 Fit Trace。",
   "Apple Health error: {message}": "Apple 健康错误：{message}",
-  "Resting heart rate last night: {bpm} bpm. Read from Apple Health, not saved to the workout record.":
-    "昨晚静息心率：{bpm} bpm。已从 Apple 健康读取，但尚未保存到训练记录。",
+  "Resting heart rate for {date}: {bpm} bpm. Read from Apple Health, not saved to the workout record.":
+    "{date} 的静息心率：{bpm} bpm。已从 Apple 健康读取，但尚未保存到训练记录。",
   "Resting heart rate is read for the same night window but not saved to the workout record yet.":
     "静息心率会按同一夜间窗口读取，但尚未保存到训练记录。",
   "Reading Apple Health…": "正在读取 Apple 健康…",
