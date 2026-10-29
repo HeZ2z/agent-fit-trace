@@ -21,6 +21,10 @@
         "android.permission.health.READ_RESTING_HEART_RATE"
       ]
     },
+    "ios": {
+      "bundleIdentifier": "com.pifittrace.app",
+      "supportsTablet": false
+    },
     "web": {
       "output": "single",
       "favicon": "./assets/images/favicon.png"
@@ -48,7 +52,15 @@
           }
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "Fit Trace reads your sleep analysis and resting heart rate from Apple Health on this device only, to attach that night's sleep and recovery signal to your workout records.",
+          "NSHealthUpdateUsageDescription": false,
+          "background": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

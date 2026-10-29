@@ -4,11 +4,14 @@ import { test } from "node:test";
 
 import {
   aggregateSleepHours,
+  appleHealthStatusKey,
   createHealthConnectToggle,
   createSingleFlightInit,
   evaluatePermissionGrant,
   formatSleepHours,
   healthConnectStatusKey,
+  healthPlatformFor,
+  healthStatusView,
   importUnavailableReason,
   isIsoDate,
   mapHealthConnectStatus,
@@ -19,8 +22,10 @@ import {
   SLEEP_STAGE,
   SDK_AVAILABILITY_STATUS,
   sleepImportMatchesDraft,
+  sleepReadUsable,
   summarizeRecentNightsImport,
   supportedPhoneBrand,
+  type HealthAuthorization,
   type SleepSessionLike,
 } from "../mobile/src/health/healthModel.ts";
 import {
@@ -817,4 +822,135 @@ test("summarizeRecentNightsImport summarizes a single stored night", () => {
     summarizeRecentNightsImport([{ date: "2024-02-29", hoursText: "8.3" }]),
     { kind: "imported", count: 1, latestDate: "2024-02-29", latestHoursText: "8.3" },
   );
+});
+
+/* ── iOS HealthKit contract (issue #51) ──────────────────────────── */
+
+/*
+ * The pure half of the Apple Health integration: platform resolution, the
+ * authorization model that keeps HealthKit's hidden read grants honest, and the
+ * status-line projection. The native adapter (`healthKit.ts`) is never imported
+ * here; it only exists on an iOS device build.
+ */
+
+test("healthPlatformFor resolves only android and ios to a health store", () => {
+  assert.equal(healthPlatformFor("android"), "android");
+  assert.equal(healthPlatformFor("ios"), "ios");
+  // A web bundle, a bare test shell or an unknown future target reads as
+  // "other": no import is offered instead of guessing at a store.
+  assert.equal(healthPlatformFor("web"), "other");
+  assert.equal(healthPlatformFor("windows"), "other");
+  assert.equal(healthPlatformFor(""), "other");
+});
+
+test("sleepReadUsable keeps the Android sleep grant as the gate", () => {
+  // Android: only the sleep scope opens the import; resting heart rate alone
+  // does not (it is not read in the Android slice).
+  assert.equal(sleepReadUsable({ kind: "granted", granted: ["SleepSession"], missing: [] }), true);
+  assert.equal(
+    sleepReadUsable({ kind: "granted", granted: ["RestingHeartRate"], missing: ["SleepSession"] }),
+    false,
+  );
+  assert.equal(sleepReadUsable({ kind: "granted", granted: [], missing: ["SleepSession"] }), false);
+});
+
+test("sleepReadUsable treats iOS as usable once the request was shown, never as a grant", () => {
+  // HealthKit hides read grants, so a completed request is all the app can ask
+  // for; a not-yet-requested state must block the read (reading before the
+  // sheet crashes the bridge).
+  assert.equal(sleepReadUsable({ kind: "unknown", requested: true }), true);
+  assert.equal(sleepReadUsable({ kind: "unknown", requested: false }), false);
+});
+
+test("appleHealthStatusKey never claims a grant, a denial or an install state", () => {
+  // The toggle and the loading state win first.
+  assert.equal(appleHealthStatusKey(false, { kind: "supported" }, null), "off");
+  assert.equal(appleHealthStatusKey(null, null, null), "off");
+  assert.equal(appleHealthStatusKey(true, null, null), "off");
+  // Platform unavailability is reported as such.
+  assert.equal(
+    appleHealthStatusKey(true, { kind: "unavailable", reason: "platform" }, null),
+    "platform",
+  );
+  assert.equal(
+    appleHealthStatusKey(true, { kind: "unavailable", reason: "not-found" }, null),
+    "not-found",
+  );
+  // HealthKit has no install/update state; those map to "not-found" rather than
+  // borrowing Health Connect's copy.
+  assert.equal(appleHealthStatusKey(true, { kind: "needs-install" }, null), "not-found");
+  assert.equal(appleHealthStatusKey(true, { kind: "needs-update" }, null), "not-found");
+  // A completed request reads as authorization-unknown — explicitly not
+  // "granted", because the platform cannot tell us that.
+  assert.equal(
+    appleHealthStatusKey(true, { kind: "supported" }, { kind: "unknown", requested: true }),
+    "authorization-unknown",
+  );
+  // Not yet requested (and still hydrating) reads as the plain supported state;
+  // the toggle copy asks for the permission.
+  assert.equal(
+    appleHealthStatusKey(true, { kind: "supported" }, { kind: "unknown", requested: false }),
+    "supported",
+  );
+  assert.equal(appleHealthStatusKey(true, { kind: "supported" }, null), "supported");
+});
+
+test("healthStatusView leaves the Android status line exactly as it was", () => {
+  // The Android arm must delegate to healthConnectStatusKey unchanged: the same
+  // inputs that produced each existing key still do.
+  const grant: HealthAuthorization = {
+    kind: "granted",
+    granted: ["SleepSession", "RestingHeartRate"],
+    missing: [],
+  };
+  assert.deepEqual(healthStatusView("android", true, { kind: "supported" }, grant), {
+    platform: "android",
+    key: "supported",
+  });
+  assert.deepEqual(
+    healthStatusView("android", true, { kind: "supported" }, {
+      kind: "granted",
+      granted: ["SleepSession"],
+      missing: ["RestingHeartRate"],
+    }),
+    { platform: "android", key: "partial" },
+  );
+  assert.deepEqual(
+    healthStatusView("android", true, { kind: "supported" }, {
+      kind: "granted",
+      granted: [],
+      missing: ["SleepSession", "RestingHeartRate"],
+    }),
+    { platform: "android", key: "no-permission" },
+  );
+  assert.deepEqual(healthStatusView("android", false, { kind: "supported" }, grant), {
+    platform: "android",
+    key: "off",
+  });
+  assert.deepEqual(healthStatusView("android", true, { kind: "needs-install" }, null), {
+    platform: "android",
+    key: "needs-install",
+  });
+  // An iOS-shaped authorization carries no grant, so the Android rule sees null
+  // and reports "supported" instead of inventing a revocation.
+  assert.deepEqual(
+    healthStatusView("android", true, { kind: "supported" }, { kind: "unknown", requested: true }),
+    { platform: "android", key: "supported" },
+  );
+});
+
+test("healthStatusView routes iOS and other platforms without Android leakage", () => {
+  assert.deepEqual(
+    healthStatusView("ios", true, { kind: "supported" }, { kind: "unknown", requested: true }),
+    { platform: "ios", key: "authorization-unknown" },
+  );
+  assert.deepEqual(healthStatusView("ios", false, null, null), {
+    platform: "ios",
+    key: "off",
+  });
+  // A platform with no health store offers nothing, whatever else is passed.
+  assert.deepEqual(healthStatusView("other", true, { kind: "supported" }, null), {
+    platform: "other",
+    key: "platform",
+  });
 });

@@ -68,8 +68,9 @@ service-role key; privileged work stays on the server and worker in
 The root layout nests `SafeAreaProvider`, `I18nProvider`, `SkinProvider`,
 `WorkoutDataProvider`, `AuthProvider` and `PreferencesProvider`, in that order.
 `index.tsx` opens History. The seven tabs are History, Log, Analysis, Plan,
-Coach, Health and Me; Health owns the Health Connect sleep import (below) and Me
-hosts account, appearance, language, sign-out and the manual sync entry. The
+Coach, Health and Me; Health owns the sleep import — Health Connect on Android,
+Apple Health on iOS (below) — and Me hosts account, appearance, language,
+sign-out and the manual sync entry. The
 sign-in and sync screens are stack routes outside the dock. There are no
 placeholder tabs left.
 
@@ -350,7 +351,7 @@ A failed or postponed sync does not block local use. Failures are classified as
 offline, auth, conflict or other, and the screen reports the corresponding
 message. The runner never logs tokens or workout content.
 
-## Health page: Health Connect sleep import and sleep history (Android)
+## Health page: sleep import and sleep history (Android Health Connect, iOS Apple Health)
 
 Samsung Health (and other wearables) sync sleep into Android Health Connect. Sleep
 lives on its own **Health page** — a bottom dock tab (the seventh, between Coach
@@ -377,7 +378,9 @@ partially granted), the read-only scopes (sleep sessions and resting heart rate)
 and the toggle. Enabling first requests the Health Connect read permissions; a
 denied sleep grant keeps the toggle off and shows guidance. Disabling is in-app
 only — Health Connect grants are revoked from the system Health Connect settings,
-which the notice says. The import button only renders when the toggle is on **and**
+which the notice says. Each platform's notice points at its own settings (Health
+Connect on Android, Health › Data Access & Devices on iOS); neither claims a
+revocation the app cannot perform. The import button only renders when the toggle is on **and**
 Health Connect reports supported. The button names the health app of the device's
 brand (`supportedPhoneBrand` on the native `Platform.constants.Brand`):
 
@@ -385,7 +388,7 @@ brand (`supportedPhoneBrand` on the native `Platform.constants.Brand`):
 | --- | --- | --- |
 | Samsung | "Import from Samsung Health" (zh: 导入您的三星健康) | Samsung Health syncs into Health Connect (sync switch above) |
 | Xiaomi / Redmi | "Import from Mi Fitness" (zh: 导入您的小米运动健康) | Mi Fitness (小米运动健康) writes Health Connect natively; after a device reboot the connection may need to be re-established before data flows again |
-| Apple | "Import from Apple Health" (zh: 导入您的苹果健康) | iOS has no Health Connect; the tap reports the platform as unavailable |
+| Apple | "Import from Apple Health" (zh: 导入您的苹果健康) | iOS has no Health Connect; iOS reads Apple Health through HealthKit instead (below), so this row only applies to an Android device reporting an Apple brand string |
 
 Vendor-direct SDKs (the Samsung Data SDK, the vivo open platform) would each
 require a vendor partnership approval; this project does not evaluate them.
@@ -427,12 +430,12 @@ sleep hours (strictly parsed: a number in (0, 24], one decimal) and save it into
 the same history; the import button is simply absent on devices without a usable
 Health Connect.
 
-**Android only and a custom development build is required** (for the import; the
-rest of the page works everywhere). The native module
-is not part of Expo Go: the import works only in a dev-client / EAS development
-build or a prebuild (`expo prebuild` applies the config plugin and manifest
-permissions). In Expo Go the availability check reports the platform as
-unavailable and the import button never renders.
+**A custom development build is required** (for the import; the rest of the page
+works everywhere). Neither native module is part of Expo Go: the import works
+only in a dev-client / EAS development build or a prebuild (`expo prebuild`
+applies the config plugins and the native permissions). In Expo Go the
+availability check reports the platform as unavailable and the import button
+never renders.
 
 **Sleep history** lists the stored nights newest-first (wake-up date, hours,
 source `Health Connect`/`Manual`, recorded-at timestamp) with a per-row delete.
@@ -466,8 +469,9 @@ the opt-in lives entirely on the device. The sleep history itself is
 device-local AsyncStorage (`agent-fit-trace.health.sleep.v1`) and is never
 mirrored, restored or synced across devices.
 
-Slice boundary: this slice aggregates sleep only. Resting heart rate is
-requested and shown in the status line but is not read or displayed yet.
+Slice boundary on Android: the Health Connect path aggregates sleep only.
+Resting heart rate is requested and shown in the status line but is not read
+yet (`restingHeartRateForDate` returns `null` there by design).
 
 Runtime and permissions:
 
@@ -496,16 +500,135 @@ Runtime and permissions:
   and the `resolveAttachableSleep(date, snapshot)` attach decision. The shell
   follows `deviceHealth.ts`: memory-first reads, memory-applied-first writes
   with rollback-and-rethrow on persistence failure.
-- `mobile/src/health/healthConnect.ts` is the thin native adapter (never
+- `mobile/src/health/healthConnect.ts` is the thin Android native adapter (never
   imported by tests): platform gate first (non-Android → unavailable without
   touching the native module), lazily required SDK, availability mapping,
-  granular permission bookkeeping and `SleepSessionRecord` normalization.
+  granular permission bookkeeping and `SleepSessionRecord` normalization. It
+  implements the shared `PlatformHealthProvider` and wraps its granular grant as
+  `{ kind: "granted" }`; `restingHeartRateForDate` returns `null`.
+- `mobile/src/health/healthKit.ts` is the thin iOS native adapter (never
+  imported by tests): platform gate first (non-iOS → unavailable without
+  touching the native module), lazily required module, `isHealthDataAvailable`,
+  the request-status-before-query rule, sleep-stage sample normalization into
+  `sleepIntervals`, and the resting-heart-rate quantity read. Read-only: no
+  `save*` call, no share scope, no background delivery.
+- `mobile/src/health/healthProvider.ts` is the platform picker (never imported
+  by tests): `currentHealthPlatform()` plus one cached
+  `PlatformHealthProvider` — Health Connect on Android, Apple Health on iOS, a
+  no-native-module stub elsewhere.
+- `mobile/src/health/sleepIntervals.ts` is the pure iOS aggregation model:
+  HealthKit sleep-stage values, the asleep-stage predicate, the interval union
+  (clip → sort → merge overlaps/nesting/duplicates/adjacency → sum → one
+  rounding) and the latest-plausible resting-heart-rate selection.
 
 On the Health page every import outcome renders its own message — imported
 (hours + session count), no data (with the Samsung Health sync-pointer copy), no
 permission, partial permission, unavailable (install/update/platform/not found)
 and error — and manual saves/deletes surface storage failures instead of
 silently showing state the store never received.
+
+### Apple Health (iOS)
+
+iOS has no Health Connect, so the same Health page reads **Apple Health**
+through HealthKit via `@kingstinct/react-native-healthkit` (16.2.0, pinned
+exactly, with `react-native-nitro-modules` 0.37.1 and
+`@react-native-healthkit/core` 16.2.0 — the library's own Nitro dependency).
+`mobile/src/health/healthProvider.ts` picks the provider per platform
+(`healthPlatformFor`), so the screen talks to one `PlatformHealthProvider` and
+never branches on `Platform.OS` itself; the pure `healthStatusView` resolves
+which status copy to show. A platform with no health store (web, a JS-only
+shell) gets a stub that reports "platform unavailable" without loading any
+native module.
+
+**Native build.** HealthKit needs a development build (`expo prebuild` +
+dev client or EAS); Expo Go does not contain the module. `mobile/app.json`
+declares the `ios` block (`bundleIdentifier com.pifittrace.app`) and the
+library's config plugin with
+`NSHealthShareUsageDescription`, `NSHealthUpdateUsageDescription: false` and
+`background: false`. The generated project carries the
+`com.apple.developer.healthkit` entitlement and no share (write) usage string.
+Read-only toward Apple Health: no write scopes, no `save*` call, no background
+delivery — pinned by source guards in `tests/mobileHealthKitContract.test.ts`.
+
+**Apple Health never reports read authorization.** For read types HealthKit
+reveals neither a grant nor a denial: `getRequestStatusForAuthorization` only
+says whether the request sheet was already shown. The app therefore models iOS
+authorization as `{ kind: "unknown", requested }` and has no
+"no-permission" state at all. Two consequences the UI states explicitly:
+
+- An enable tap reports that the sheet was shown, not that access was granted.
+  A request that throws reads as "not requested" — a failure to *ask*, never a
+  denial.
+- An empty import is reported as **no data**, never as a revoked permission.
+  It may mean the user limited access, or simply that no sleep was recorded.
+  The copy points at Settings › Health › Data Access & Devices › Fit Trace.
+
+Queries always ensure the sheet was shown first (`ensureAuthorizationRequested`
+before each read), because querying before authorization crashes the bridge. If
+the sheet is still needed and the request itself fails, the read stops: the
+sleep import returns an error naming the authorization request rather than
+reporting `no-data` (which would hide a failure to *ask* behind "nothing
+recorded"), and the optional recovery read yields no value. The same distinction
+holds on the enable toggle: a request that could not be shown keeps the opt-in
+off and says so, instead of reusing the "permission sheet was shown" copy that
+belongs to a completed request.
+
+**Sleep aggregation.** HealthKit reports sleep as a flat stream of category
+samples — one per stage, often written by several sources — so summing raw
+sample durations over-counts. `mobile/src/health/sleepIntervals.ts` (pure,
+node-testable) measures the **union** of the asleep intervals instead:
+`inBed` (0) and `awake` (2) are excluded, the four asleep values (1
+unspecified/alias, 3 core, 4 deep, 5 REM) are clipped to the same
+`[D-1 20:00, D 12:00]` local night window the Android path uses (each edge
+carrying its own day's UTC offset, so a DST switch inside the window cannot
+drift it), overlapping/nested/duplicate and exactly-adjacent intervals merge
+into one run, and the total is rounded to whole minutes **once**, at the end.
+A union policy has one documented risk: if two sources disagree and one reports
+false-positive sleep, the union reports the larger total. Excluding in-bed and
+awake keeps the overstatement bounded to genuine asleep claims.
+
+`sessionCount` on iOS is the number of merged asleep intervals that
+contributed, not a count of native samples.
+
+**Resting heart rate: read but not persisted.** `restingHeartRateForDate`
+queries `HKQuantityTypeIdentifierRestingHeartRate` inside the same window and
+selects the latest plausible sample (`selectRestingHeartRate`: latest start
+inside the window, finite and > 0, rounded to whole bpm). There is **no
+persistence contract for it**: `WorkoutRecord` carries only `sleep_hours`, so
+the value is surfaced as read-only information and the Health page says so in
+the same breath. Nothing claims a recovery warning is resolved by it —
+`MISSING_RECOVERY_DATA` follows from `sleep_hours` alone, exactly as before.
+
+The reading is attributed to exactly one night: the newest night that actually
+imported. The attempt is tracked separately from its nullable result, so a
+newest night with no sample does not let an older night's value stand in, and
+the notice names the date the reading belongs to (`Resting heart rate for
+{date}`) alongside a sleep summary that describes the latest night. The two
+lines deliberately do not imply they came from the same night.
+
+**Sleep history sources.** `SleepSource` grew to
+`"health-connect" | "apple-health" | "manual"`. The change is additive: a
+payload written by the Android-only release (only the first and third values)
+still parses unchanged, an unknown source is still a corrupt store naming the
+entry index, and each history row labels its own store instead of a generic
+"imported". An imported night attaches to the Log draft by wake-up date
+regardless of source.
+
+**Troubleshooting (iOS).**
+
+1. **No import button.** It renders only when the opt-in is on and
+   `isHealthDataAvailable()` is true; a simulator has health data available but
+   usually no sleep samples, and Expo Go has no module at all.
+2. **Empty import.** Check Settings › Health › Data Access & Devices › Fit
+   Trace, and confirm the watch has synced into the Health app. An empty import
+   is not evidence of a denial.
+3. **Sleep exists in Health but not here.** Confirm the wake-up date: the read
+   window is `[D-1 20:00, D 12:00]` local time, so a nap or an off date will not
+   appear.
+4. **Wrong hours.** Overlapping sources are unioned, not summed; a lower total
+   than a source app's own number is expected when that app counts awake or
+   in-bed time.
+
 
 ## Hosted coach
 
@@ -670,8 +793,14 @@ for fixed versions, not every commit. Checks stay light (typecheck, tests,
 `expo export`); build time is not spent on artifacts with no native change. EAS
 only builds on demand, not from CI.
 
-Android is the only supported target. iOS is deferred until before the public
-store release; there is no iOS build configuration or verification yet.
+Android is the only **released** target: `eas.json` defines Android profiles
+only, and every device smoke to date is Android. iOS now has an app identity and
+native configuration — `mobile/app.json` carries the `ios` block
+(`bundleIdentifier com.pifittrace.app`, `supportsTablet: false`) and the
+HealthKit config plugin, and `expo prebuild -p ios` generates a project with the
+`com.apple.developer.healthkit` entitlement — but no iOS EAS profile, signing
+identity, store entry or device verification exists yet. An iOS build is a
+manual, unsigned local prebuild at this point.
 
 ## Security and privacy
 
@@ -705,12 +834,14 @@ store release; there is no iOS build configuration or verification yet.
 
 ## Verification status and known gaps
 
-The ten mobile model suites pass with 141 tests: store 11, session draft 10,
-analysis 8, plan 6, auth 12, preferences 9, sync 16, sync apply 24, coach model
-18 and coach screen 27. The root app suite passes 607 tests. `pnpm typecheck`,
-`pnpm mobile:typecheck` and `expo export --platform android` pass in the current
-tree. These are model and bundle checks plus one limited Expo Go device smoke,
-not live service checks.
+The mobile model suites pass, including the health additions from issue #51
+(`mobileSleepIntervals`, the HealthKit contract guards, and the sleep-store
+source regression). `pnpm test`, `pnpm typecheck`, `pnpm mobile:typecheck`,
+`pnpm build`, `expo export --platform android` and
+`expo prebuild -p ios --no-install` pass in the current tree (the prebuild is
+inspected, not committed: `mobile/ios` is gitignored). These are model, bundle
+and generated-config checks plus one limited Expo Go device smoke on Android,
+not live service or device checks.
 
 - **PR3 is not verified against live services.** Sign-in, account preference
   round-trips, manual sync and the hosted coach have not been exercised against a
@@ -733,8 +864,26 @@ not live service checks.
 - **No local import/export parity.** The store has no import/export screen or file
   path yet, and plan application/adoption is not implemented; Plan remains a
   read-only draft.
-- **No iOS.** Native typography and layout are verified only on Android; there is
-  no iPhone build or test target.
+- **No iOS device verification.** Native typography and layout are verified only
+  on Android, and there is no iPhone test target. The Apple Health integration
+  (issue #51) is **generated-config-verified, not device-verified**: config
+  plugins, the HealthKit entitlement and `NSHealthShareUsageDescription` were
+  inspected in a fresh `expo prebuild -p ios` run, and the pure union /
+  authorization / window rules are unit-tested, but no iOS native build was
+  compiled (no CocoaPods install or Apple signing in this environment) and no
+  permission sheet, stage import or overlap sample has been exercised on a real
+  iPhone. `healthKit.ts` is never loaded by the test suite, so its native calls
+  (query shapes, the crash-before-authorization rule) are verified only against
+  the installed library's type declarations.
+- **Resting heart rate has no persistence contract.** It is read on iOS
+  (`restingHeartRateForDate` + `selectRestingHeartRate`) and returned to the
+  caller, but `WorkoutRecord` carries only `sleep_hours`, so it is not saved and
+  not shown as imported. No recovery-warning claim rests on it;
+  `MISSING_RECOVERY_DATA` still follows from `sleep_hours` alone.
+- **The iOS union policy can overstate.** Unioning every source's asleep
+  intervals means conflicting sources resolve to the larger total, not a
+  consensus. Excluding in-bed and awake keeps it bounded to genuine asleep
+  claims.
 - **No bundled fonts.** Bricolage/DM Sans fall back to platform fonts.
 - **No push notifications or background sync.** Sync is manual and foreground;
   the coach stream is foreground-only. There is no background delivery,
@@ -758,8 +907,9 @@ not live service checks.
   the native permission flow, Samsung Health sync, a real import and the
   redesigned Health page have not been re-run
   on a device with Health Connect installed; the native adapter is deliberately
-  thin so the pure coverage is the contract. Resting heart rate is requested and
-  shown in the status line but not read yet.
+  thin so the pure coverage is the contract. On Android, resting heart rate is
+  requested and shown in the status line but not read; on iOS it is read and
+  returned to the screen but not persisted (see the Apple Health gap above).
 - **EAS builds are manual.** Builds require an authenticated Expo account and
   are not triggered per commit.
 

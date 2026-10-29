@@ -5,14 +5,16 @@ import {
   createSingleFlightInit,
   evaluatePermissionGrant,
   importUnavailableReason,
-  isIsoDate,
   mapHealthConnectStatus,
   nightWindowRange,
+  previousIsoDate,
+  tzOffsetMinutesForDate,
   HEALTH_READ_SCOPES,
   SLEEP_READ_SCOPE,
+  type HealthAuthorization,
   type HealthAvailability,
-  type HealthProvider,
   type PermissionRequestResult,
+  type PlatformHealthProvider,
   type SleepImportResult,
   type SleepSessionLike,
 } from "./healthModel.ts";
@@ -100,29 +102,19 @@ function toSleepSessionLike(record: Record<string, unknown>): SleepSessionLike |
 }
 
 /**
- * The UTC offset (minutes east of UTC) in effect at local noon of `date`
- * ("YYYY-MM-DD", validated by the caller through `isIsoDate`).
+ * Adapt the granular Android outcome to the shared `HealthAuthorization`.
  *
- * Noon is sampled because DST transitions happen in the early morning, so the
- * offset at noon is the offset that date's evening and daytime hours use —
- * the offset each night-window edge must carry on a DST switch day. A
- * malformed date yields `NaN`, which the caller rejects via the window check.
+ * Android is the one platform that can state a grant, so its `granted`/
+ * `missing` pair passes through untouched — the screen's Android copy keeps
+ * reading exactly the fields it read before issue #51.
  */
-function tzOffsetMinutesForDate(date: string): number {
-  const [year, month, day] = date.split("-").map(Number);
-  const localNoon = new Date(year, month - 1, day, 12, 0, 0);
-  return -localNoon.getTimezoneOffset();
+function grantedAuthorization(
+  grant: PermissionRequestResult,
+): HealthAuthorization {
+  return { kind: "granted", granted: grant.granted, missing: grant.missing };
 }
 
-/** The calendar day before `workoutDate` ("YYYY-MM-DD"), rollover-safe. */
-function previousIsoDate(workoutDate: string): string | null {
-  if (!isIsoDate(workoutDate)) return null;
-  const [year, month, day] = workoutDate.split("-").map(Number);
-  // `Date.UTC` normalizes day 0 / month overflow; the ISO slice round-trips.
-  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
-}
-
-function createHealthConnectProvider(): HealthProvider {
+function createHealthConnectProvider(): PlatformHealthProvider {
   /**
    * Idempotent initialize guard for every native call that needs a client. In
    * react-native-health-connect 4.1.3 `requestPermission`,
@@ -155,6 +147,8 @@ function createHealthConnectProvider(): HealthProvider {
   }
 
   return {
+    sourceKind: "health-connect",
+
     async availability(): Promise<HealthAvailability> {
       // The platform gate comes first and never touches the native module.
       if (Platform.OS !== "android") return { kind: "unavailable", reason: "platform" };
@@ -167,22 +161,30 @@ function createHealthConnectProvider(): HealthProvider {
       }
     },
 
-    async requestReadPermissions(): Promise<PermissionRequestResult> {
-      if (Platform.OS !== "android") return { granted: [], missing: [...HEALTH_READ_SCOPES] };
+    async requestReadPermissions(): Promise<HealthAuthorization> {
+      if (Platform.OS !== "android") {
+        return grantedAuthorization(evaluatePermissionGrant(HEALTH_READ_SCOPES, []));
+      }
       const native = loadNativeHealthConnect();
-      if (native === null) return { granted: [], missing: [...HEALTH_READ_SCOPES] };
+      if (native === null) {
+        return grantedAuthorization(evaluatePermissionGrant(HEALTH_READ_SCOPES, []));
+      }
       await ensureInitialized();
       const granted = grantedRecordTypes(await native.requestPermission(readPermissions()));
-      return evaluatePermissionGrant(HEALTH_READ_SCOPES, granted);
+      return grantedAuthorization(evaluatePermissionGrant(HEALTH_READ_SCOPES, granted));
     },
 
-    async currentPermissions(): Promise<PermissionRequestResult> {
-      if (Platform.OS !== "android") return { granted: [], missing: [...HEALTH_READ_SCOPES] };
+    async currentPermissions(): Promise<HealthAuthorization> {
+      if (Platform.OS !== "android") {
+        return grantedAuthorization(evaluatePermissionGrant(HEALTH_READ_SCOPES, []));
+      }
       const native = loadNativeHealthConnect();
-      if (native === null) return { granted: [], missing: [...HEALTH_READ_SCOPES] };
+      if (native === null) {
+        return grantedAuthorization(evaluatePermissionGrant(HEALTH_READ_SCOPES, []));
+      }
       await ensureInitialized();
       const granted = await grantedReadScopes(native);
-      return evaluatePermissionGrant(HEALTH_READ_SCOPES, granted);
+      return grantedAuthorization(evaluatePermissionGrant(HEALTH_READ_SCOPES, granted));
     },
 
     async sleepHoursForDate(workoutDate: string): Promise<SleepImportResult> {
@@ -237,25 +239,35 @@ function createHealthConnectProvider(): HealthProvider {
         .filter((session): session is SleepSessionLike => session !== null);
       return aggregateSleepHours(sessions, workoutDate, startOffsetMinutes, endOffsetMinutes);
     },
+
+    /**
+     * Resting heart rate is deliberately unread on Android in this slice
+     * (issue #50 scoped the import to sleep; the scope is requested and shown
+     * in the status line but no query runs). Returning `null` keeps the
+     * contract honest for the platform-agnostic screen: "this store has no
+     * value to offer", never a fabricated 0 or a claim that none was recorded.
+     */
+    async restingHeartRateForDate(): Promise<number | null> {
+      return null;
+    },
   };
 }
 
-let providerSingleton: HealthProvider | null = null;
+let providerSingleton: PlatformHealthProvider | null = null;
 
 /** The app-wide Health Connect provider (one instance per launch). */
-export function getHealthConnectProvider(): HealthProvider {
+export function getHealthConnectProvider(): PlatformHealthProvider {
   providerSingleton ??= createHealthConnectProvider();
   return providerSingleton;
 }
 
 /**
- * The current device's phone brand, as the Health screen's import-button
- * brand gate reads it: Android exposes `Platform.constants.Brand`
- * ("samsung", "Xiaomi", "vivo", …). iOS constants carry no brand field, so an
- * iOS device reads as "apple" directly — note that iOS (HealthKit) import is
- * not implemented yet; the value only drives the button's copy, and the tap
- * still goes through the existing availability flow, which reports the
- * platform as unavailable there. Other shells read as an unknown brand.
+ * The current device's phone brand, as the Android import-button brand gate
+ * reads it: Android exposes `Platform.constants.Brand` ("samsung", "Xiaomi",
+ * "vivo", …). iOS constants carry no brand field, so an iOS device reads as
+ * "apple" directly — the iOS import button no longer depends on this at all
+ * (it names Apple Health unconditionally, issue #51); the value only remains
+ * the Android brand table's input. Other shells read as an unknown brand.
  */
 export function getCurrentPhoneBrand(): string {
   if (Platform.OS === "android") return Platform.constants.Brand;
