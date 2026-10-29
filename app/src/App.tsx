@@ -14,6 +14,7 @@ import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
 import { CoachScreen } from "./screens/CoachScreen.tsx";
 import { MeScreen } from "./screens/MeScreen.tsx";
+import { OAuthConsentScreen } from "./screens/OAuthConsentScreen.tsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.tsx";
 import {
   AuthCallbackScreen,
@@ -290,6 +291,17 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
           <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
           <Route path="/reset-password" element={<ResetPasswordScreen />} />
           <Route path="/auth/callback" element={<AuthCallbackScreen />} />
+          {/*
+            Remote-MCP OAuth consent. Registered as a sibling of the auth
+            screens and OUTSIDE `RequireAuth`/`ProtectedContent` on purpose:
+            the screen owns its own signed-out prompt, because the shared gate
+            signs in through `returnTarget.ts` and then navigates away from the
+            requested URL — which would drop the `authorization_id` that the
+            Supabase OAuth server put in this redirect. It also has to render
+            when the public config cannot load, so a failure here is never a
+            silent blank page.
+          */}
+          <Route path="/oauth/consent" element={<OAuthConsentScreen />} />
         </Route>
       </Routes>
     </BrowserRouter>
