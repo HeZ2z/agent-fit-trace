@@ -566,7 +566,10 @@ before each read), because querying before authorization crashes the bridge. If
 the sheet is still needed and the request itself fails, the read stops: the
 sleep import returns an error naming the authorization request rather than
 reporting `no-data` (which would hide a failure to *ask* behind "nothing
-recorded"), and the optional recovery read yields no value.
+recorded"), and the optional recovery read yields no value. The same distinction
+holds on the enable toggle: a request that could not be shown keeps the opt-in
+off and says so, instead of reusing the "permission sheet was shown" copy that
+belongs to a completed request.
 
 **Sleep aggregation.** HealthKit reports sleep as a flat stream of category
 samples — one per stage, often written by several sources — so summing raw

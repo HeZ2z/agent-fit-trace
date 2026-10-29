@@ -148,6 +148,8 @@ const copy = {
   appleStatusNotFound: "Apple Health is not available on this device.",
   applePermissionRequested:
     "The permission sheet was shown. Apple Health does not report read grants, so the import will tell you if there is no data to read.",
+  applePermissionRequestFailed:
+    "Apple Health could not show its permission sheet, so nothing was requested and Apple Health stays off. Open the Health app (or Settings › Health) once, then try again.",
   appleImportNoData:
     "Apple Health has no sleep recorded for the last 7 nights. If you expect data, check Settings › Health › Data Access & Devices › Fit Trace and make sure your watch has synced.",
   appleOffNote:
@@ -382,10 +384,14 @@ export default function HealthScreen() {
       setHealthAuthorization(authorization);
       setHealthHydrationFailed(false);
       if (!sleepReadUsable(authorization)) {
-        // Android: the sleep scope was refused, so say so and stay off.
-        // iOS: the sheet could not be shown at all (a throwing request reads as
-        // `requested: false`), which is a failure to *ask* — never a denial.
-        setHealthNotice(t(platform === "ios" ? copy.applePermissionRequested : copy.healthPermissionDenied));
+        // The opt-in stays off (the import button never appears), and the
+        // notice must say why. The two platforms fail differently here:
+        // Android refused a scope; iOS could not show the sheet at all, which
+        // is a failure to *ask* — never a denial, and never "the sheet was
+        // shown".
+        setHealthNotice(
+          t(platform === "ios" ? copy.applePermissionRequestFailed : copy.healthPermissionDenied),
+        );
         return;
       }
       await writeHealthConnectEnabled(true);

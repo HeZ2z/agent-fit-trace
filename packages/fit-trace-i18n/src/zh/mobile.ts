@@ -285,6 +285,8 @@ export const messages: Record<string, string> = {
   "Apple Health is not available on this device.": "此设备上没有可用的 Apple 健康。",
   "The permission sheet was shown. Apple Health does not report read grants, so the import will tell you if there is no data to read.":
     "已显示权限请求面板。Apple 健康不会告知读取授权结果，因此若没有可读取的数据，导入会如实提示。",
+  "Apple Health could not show its permission sheet, so nothing was requested and Apple Health stays off. Open the Health app (or Settings › Health) once, then try again.":
+    "Apple 健康未能显示权限请求面板，因此没有发起任何请求，Apple 健康保持关闭。请先打开一次「健康」App（或「设置 › 健康」），然后重试。",
   "Apple Health has no sleep recorded for the last 7 nights. If you expect data, check Settings › Health › Data Access & Devices › Fit Trace and make sure your watch has synced.":
     "Apple 健康中没有最近 7 晚的睡眠记录。如果你预期有数据，请检查“设置 › 健康 › 数据访问与设备 › Fit Trace”，并确认手表已完成同步。",
   "Off on this device. To revoke access entirely, remove Fit Trace under Settings › Health › Data Access & Devices.":

@@ -296,3 +296,34 @@ test("the recovery value is tied to the newest imported night, not the first tha
   );
   assert.ok(/\{ bpm: recoveryBpm, date: recoveryDate \}/.test(source));
 });
+
+test("a failed enable-flow request is not reported as a shown sheet", () => {
+  // Regression for the third review finding: when `requestReadPermissions`
+  // answered `{ kind: "unknown", requested: false }` (the request itself
+  // rejected), the enable flow rendered `applePermissionRequested` — "The
+  // permission sheet was shown" — for a sheet that never appeared. The failure
+  // needs its own copy; `applePermissionRequested` stays for completed
+  // requests only.
+  const source = readFileSync(
+    new URL("../mobile/src/app/(tabs)/health.tsx", import.meta.url),
+    "utf8",
+  );
+  // The unusable-authorization branch must not use the "shown" copy on iOS.
+  const branch = source.slice(
+    source.indexOf("if (!sleepReadUsable(authorization))"),
+    source.indexOf("await writeHealthConnectEnabled(true)"),
+  );
+  assert.ok(branch.length > 0, "the enable flow must still gate on sleepReadUsable");
+  assert.ok(
+    branch.includes("copy.applePermissionRequestFailed"),
+    "a failed request needs its own message",
+  );
+  assert.ok(
+    !branch.includes("copy.applePermissionRequested"),
+    "a failed request must not claim the sheet was shown",
+  );
+  // The success path still says the sheet was shown (that is all iOS reveals).
+  assert.ok(
+    /if \(platform === "ios"\) setHealthNotice\(t\(copy\.applePermissionRequested\)\);/.test(source),
+  );
+});
