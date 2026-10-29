@@ -1,4 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import { resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { createCloudFitTraceStore, loadTrainingCoachPrompt } from "@agent-fit-trace/mcp";
 import { createSupabaseVerifier } from "./auth/supabaseVerifier.ts";
 import { extractBearerToken } from "./auth/verifier.ts";
 import {
@@ -12,6 +17,15 @@ import { CLOUD_SAFE_DEFAULTS, readCloudRequestEnv } from "./cloud/config.ts";
 import { createCloudCoachingHandler } from "./cloud/httpHandler.ts";
 import { createSupabaseCoachingRequestRepository } from "./cloud/supabaseCoachingRepository.ts";
 import { storeFactorySource } from "./coaching/coachingService.ts";
+import { createMcpTokenVerifier } from "./mcp/auth.ts";
+import { readMcpAuthConfig } from "./mcp/env.ts";
+import { createMcpHttpHandler } from "./mcp/httpHandler.ts";
+import {
+  MCP_ENDPOINT_PATH,
+  MCP_METADATA_QUERY_KEY,
+  PROTECTED_RESOURCE_METADATA_PATH,
+  isProtectedResourceMetadataPath,
+} from "./mcp/resourceMetadata.ts";
 
 /**
  * Shared Vercel Function adapter.
@@ -121,6 +135,196 @@ const CLOUD_SUBPATH_QUERY_KEY = "__fit_trace_cloud_op";
 const CLOUD_SUBPATH_SEGMENTS = new Set(["events", "cancel"]);
 
 /**
+ * Fixed base for the `Request` handed to the MCP handler.
+ *
+ * The MCP layer derives everything that matters (the metadata URL, the
+ * challenge) from configuration, never from the incoming URL, so a constant
+ * base is both sufficient and safer than reading `Host`/`X-Forwarded-Host` —
+ * a spoofed host header must not be able to redirect OAuth discovery.
+ */
+const MCP_REQUEST_BASE = "http://fit-trace.invalid";
+
+/**
+ * Headers that describe the platform's HTTP hop rather than the request, and
+ * that a Web `Request` must not carry. The body is supplied explicitly and the
+ * URL is fixed, so dropping them loses nothing and avoids runtime rejections.
+ */
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "upgrade",
+  "trailer",
+  "te",
+  "expect",
+  "host",
+  "content-length",
+]);
+
+/** True for the MCP endpoint and its Protected Resource Metadata path. */
+function isMcpRequest(url: URL): boolean {
+  const pathname = url.pathname.replace(/\/+$/, "");
+  return (
+    pathname === MCP_ENDPOINT_PATH ||
+    pathname.startsWith(`${MCP_ENDPOINT_PATH}/`) ||
+    isProtectedResourceMetadataPath(url.pathname)
+  );
+}
+
+/**
+ * Training-coach skill body for the remote endpoint.
+ *
+ * Read once per warm instance and memoized: the file is immutable
+ * configuration, unlike identity, transports, or stores. `FIT_TRACE_SKILL_PATH`
+ * wins (the same override the stdio entrypoint documents), then the repo
+ * layout is tried relative to this module. A miss returns `null` and the
+ * handler fails closed with `503` rather than serving an empty coach contract.
+ *
+ * Deployment requirement: the skill file must be present in the Function
+ * bundle (`vercel.json` includes `.pi/skills/**`) or `FIT_TRACE_SKILL_PATH`
+ * must point at it; otherwise `/api/mcp` answers 503 until one of the two is
+ * set. See `docs/deployment.md`.
+ */
+let mcpSkillText: Promise<string | null> | null = null;
+
+async function loadMcpSkillText(): Promise<string | null> {
+  const override = (process.env.FIT_TRACE_SKILL_PATH ?? "").trim();
+  const candidates =
+    override !== ""
+      ? [override]
+      : [
+          resolvePath(process.cwd(), ".pi", "skills", "training-coach", "SKILL.md"),
+          fileURLToPath(new URL("../../.pi/skills/training-coach/SKILL.md", import.meta.url)),
+        ];
+  for (const candidate of candidates) {
+    try {
+      return await loadTrainingCoachPrompt(candidate);
+    } catch {
+      // Try the next candidate; only a full miss fails closed.
+    }
+  }
+  return null;
+}
+
+async function resolveMcpSkillText(): Promise<string | null> {
+  // A miss is never cached: serving 503 is the honest answer for one failed
+  // read, whereas caching it would make a transient error permanent for the
+  // life of the warm instance.
+  if (mcpSkillText === null) {
+    const attempt = loadMcpSkillText()
+      .catch(() => null)
+      .then((text) => (text === null || text.trim() === "" ? null : text));
+    mcpSkillText = attempt;
+    const text = await attempt;
+    if (text === null) mcpSkillText = null;
+    return text;
+  }
+  return mcpSkillText;
+}
+
+/** Adapt the platform request into a Web `Request` the MCP handler can serve. */
+function toWebRequest(request: VercelRequestLike, url: URL, body: string | undefined): Request {
+  const method = (request.method ?? "GET").toUpperCase();
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (value === undefined) continue;
+    const name = key.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(name)) continue;
+    headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+  }
+  const init: RequestInit = { method, headers };
+  if (body !== undefined && method !== "GET" && method !== "HEAD") init.body = body;
+  return new Request(url, init);
+}
+
+/** Write a Web `Response` back onto the platform response. */
+async function sendWebResponse(
+  response: ServerResponse,
+  webResponse: Response,
+  headOnly: boolean,
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  webResponse.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+  // HEAD must not carry a body, but must keep the headers of the GET response.
+  const text = headOnly ? "" : await webResponse.text();
+  if (!headOnly) headers["content-length"] = String(Buffer.byteLength(text, "utf8"));
+  response.writeHead(webResponse.status, headers);
+  response.end(text);
+}
+
+/**
+ * Route one request for the remote MCP surface.
+ *
+ * The handler is constructed per request from freshly read configuration: the
+ * endpoint is a resource server, so nothing about a caller — config included —
+ * may be cached across requests. A request-local handler keeps the fail-closed
+ * rules honest even if the environment changes between invocations.
+ */
+async function handleMcpRequest(
+  request: VercelRequestLike,
+  response: ServerResponse,
+  url: URL,
+): Promise<void> {
+  const method = (request.method ?? "GET").toUpperCase();
+  const headOnly = method === "HEAD";
+
+  let body: string | undefined;
+  if (method !== "GET" && method !== "HEAD") {
+    try {
+      body = await readBody(request, MAX_REQUEST_BODY_BYTES);
+    } catch {
+      send(
+        response,
+        400,
+        JSON.stringify({
+          error: {
+            code: "MCP_INVALID_REQUEST",
+            message: `Request body exceeds the ${MAX_REQUEST_BODY_BYTES} byte limit.`,
+          },
+        }),
+        { "www-authenticate": "Bearer" },
+      );
+      return;
+    }
+  }
+
+  const config = readMcpAuthConfig(process.env);
+  const handler = createMcpHttpHandler({
+    config,
+    // A misconfigured deployment must refuse, not serve anonymously: a null
+    // config also means there is no Supabase URL/key to verify against.
+    verifier: config === null ? null : createMcpTokenVerifier(config),
+    storeFor:
+      config === null
+        ? null
+        : (principal) =>
+            // One store per request, carrying only that caller's token, so
+            // PostgREST RLS is the authority and no service-role key is ever
+            // involved on this path.
+            createCloudFitTraceStore(principal.principal, {
+              supabaseUrl: config.supabaseUrl,
+              publishableKey: config.publishableKey,
+              accessToken: principal.accessToken,
+            }),
+    skillText: () => resolveMcpSkillText(),
+  });
+
+  try {
+    const webResponse = await handler(toWebRequest(request, url, body));
+    await sendWebResponse(response, webResponse, headOnly);
+  } catch {
+    // The handler answers its own failures; this is the last-resort guard so a
+    // bug cannot surface as an unhandled rejection on the platform.
+    send(response, 500, JSON.stringify({ error: { code: "MCP_INTERNAL_ERROR", message: "Internal error." } }), {
+      "www-authenticate": "Bearer",
+    });
+  }
+}
+
+
+/**
  * Restore a rewritten cloud run subpath in place. Only the two documented
  * subpaths are accepted; every other value is ignored (and the marker removed)
  * so a caller cannot inject arbitrary path segments. Unrelated query
@@ -145,13 +349,6 @@ export async function handleVercelApi(
   request: VercelRequestLike,
   response: ServerResponse,
 ): Promise<void> {
-  const env = readSupabaseServerEnv();
-  const publicConfig = getPublicConfig();
-  const verifier =
-    env === null
-      ? null
-      : createSupabaseVerifier({ supabaseUrl: env.supabaseUrl, publishableKey: env.publishableKey });
-
   let rawUrl = request.url ?? "/";
   const query = request.query;
   if (query !== undefined && !rawUrl.includes("?")) {
@@ -163,6 +360,34 @@ export async function handleVercelApi(
     const serialized = params.toString();
     if (serialized !== "") rawUrl += `?${serialized}`;
   }
+
+  // The remote MCP surface is routed FIRST and returns unconditionally.
+  // `/api/mcp` and `/.well-known/oauth-protected-resource/api/mcp` are a
+  // separate, Web-Standards handler (one stateless transport + server per
+  // request); nothing below this block may see them. Routing before the
+  // `/api/v1` env/verifier setup and before the body read keeps this request's
+  // body stream untouched for the MCP handler, which reads it with the same
+  // byte cap, and keeps MCP independent of `readSupabaseServerEnv`.
+  //
+  // The metadata path arrives here through the `vercel.json` rewrite that maps
+  // it onto this Function with `MCP_METADATA_QUERY_KEY` (Vercel creates no
+  // Function for a dot-directory, and the Hobby plan's 12-Function cap is
+  // already reached). The original path is also accepted so a direct
+  // preview/local invocation works unchanged.
+  {
+    const mcpUrl = new URL(rawUrl, MCP_REQUEST_BASE);
+    if (isMcpRequest(mcpUrl) || mcpUrl.searchParams.has(MCP_METADATA_QUERY_KEY)) {
+      await handleMcpRequest(request, response, mcpUrl);
+      return;
+    }
+  }
+
+  const env = readSupabaseServerEnv();
+  const publicConfig = getPublicConfig();
+  const verifier =
+    env === null
+      ? null
+      : createSupabaseVerifier({ supabaseUrl: env.supabaseUrl, publishableKey: env.publishableKey });
 
   let body: string | undefined;
   try {
