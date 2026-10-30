@@ -91,11 +91,6 @@ export function CoachScreen() {
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{t("Coach")}</h1>
-          <p className="coach-lede">
-            {t(
-              "Read-only analysis of your stored workouts. The coach reads a backend-issued snapshot of this account and the selected range — your records are never rewritten by a run.",
-            )}
-          </p>
         </div>
       </div>
 
@@ -149,7 +144,7 @@ export function CoachScreen() {
           {coach.activeBackend !== null && (
             <p className="coach-meta" data-testid="coach-active-backend">
               {t(
-                "This run is pinned to {backend}. Replay, cancel, and restore keep using that backend even if the selection changes.",
+                "{backend} · active",
                 { backend: disclosedLabel ?? coach.activeBackend },
               )}
             </p>
@@ -157,7 +152,7 @@ export function CoachScreen() {
         </div>
       )}
 
-      {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (
+      {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (!coach.canAsk || coach.canRetryBackendDiscovery) && (
         <>
           <p role="note" data-testid="coach-backend-notice" className="coach-meta">
             {coach.backendNotice}
@@ -183,10 +178,10 @@ export function CoachScreen() {
         >
           {disclosedLocation === "cloud"
             ? t(
-                "Cloud coach: the run executes in the hosted cloud and spends cloud coaching credits. Your question and the selected workout snapshot are sent to the configured cloud provider.",
+                "Hosted cloud coaching uses credits and sends your question and workout data to the provider.",
               )
             : t(
-                "Local coach ({backend}): the run executes on this machine through that local CLI. Your question and snapshot go to the model provider configured for it; workout storage stays local.",
+                "{backend} runs locally. Your question and workout data are sent to its model provider.",
                 { backend: disclosedLabel ?? disclosedBackend },
               )}
         </p>
@@ -238,8 +233,9 @@ export function CoachScreen() {
                   }
                 }}>{t("Delete conversation")}</button>
               )}
-              <button type="button" disabled={conversations.loading} onClick={() => void conversations.reloadList()}>{t("Refresh conversations")}</button>
-              <p className="coach-meta">{t("Showing up to 100 conversations and 200 messages per conversation.")}</p>
+              {conversations.error !== null && (
+                <button type="button" disabled={conversations.loading} onClick={() => void conversations.reloadList()}>{t("Retry")}</button>
+              )}
               {conversations.loading && <p role="status">{t("Loading conversations…")}</p>}
               {conversations.error !== null && <p role="alert">{conversations.error}</p>}
             </div>
@@ -275,12 +271,11 @@ export function CoachScreen() {
         </div>
       ) : (
         <>
-          <p data-testid="coach-history-count" className="coach-meta">
+          <p data-testid="coach-history-count" className="coach-screen-reader-only">
             {t("{count} workout(s) in history.", { count: records.length })}
           </p>
 
           <div className="coach-conversation" aria-label={t("Coach conversation")}>
-            <p className="coach-conversation-note">{cloudSelected ? t("Your cloud conversation is saved to your account and relevant history is sent to the provider.") : t("Each question starts a separate analysis. Include any context the coach needs.")}</p>
 
             {submittedQuestion !== null && submittedQuestion.accountId === user?.id && (!cloudSelected || coach.isRunning || coach.phase !== "done" || !conversations.messages.some((message) => message.role === "user" && message.content === submittedQuestion.text)) && (
               <div className="coach-message coach-message-user">
@@ -290,6 +285,8 @@ export function CoachScreen() {
             )}
 
           {snapshot !== null && (
+            <details className="coach-source-details">
+            <summary>{t("Analysis details")}</summary>
             <p data-testid="coach-source" className="coach-meta">
               {t("Snapshot {id}: {source} · {count} record(s){range}", {
                 id: snapshot.snapshotId,
@@ -301,6 +298,7 @@ export function CoachScreen() {
                     : "",
               })}
             </p>
+            </details>
           )}
 
           {rangeEmpty && (
@@ -325,8 +323,8 @@ export function CoachScreen() {
           {coach.phase === "cancelling" && <p role="status">{t("Cancelling coach run…")}</p>}
 
           {coach.tools.length > 0 && (
-            <section aria-label={t("Coach activity")}>
-              <h2>{t("Activity")}</h2>
+            <details className="coach-activity" aria-label={t("Coach activity")}>
+              <summary>{t("Activity")}</summary>
               <ul className="coach-tools">
                 {coach.tools.map((activity) => (
                   <li key={activity.callId}>
@@ -346,7 +344,7 @@ export function CoachScreen() {
                   </li>
                 ))}
               </ul>
-            </section>
+            </details>
           )}
 
           {coach.text !== "" && (!cloudSelected || !conversations.messages.some((message) => message.role === "assistant" && message.content === coach.text)) && (
@@ -455,6 +453,9 @@ export function CoachScreen() {
                 </p>
               )}
             </div>
+            <details className="coach-range">
+              <summary>{t("Date range")}</summary>
+              <div className="coach-range-fields">
             <div className="field">
               <label htmlFor="coach-from">{t("From (optional)")}</label>
               <input
@@ -475,6 +476,8 @@ export function CoachScreen() {
                 disabled={coach.isRunning || piUnavailable}
               />
             </div>
+              </div>
+            </details>
             <button
               type="submit"
               disabled={
