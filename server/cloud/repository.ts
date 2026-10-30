@@ -67,6 +67,8 @@ export interface CloudSnapshotRecord {
   expiresAt: number;
 }
 
+import type { CloudConversationTurn } from "./conversationContext.ts";
+
 export interface CloudRunRecord {
   id: string;
   sessionId: string;
@@ -75,6 +77,7 @@ export interface CloudRunRecord {
   idempotencyKey: string;
   requestHash: string;
   prompt: string;
+  conversationContext?: CloudConversationTurn[];
   snapshot: CoachingDataSnapshot;
   /** Retained copy so a dispatched run never depends on snapshot TTL. */
   snapshotRecords: WorkoutRecord[];
@@ -145,6 +148,7 @@ export interface CloudSubmitOutcome {
 
 /** Everything that identifies a submit request except the server-issued run id. */
 export interface CloudRunRequest {
+  conversationId?: string;
   sessionId: string;
   prompt: string;
   idempotencyKey: string;
@@ -205,6 +209,10 @@ export interface CloudAcceptedInfo {
 }
 
 export interface CloudRequestRepository {
+  listConversations?(): Promise<{ conversations: import("@agent-fit-trace/api-contracts").CloudConversation[] }>;
+  createConversation?(id: string): Promise<import("@agent-fit-trace/api-contracts").CloudConversation>;
+  deleteConversation?(id: string): Promise<{ deleted: true }>;
+  readConversation?(id: string): Promise<import("@agent-fit-trace/api-contracts").CloudConversationDetail>;
   accountState(): Promise<CloudAccountState>;
   createSession(id: string | undefined): Promise<CloudSessionRecord>;
   readSession(id: string): Promise<CloudSessionRecord>;

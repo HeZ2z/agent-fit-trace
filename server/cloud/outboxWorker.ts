@@ -196,6 +196,7 @@ export function createCloudOutboxWorker(options: CloudOutboxWorkerOptions): Clou
       const result = await options.provider.run({
         runId: run.id,
         prompt: run.prompt,
+        ...(run.conversationContext === undefined ? {} : { conversationContext: run.conversationContext }),
         records: run.snapshotRecords,
         async beforeProviderRequest(budget) {
           const authorization = await options.repository.authorizeProviderStep(

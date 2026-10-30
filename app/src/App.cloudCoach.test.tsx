@@ -78,6 +78,8 @@ interface RouterOptions {
   capabilityFailures?: number;
   /** Launcher mode: serve local discovery with pi missing and OpenCode ready. */
   launcherDiscovery?: boolean;
+  emptyWorkoutsWithHistory?: boolean;
+  resumeConversation?: boolean;
 }
 
 function localBackendDescriptor(
@@ -236,6 +238,8 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
     [GUEST.token, GUEST],
   ]);
   const tails: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const conversations = new Map<string, { id: string; createdAt: string; updatedAt: string; owner: string }>();
+  if (options.emptyWorkoutsWithHistory || options.resumeConversation) conversations.set("saved-conversation", { id: "saved-conversation", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", owner: FORMAL_A.id });
   let cloudSubmits = 0;
   let cloudEventReads = 0;
   let cloudCapabilityReads = 0;
@@ -359,6 +363,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
           return jsonError("UNAUTHENTICATED", "Missing bearer token.", 401);
         }
         if (url === "/api/v1/workouts" && method === "GET") {
+          if (options.emptyWorkoutsWithHistory) return jsonData([]);
           return jsonData([
             {
               schema_version: 1,
@@ -383,6 +388,19 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
             throw new Error("socket hangup");
           }
           return jsonData(capabilities(options));
+        }
+        if (url === "/api/v1/coaching/cloud/conversations" && method === "GET") {
+          return jsonData({ conversations: [...conversations.values()].filter((item) => item.owner === principal.id) });
+        }
+        if (url === "/api/v1/coaching/cloud/conversations" && method === "POST") {
+          const { id } = parseBody(init) as { id: string };
+          const item = conversations.get(id) ?? { id, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", owner: principal.id };
+          conversations.set(id, item);
+          return jsonData(item, 201);
+        }
+        if (url.startsWith("/api/v1/coaching/cloud/conversations/") && method === "GET") {
+          const item = conversations.get(url.split("/").at(-1) ?? "");
+          return item?.owner === principal.id ? jsonData({ conversation: item, messages: options.emptyWorkoutsWithHistory ? [{ id: "saved-message", role: "assistant", content: "Saved coaching answer", createdAt: "2026-01-01T00:00:00Z" }] : [] }) : jsonError("NOT_FOUND", "Not found", 404);
         }
         if (url === "/api/v1/coaching/cloud/sessions" && method === "POST") {
           return jsonData({ id: CLOUD_SESSION }, 201);
@@ -436,7 +454,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
         }
         if (url.includes(`/api/v1/coaching/cloud/runs/${CLOUD_RUN}`) && method === "GET") {
           return jsonData({
-            run: cloudRun(principal.id, "completed"),
+            run: { ...cloudRun(principal.id, "completed"), ...(options.resumeConversation ? { conversationId: "saved-conversation" } : {}) },
             lastSeq: 1,
             firstSeq: 0,
             expiresAt: Date.now() + 600_000,
@@ -506,6 +524,20 @@ describe("browser coach backend selection", () => {
     expect(
       seen.filter((entry) => entry.method === "POST" && entry.url.includes("/coaching/")),
     ).toHaveLength(0);
+  });
+
+  it("opens saved conversation history even when workout history is empty", async () => {
+    const seen: SeenRequest[] = [];
+    installRouter(seen, { emptyWorkoutsWithHistory: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    await user.selectOptions(await screen.findByTestId("coach-backend-select"), "cloud-default");
+    const select = await screen.findByRole("combobox", { name: /select conversation/i });
+    await user.selectOptions(select, "saved-conversation");
+    expect(await screen.findByText("Saved coaching answer")).toBeInTheDocument();
+    expect(screen.getByText(/no workout history to analyse/i)).toBeInTheDocument();
   });
 
   it("advertises cloud only from server capabilities, defaults off, and submits exactly once to cloud", async () => {
@@ -639,6 +671,20 @@ describe("browser coach backend selection", () => {
     expect(seen.filter((entry) => entry.url.endsWith("/coaching/bootstrap"))).toHaveLength(0);
   });
 
+  it("restores a run's server-verified conversation while replaying", async () => {
+    window.sessionStorage.setItem(RESUME_V2_KEY, JSON.stringify({ version: 2, accountId: FORMAL_A.id, backendId: "cloud-default", origin: "cloud", sessionId: CLOUD_SESSION, runId: CLOUD_RUN, lastSeq: 0 }));
+    const seen: SeenRequest[] = [];
+    const tail = installRouter(seen, { resumeConversation: true, holdCloudEvents: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    const history = await screen.findByRole("combobox", { name: /select conversation/i });
+    await waitFor(() => expect(history).toHaveValue("saved-conversation"));
+    expect(seen.some((entry) => entry.url.endsWith("/coaching/cloud/conversations/saved-conversation"))).toBe(true);
+    tail.close();
+  });
+
   it("does not inherit the previous account's cloud preference or run", async () => {
     const seen: SeenRequest[] = [];
     installRouter(seen);
@@ -732,6 +778,9 @@ describe("browser coach backend selection", () => {
     const keys = posts.map((entry) => (entry.body as { idempotencyKey?: string })?.idempotencyKey);
     expect(keys[0]).toBeTruthy();
     expect(keys[0]).toBe(keys[1]);
+    const conversationIds = posts.map((entry) => (entry.body as { conversationId?: string })?.conversationId);
+    expect(conversationIds[0]).toBeTruthy();
+    expect(conversationIds[0]).toBe(conversationIds[1]);
     // An unknown prior request is resolved, never moved to a fresh session.
     expect(
       seen.filter(

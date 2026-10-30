@@ -84,6 +84,12 @@ function mapRpcError(status: number, body: unknown): CloudError {
   if (marker.includes("CLOUD_CONFLICT")) {
     return new CloudError("IDEMPOTENCY_CONFLICT", "Idempotency key was already used with different content.", 409);
   }
+  if (marker.includes("CLOUD_CONVERSATION_BUSY")) {
+    return new CloudError("CONFLICT", "Conversation has an active or unresolved run.", 409);
+  }
+  if (marker.includes("CLOUD_CONVERSATION_NOT_FOUND")) {
+    return new CloudError("NOT_FOUND", "Conversation not found.", 404);
+  }
   if (marker.includes("CLOUD_SESSION_NOT_FOUND")) {
     return new CloudError("SESSION_NOT_FOUND", "Cloud coaching session not found.", 404);
   }
@@ -225,6 +231,18 @@ function parseRunRow(value: unknown): CloudRunRecord {
         : asNumber(row.providerRequestsCommitted, "run.providerRequestsCommitted"),
     budgetReleased: row.budgetReleased === true,
   };
+  if (row.conversationContext !== undefined && row.conversationContext !== null) {
+    if (!Array.isArray(row.conversationContext) || row.conversationContext.length > 20 || new TextEncoder().encode(JSON.stringify(row.conversationContext)).length > 16384) {
+      throw new CloudError("STORAGE_UNAVAILABLE", "Cloud coaching storage returned malformed conversation context.", 503);
+    }
+    run.conversationContext = row.conversationContext.map((item: unknown) => {
+      const turn = asRecord(item, "conversation context turn");
+      if ((turn.role !== "user" && turn.role !== "assistant") || typeof turn.content !== "string" || turn.content.length === 0) {
+        throw new CloudError("STORAGE_UNAVAILABLE", "Cloud coaching storage returned malformed conversation context.", 503);
+      }
+      return { role: turn.role, content: turn.content };
+    });
+  }
   if (typeof row.cancelRequestedAt === "string") run.cancelRequestedAt = row.cancelRequestedAt;
   if (typeof row.cancelReason === "string") run.cancelReason = row.cancelReason;
   if (typeof row.providerCallStartedAt === "string") run.providerCallStartedAt = row.providerCallStartedAt;
@@ -288,6 +306,16 @@ function makeRpc(options: {
   };
 }
 
+function readConversation(value: unknown): import("@agent-fit-trace/api-contracts").CloudConversation {
+  const row = asRecord(value, "conversation");
+  return { id: asString(row.id, "conversation.id"), createdAt: asString(row.createdAt, "conversation.createdAt"), updatedAt: asString(row.updatedAt, "conversation.updatedAt") };
+}
+function readMessage(value: unknown): import("@agent-fit-trace/api-contracts").CloudConversationMessage {
+  const row = asRecord(value, "message");
+  if (row.role !== "user" && row.role !== "assistant") throw new CloudError("STORAGE_UNAVAILABLE", "Malformed message role.", 503);
+  return { id: asString(row.id, "message.id"), role: row.role, content: asString(row.content, "message.content"), createdAt: asString(row.createdAt, "message.createdAt") };
+}
+
 function optionalStringParam(value: string | undefined): string | null {
   return value === undefined ? null : value;
 }
@@ -308,6 +336,24 @@ export function createSupabaseCoachingRequestRepository(
   });
 
   return {
+    async listConversations() {
+      const value = asRecord(await rpc("coaching_list_conversations", {}), "conversations");
+      if (!Array.isArray(value.conversations) || value.conversations.length > 100) throw new CloudError("STORAGE_UNAVAILABLE", "Malformed conversations.", 503);
+      return { conversations: value.conversations.map(readConversation) };
+    },
+    async createConversation(id) {
+      return readConversation(await rpc("coaching_create_conversation", { p_id: id }));
+    },
+    async deleteConversation(id) {
+      const value = asRecord(await rpc("coaching_delete_conversation", { p_id: id }), "delete conversation");
+      if (value.deleted !== true) throw new CloudError("STORAGE_UNAVAILABLE", "Malformed delete response.", 503);
+      return { deleted: true as const };
+    },
+    async readConversation(id) {
+      const value = asRecord(await rpc("coaching_read_conversation", { p_id: id }), "conversation detail");
+      if (!Array.isArray(value.messages) || value.messages.length > 200) throw new CloudError("STORAGE_UNAVAILABLE", "Malformed messages.", 503);
+      return { conversation: readConversation(value.conversation), messages: value.messages.map(readMessage) };
+    },
     async accountState(): Promise<CloudAccountState> {
       const value = asRecord(await rpc("coaching_cloud_state", {}), "account state");
       return {
@@ -396,6 +442,7 @@ export function createSupabaseCoachingRequestRepository(
     async findRunByKey(input): Promise<CloudSubmitOutcome | null> {
       const value = await rpc("coaching_find_run", {
         p_session_id: input.sessionId,
+        ...(input.conversationId === undefined ? {} : { p_conversation_id: input.conversationId }),
         p_idempotency_key: input.idempotencyKey,
         p_prompt: input.prompt,
         p_snapshot_id: input.snapshot.snapshotId,
@@ -410,6 +457,7 @@ export function createSupabaseCoachingRequestRepository(
       const value = await rpc("coaching_submit_run", {
         p_run_id: input.runId,
         p_session_id: input.sessionId,
+        ...(input.conversationId === undefined ? {} : { p_conversation_id: input.conversationId }),
         p_idempotency_key: input.idempotencyKey,
         p_prompt: input.prompt,
         p_backend_id: "cloud-default",

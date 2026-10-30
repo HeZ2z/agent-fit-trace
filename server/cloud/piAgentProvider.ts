@@ -35,6 +35,7 @@
  * See `docs/adr/0002-cloud-pi-agent-runtime.md`.
  */
 import { Agent } from "@earendil-works/pi-agent-core";
+import { composeCoachPrompt } from "./conversationContext.ts";
 import type {
   AgentEvent,
   AgentMessage,
@@ -1010,7 +1011,7 @@ export function createPiAgentProvider(options: PiAgentProviderOptions): CloudCoa
 
       const userMessage: AgentMessage = {
         role: "user",
-        content: `${input.prompt}\n\nPinned snapshot: ${executor.recordCount} workout record(s). Use analyze_progress before answering.`,
+        content: composeCoachPrompt(input.prompt, executor.recordCount, input.conversationContext),
         timestamp: now(),
       };
 

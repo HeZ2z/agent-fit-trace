@@ -88,12 +88,14 @@ test("openrouter: fixed official endpoint, fixture tool flow, text + determinist
       return response(calls.length === 1 ? tool : final);
     }) as typeof fetch,
   });
-  const { input, events, accepted } = providerInput();
+  const { input, events, accepted } = providerInput({ conversationContext: [{ role: "user", content: "Earlier knee pain" }] });
   const result = await provider.run(input);
 
   assert.equal(calls.length, 2);
   for (const call of calls) assert.equal(call.url, "https://openrouter.ai/api/v1/chat/completions");
   const firstBody = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
+  assert.match(JSON.stringify(firstBody.messages), /Earlier knee pain/);
+  assert.match(JSON.stringify(firstBody.messages), /untrusted context/);
   assert.equal(firstBody.model, "test/model");
   assert.equal(firstBody.tool_choice, "auto");
   assert.equal(firstBody.parallel_tool_calls, false);

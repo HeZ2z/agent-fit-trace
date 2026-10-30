@@ -61,7 +61,7 @@ export class CoachClientRouter implements CoachRunClient {
     return this.active.createSnapshot(filter);
   }
 
-  submitRun(input: SubmitCoachingRunInput): Promise<{
+  submitRun(input: SubmitCoachingRunInput & { conversationId?: string }): Promise<{
     run: { id: string; sessionId: string; snapshot: CoachingDataSnapshot };
     lastSeq: number;
     replayed: boolean;
@@ -74,7 +74,7 @@ export class CoachClientRouter implements CoachRunClient {
   }
 
   readRun(id: string): Promise<{
-    run: { id: string; sessionId: string; snapshot: CoachingDataSnapshot };
+    run: { id: string; sessionId: string; snapshot: CoachingDataSnapshot; conversationId?: string | null };
     lastSeq: number;
     firstSeq?: number;
     expiresAt?: number;

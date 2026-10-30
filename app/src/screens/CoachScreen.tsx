@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { filterRecords } from "@agent-fit-trace/core";
@@ -9,14 +9,34 @@ import { useWorkouts } from "../state/useWorkouts.ts";
 import { useCoach } from "../coaching/useCoach.ts";
 import { isCloudBackend } from "../coaching/coachBackend.ts";
 import { useI18n } from "../i18n/useI18n.ts";
+import { useAuth } from "../auth/AuthContext.tsx";
+import { useCloudConversations } from "../coaching/useCloudConversations.ts";
 
 export function CoachScreen() {
   const { t } = useI18n();
+  const { user, getAccessToken } = useAuth();
   const { records, status: historyStatus, loadError, reload } = useWorkouts();
   const coach = useCoach();
   const [question, setQuestion] = useState("");
+  const [submittedQuestion, setSubmittedQuestion] = useState<{ accountId: string | undefined; text: string } | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const cloudSelected = (coach.activeBackend ?? coach.selectedBackend ?? (coach.runConversationId === null ? null : "cloud-default")) === "cloud-default";
+  const conversations = useCloudConversations(user?.id ?? null, cloudSelected && user?.isAnonymous === false, getAccessToken);
+  const submitting = useRef(false);
+  const attemptedResume = useRef<string | null>(null);
+
+  useEffect(() => { attemptedResume.current = null; }, [user?.id]);
+  useEffect(() => {
+    const id = coach.runConversationId;
+    if (!cloudSelected || id === null || !conversations.initialized || conversations.loading || attemptedResume.current === id) return;
+    attemptedResume.current = id;
+    if (conversations.selectedId !== id) void conversations.select(id);
+  }, [coach.runConversationId, cloudSelected, conversations.initialized, conversations.loading, conversations.selectedId, conversations.select]);
+
+  useEffect(() => {
+    if (coach.phase === "done" && cloudSelected) void conversations.refresh();
+  }, [coach.phase, cloudSelected, conversations.refresh]);
 
   // The run's own backend wins for disclosure while one is pinned; otherwise
   // show what the NEXT run would use. Backend availability is per-option:
@@ -52,10 +72,18 @@ export function CoachScreen() {
 
   const rangeEmpty = snapshot !== null && snapshot.recordCount === 0;
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (piUnavailable || !coach.canAsk) return;
-    void coach.submit({ question, from, to });
+    if (piUnavailable || !coach.canAsk || coach.isRunning || question.trim() === "" || submitting.current || conversations.loading) return;
+    submitting.current = true;
+    try {
+      const conversationId = cloudSelected ? conversations.selectedId ?? await conversations.create() : null;
+      if (cloudSelected && conversationId === null) return;
+      setSubmittedQuestion({ accountId: user?.id, text: question.trim() });
+      void coach.submit({ question, from, to, ...(conversationId === null ? {} : { conversationId }) });
+    } finally {
+      submitting.current = false;
+    }
   }
 
   return (
@@ -178,6 +206,55 @@ export function CoachScreen() {
         </div>
       )}
 
+          {cloudSelected && user?.isAnonymous === false && (
+            <div className="coach-history" aria-label={t("Conversation history")}>
+              <div className="coach-history-heading">
+                <h2>{t("Conversations")}</h2>
+                <button type="button" disabled={coach.isRunning || conversations.loading} onClick={() => { coach.newAnalysis(); void conversations.create(); }}>
+                  {t("New conversation")}
+                </button>
+              </div>
+              {conversations.conversations.length > 0 && (
+                <select aria-label={t("Select conversation")} value={conversations.selectedId ?? ""} disabled={coach.isRunning || conversations.loading} onChange={(event) => {
+                  if (event.currentTarget.value) {
+                    coach.newAnalysis();
+                    setSubmittedQuestion(null);
+                    void conversations.select(event.currentTarget.value);
+                  }
+                }}>
+                  <option value="">{t("Select conversation")}</option>
+                  {conversations.conversations.map((item) => <option key={item.id} value={item.id}>{new Date(item.updatedAt).toLocaleString()}</option>)}
+                </select>
+              )}
+              {conversations.selectedId !== null && (
+                <button type="button" disabled={coach.isRunning || conversations.loading} onClick={() => {
+                  if (window.confirm(t("Delete this conversation and its messages?"))) {
+                    void conversations.remove().then((removed) => {
+                      if (removed) {
+                        coach.newAnalysis();
+                        setSubmittedQuestion(null);
+                      }
+                    });
+                  }
+                }}>{t("Delete conversation")}</button>
+              )}
+              <button type="button" disabled={conversations.loading} onClick={() => void conversations.reloadList()}>{t("Refresh conversations")}</button>
+              <p className="coach-meta">{t("Showing up to 100 conversations and 200 messages per conversation.")}</p>
+              {conversations.loading && <p role="status">{t("Loading conversations…")}</p>}
+              {conversations.error !== null && <p role="alert">{conversations.error}</p>}
+            </div>
+          )}
+      {cloudSelected && conversations.messages.length > 0 && (
+        <div className="coach-conversation" aria-label={t("Conversation history")}>
+          {conversations.messages.map((message) => (
+            <div key={message.id} className={`coach-message ${message.role === "user" ? "coach-message-user" : "coach-message-answer"}`}>
+              <span className="coach-message-label">{message.role === "user" ? t("You") : t("Coach")}</span>
+              <p>{message.content}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {historyStatus === "error" ? (
         <div role="alert" data-testid="history-error" className="validation-summary">
           <p>
@@ -202,61 +279,15 @@ export function CoachScreen() {
             {t("{count} workout(s) in history.", { count: records.length })}
           </p>
 
-          <form onSubmit={handleSubmit}>
-            <div className="field">
-              <label htmlFor="coach-question">{t("Analysis question")}</label>
-              <textarea
-                id="coach-question"
-                value={question}
-                onChange={(event) => setQuestion(event.currentTarget.value)}
-                placeholder={t("How is my squat progressing?")}
-                disabled={coach.isRunning || piUnavailable}
-              />
-              {!coach.canAsk && !piUnavailable && (
-                <p className="coach-meta" data-testid="coach-backend-required">
-                  {t("Select an available coach backend to ask.")}
-                </p>
-              )}
-            </div>
-            <div className="field">
-              <label htmlFor="coach-from">{t("From (optional)")}</label>
-              <input
-                id="coach-from"
-                type="date"
-                value={from}
-                onChange={(event) => setFrom(event.currentTarget.value)}
-                disabled={coach.isRunning || piUnavailable}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="coach-to">{t("To (optional)")}</label>
-              <input
-                id="coach-to"
-                type="date"
-                value={to}
-                onChange={(event) => setTo(event.currentTarget.value)}
-                disabled={coach.isRunning || piUnavailable}
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={
-                coach.isRunning ||
-                piUnavailable ||
-                !coach.canAsk ||
-                question.trim() === ""
-              }
-            >
-              {coach.phase === "preparing" || coach.phase === "streaming" || coach.phase === "cancelling"
-                ? t("Coach is working…")
-                : t("Ask coach")}
-            </button>{" "}
-            {coach.canCancel && (
-              <button type="button" onClick={() => void coach.cancel()}>
-                {coach.phase === "cancelling" ? t("Cancelling…") : t("Cancel")}
-              </button>
+          <div className="coach-conversation" aria-label={t("Coach conversation")}>
+            <p className="coach-conversation-note">{cloudSelected ? t("Your cloud conversation is saved to your account and relevant history is sent to the provider.") : t("Each question starts a separate analysis. Include any context the coach needs.")}</p>
+
+            {submittedQuestion !== null && submittedQuestion.accountId === user?.id && (!cloudSelected || coach.isRunning || coach.phase !== "done" || !conversations.messages.some((message) => message.role === "user" && message.content === submittedQuestion.text)) && (
+              <div className="coach-message coach-message-user">
+                <span className="coach-message-label">{t("You")}</span>
+                <p>{submittedQuestion.text}</p>
+              </div>
             )}
-          </form>
 
           {snapshot !== null && (
             <p data-testid="coach-source" className="coach-meta">
@@ -318,8 +349,8 @@ export function CoachScreen() {
             </section>
           )}
 
-          {coach.text !== "" && (
-            <section aria-label={t("Coach answer")}>
+          {coach.text !== "" && (!cloudSelected || !conversations.messages.some((message) => message.role === "assistant" && message.content === coach.text)) && (
+            <section className="coach-message coach-message-answer" aria-label={t("Coach answer")}>
               <h2>{t("Answer")}</h2>
               <pre className="coach-text" data-testid="coach-text">
                 {coach.text}
@@ -406,6 +437,65 @@ export function CoachScreen() {
               </button>
             </div>
           )}
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            <div className="field">
+              <label htmlFor="coach-question">{t("Analysis question")}</label>
+              <textarea
+                id="coach-question"
+                value={question}
+                onChange={(event) => setQuestion(event.currentTarget.value)}
+                placeholder={t("How is my squat progressing?")}
+                disabled={coach.isRunning || piUnavailable}
+              />
+              {!coach.canAsk && !piUnavailable && (
+                <p className="coach-meta" data-testid="coach-backend-required">
+                  {t("Select an available coach backend to ask.")}
+                </p>
+              )}
+            </div>
+            <div className="field">
+              <label htmlFor="coach-from">{t("From (optional)")}</label>
+              <input
+                id="coach-from"
+                type="date"
+                value={from}
+                onChange={(event) => setFrom(event.currentTarget.value)}
+                disabled={coach.isRunning || piUnavailable}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="coach-to">{t("To (optional)")}</label>
+              <input
+                id="coach-to"
+                type="date"
+                value={to}
+                onChange={(event) => setTo(event.currentTarget.value)}
+                disabled={coach.isRunning || piUnavailable}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={
+                coach.isRunning ||
+                piUnavailable ||
+                !coach.canAsk ||
+                question.trim() === "" ||
+                (cloudSelected && conversations.loading)
+              }
+            >
+              {coach.phase === "preparing" || coach.phase === "streaming" || coach.phase === "cancelling"
+                ? t("Coach is working…")
+                : t("Ask coach")}
+            </button>{" "}
+            {coach.canCancel && (
+              <button type="button" onClick={() => void coach.cancel()}>
+                {coach.phase === "cancelling" ? t("Cancelling…") : t("Cancel")}
+              </button>
+            )}
+          </form>
+
         </>
       )}
     </section>
