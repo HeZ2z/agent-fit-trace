@@ -78,6 +78,8 @@ interface RouterOptions {
   capabilityFailures?: number;
   /** Launcher mode: serve local discovery with pi missing and OpenCode ready. */
   launcherDiscovery?: boolean;
+  /** Launcher discovery also advertises an eligible cloud backend. */
+  discoveryCloud?: boolean;
   emptyWorkoutsWithHistory?: boolean;
   resumeConversation?: boolean;
 }
@@ -115,6 +117,31 @@ function localBackendDescriptor(
       accountEligibility: "not-required",
       quotaReservation: "not-required",
       dataDestination: "cli-provider",
+    },
+  };
+}
+
+/** An eligible cloud descriptor from launcher discovery (contract-valid). */
+function cloudBackendDescriptor() {
+  return {
+    backendId: "cloud-default",
+    runtimeId: "hosted-sdk",
+    executionLocation: "cloud",
+    displayName: "Cloud coach",
+    available: true,
+    capabilities: {
+      capabilityVersion: COACHING_CAPABILITY_VERSION,
+      protocolVersion: COACHING_PROTOCOL_VERSION,
+      tools: ["get_training_history", "analyze_progress"],
+      productReplay: true,
+      nativeContinuation: true,
+      cancelConfirmation: "provider",
+      maxInputBytes: 65_536,
+      maxEvents: 1_000,
+      maxEventBytes: 4 * 1024 * 1024,
+      accountEligibility: "required",
+      quotaReservation: "required",
+      dataDestination: "vendor-api",
     },
   };
 }
@@ -352,6 +379,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
               localBackendDescriptor("local-pi", "pi", "pi CLI (local)", false),
               localBackendDescriptor("local-codex", "codex", "Codex CLI (local)", false),
               localBackendDescriptor("local-opencode", "opencode", "OpenCode CLI (local)", true),
+              ...(options.discoveryCloud === true ? [cloudBackendDescriptor()] : []),
             ],
           });
         }
@@ -878,6 +906,62 @@ describe("browser coach backend selection", () => {
 
     // Launcher discovery stays local; no cloud capability traffic.
     expect(seen.filter((entry) => entry.url.includes("/coaching/cloud"))).toHaveLength(0);
+  });
+
+  it("restores the run's conversation after switching to a local backend and back", async () => {
+    (globalThis as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME = {
+      mode: "http",
+      coaching: "same-origin",
+      piAvailable: false,
+    };
+    const seen: SeenRequest[] = [];
+    installRouter(seen, {
+      launcherDiscovery: true,
+      discoveryCloud: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    const select = await screen.findByTestId("coach-backend-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /^Cloud coach$/ })).not.toBeDisabled(),
+    );
+
+    await user.selectOptions(select, "cloud-default");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("cloud answer");
+
+    const submit = seen.find(
+      (entry) => entry.url === "/api/v1/coaching/cloud/runs" && entry.method === "POST",
+    );
+    const conversationId = (submit?.body as { conversationId?: string }).conversationId;
+    expect(conversationId).toBeTruthy();
+    const history = (): HTMLElement => screen.getByRole("combobox", { name: /select conversation/i });
+    await waitFor(() => expect(history()).toHaveValue(conversationId));
+    const readPath = `/api/v1/coaching/cloud/conversations/${conversationId}`;
+    const readsOfRunConversation = (): number =>
+      seen.filter((entry) => entry.url.endsWith(readPath) && entry.method === "GET").length;
+    await waitFor(() => expect(readsOfRunConversation()).toBeGreaterThan(0));
+
+    // Switch to a local backend: the cloud conversation store is disabled and
+    // its selection/messages are cleared.
+    await waitFor(() => expect(select).not.toBeDisabled());
+    const readsBeforeSwitch = readsOfRunConversation();
+    await user.selectOptions(select, "local-opencode");
+    await waitFor(() =>
+      expect(screen.queryByRole("combobox", { name: /select conversation/i })).not.toBeInTheDocument(),
+    );
+
+    // Switching back must re-establish the SAME conversation the answer on
+    // screen belongs to — a follow-up would otherwise start a new one and send
+    // none of the history the user is looking at.
+    await user.selectOptions(select, "cloud-default");
+    const restored = await screen.findByRole("combobox", { name: /select conversation/i });
+    await waitFor(() => expect(restored).toHaveValue(conversationId));
+    expect(readsOfRunConversation()).toBeGreaterThan(readsBeforeSwitch);
   });
 
   it("tails a cloud replay across GET page boundaries without a new run POST", async () => {

@@ -22,17 +22,28 @@ export function CoachScreen() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const cloudSelected = (coach.activeBackend ?? coach.selectedBackend ?? (coach.runConversationId === null ? null : "cloud-default")) === "cloud-default";
-  const conversations = useCloudConversations(user?.id ?? null, cloudSelected && user?.isAnonymous === false, getAccessToken);
+  const conversationsEnabled = cloudSelected && user?.isAnonymous === false;
+  const conversations = useCloudConversations(user?.id ?? null, conversationsEnabled, getAccessToken);
   const submitting = useRef(false);
-  const attemptedResume = useRef<string | null>(null);
+  // One-shot guard for restoring a run's server-verified conversation. It is
+  // keyed by account and dropped whenever the conversation store is disabled:
+  // switching to a local backend clears the selection and messages, so a guard
+  // that survived would let the switch back show the completed run's answer
+  // with no conversation selected, and a follow-up would start a NEW
+  // conversation without the history the user is looking at.
+  const attemptedResume = useRef<{ accountId: string; id: string } | null>(null);
 
-  useEffect(() => { attemptedResume.current = null; }, [user?.id]);
+  useEffect(() => {
+    if (!conversationsEnabled) attemptedResume.current = null;
+  }, [conversationsEnabled]);
   useEffect(() => {
     const id = coach.runConversationId;
-    if (!cloudSelected || id === null || !conversations.initialized || conversations.loading || attemptedResume.current === id) return;
-    attemptedResume.current = id;
+    if (!conversationsEnabled || id === null || !conversations.initialized || conversations.loading) return;
+    const accountId = user?.id ?? "none";
+    if (attemptedResume.current?.accountId === accountId && attemptedResume.current.id === id) return;
+    attemptedResume.current = { accountId, id };
     if (conversations.selectedId !== id) void conversations.select(id);
-  }, [coach.runConversationId, cloudSelected, conversations.initialized, conversations.loading, conversations.selectedId, conversations.select]);
+  }, [coach.runConversationId, conversationsEnabled, user?.id, conversations.initialized, conversations.loading, conversations.selectedId, conversations.select]);
 
   useEffect(() => {
     if (coach.phase === "done" && cloudSelected) void conversations.refresh();
