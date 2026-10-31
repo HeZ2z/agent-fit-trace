@@ -581,8 +581,7 @@ describe("browser coach backend selection", () => {
     // off by default so a credit-spending backend is never implicit.
     const select = await screen.findByTestId("coach-backend-select");
     expect(select).toHaveValue("");
-    expect(screen.getByTestId("coach-backend-notice")).toHaveTextContent(/off by default/i);
-    expect(screen.getByTestId("coach-backend-notice")).toHaveTextContent(/credits/i);
+    expect(screen.queryByTestId("coach-backend-notice")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /ask coach/i })).toBeDisabled();
 
     await user.selectOptions(select, "cloud-default");
@@ -684,7 +683,7 @@ describe("browser coach backend selection", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("coach-retry-backend-discovery")).not.toBeInTheDocument(),
     );
-    expect(screen.getByTestId("coach-backend-notice")).toHaveTextContent(/off by default/i);
+    expect(screen.queryByTestId("coach-backend-notice")).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: /^Cloud coach$/ })).not.toBeDisabled();
 
     await user.selectOptions(screen.getByTestId("coach-backend-select"), "cloud-default");
@@ -764,7 +763,7 @@ describe("browser coach backend selection", () => {
     // B has no stored preference: the selector is unselected, cloud stays off,
     // and A's preference is not consumed.
     expect(await screen.findByTestId("coach-backend-select")).toHaveValue("");
-    expect(screen.getByTestId("coach-backend-notice")).toHaveTextContent(/off by default/i);
+    expect(screen.queryByTestId("coach-backend-notice")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("fit-trace.coach.backend.v1:user-b")).toBeNull();
     expect(window.localStorage.getItem("fit-trace.coach.backend.v1:user-a")).toBe("cloud-default");
     expect(screen.queryByTestId("coach-text")).not.toBeInTheDocument();

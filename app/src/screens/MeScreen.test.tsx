@@ -157,8 +157,6 @@ describe("MeScreen", () => {
     expect(
       screen.getByRole("heading", { name: "Import a training plan" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/storage scope: local mode/i)).toBeInTheDocument();
-    expect(screen.getByText(/this browser on this device/i)).toBeInTheDocument();
     expect(screen.queryByText(/actions arrive with/i)).not.toBeInTheDocument();
   });
 

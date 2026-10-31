@@ -14,7 +14,6 @@ import type {
   ImportedArtifactKind,
   SaveImportedArtifactResult,
 } from "@agent-fit-trace/api-contracts";
-import { isHttpModeActive } from "../api/runtimeMode.ts";
 import { readTextFile } from "../api/fileTransport.ts";
 import { useWorkoutExport } from "../api/useWorkoutExport.ts";
 import {
@@ -382,20 +381,16 @@ const LANGUAGE_OPTIONS: readonly {
   id: AppLanguage;
   label: string;
   preview: string;
-  description: string;
 }[] = [
   {
     id: "en",
     label: "English",
     preview: "EN",
-    description: "Source language. Data and exports stay in English.",
   },
   {
     id: "zh",
     label: "简体中文",
     preview: "中",
-    description:
-      "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
   },
 ];
 
@@ -634,30 +629,7 @@ export function MeScreen() {
     }
   }
 
-  const httpMode = isHttpModeActive(
-    (import.meta.env as Record<string, string | undefined> | undefined)?.VITE_FIT_TRACE_MODE,
-  );
-  // On the daemon the HTTP transport talks to this machine's local service,
-  // so "on the server" would be a lie — snapshots stay on this device.
   const daemonLocal = authSurface === "guest-local" || authSurface === "daemon-optional";
-  const storageSubject =
-    user === null
-      ? t("the current session")
-      : user.isAnonymous === true
-        ? t("this guest identity")
-        : t("the signed-in account");
-  const scope = daemonLocal
-    ? t("Storage scope: local daemon. Snapshots and selections belong to {subject} in this machine's local store.", {
-        subject: storageSubject,
-      })
-    : httpMode
-      ? t("Storage scope: HTTP mode. Snapshots and selections belong to {subject} on the server.{devNote}", {
-          subject: storageSubject,
-          devNote: import.meta.env.DEV
-            ? t(" The development in-memory API clears on restart.")
-            : "",
-        })
-      : t("Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.");
 
   return (
     <section data-screen="me">
@@ -682,7 +654,6 @@ export function MeScreen() {
         )}
         <GuestUpgradePasswordNotice />
         {user?.isAnonymous === true && <GuestAccountControls />}
-        <p className="me-help">{scope}</p>
       </section>
 
       <section className="me-section" aria-labelledby="me-export">
@@ -927,11 +898,6 @@ export function MeScreen() {
 
       <section className="me-section" aria-labelledby="me-language">
         <h2 id="me-language">{t("Language")}</h2>
-        <p className="me-help">
-          {t(
-            "Choose the interface language. Workout records, saved snapshots and exported JSON keep their original English; only the interface is translated.",
-          )}
-        </p>
         <div className="theme-options" role="group" aria-label={t("Interface language")}>
           {LANGUAGE_OPTIONS.map((option) => {
             const selected = language === option.id;
@@ -958,7 +924,6 @@ export function MeScreen() {
                       {t("On")}
                     </span>
                   </span>
-                  <span className="theme-option-desc">{t(option.description)}</span>
                 </span>
               </button>
             );

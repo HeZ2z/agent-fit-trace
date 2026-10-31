@@ -458,11 +458,6 @@ export function CoachScreen() {
                 placeholder={t("How is my squat progressing?")}
                 disabled={coach.isRunning || piUnavailable}
               />
-              {!coach.canAsk && !piUnavailable && (
-                <p className="coach-meta" data-testid="coach-backend-required">
-                  {t("Select an available coach backend to ask.")}
-                </p>
-              )}
             </div>
             <details className="coach-range">
               <summary>{t("Date range")}</summary>

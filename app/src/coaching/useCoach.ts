@@ -1966,9 +1966,6 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     }
     if (discoveryNotice !== null) return discoveryNotice;
     if (selectedOption === null) {
-      if (coachMode === "browser") {
-        return "Cloud coaching is off by default because every run spends cloud coaching credits. Select Cloud coach for the next run.";
-      }
       return null;
     }
     if (!selectedOption.available) {

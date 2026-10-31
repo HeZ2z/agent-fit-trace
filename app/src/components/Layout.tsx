@@ -121,13 +121,6 @@ function SideFoot() {
             ? t("Cloud mode · account data")
             : t("Local mode · browser storage")}
       </span>
-      <p className="side-note">
-        {daemonLocal
-          ? t("Records and snapshots stay on this machine through the local daemon; export them from Me.")
-          : httpMode
-            ? t("Records, snapshots and coaching runs belong to the signed-in account.")
-            : t("Records and snapshots stay in this browser; export them from Me.")}
-      </p>
       <p className="side-slug">agent-fit-trace</p>
     </div>
   );
