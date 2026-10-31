@@ -231,6 +231,7 @@ describe("app guest-local daemon mode", () => {
     await user.click(screen.getByRole("link", { name: /account details/i }));
     expect(await screen.findByRole("heading", { name: /^me$/i })).toBeInTheDocument();
     expect(screen.getByText(/local guest on this machine's daemon/i)).toBeInTheDocument();
+    expect(screen.queryByText(/another device can recover it only/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /sign out guest/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /sign in to an existing account/i })).toBeNull();
   });
