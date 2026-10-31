@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import {
   AUTH_EXPIRY_SKEW_MS,
   AUTH_REFRESH_RETRY_BASE_MS,
   AUTH_REFRESH_RETRY_MAX_MS,
+  isRefreshCredentialCurrent,
   AuthError,
   authErrorMessage,
   authRefreshRetryDelayMs,
   authRefreshTimerDelayMs,
   isSessionExpired,
+  isSessionGenerationCurrent,
   isTransientAuthError,
   MOBILE_AUTH_SESSION_KEY,
   mapTokenErrorStatus,
@@ -24,6 +27,13 @@ import {
   validateSignInInput,
   type SupabaseSession,
 } from "../mobile/src/auth/authModel.ts";
+import {
+  AUTH_CONTROL_TABLE_SQL,
+  AUTH_REFRESH_LEASE_ACQUIRE_SQL,
+  AUTH_REFRESH_LEASE_RELEASE_SQL,
+  AUTH_REFRESH_LEASE_TABLE_SQL,
+  shouldDeleteRevokedSession,
+} from "../mobile/src/auth/authControlModel.ts";
 
 /**
  * Pure coverage for the mobile account foundation. No network, SecureStore or
@@ -47,6 +57,42 @@ test("mobile session key is versioned, mobile-specific, and SecureStore-safe", (
   assert.equal(MOBILE_AUTH_SESSION_KEY, "agent-fit-trace.auth.v1.mobile");
   // expo-secure-store rejects keys outside /^[\w.-]+$/ (colons are invalid).
   assert.match(MOBILE_AUTH_SESSION_KEY, /^[\w.-]+$/);
+});
+
+test("revoked or stale SecureStore session generations fail closed", () => {
+  assert.equal(isSessionGenerationCurrent(5, 5, false), true);
+  assert.equal(isSessionGenerationCurrent(4, 5, false), false, "late refresh from an older epoch is rejected");
+  assert.equal(isSessionGenerationCurrent(5, 5, true), false, "revocation wins even if key deletion fails");
+  assert.equal(isSessionGenerationCurrent(Number.NaN, 5, false), false);
+  assert.equal(isRefreshCredentialCurrent(5, 5, false, "refresh-5", "refresh-5"), true);
+  assert.equal(isRefreshCredentialCurrent(5, 5, false, "refresh-6", "refresh-5"), false, "late refresh cannot replace a newer token in the same epoch");
+  assert.equal(shouldDeleteRevokedSession(5, 5, true), true);
+  assert.equal(shouldDeleteRevokedSession(6, 5, true), false, "a delayed delete cannot erase the newer login");
+});
+
+test("SQLite refresh lease serializes runtimes and fences a revoked owner's release", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(AUTH_CONTROL_TABLE_SQL);
+    database.exec(AUTH_REFRESH_LEASE_TABLE_SQL);
+    database.prepare("INSERT INTO auth_control (singleton, generation, revoked) VALUES (1, 1, 0)").run();
+    const acquire = database.prepare(AUTH_REFRESH_LEASE_ACQUIRE_SQL);
+    const claim = (owner: string, generation: number, at: string, expiry: string) => acquire.run(
+      owner, generation, expiry, generation, at,
+    );
+    assert.equal(claim("provider", 1, "2026-10-31T00:00:00.000Z", "2026-10-31T00:00:25.000Z").changes, 1);
+    assert.equal(claim("headless", 1, "2026-10-31T00:00:01.000Z", "2026-10-31T00:00:26.000Z").changes, 0);
+
+    database.prepare("UPDATE auth_control SET generation = 2, revoked = 1 WHERE singleton = 1").run();
+    database.prepare("UPDATE auth_control SET generation = 3, revoked = 0 WHERE singleton = 1").run();
+    assert.equal(claim("new-login", 3, "2026-10-31T00:00:02.000Z", "2026-10-31T00:00:27.000Z").changes, 1);
+    assert.equal(database.prepare(AUTH_REFRESH_LEASE_RELEASE_SQL).run(1, "provider").changes, 0);
+    const current = database.prepare("SELECT owner, generation FROM auth_refresh_lease WHERE singleton = 1")
+      .get() as { owner: string; generation: number };
+    assert.deepEqual({ ...current }, { owner: "new-login", generation: 3 });
+  } finally {
+    database.close();
+  }
 });
 
 test("resolveAuthConfig returns the trimmed public config or null", () => {

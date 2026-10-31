@@ -43,7 +43,7 @@ split by concern: `mobile/src/data` owns the SQLite store and the session-draft
 repository, `mobile/src/workout` owns the native live-feedback adapters,
 `mobile/src/auth` owns identity,
 `mobile/src/preferences` reconciles account metadata, `mobile/src/sync` owns
-manual workout sync and `mobile/src/coach` owns hosted coaching. The app embeds no
+account-scoped workout sync and `mobile/src/coach` owns hosted coaching. The app embeds no
 Node runtime, CLI launcher or local coach process and never receives a
 service-role key; privileged work stays on the server and worker in
 [`docs/deployment.md`](deployment.md).
@@ -55,11 +55,11 @@ service-role key; privileged work stays on the server and worker in
 | `mobile/src/app/` | Implemented | Routes: root stack, six tabs, invite-only sign-in, manual sync |
 | `mobile/src/theme/` | Implemented | Shared tokens; AsyncStorage-backed skin state |
 | `mobile/src/ui/` | Implemented | Button, Card, Chip, Field, ExerciseNameField, Banner, EmptyState, Screen, text |
-| `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, session-draft repository and row mapping, analysis/plan models |
+| `mobile/src/data/` | Implemented | SQLite connection, schema and migrations, workout repository, account-scoped outbox and session-draft repository, row mapping, analysis/plan models |
 | `mobile/src/workout/` | Implemented | Native live feedback (haptics and the bundled `expo-audio` rest cue) |
-| `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session and auth provider |
+| `mobile/src/auth/` | Implemented | Supabase sign-in, SecureStore session, SQLite revocation generation and auth provider |
 | `mobile/src/preferences/` | Implemented | Account skin/language reconciliation provider |
-| `mobile/src/sync/` | Implemented | Sync config, client, pure plan, runner and conflict/apply model |
+| `mobile/src/sync/` | Implemented | Sync config, client, pure plan, shared manual/headless coordinator, Expo background/reconnect lifecycle and conflict/apply model |
 | `mobile/src/coach/` | Implemented | Hosted coach config and client, SSE/reducer model and screen model |
 | `mobile/src/i18n/` | Implemented | Language store and provider over the shared dictionary |
 | `packages/fit-trace-ui-tokens/` | Implemented | Shared token contract for web and native |
@@ -163,8 +163,8 @@ across the local store and the cloud.
 
 A mobile guest is an unauthenticated local user. Unlike the web guest flow, the
 app creates no Supabase anonymous account and there is no hidden identity to
-upgrade later. Guest workouts stay local until the user signs in and starts a
-manual sync.
+upgrade later. Guest workouts stay local until the user signs in and explicitly
+enables sync for an account and API endpoint.
 
 Sign-in is invite-only email and password, using the existing Supabase account
 system. The client talks to Supabase Auth over its REST endpoints with
@@ -306,9 +306,12 @@ Cloud sync is optional and requires a signed-in account, a configured
 `EXPO_PUBLIC_FIT_TRACE_API_URL`, and explicit consent scoped to that account and
 API endpoint. The sync screen asks whether existing device records should be
 included. Declining leaves them device-only; records saved while consent is
-enabled enter a durable upload queue. Uploads still run only after a manual
-sync tap. This build has no background or reconnect worker and does not promise
-automatic or immediate uploads.
+enabled enter a durable upload queue. The shared coordinator runs after opt-in
+when the app enters the foreground, connectivity returns, or Expo's background
+task is scheduled. The manual **Sync now** action remains available. Android's
+WorkManager minimum interval is 15 minutes and the OS may defer or skip work;
+neither reconnect nor background upload is immediate or guaranteed. Guests and
+accounts without consent never upload.
 
 Only **workouts** are synchronized. Imported artifacts, plan adoption, coaching
 data and account preferences are not part of this flow; preferences use the
@@ -333,8 +336,13 @@ The runner reads both sides before any write. Remote-only records are inserted
 through the local repository, which never overwrites; a same-id local record
 becomes a conflict. Enrolled candidates are posted one at a time to
 `POST /workouts`: `201` creates, `200` is an identical duplicate, and `409` is
-a same-id content difference. Successful uploads leave the durable queue. The
-client bounds response bodies and validates every remote record.
+a same-id content difference. Successful uploads leave the durable queue. If a
+request reaches the server but its response is lost, the next complete remote
+read recognizes the identical record and completes the queued item without
+posting it again. Retryable upload failures use bounded exponential backoff
+with jitter. The client bounds response bodies and validates every remote
+record; a malformed remote row makes reconciliation incomplete and prevents
+advancing last-success status.
 
 Conflicts preserve both originals. Each offers three device-only choices:
 
@@ -347,6 +355,21 @@ Conflicts preserve both originals. Each offers three device-only choices:
 None of the three uploads the local record, deletes either copy or rewrites the
 cloud original. Export is acknowledged only after the system share sheet
 returns successfully. Records stay immutable.
+
+Conflict choices are stored by account, endpoint and canonical fingerprints.
+An unchanged acknowledged divergence is explicitly device-only; it is not
+counted as identical content and reappears if either payload changes.
+
+Session tokens live only in SecureStore. A separate SQLite auth-control store
+contains a non-secret generation and revocation bit. Refresh writes use a
+generation check shared by foreground and headless runtimes; sign-out advances
+the durable generation before attempting SecureStore deletion, so a failed
+delete or a late refresh cannot make the old session usable. Storage errors
+fail closed. No credentials are written to the workout database or sync logs.
+
+Migration v8 creates unassigned outbox entries for preexisting local rows;
+only the explicit include-existing choice enrolls them. Earlier migration
+versions remain unchanged.
 
 Schema migrations are additive and tracked by SQLite `user_version`. SQLite
 does not provide an app-level downgrade path: rollback requires restoring the
@@ -473,8 +496,8 @@ Privacy: read-only towards Health Connect. The app requests only
 and every aggregation happens on the device — the Health Connect read itself
 never leaves the device. An imported sleep value does not stay quarantined,
 though: it becomes part of the workout record it was filled into, and like a
-manually entered value it is stored in the local log and syncs to the cloud
-only when the user starts a manual sync. No account is required to import —
+manually entered value it is stored in the local log and uploads only after
+explicit account/endpoint sync consent. No account is required to import —
 the opt-in lives entirely on the device. The sleep history itself is
 device-local AsyncStorage (`agent-fit-trace.health.sleep.v1`) and is never
 mirrored, restored or synced across devices.
@@ -689,23 +712,23 @@ store release; there is no iOS build configuration or verification yet.
 ## Security and privacy
 
 - **Session tokens live in SecureStore.** They never go to AsyncStorage, workout
-  records, exported JSON or logs. The in-memory fallback exists only for the
-  current process and is not persisted.
+  records, exported JSON or logs. The non-secret revocation generation is kept
+  in a separate SQLite control database; read/write failures fail closed.
 - **No privileged keys in the app.** The client may use the public Supabase URL,
   the publishable key and the public API base. Service-role and provider keys
   stay server- or worker-only, consistent with
   [`docs/deployment.md`](deployment.md).
-- **SQLite is plaintext.** The database lives inside the Android app sandbox
+- **SQLite is plaintext.** The databases live inside the Android app sandbox
   without application-level encryption: a deliberate tradeoff that avoids key
   management and keeps migrations simple. It relies on the OS sandbox and device
   lock, so a rooted device, an included backup or an export can expose data.
-  Encryption is deferred; because manual sync now sends selected workout records
+  Encryption is deferred; because consented sync sends selected workout records
   to the account, treat the device sandbox and the cloud account as the current
-  protection boundary, and revisit encryption before additional health data or
-  background sync.
-- **Guest data stays local** until the user signs in and explicitly starts a
-  sync. Cloud sync sends the workouts the user chose to store in the account; it
-  is not an automatic device backup.
+  protection boundary, and revisit encryption before syncing additional health
+  data.
+- **Guest data stays local** until the user signs in and explicitly enables
+  account/endpoint sync. Cloud sync sends only enrolled workouts; it is not an
+  automatic device backup.
 - **Session drafts are device-local and owner-scoped.** They live in the same
   plaintext SQLite database, keyed by account id (or the local guest), and are
   never synced or exported. Sign-out or an account switch makes the previous
@@ -718,12 +741,9 @@ store release; there is no iOS build configuration or verification yet.
 
 ## Verification status and known gaps
 
-The ten mobile model suites pass with 141 tests: store 11, session draft 10,
-analysis 8, plan 6, auth 12, preferences 9, sync 16, sync apply 24, coach model
-18 and coach screen 27. The root app suite passes 607 tests. `pnpm typecheck`,
-`pnpm mobile:typecheck` and `expo export --platform android` pass in the current
-tree. These are model and bundle checks plus one limited Expo Go device smoke,
-not live service checks.
+The mobile and root test suites, typechecks and Android JS export are verified
+in this worktree. These are model, static and bundle checks, not live service
+checks.
 
 - **PR3 is not verified against live services.** Sign-in, account preference
   round-trips, manual sync and the hosted coach have not been exercised against a
@@ -749,12 +769,14 @@ not live service checks.
 - **No iOS.** Native typography and layout are verified only on Android; there is
   no iPhone build or test target.
 - **No bundled fonts.** Bricolage/DM Sans fall back to platform fonts.
-- **No push notifications or background sync.** Sync is manual and foreground;
-  the coach stream is foreground-only. There is no background delivery,
-  notification, persisted run/cursor or automatic resume after an app restart.
-- **Conflict acknowledgements are not persistent.** They apply to the current
-  result only, and the immutable local record makes the same conflict return on
-  the next manual sync.
+- **Background sync is best effort.** Android emulator export does not prove
+  WorkManager delivery after force-stop or under battery restrictions. The OS
+  may defer background work. The coach stream remains foreground-only.
+- **Background task native execution is unverified for this change.** An API 35
+  emulator was available over SSH, but it had no Fit Trace or Expo Go package
+  installed and its host exposes `adb` without Node, pnpm or Gradle. The JS
+  export and Expo prebuild configuration resolve; a native dev build and actual
+  scheduled task run still need verification.
 - **No email verification or reset deep links.** Email confirmation and password
   recovery have no in-app or deep-link flow yet.
 - **Mobile CI is partial.** The pure mobile model suites run in root CI, but
@@ -813,7 +835,6 @@ This is the intended sequencing, not a commitment to a release date:
 2. Add mobile typecheck, Expo export and the preview build to CI while keeping
    the pure model suites in the root `node:test` run.
 3. Add local store import/export parity and finish the plan application path.
-4. Add background sync, persistent conflict acknowledgement and push
-   notifications.
+4. Verify background sync on supported Android devices; add push notifications.
 5. Add iOS, bundled fonts, email verification/password-reset deep links and the
    remaining Glass polish before the public store release.

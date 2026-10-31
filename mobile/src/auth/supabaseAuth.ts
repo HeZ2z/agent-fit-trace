@@ -24,6 +24,8 @@ import {
 
 export type AuthFetch = typeof fetch;
 
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
 function authHeaders(
   config: SupabaseAuthConfig,
   accessToken?: string,
@@ -45,11 +47,15 @@ async function send(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS);
   try {
-    return await fetchImpl(url, init);
+    return await fetchImpl(url, { ...init, signal: controller.signal });
   } catch {
     // Network failure is transient: callers keep any existing session.
     throw new AuthError("network");
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

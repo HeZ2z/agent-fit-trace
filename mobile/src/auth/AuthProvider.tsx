@@ -25,10 +25,14 @@ import {
   type SupabaseAuthUser,
   type SupabaseSession,
 } from "./authModel";
-import { readStoredSession, writeStoredSession } from "./sessionStore";
+import {
+  readStoredAuthSession,
+  revokeStoredSession,
+  saveNewStoredSession,
+} from "./sessionStore";
+import { refreshStoredSession } from "./sessionRefresh";
 import {
   fetchAuthUser,
-  refreshSession as refreshSessionRequest,
   signInWithPassword,
   signOut as signOutRequest,
 } from "./supabaseAuth";
@@ -77,6 +81,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Bumped by every sign-in/sign-out/unmount so late async work cannot replace
   // a newer identity. `attemptRef` does the same for concurrent sign-in clicks.
   const generationRef = useRef(0);
+  // Shared with headless runtimes through SQLite; SecureStore alone cannot
+  // distinguish a late refresh from credentials revoked by another runtime.
+  const sessionGenerationRef = useRef(0);
   const attemptRef = useRef(0);
   const refreshInflightRef = useRef<Promise<boolean> | null>(null);
   const refreshRef = useRef<() => Promise<boolean>>(async () => false);
@@ -99,26 +106,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const generation = generationRef.current;
     void (async () => {
       try {
-        const stored = await readStoredSession();
+        const stored = await readStoredAuthSession();
         if (cancelled || generation !== generationRef.current) return;
         if (stored === null) {
           setStatus("signed-out");
           return;
         }
-        if (!isSessionExpired(stored)) {
-          applySession(stored);
+        sessionGenerationRef.current = stored.generation;
+        if (!isSessionExpired(stored.session)) {
+          applySession(stored.session);
           setStatus("signed-in");
           setError(null);
           setRefreshRetry(null);
           return;
         }
-        const refreshed = await refreshSessionRequest(config, stored.refreshToken);
+        const refreshed = await refreshStoredSession(config, stored);
         if (cancelled || generation !== generationRef.current) return;
-        applySession(refreshed);
+        if (refreshed === null) {
+          const latest = await readStoredAuthSession();
+          if (latest === null) {
+            setStatus("signed-out");
+          } else if (latest.generation !== stored.generation || latest.session.refreshToken !== stored.session.refreshToken) {
+            sessionGenerationRef.current = latest.generation;
+            applySession(latest.session);
+            setStatus("signed-in");
+            setError(null);
+          } else {
+            applySession(null);
+            setError(new AuthError("network"));
+            setStatus("error");
+            setRefreshRetry((previous) => nextAuthRefreshRetry(previous));
+          }
+          return;
+        }
+        sessionGenerationRef.current = refreshed.generation;
+        applySession(refreshed.session);
         setStatus("signed-in");
         setError(null);
         setRefreshRetry(null);
-        void writeStoredSession(refreshed);
       } catch (cause) {
         if (cancelled || generation !== generationRef.current) return;
         const nextError = toAuthError(cause);
@@ -131,7 +156,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         applySession(null);
         setStatus("signed-out");
-        void writeStoredSession(null);
+        void revokeStoredSession(sessionGenerationRef.current).catch(() => undefined);
       }
     })();
     return () => {
@@ -162,13 +187,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const verified = await fetchAuthUser(config, tokenSession.accessToken);
         if (attempt !== attemptRef.current) return;
         const next: SupabaseSession = { ...tokenSession, user: verified };
+        const authGeneration = await saveNewStoredSession(next);
         generationRef.current += 1;
+        sessionGenerationRef.current = authGeneration;
         refreshInflightRef.current = null;
         applySession(next);
         setStatus("signed-in");
         setError(null);
         setRefreshRetry(null);
-        await writeStoredSession(next);
       } catch (cause) {
         const nextError = toAuthError(cause);
         if (attempt === attemptRef.current) setError(nextError);
@@ -189,7 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     setRefreshRetry(null);
     setStatus(config === null ? "unconfigured" : "signed-out");
-    await writeStoredSession(null);
+    await revokeStoredSession().catch(() => undefined);
     if (current !== null && config !== null) {
       try {
         await signOutRequest(config, current.accessToken);
@@ -210,17 +236,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let task!: Promise<boolean>;
     task = (async (): Promise<boolean> => {
       try {
-        const next = await refreshSessionRequest(config, refreshToken);
+        const refreshed = await refreshStoredSession(config, {
+          session: current,
+          generation: sessionGenerationRef.current,
+        });
         // A sign-out/account change may have landed while the grant was in
         // flight; never apply stale credentials to the new identity.
         if (generation !== generationRef.current) return false;
         const latest = sessionRef.current;
         if (latest === null || latest.refreshToken !== refreshToken) return false;
-        applySession(next);
+        if (refreshed === null) {
+          const stored = await readStoredAuthSession();
+          if (stored === null) {
+            generationRef.current += 1;
+            applySession(null);
+            setStatus("signed-out");
+            return false;
+          }
+          sessionGenerationRef.current = stored.generation;
+          if (stored.session.refreshToken !== refreshToken) {
+            applySession(stored.session);
+            setStatus("signed-in");
+            setError(null);
+            setRefreshRetry(null);
+            return true;
+          }
+          if (isSessionExpired(latest)) setStatus("error");
+          setRefreshRetry((previous) => nextAuthRefreshRetry(previous));
+          return false;
+        }
+        sessionGenerationRef.current = refreshed.generation;
+        applySession(refreshed.session);
         setStatus("signed-in");
         setError(null);
         setRefreshRetry(null);
-        void writeStoredSession(next);
         return true;
       } catch (cause) {
         if (generation !== generationRef.current) return false;
@@ -240,7 +289,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applySession(null);
         setRefreshRetry(null);
         setStatus("signed-out");
-        void writeStoredSession(null);
+        void revokeStoredSession(sessionGenerationRef.current).catch(() => undefined);
         return false;
       } finally {
         if (refreshInflightRef.current === task) refreshInflightRef.current = null;

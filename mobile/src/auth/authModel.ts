@@ -17,6 +17,7 @@
  * characters, `.`, `-` and `_`, so the web-style colons are dots here.
  */
 export const MOBILE_AUTH_SESSION_KEY = "agent-fit-trace.auth.v1.mobile";
+export { isRefreshCredentialCurrent, isSessionGenerationCurrent } from "./authControlModel.ts";
 
 /** Refresh a session this long before its access token actually expires. */
 export const AUTH_EXPIRY_SKEW_MS = 60_000;
