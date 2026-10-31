@@ -357,6 +357,100 @@ test("runner pulls remote-only, pushes local-only, and preserves both conflict o
   assert.equal(client.stored.get("a-local"), onlyLocal);
 });
 
+test("runner uploads only explicitly enrolled candidates and marks pulled records remote-origin", async () => {
+  const local = record("scoped-local");
+  const remote = record("cloud-only");
+  const candidates: WorkoutRecord[] = [local];
+  const savedOrigins: string[] = [];
+  const completed: string[] = [];
+  const base = createRepository([local]);
+  const repository = {
+    ...base,
+    async listUploadCandidates(scope: { accountId: string; endpoint: string }) {
+      assert.deepEqual(scope, { accountId: ACCOUNT_A.userId, endpoint: CONFIGURED.baseUrl });
+      return candidates;
+    },
+    async isSyncEnabled() { return true; },
+    async markUploadComplete(_scope: unknown, id: string) { completed.push(id); },
+    async saveWorkout(entry: WorkoutRecord, options?: { origin?: "local" | "remote" }) {
+      savedOrigins.push(options?.origin ?? "local");
+      return base.saveWorkout(entry);
+    },
+  };
+  const client = createClient([remote]);
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => ACCOUNT_A,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(client.calls.creates, [local.id]);
+  assert.deepEqual(completed, [local.id]);
+  assert.deepEqual(savedOrigins, ["remote"]);
+});
+
+test("remote membership from another account is excluded from sync planning", async () => {
+  const accountARecord = record("from-account-a");
+  const saves: string[] = [];
+  const client = createClient([]);
+  const result = await runWorkoutSync({
+    repository: {
+      async listWorkouts() { return [accountARecord]; },
+      async listSyncWorkouts(scope) {
+        assert.deepEqual(scope, { accountId: ACCOUNT_B.userId, endpoint: CONFIGURED.baseUrl });
+        return [];
+      },
+      async listUploadCandidates() { return []; },
+      async isSyncEnabled() { return true; },
+      async markUploadComplete() {},
+      async saveWorkout(entry) { saves.push(entry.id); return { created: true }; },
+      async getWorkout() { return null; },
+    },
+    client,
+    account: ACCOUNT_B,
+    getCurrentAccount: () => ACCOUNT_B,
+    scope: { accountId: ACCOUNT_B.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.counts.conflicts, 0);
+  assert.deepEqual(client.calls.creates, []);
+  assert.deepEqual(saves, []);
+});
+
+test("a stale sync lease stops a suspended worker before its next write", async () => {
+  const local = record("fenced-local");
+  const client = createClient([]);
+  let released = false;
+  const result = await runWorkoutSync({
+    repository: {
+      async listWorkouts() { return [local]; },
+      async listSyncWorkouts() { return [local]; },
+      async listUploadCandidates() { return [local]; },
+      async isSyncEnabled() { return true; },
+      async markUploadComplete() {},
+      async saveWorkout() { return { created: true }; },
+      async getWorkout() { return null; },
+      async acquireSyncLease() { return { owner: "worker-a", generation: 1, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
+      async renewSyncLease() { return false; },
+      async isSyncLeaseCurrent() { return false; },
+      async releaseSyncLease() { released = true; },
+    },
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => ACCOUNT_A,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure, "other");
+  assert.deepEqual(client.calls.creates, []);
+  assert.equal(released, true);
+});
+
 test("a CONFLICT while inserting locally becomes a conflict, not a failed run", async () => {
   const racedLocal = record("r1", { notes: "device version" });
   const remote = record("r1", { notes: "cloud version" });

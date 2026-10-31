@@ -14,6 +14,7 @@ import {
   classifySyncFailure,
   classifySyncStatus,
   planSync,
+  validateRemoteWorkoutList,
 } from "../mobile/src/sync/syncModel.ts";
 import { resolveSyncConfig } from "../mobile/src/sync/syncConfig.ts";
 
@@ -259,6 +260,19 @@ test("canSync requires both a signed-in session and configured cloud sync", () =
       );
     }
   }
+});
+
+test("remote list validation rejects a partial list and reports only redacted diagnostics", () => {
+  const malformed: unknown = { id: "bad", notes: "private workout text" };
+  const notices: { index: number; reason: string }[] = [];
+  assert.throws(
+    () => validateRemoteWorkoutList([record("valid"), malformed], (notice) => notices.push(notice)),
+    /Remote workout list is incomplete \(1 invalid record\)/,
+  );
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].index, 1);
+  assert.doesNotMatch(notices[0].reason, /private workout text/);
+  assert.deepEqual(validateRemoteWorkoutList([record("valid")]).map((entry) => entry.id), ["valid"]);
 });
 
 test("sync config treats missing or blank values as unconfigured", () => {

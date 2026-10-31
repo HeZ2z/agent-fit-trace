@@ -12,7 +12,7 @@
  */
 
 import { API_ERROR_CODES } from "@agent-fit-trace/api-contracts";
-import { stableStringify } from "@agent-fit-trace/core";
+import { stableStringify, validateWorkoutRecord } from "@agent-fit-trace/core";
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import type { AuthStatus } from "../auth/authModel.ts";
 import type { SyncConfigStatus } from "./syncConfig.ts";
@@ -53,6 +53,40 @@ export interface SyncPlan {
 
 /** UI-facing failure buckets; the i18n layer owns the actual copy. */
 export type SyncFailureKind = "offline" | "auth" | "conflict" | "other";
+
+/** A partial remote list is never safe to treat as a completed reconciliation. */
+export class IncompleteRemoteWorkoutListError extends Error {
+  readonly malformedCount: number;
+
+  constructor(malformedCount: number) {
+    super(`Remote workout list is incomplete (${malformedCount} invalid record${malformedCount === 1 ? "" : "s"}).`);
+    this.name = "IncompleteRemoteWorkoutListError";
+    this.malformedCount = malformedCount;
+  }
+}
+
+/** Validate the complete collection or fail without returning a partial list. */
+export function validateRemoteWorkoutList(
+  data: unknown,
+  onMalformed?: (notice: { index: number; reason: string }) => void,
+): WorkoutRecord[] {
+  if (!Array.isArray(data)) throw new TypeError("Remote workout list must be an array.");
+  const records: WorkoutRecord[] = [];
+  let malformedCount = 0;
+  data.forEach((entry, index) => {
+    try {
+      records.push(validateWorkoutRecord(entry).record);
+    } catch (error) {
+      malformedCount += 1;
+      onMalformed?.({
+        index,
+        reason: error instanceof Error ? error.message : "Workout record failed validation.",
+      });
+    }
+  });
+  if (malformedCount > 0) throw new IncompleteRemoteWorkoutListError(malformedCount);
+  return records;
+}
 
 /** Ascending id order, independent of locale and input order. */
 function compareIds(a: string, b: string): number {

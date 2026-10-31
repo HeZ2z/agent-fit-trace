@@ -38,6 +38,8 @@ import {
 import { classifySyncFailure, planSync } from "./syncModel.ts";
 import type { SyncFailureKind, SyncPlan } from "./syncModel.ts";
 import type { SyncConfig } from "./syncConfig.ts";
+import type { SyncScope } from "../data/schema.ts";
+import type { SyncLease } from "../data/schema.ts";
 
 /** Outcome of one cloud create; mirrors the client without importing Expo. */
 export type SyncRemoteCreateOutcome = "created" | "duplicate";
@@ -45,8 +47,27 @@ export type SyncRemoteCreateOutcome = "created" | "duplicate";
 /** The subset of `WorkoutRepository` the runner needs. */
 export interface SyncRunRepository {
   listWorkouts(): Promise<WorkoutRecord[]>;
-  saveWorkout(record: WorkoutRecord): Promise<{ created: boolean }>;
+  listSyncWorkouts?(scope: SyncScope): Promise<WorkoutRecord[]>;
+  linkRemoteMembership?(scope: SyncScope, record: WorkoutRecord): Promise<void>;
+  saveWorkout(
+    record: WorkoutRecord,
+    options?: { origin?: "local" | "remote"; scope?: SyncScope },
+  ): Promise<{ created: boolean }>;
   getWorkout(id: string): Promise<WorkoutRecord | null>;
+  listUploadCandidates?(scope: SyncScope): Promise<WorkoutRecord[]>;
+  isSyncEnabled?(scope: SyncScope): Promise<boolean>;
+  markUploadComplete?(scope: SyncScope, workoutId: string): Promise<void>;
+  acquireSyncLease?(scope: SyncScope, owner: string, now: Date, ttlMs?: number): Promise<SyncLease | null>;
+  renewSyncLease?(scope: SyncScope, now: Date, ttlMs?: number): Promise<boolean>;
+  isSyncLeaseCurrent?(scope: SyncScope, now: Date): Promise<boolean>;
+  releaseSyncLease?(scope: SyncScope): Promise<void>;
+}
+
+const SYNC_LEASE_TTL_MS = 60_000;
+const SYNC_LEASE_RENEW_MS = 15_000;
+
+function syncLeaseOwner(): string {
+  return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** The subset of `WorkoutSyncClient` the runner needs. */
@@ -74,6 +95,7 @@ export interface RunWorkoutSyncOptions {
    * the same user does not stop the run; the run keeps its pinned token.
    */
   getCurrentAccount: () => SyncRunAccount | Promise<SyncRunAccount>;
+  scope?: SyncScope;
 }
 
 /** User id and access token pinned for one sync run. */
@@ -115,6 +137,18 @@ async function stopIfAccountChanged(
   options: RunWorkoutSyncOptions,
   state: SyncRunAccumulator,
 ): Promise<SyncRunAccumulator | null> {
+  if (
+    options.scope?.leaseOwner !== undefined &&
+    options.repository.isSyncLeaseCurrent !== undefined
+  ) {
+    try {
+      if (!(await options.repository.isSyncLeaseCurrent(options.scope, new Date()))) {
+        return recordSyncFailure(state, "other");
+      }
+    } catch {
+      return recordSyncFailure(state, "other");
+    }
+  }
   let current: SyncRunAccount;
   try {
     current = await options.getCurrentAccount();
@@ -186,7 +220,7 @@ async function collectPushConflicts(
  * a network/storage/conflict failure. Preflight aborts perform no reads and no
  * writes; a mid-run failure stops further writes and reports what completed.
  */
-export async function runWorkoutSync(
+async function runWorkoutSyncUnderLease(
   options: RunWorkoutSyncOptions,
 ): Promise<SyncRunResult> {
   if (
@@ -198,12 +232,28 @@ export async function runWorkoutSync(
   if (options.client.config.status !== "configured") {
     return abortSyncRun("other", "unconfigured");
   }
+  const scope: SyncScope = options.scope ?? {
+    accountId: options.account.userId as string,
+    endpoint: options.client.config.baseUrl,
+  };
+  if (scope.accountId !== options.account.userId || scope.endpoint !== options.client.config.baseUrl) {
+    return abortSyncRun("auth", "unauthenticated");
+  }
+  try {
+    if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+      return abortSyncRun("auth", "unauthenticated");
+    }
+  } catch {
+    return abortSyncRun("other");
+  }
 
   let local: WorkoutRecord[];
   let remote: WorkoutRecord[];
   try {
     [local, remote] = await Promise.all([
-      options.repository.listWorkouts(),
+      options.repository.listSyncWorkouts === undefined
+        ? options.repository.listWorkouts()
+        : options.repository.listSyncWorkouts(scope),
       options.client.listRemoteWorkouts(),
     ]);
   } catch (error) {
@@ -211,9 +261,26 @@ export async function runWorkoutSync(
     return abortForFailure(classifySyncFailure(error));
   }
 
+  let candidates: WorkoutRecord[];
+  try {
+    candidates = options.repository.listUploadCandidates === undefined
+      ? local
+      : await options.repository.listUploadCandidates(scope);
+  } catch (error) {
+    return abortForFailure(classifySyncFailure(error));
+  }
+
   let plan: SyncPlan;
   try {
-    plan = planSync(local, remote);
+    const fullPlan = planSync(local, remote);
+    const candidatePlan = planSync(candidates, remote);
+    // Every local record participates in conflict detection, but only records
+    // explicitly enrolled for this account and endpoint can be uploaded.
+    plan = {
+      ...fullPlan,
+      toPush: candidatePlan.toPush,
+      summary: { ...fullPlan.summary, toPush: candidatePlan.toPush.length },
+    };
   } catch {
     // Inconsistent input lists are a data-integrity problem, not a network one.
     return abortSyncRun("other");
@@ -227,7 +294,8 @@ export async function runWorkoutSync(
     const stopped = await stopIfAccountChanged(options, state);
     if (stopped !== null) return completeSyncRun(stopped);
     try {
-      await options.repository.saveWorkout(record);
+      await options.repository.saveWorkout(record, { origin: "remote", scope });
+      await options.repository.linkRemoteMembership?.(scope, record);
       state = recordPulledRecord(state);
     } catch (error) {
       if (classifySyncFailure(error) !== "conflict") {
@@ -245,6 +313,7 @@ export async function runWorkoutSync(
         return completeSyncRun(state);
       }
       if (sameRecord(existing, record)) {
+        await options.repository.linkRemoteMembership?.(scope, record);
         state = recordPulledRecord(state);
         continue;
       }
@@ -268,7 +337,17 @@ export async function runWorkoutSync(
       break;
     }
     try {
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        state = recordSyncFailure(state, "auth");
+        break;
+      }
+    } catch {
+      state = recordSyncFailure(state, "other");
+      break;
+    }
+    try {
       await options.client.createRemoteWorkout(record);
+      await options.repository.markUploadComplete?.(scope, record.id);
       state = recordPushedRecord(state);
     } catch (error) {
       if (classifySyncFailure(error) === "conflict") {
@@ -285,4 +364,55 @@ export async function runWorkoutSync(
   }
 
   return completeSyncRun(state);
+}
+
+/** Serialize independent JS runtimes and fence every sync-owned local write. */
+export async function runWorkoutSync(options: RunWorkoutSyncOptions): Promise<SyncRunResult> {
+  const repository = options.repository;
+  if (repository.acquireSyncLease === undefined) {
+    return runWorkoutSyncUnderLease(options);
+  }
+  if (
+    repository.renewSyncLease === undefined ||
+    repository.isSyncLeaseCurrent === undefined ||
+    repository.releaseSyncLease === undefined
+  ) {
+    return abortSyncRun("other");
+  }
+  const scope: SyncScope = options.scope ?? {
+    accountId: options.account.userId as string,
+    endpoint: options.client.config.status === "configured"
+      ? options.client.config.baseUrl
+      : "",
+  };
+  if (!hasAccountId(scope.accountId) || scope.endpoint === "") {
+    return runWorkoutSyncUnderLease(options);
+  }
+  const owner = syncLeaseOwner();
+  let lease: SyncLease | null;
+  try {
+    lease = await repository.acquireSyncLease(scope, owner, new Date(), SYNC_LEASE_TTL_MS);
+  } catch {
+    return abortSyncRun("other");
+  }
+  if (lease === null) return abortSyncRun("other");
+
+  const leasedScope: SyncScope = {
+    ...scope,
+    leaseOwner: owner,
+    leaseGeneration: lease.generation,
+  };
+  const renewal = setInterval(() => {
+    void repository.renewSyncLease!(leasedScope, new Date(), SYNC_LEASE_TTL_MS).catch(() => undefined);
+  }, SYNC_LEASE_RENEW_MS);
+  try {
+    return await runWorkoutSyncUnderLease({ ...options, scope: leasedScope });
+  } finally {
+    clearInterval(renewal);
+    try {
+      await repository.releaseSyncLease!(leasedScope);
+    } catch {
+      // Expiry recovers a lease if local cleanup fails or the runtime is killed.
+    }
+  }
 }
