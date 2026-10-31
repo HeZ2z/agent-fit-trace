@@ -42,6 +42,7 @@ describe("MeScreen appearance preference", () => {
       "aria-pressed",
       "false",
     );
+    expect(screen.queryByText(/blueprint grid|frosted chrome/i)).not.toBeInTheDocument();
   });
 
   it("applies and persists Glass, and restores it on the next mount", async () => {

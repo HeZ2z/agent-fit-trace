@@ -107,6 +107,7 @@ describe("WorkoutEditorScreen session draft", () => {
 
     renderEditor(adapter);
 
+    expect(screen.queryByText(/validation runs before anything is stored/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("draft-notice")).toHaveTextContent(
       /unfinished session restored/i,
     );

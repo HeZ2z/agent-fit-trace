@@ -134,6 +134,7 @@ describe("PlanScreen", () => {
     const { container } = renderPlanOver(adapter);
 
     expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
+    expect(screen.queryByText(/rule-based next-session draft/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("plan-source")).toHaveTextContent(/current computed/i);
     expect(screen.getByRole("link", { name: /manage imports and exports/i })).toHaveAttribute(
       "href",
@@ -171,7 +172,7 @@ describe("PlanScreen", () => {
 
     expect(await screen.findByText(/imported goal/i)).toBeInTheDocument();
     expect(screen.getByTestId("plan-source")).toHaveTextContent(/imported snapshot/i);
-    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent("This saved plan is not adopted.");
     expect(await client.getPlanAdoption()).toBeNull();
     expect(screen.getByTestId("plan-snapshot-meta")).toHaveTextContent(/plan\.json/);
     expect(screen.getByTestId("plan-snapshot-linkage")).toHaveTextContent(/2 missing/i);
@@ -214,18 +215,15 @@ describe("PlanScreen", () => {
 
     const { user } = renderPlan(client);
     await screen.findByText(/imported goal/i);
-    await user.click(
-      screen.getByRole("button", { name: /confirm adopting this exact saved snapshot/i }),
-    );
+    await user.click(screen.getByRole("button", { name: "Adopt this plan" }));
 
-    expect(await screen.findByTestId("current-adoption")).toHaveTextContent(artifact.id);
+    expect(await screen.findByTestId("current-adoption")).toHaveTextContent(
+      "A saved plan is adopted.",
+    );
     expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(
-      /is the currently adopted plan/i,
+      "This saved plan is adopted.",
     );
-    expect(screen.getByTestId("plan-snapshot-draft")).toHaveTextContent(
-      /is_draft=true, requires_confirmation=true/i,
-    );
-    expect(screen.getByTestId("plan-snapshot-draft")).toHaveTextContent(/saved adoption is separate/i);
+    expect(screen.getByTestId("plan-snapshot-draft")).toHaveTextContent("This plan is adopted.");
     expect(await client.getPlanAdoption()).toMatchObject({
       artifact_id: artifact.id,
       confirmed_digest: artifact.content_digest,
@@ -254,7 +252,7 @@ describe("PlanScreen", () => {
     await waitFor(() => expect(reads).toBe(1));
 
     await user.click(
-      screen.getByRole("button", { name: /confirm adopting this exact saved snapshot/i }),
+      screen.getByRole("button", { name: "Adopt this plan" }),
     );
     await user.click(screen.getByRole("button", { name: /refresh saved data/i }));
     await waitFor(() => expect(reads).toBe(2));
@@ -267,14 +265,14 @@ describe("PlanScreen", () => {
       });
     });
     await waitFor(() =>
-      expect(screen.getByTestId("current-adoption")).toHaveTextContent(artifact.id),
+      expect(screen.getByTestId("current-adoption")).toHaveTextContent("A saved plan is adopted."),
     );
 
     await act(async () => {
       staleRead.resolve(null);
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
-    expect(screen.getByTestId("current-adoption")).toHaveTextContent(artifact.id);
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent("A saved plan is adopted.");
   });
 
   it("restores an adoption binding after a hard remount", async () => {
@@ -289,12 +287,12 @@ describe("PlanScreen", () => {
     });
 
     const first = renderPlan(client);
-    await screen.findByText(/is the currently adopted plan/i);
+    await screen.findByText("This saved plan is adopted.");
     first.unmount();
 
     renderPlan(clientFor(adapter));
-    expect(await screen.findByText(/is the currently adopted plan/i)).toBeInTheDocument();
-    expect(screen.getByTestId("current-adoption")).toHaveTextContent(artifact.id);
+    expect(await screen.findByText("This saved plan is adopted.")).toBeInTheDocument();
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent("A saved plan is adopted.");
   });
 
   it("does not let a newly imported draft inherit the old adoption", async () => {
@@ -317,15 +315,15 @@ describe("PlanScreen", () => {
     const { user } = renderPlan(client);
 
     expect(await screen.findByText(/Fresh imported goal/i)).toBeInTheDocument();
-    expect(screen.getByTestId("current-adoption")).toHaveTextContent(old.id);
-    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent("A saved plan is adopted.");
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent("This saved plan is not adopted.");
 
     // Viewing the fresh draft did not adopt it, but the old adoption remains
     // revocable without navigating back to the adopted snapshot.
-    await user.click(screen.getByRole("button", { name: /revoke saved adoption/i }));
+    await user.click(screen.getByRole("button", { name: "Revoke adoption" }));
     expect(await client.getPlanAdoption()).toBeNull();
-    expect(screen.getByTestId("current-adoption")).toHaveTextContent(/none/i);
-    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+    expect(screen.getByTestId("current-adoption")).toHaveTextContent("No plan adopted.");
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent("This saved plan is not adopted.");
   });
 
   it("revokes adoption metadata only, leaving payload and workouts unchanged", async () => {
@@ -341,11 +339,11 @@ describe("PlanScreen", () => {
     });
 
     const { user } = renderPlan(client);
-    await screen.findByText(/is the currently adopted plan/i);
-    await user.click(screen.getByRole("button", { name: /revoke saved adoption/i }));
+    await screen.findByText("This saved plan is adopted.");
+    await user.click(screen.getByRole("button", { name: "Revoke adoption" }));
 
     expect(await client.getPlanAdoption()).toBeNull();
-    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent(/is not adopted/i);
+    expect(screen.getByTestId("selected-snapshot-adoption")).toHaveTextContent("This saved plan is not adopted.");
     expect(await client.getImportedArtifact(artifact.id)).toMatchObject({
       payload: { is_draft: true, requires_confirmation: true },
       content_digest: artifact.content_digest,

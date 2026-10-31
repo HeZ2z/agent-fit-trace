@@ -466,11 +466,6 @@ export function WorkoutEditorScreen() {
   return (
     <section data-screen="log">
       <h1>{t("Log Workout")}</h1>
-      <p className="screen-lede">
-        {t(
-          "Record one session. Validation runs before anything is stored, and no existing record is ever overwritten.",
-        )}
-      </p>
 
       {restoredNotice !== null && (
         <p role="status" className="session-draft-notice" data-testid="draft-notice">
