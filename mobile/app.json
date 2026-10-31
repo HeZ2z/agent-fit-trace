@@ -36,6 +36,7 @@
         }
       ],
       "expo-sqlite",
+      "expo-background-task",
       "expo-secure-store",
       "expo-localization",
       "expo-sharing",

@@ -145,8 +145,8 @@ export const messages: Record<string, string> = {
   "Cloud sync consent": "云端同步授权",
   "Sync is scoped to this account and API endpoint. Pulled workouts are never queued for upload.":
     "同步仅适用于此账号和 API 地址。拉取的训练记录不会进入上传队列。",
-  "Cloud sync is enabled for this account on this API endpoint. Uploads run when you start a manual sync.":
-    "此账号已在此 API 地址启用云端同步。上传会在你手动开始同步时执行。",
+  "Cloud sync is enabled for this account on this API endpoint. Uploads can run in the foreground, on reconnect, or when the OS schedules background work.":
+    "此账号已在此 API 地址启用云端同步。上传可能在应用前台、网络恢复时，或操作系统安排的后台任务中执行。",
   "Turn off cloud sync": "关闭云端同步",
   "{count} existing device records are not yet authorized for upload.":
     "还有 {count} 条现有设备记录尚未获准上传。",
@@ -156,8 +156,8 @@ export const messages: Record<string, string> = {
     "此选择在启用时生效。启用期间的新本地训练会加入上传队列；关闭期间创建的记录会保留在设备，直到你明确选择纳入现有记录。",
   "Enable cloud sync": "启用云端同步",
   "Saving…": "正在保存…",
-  "Optional and manual. Nothing is uploaded until you start a sync; your device stays the source of truth.":
-    "可选且手动。在你开始同步之前不会上传任何内容；你的设备始终是数据的权威来源。",
+  "Optional and account-scoped. After you enable sync, uploads can run in the foreground, on reconnect, or when the OS schedules background work. Your device stays the source of truth.":
+    "可选并按账号隔离。启用后，上传可能在应用前台、网络恢复时，或操作系统安排的后台任务中执行。你的设备始终是数据的权威来源。",
   "Sync status": "同步状态",
   Idle: "空闲",
   "Syncing…": "正在同步…",

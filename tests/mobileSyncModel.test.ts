@@ -17,6 +17,7 @@ import {
   validateRemoteWorkoutList,
 } from "../mobile/src/sync/syncModel.ts";
 import { resolveSyncConfig } from "../mobile/src/sync/syncConfig.ts";
+import { shouldRunSyncForTrigger } from "../mobile/src/sync/syncTriggerModel.ts";
 
 /**
  * Pure coverage for the mobile sync foundation.
@@ -37,6 +38,19 @@ function record(id: string, overrides: Partial<WorkoutRecord> = {}): WorkoutReco
     ...overrides,
   };
 }
+
+test("sync trigger gate requires account, configuration, consent and trigger conditions", () => {
+  const authorized = { authenticated: true, configured: true, consented: true };
+  assert.equal(shouldRunSyncForTrigger("manual", authorized), true, "manual still reaches offline messaging");
+  assert.equal(shouldRunSyncForTrigger("foreground", { ...authorized, appActive: true }), true);
+  assert.equal(shouldRunSyncForTrigger("foreground", { ...authorized, appActive: false }), false);
+  assert.equal(shouldRunSyncForTrigger("reconnect", { ...authorized, networkAvailable: true }), true);
+  assert.equal(shouldRunSyncForTrigger("reconnect", { ...authorized, networkAvailable: false }), false);
+  assert.equal(shouldRunSyncForTrigger("background", { ...authorized, networkAvailable: false }), false);
+  assert.equal(shouldRunSyncForTrigger("manual", { ...authorized, consented: false }), false);
+  assert.equal(shouldRunSyncForTrigger("manual", { ...authorized, authenticated: false }), false);
+  assert.equal(shouldRunSyncForTrigger("manual", { ...authorized, configured: false }), false);
+});
 
 function ids(records: readonly WorkoutRecord[]): string[] {
   return records.map((entry) => entry.id);

@@ -17,7 +17,10 @@ import {
 } from "@/sync/syncApplyModel";
 import { WorkoutSyncClient } from "@/sync/syncClient";
 import type { SyncConflict } from "@/sync/syncModel";
-import { runWorkoutSync, type SyncRunAccount } from "@/sync/syncRunner";
+import type { SyncRunAccount } from "@/sync/syncRunner";
+import { coordinateWorkoutSync, runHeadlessWorkoutSync } from "@/sync/syncCoordinator";
+import { refreshBackgroundSyncRegistration } from "@/sync/syncLifecycle";
+import { shouldRunSyncForTrigger } from "@/sync/syncTriggerModel";
 import { SPACING } from "@/theme";
 import { Banner, Body, Button, Card, Display, Kicker, Screen, Title } from "@/ui";
 
@@ -25,9 +28,8 @@ import { Banner, Body, Button, Card, Display, Kicker, Screen, Title } from "@/ui
  * Manual cloud-sync screen.
  *
  * The screen owns only UI lifecycle (idle/syncing/done/error). All writes go
- * through `runWorkoutSync`; conflict acknowledgements only edit the current
- * result in memory. Nothing persists, so the next manual sync plans the same
- * unresolved local/cloud difference again. Each run pins the signed-in account
+ * through the shared coordinator; conflict acknowledgements persist against
+ * exact payload fingerprints. Each run pins the signed-in account
  * and token, and an account switch or unmount stops later writes and discards
  * any late result.
  */
@@ -36,7 +38,7 @@ const copy = {
   kicker: "SYNC",
   title: "Cloud sync",
   lede:
-    "Optional and manual. Nothing is uploaded until you start a sync; your device stays the source of truth.",
+    "Optional and account-scoped. After you enable sync, uploads can run in the foreground, on reconnect, or when the OS schedules background work. Your device stays the source of truth.",
   statusKicker: "Sync status",
   statusIdle: "Idle",
   statusSyncing: "Syncing…",
@@ -200,13 +202,17 @@ export default function SyncScreen() {
   // identity and the run stops before touching another account.
   const getCurrentAccount = useCallback((): SyncRunAccount => {
     if (!mountedRef.current) return { userId: null, accessToken: null };
-    return { userId: activeUserIdRef.current, accessToken: getAccessToken() };
+    return { userId: activeUserIdRef.current, accessToken: getAccessToken(), authGeneration: runGenerationRef.current };
   }, [getAccessToken]);
 
   const signedIn = authStatus === "signed-in";
   const configured = client.config.status === "configured";
   const busy = status === "syncing";
-  const canRun = signedIn && configured && repository !== null && syncEnabled === true && !busy;
+  const canRun = shouldRunSyncForTrigger("manual", {
+    authenticated: signedIn,
+    configured,
+    consented: syncEnabled === true,
+  }) && repository !== null && !busy;
 
   async function enableSync(): Promise<void> {
     if (repository === null || syncScope === null || consentBusy) return;
@@ -220,6 +226,8 @@ export default function SyncScreen() {
       const syncStatus = await repository.getSyncStatus(syncScope);
       setPendingCount(syncStatus.pendingCount);
       setLastSuccessAt(syncStatus.lastSuccessAt);
+      await refreshBackgroundSyncRegistration(true);
+      void runHeadlessWorkoutSync().catch(() => undefined);
     } catch {
       setSyncEnabled(false);
     } finally {
@@ -240,6 +248,7 @@ export default function SyncScreen() {
       setLastSuccessAt(syncStatus.lastSuccessAt);
       setResult(null);
       setStatus("idle");
+      await refreshBackgroundSyncRegistration(false);
     } finally {
       setConsentBusy(false);
     }
@@ -255,6 +264,8 @@ export default function SyncScreen() {
 
   async function handleSync(): Promise<void> {
     if (!canRun || repository === null) return;
+    const syncConfig = client.config;
+    if (syncConfig.status !== "configured") return;
     const accessToken = getAccessToken();
     const userId = user?.id ?? null;
     if (
@@ -270,48 +281,29 @@ export default function SyncScreen() {
 
     // Pin the account for the whole run and bind the client to its token, so
     // no request can silently switch to a newer sign-in.
-    const account: SyncRunAccount = { userId, accessToken };
-    const runClient = client.withAccessToken(accessToken);
     const generation = runGenerationRef.current + 1;
     runGenerationRef.current = generation;
+    const account: SyncRunAccount = { userId, accessToken, authGeneration: generation };
+    const runClient = client.withAccessToken(accessToken);
     setStatus("syncing");
     setResult(null);
     setShareError(false);
     setAcknowledged(0);
     try {
-      const next = await runWorkoutSync({
+      const next = await coordinateWorkoutSync({
         repository,
         client: runClient,
         account,
         getCurrentAccount,
-        scope: { accountId: userId, endpoint: client.config.baseUrl },
+        scope: { accountId: userId, endpoint: syncConfig.baseUrl },
       });
       if (!mountedRef.current || runGenerationRef.current !== generation) return;
-      let visible = next;
-      if (next.conflicts.length > 0) {
-        const acknowledgements = await repository.listConflictAcknowledgements({
-          accountId: userId,
-          endpoint: client.config.baseUrl,
-        });
-        for (const conflict of next.conflicts) {
-          const acknowledgement = acknowledgements.find((entry) => entry.workoutId === conflict.id);
-          if (
-            acknowledgement !== undefined &&
-            acknowledgement.localFingerprint === stableStringify(conflict.local) &&
-            acknowledgement.remoteFingerprint === stableStringify(conflict.remote)
-          ) {
-            visible = acknowledgeSyncConflict(visible, conflict.id);
-          }
-        }
-      }
-      setAcknowledged(next.conflicts.length - visible.conflicts.length);
-      setResult(visible);
-      setStatus(visible.status === "done" ? "done" : "error");
-      if (visible.status === "done" && visible.conflicts.length === 0) {
+      setAcknowledged(0);
+      setResult(next);
+      setStatus(next.status === "done" ? "done" : "error");
+      if (next.status === "done" && next.conflicts.length === 0) {
         try {
-          await repository.recordSuccessfulReconciliation({ accountId: userId, endpoint: client.config.baseUrl });
-          if (!mountedRef.current || runGenerationRef.current !== generation) return;
-          const syncStatus = await repository.getSyncStatus({ accountId: userId, endpoint: client.config.baseUrl });
+          const syncStatus = await repository.getSyncStatus({ accountId: userId, endpoint: syncConfig.baseUrl });
           if (!mountedRef.current || runGenerationRef.current !== generation) return;
           setPendingCount(syncStatus.pendingCount);
           setLastSuccessAt(syncStatus.lastSuccessAt);
@@ -351,11 +343,6 @@ export default function SyncScreen() {
     try {
       const syncStatus = await repository.getSyncStatus(syncScope);
       setPendingCount(syncStatus.pendingCount);
-      if (next.status === "done" && next.conflicts.length === 0) {
-        await repository.recordSuccessfulReconciliation(syncScope);
-        const updated = await repository.getSyncStatus(syncScope);
-        setLastSuccessAt(updated.lastSuccessAt);
-      }
     } catch {
       // The saved decision remains valid; status is refreshed on the next visit.
     }
@@ -442,7 +429,7 @@ export default function SyncScreen() {
           <Body>{t("Sync is scoped to this account and API endpoint. Pulled workouts are never queued for upload.")}</Body>
           {syncEnabled === true ? (
             <>
-              <Body testID="sync-consent-enabled">{t("Cloud sync is enabled for this account on this API endpoint. Uploads run when you start a manual sync.")}</Body>
+              <Body testID="sync-consent-enabled">{t("Cloud sync is enabled for this account on this API endpoint. Uploads can run in the foreground, on reconnect, or when the OS schedules background work.")}</Body>
               <Body testID="sync-pending-count">{t("Pending uploads: {count}", { count: pendingCount })}</Body>
               <Body testID="sync-last-success">{lastSuccessAt === null ? t("No complete sync recorded yet.") : t("Last complete sync: {date}", { date: lastSuccessAt })}</Body>
               <Button label={t("Turn off cloud sync")} onPress={() => { void disableSync(); }} disabled={consentBusy} testID="sync-disable" variant="secondary" />

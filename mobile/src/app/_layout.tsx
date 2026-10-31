@@ -8,6 +8,7 @@ import { WorkoutDataProvider } from "@/data/provider";
 import { I18nProvider } from "@/i18n";
 import { PreferencesProvider } from "@/preferences";
 import { SkinProvider, useSkin } from "@/theme/skin";
+import { SyncLifecycle } from "@/sync/syncLifecycle";
 
 function RootShell() {
   const { tokens } = useSkin();
@@ -35,6 +36,7 @@ export default function RootLayout() {
             <AuthProvider>
               {/* Preferences sit inside auth + skin + language: one place reconciles account metadata with the local stores. */}
               <PreferencesProvider>
+                <SyncLifecycle />
                 <RootShell />
               </PreferencesProvider>
             </AuthProvider>
