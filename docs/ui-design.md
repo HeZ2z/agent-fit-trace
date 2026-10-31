@@ -1,8 +1,8 @@
 # UI design system
 
-This document records the visual system used by `app/` and the rules for
-extending it. It is a presentation contract only: behaviour, data access and
-product copy stay governed by [`docs/mvp-design.md`](mvp-design.md) and
+This document records the UI principles and visual system used by `app/` and
+applicable to `mobile/`. Behaviour and data access remain governed by
+[`docs/mvp-design.md`](mvp-design.md) and
 [`docs/app-dev-modes.md`](app-dev-modes.md).
 
 ## Provenance
@@ -42,6 +42,26 @@ Both typefaces are self-hosted (SIL OFL 1.1, licenses in
    Icons are `aria-hidden`; the adjacent label always carries the name.
 5. **Touch first.** Interactive controls are at least 44px in their interactive
    dimension, with a visible 3px focus ring at all sizes.
+
+## Content and hierarchy
+
+**Avoid unnecessary secondary labels and descriptions. Let the layout do the
+explaining.** Build a task-focused product interface: use headings, grouping,
+control labels and visual hierarchy to make the next action clear.
+
+- Remove introductions, subtitles, badges and helper text that repeat a heading,
+  an obvious action or information already visible in context. Do not use the
+  interface to explain visual styling, implementation mechanics or internal
+  identifiers unless they help someone make a decision or resolve a problem.
+- Keep routine navigation and account details in their natural place instead of
+  repeating them across the shell and every screen. For example, data import,
+  export and account controls belong on **Me**.
+- Show necessary information where it matters: retain actionable errors,
+  safety and data-loss warnings, privacy and cost disclosures, and explicit
+  confirmations. Concision must not conceal a consequence of an action.
+- Keep accessible names and state information even when visible labels can be
+  shortened using the surrounding layout. Check the result on desktop and
+  narrow screens and in each supported language.
 
 ## Tokens
 
@@ -92,10 +112,9 @@ One navigation element at every width; it never duplicates in the DOM.
 | 601–899 | bottom dock, icon above label, 54px targets | 880px column |
 | ≤ 600 | bottom dock | 18px gutters, single column |
 
-The app bar is sticky below 900px and shows the compact brand plus the runtime
-mode badge and account controls. Above 900px the account controls float in the
-top-right of the workspace column; the side panel carries brand, destinations
-and data-scope disclosure.
+The app bar is sticky below 900px and shows the compact brand. Above 900px the
+side panel carries the brand and destinations. Account controls and data
+management are available from Me.
 
 The workspace ground is a 30px blueprint grid in `--grid`. Every card drawn on
 it stays pure white.
