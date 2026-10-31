@@ -64,7 +64,6 @@ import { Banner, Body, Button, Card, Display, Field, Kicker, Screen, Title } fro
 const copy = {
   kicker: "COACH",
   title: "Coach",
-  lede: "Ask about training, review the evidence, and shape the next block with a coach.",
   unconfiguredTitle: "Cloud coach is not configured",
   signedOutMessage:
     "Sign in to start a hosted cloud coaching conversation. Mobile coaching always runs in the cloud; the local CLI coach stays on desktop.",
@@ -517,7 +516,6 @@ export default function CoachScreen() {
   return (
     <Screen testID="screen-coach">
       <Display>{t(copy.title)}</Display>
-      <Body>{t(copy.lede)}</Body>
 
       {gate === "unconfigured" ? (
         <Card testID="coach-unconfigured">

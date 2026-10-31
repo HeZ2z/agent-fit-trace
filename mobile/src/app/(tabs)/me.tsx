@@ -23,7 +23,6 @@ import {
 const copy = {
   kicker: "ME",
   title: "Me",
-  lede: "Your profile, appearance, and language preferences.",
   profileKicker: "PROFILE",
   profileName: "Guest lifter",
   profileBody: "Sign in to sync sessions and unlock the cloud coach.",
@@ -90,7 +89,6 @@ export default function MeScreen() {
   return (
     <Screen testID="screen-me">
       <Display>{t(copy.title)}</Display>
-      <Body>{t(copy.lede)}</Body>
 
       <Card testID="profile-card">
         <View style={styles.profileRow}>

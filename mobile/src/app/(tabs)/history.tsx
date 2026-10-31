@@ -23,7 +23,6 @@ import {
 const copy = {
   kicker: "HISTORY",
   title: "Training history",
-  lede: "Every logged session becomes evidence. Review what you lifted, how it felt, and what changed over time.",
   emptyTitle: "No sessions yet",
   emptyMessage:
     "Log your first session and it will appear here.",
@@ -201,7 +200,6 @@ export default function HistoryScreen() {
   return (
     <Screen testID="screen-history">
       <Display>{t(copy.title)}</Display>
-      <Body>{t(copy.lede)}</Body>
       {content}
     </Screen>
   );
