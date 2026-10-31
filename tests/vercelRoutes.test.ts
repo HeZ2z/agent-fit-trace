@@ -28,7 +28,20 @@ function collectFunctionFiles(dir: string): string[] {
 
 test("vercel api Functions stay within the Hobby plan limit", () => {
   const files = collectFunctionFiles(API_DIR);
-  assert.ok(files.length <= 12, `found ${files.length} API Functions; the Hobby plan allows 12`);
+  assert.ok(files.length <= 6, `found ${files.length} API Functions; preserve room under the Hobby limit`);
+});
+
+test("data API paths are rewritten to the shared Function", () => {
+  const config = JSON.parse(readFileSync(VERCEL_CONFIG, "utf8")) as {
+    rewrites: Array<{ source: string; destination: string }>;
+  };
+  for (const path of ["workouts", "analysis", "public-config", "plans/drafts", "imports", "imports/:id", "import-selections/:kind", "plan-adoption"]) {
+    assert.ok(config.rewrites.some((entry) =>
+      entry.source === `/api/v1/${path}` &&
+      entry.destination === `/api/v1/router?__fit_trace_route=${path}`,
+    ), `missing data route rewrite for ${path}`);
+  }
+  assert.ok(existsSync(join(API_DIR, "v1/router.mjs")));
 });
 
 test("multi-segment cloud run subpaths are rewritten to the nearest Function", () => {

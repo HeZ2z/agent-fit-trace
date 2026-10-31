@@ -20,6 +20,14 @@
       "source": "/api/v1/coaching/cloud/runs/:id/cancel",
       "destination": "/api/v1/coaching/cloud/runs/:id?__fit_trace_cloud_op=cancel"
     },
+    { "source": "/api/v1/workouts", "destination": "/api/v1/router?__fit_trace_route=workouts" },
+    { "source": "/api/v1/analysis", "destination": "/api/v1/router?__fit_trace_route=analysis" },
+    { "source": "/api/v1/public-config", "destination": "/api/v1/router?__fit_trace_route=public-config" },
+    { "source": "/api/v1/plans/drafts", "destination": "/api/v1/router?__fit_trace_route=plans/drafts" },
+    { "source": "/api/v1/imports", "destination": "/api/v1/router?__fit_trace_route=imports" },
+    { "source": "/api/v1/imports/:id", "destination": "/api/v1/router?__fit_trace_route=imports/:id" },
+    { "source": "/api/v1/import-selections/:kind", "destination": "/api/v1/router?__fit_trace_route=import-selections/:kind" },
+    { "source": "/api/v1/plan-adoption", "destination": "/api/v1/router?__fit_trace_route=plan-adoption" },
     { "source": "/((?!api(?:/|$)|assets(?:/|$)).*)", "destination": "/index.html" }
   ],
   "headers": [
