@@ -707,10 +707,7 @@ export function WorkoutEditorScreen() {
                     data-safety={extreme ? "extreme-rpe" : undefined}
                   >
                     <legend>
-                      {t("Exercise {exercise} set {set}", {
-                        exercise: exerciseIndex + 1,
-                        set: setIndex + 1,
-                      })}
+                      {t("Set {set}", { set: setIndex + 1 })}
                     </legend>
 
                     {/* Check-off only exists for a timed session: on an untimed
@@ -739,13 +736,14 @@ export function WorkoutEditorScreen() {
 
                     <div className="field">
                       <label htmlFor={`${base}-weight`}>
-                        {t("Exercise {exercise} set {set} weight (kg)", {
-                          exercise: exerciseIndex + 1,
-                          set: setIndex + 1,
-                        })}
+                        {t("Weight (kg)")}
                       </label>
                       <input
                         id={`${base}-weight`}
+                        aria-label={t("Exercise {exercise} set {set} weight (kg)", {
+                          exercise: exerciseIndex + 1,
+                          set: setIndex + 1,
+                        })}
                         type="number"
                         step="any"
                         value={set.weight}
@@ -763,13 +761,14 @@ export function WorkoutEditorScreen() {
 
                     <div className="field">
                       <label htmlFor={`${base}-reps`}>
-                        {t("Exercise {exercise} set {set} reps", {
-                          exercise: exerciseIndex + 1,
-                          set: setIndex + 1,
-                        })}
+                        {t("Reps")}
                       </label>
                       <input
                         id={`${base}-reps`}
+                        aria-label={t("Exercise {exercise} set {set} reps", {
+                          exercise: exerciseIndex + 1,
+                          set: setIndex + 1,
+                        })}
                         type="number"
                         step="1"
                         value={set.reps}
@@ -787,13 +786,14 @@ export function WorkoutEditorScreen() {
 
                     <div className="field">
                       <label htmlFor={`${base}-rpe`}>
-                        {t("Exercise {exercise} set {set} RPE", {
-                          exercise: exerciseIndex + 1,
-                          set: setIndex + 1,
-                        })}
+                        {t("RPE")}
                       </label>
                       <input
                         id={`${base}-rpe`}
+                        aria-label={t("Exercise {exercise} set {set} RPE", {
+                          exercise: exerciseIndex + 1,
+                          set: setIndex + 1,
+                        })}
                         type="number"
                         min="1"
                         max="10"
