@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -32,7 +35,13 @@ import {
   AUTH_REFRESH_LEASE_ACQUIRE_SQL,
   AUTH_REFRESH_LEASE_RELEASE_SQL,
   AUTH_REFRESH_LEASE_TABLE_SQL,
+  AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL,
+  AUTH_SIGN_IN_ATTEMPT_CURRENT_SQL,
+  AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL,
+  AUTH_SIGN_IN_ATTEMPT_TABLE_SQL,
   shouldDeleteRevokedSession,
+  shouldApplySignInResult,
+  persistCurrentSignInAttempt,
 } from "../mobile/src/auth/authControlModel.ts";
 
 /**
@@ -92,6 +101,118 @@ test("SQLite refresh lease serializes runtimes and fences a revoked owner's rele
     assert.deepEqual({ ...current }, { owner: "new-login", generation: 3 });
   } finally {
     database.close();
+  }
+});
+
+test("SQLite sign-in intent fences stale saves and sign-out wins a save race", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(AUTH_CONTROL_TABLE_SQL);
+    database.exec(AUTH_SIGN_IN_ATTEMPT_TABLE_SQL);
+    database.prepare("INSERT INTO auth_control (singleton, generation, revoked) VALUES (1, 1, 1)").run();
+    const begin = database.prepare(AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL);
+    const currentAttempt = () => (database.prepare(AUTH_SIGN_IN_ATTEMPT_CURRENT_SQL).get() as { attempt: number }).attempt;
+    begin.run();
+    const firstAttempt = currentAttempt();
+    begin.run();
+    const secondAttempt = currentAttempt();
+
+    // This mirrors saveNewStoredSession's CAS inside its exclusive SQLite
+    // transaction: the earlier token response cannot replace the latest one.
+    database.exec("BEGIN IMMEDIATE");
+    assert.notEqual(currentAttempt(), firstAttempt);
+    database.exec("ROLLBACK");
+    assert.equal(shouldApplySignInResult(1, 2, 2), false);
+
+    // A later sign-out invalidates every outstanding intent and revokes the
+    // active generation atomically; a late completion cannot apply in React.
+    database.exec("BEGIN IMMEDIATE");
+    database.prepare(AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL).run();
+    database.prepare("UPDATE auth_control SET generation = generation + 1, revoked = 1 WHERE singleton = 1").run();
+    database.exec("COMMIT");
+    assert.notEqual(currentAttempt(), secondAttempt);
+    assert.equal(shouldApplySignInResult(2, 3, 3), false);
+
+    // The next deliberate login can still proceed after sign-out completes.
+    begin.run();
+    const thirdAttempt = currentAttempt();
+    database.exec("BEGIN IMMEDIATE");
+    assert.equal(currentAttempt(), thirdAttempt);
+    database.prepare("UPDATE auth_control SET generation = generation + 1, revoked = 0 WHERE singleton = 1").run();
+    database.exec("COMMIT");
+    assert.equal(shouldApplySignInResult(3, 3, 4), true);
+  } finally {
+    database.close();
+  }
+});
+
+test("late SecureStore completion after sign-out or a newer login is revoked, never applied", async () => {
+  let localAttempt = 1;
+  let finishSave!: (generation: number | null) => void;
+  const pendingSave = new Promise<number | null>((resolve) => { finishSave = resolve; });
+  const revoked: number[] = [];
+  const stale = persistCurrentSignInAttempt(
+    1,
+    () => localAttempt,
+    () => pendingSave,
+    async (generation) => { revoked.push(generation); },
+  );
+
+  // Sign-out or a second sign-in increments this ref while SecureStore is
+  // still pending. The stale identity must not reach AuthProvider state.
+  localAttempt = 2;
+  finishSave(7);
+  assert.equal(await stale, null);
+  assert.deepEqual(revoked, [7]);
+
+  let finishSecondSave!: (generation: number | null) => void;
+  const secondSave = new Promise<number | null>((resolve) => { finishSecondSave = resolve; });
+  const current = persistCurrentSignInAttempt(
+    2,
+    () => localAttempt,
+    () => secondSave,
+    async (generation) => { revoked.push(generation); },
+  );
+  finishSecondSave(8);
+  assert.equal(await current, 8);
+  assert.deepEqual(revoked, [7]);
+});
+
+test("separate SQLite connections serialize SecureStore save and sign-out writes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "fit-trace-auth-lock-"));
+  const filename = join(directory, "auth.db");
+  const savingRuntime = new DatabaseSync(filename);
+  const signOutRuntime = new DatabaseSync(filename);
+  try {
+    savingRuntime.exec(AUTH_CONTROL_TABLE_SQL);
+    savingRuntime.exec(AUTH_SIGN_IN_ATTEMPT_TABLE_SQL);
+    savingRuntime.exec("INSERT INTO auth_control (singleton, generation, revoked) VALUES (1, 1, 1)");
+    savingRuntime.prepare(AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL).run();
+    signOutRuntime.exec("PRAGMA busy_timeout = 10");
+
+    // The save path takes a write lock before awaiting SecureStore. A second
+    // runtime cannot advance the durable intent while that secret write is in
+    // flight; it must retry the lock acquisition after the transaction ends.
+    savingRuntime.exec("BEGIN IMMEDIATE");
+    savingRuntime.exec("UPDATE auth_sign_in_attempt SET attempt = attempt WHERE singleton = 1");
+    assert.throws(
+      () => signOutRuntime.prepare(AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL).run(),
+      /locked/i,
+    );
+    savingRuntime.prepare("UPDATE auth_control SET generation = 2, revoked = 0 WHERE singleton = 1").run();
+    savingRuntime.exec("COMMIT");
+
+    signOutRuntime.exec("BEGIN IMMEDIATE");
+    signOutRuntime.prepare(AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL).run();
+    signOutRuntime.prepare("UPDATE auth_control SET generation = generation + 1, revoked = 1 WHERE singleton = 1").run();
+    signOutRuntime.exec("COMMIT");
+    const control = savingRuntime.prepare("SELECT generation, revoked FROM auth_control WHERE singleton = 1")
+      .get() as { generation: number; revoked: number };
+    assert.deepEqual({ ...control }, { generation: 3, revoked: 1 });
+  } finally {
+    savingRuntime.close();
+    signOutRuntime.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

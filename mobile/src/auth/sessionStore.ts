@@ -12,6 +12,10 @@ import {
   AUTH_REFRESH_LEASE_ACQUIRE_SQL,
   AUTH_REFRESH_LEASE_RELEASE_SQL,
   AUTH_REFRESH_LEASE_TABLE_SQL,
+  AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL,
+  AUTH_SIGN_IN_ATTEMPT_CURRENT_SQL,
+  AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL,
+  AUTH_SIGN_IN_ATTEMPT_TABLE_SQL,
   isRefreshCredentialCurrent,
   isSessionGenerationCurrent,
   shouldDeleteRevokedSession,
@@ -54,10 +58,40 @@ async function openControlDatabase() {
   try {
     await database.execAsync(AUTH_CONTROL_TABLE_SQL);
     await database.execAsync(AUTH_REFRESH_LEASE_TABLE_SQL);
+    await database.execAsync(AUTH_SIGN_IN_ATTEMPT_TABLE_SQL);
     return database;
   } catch (error) {
     await database.closeAsync().catch(() => undefined);
     throw error;
+  }
+}
+
+type AuthControlDatabase = Awaited<ReturnType<typeof openControlDatabase>>;
+type AuthTransactionTask = Parameters<AuthControlDatabase["withExclusiveTransactionAsync"]>[0];
+
+function isSQLiteBusy(error: unknown): boolean {
+  return error instanceof Error && /database is (?:locked|busy)|SQLITE_BUSY/i.test(error.message);
+}
+
+async function waitForSQLite(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** Wait for another runtime's short SecureStore transaction instead of losing sign-out/sign-in intent. */
+async function withExclusiveAuthTransaction(
+  database: AuthControlDatabase,
+  task: AuthTransactionTask,
+): Promise<void> {
+  let delayMs = 20;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await database.withExclusiveTransactionAsync(task);
+      return;
+    } catch (error) {
+      if (!isSQLiteBusy(error) || attempt >= 24) throw error;
+      await waitForSQLite(delayMs);
+      delayMs = Math.min(delayMs * 2, 250);
+    }
   }
 }
 
@@ -66,8 +100,9 @@ export async function readStoredAuthSession(): Promise<StoredAuthSession | null>
   const database = await openControlDatabase();
   try {
     let result: StoredAuthSession | null = null;
-    await database.withTransactionAsync(async () => {
-      let state = await database.getFirstAsync<{ generation: number; revoked: number }>(
+    await withExclusiveAuthTransaction(database, async (transaction) => {
+      await transaction.runAsync("UPDATE auth_control SET generation = generation WHERE singleton = 1");
+      let state = await transaction.getFirstAsync<{ generation: number; revoked: number }>(
         "SELECT generation, revoked FROM auth_control WHERE singleton = 1 LIMIT 1",
       );
       if (state?.revoked === 1) return;
@@ -78,7 +113,7 @@ export async function readStoredAuthSession(): Promise<StoredAuthSession | null>
         const legacy = parseStoredSession(raw);
         const generation = legacy === null ? 0 : 1;
         const revoked = legacy === null ? 1 : 0;
-        await database.runAsync(
+        await transaction.runAsync(
           "INSERT INTO auth_control (singleton, generation, revoked) VALUES (1, ?, ?)",
           generation,
           revoked,
@@ -101,24 +136,47 @@ export async function readStoredAuthSession(): Promise<StoredAuthSession | null>
   }
 }
 
-/** Start a fresh authentication identity, invalidating older async refreshes. */
-export async function saveNewStoredSession(session: SupabaseSession): Promise<number> {
+/** Reserve the latest sign-in intent before any network request starts. */
+export async function beginStoredSignInAttempt(): Promise<number> {
   const database = await openControlDatabase();
   try {
-    let generation = 0;
-    await database.withTransactionAsync(async () => {
-      const state = await database.getFirstAsync<{ generation: number }>(
+    let attempt = 0;
+    await withExclusiveAuthTransaction(database, async (transaction) => {
+      await transaction.runAsync(AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL);
+      const row = await transaction.getFirstAsync<{ attempt: number }>(AUTH_SIGN_IN_ATTEMPT_CURRENT_SQL);
+      attempt = row?.attempt ?? 0;
+    });
+    return attempt;
+  } finally {
+    await database.closeAsync();
+  }
+}
+
+/** Commit a fresh identity only while its sign-in intent is still latest. */
+export async function saveNewStoredSession(
+  session: SupabaseSession,
+  expectedAttempt: number,
+): Promise<number | null> {
+  const database = await openControlDatabase();
+  try {
+    let generation: number | null = null;
+    await withExclusiveAuthTransaction(database, async (transaction) => {
+      await transaction.runAsync("UPDATE auth_sign_in_attempt SET attempt = attempt WHERE singleton = 1");
+      const attempt = await transaction.getFirstAsync<{ attempt: number }>(AUTH_SIGN_IN_ATTEMPT_CURRENT_SQL);
+      if (attempt?.attempt !== expectedAttempt) return;
+      const state = await transaction.getFirstAsync<{ generation: number }>(
         "SELECT generation FROM auth_control WHERE singleton = 1 LIMIT 1",
       );
-      generation = (state?.generation ?? 0) + 1;
+      const nextGeneration = (state?.generation ?? 0) + 1;
       // Write the token first; if SecureStore fails, transaction rollback keeps
       // the previous durable generation active and this sign-in is not applied.
-      await SecureStore.setItemAsync(MOBILE_AUTH_SESSION_KEY, serializeEnvelope(session, generation));
-      await database.runAsync(
+      await SecureStore.setItemAsync(MOBILE_AUTH_SESSION_KEY, serializeEnvelope(session, nextGeneration));
+      await transaction.runAsync(
         `INSERT INTO auth_control (singleton, generation, revoked) VALUES (1, ?, 0)
          ON CONFLICT(singleton) DO UPDATE SET generation = excluded.generation, revoked = 0`,
-        generation,
+        nextGeneration,
       );
+      generation = nextGeneration;
     });
     return generation;
   } finally {
@@ -139,8 +197,9 @@ export async function replaceStoredSession(
   const database = await openControlDatabase();
   try {
     let stored = false;
-    await database.withTransactionAsync(async () => {
-      const state = await database.getFirstAsync<{ generation: number; revoked: number }>(
+    await withExclusiveAuthTransaction(database, async (transaction) => {
+      await transaction.runAsync("UPDATE auth_control SET generation = generation WHERE singleton = 1");
+      const state = await transaction.getFirstAsync<{ generation: number; revoked: number }>(
         "SELECT generation, revoked FROM auth_control WHERE singleton = 1 LIMIT 1",
       );
       if (state === null || state.generation !== expectedGeneration || state.revoked !== 0) return;
@@ -155,7 +214,7 @@ export async function replaceStoredSession(
         )) return;
       }
       if (expectedRefreshOwner !== undefined) {
-        const lease = await database.getFirstAsync<{ owner: string }>(
+        const lease = await transaction.getFirstAsync<{ owner: string }>(
           `SELECT owner FROM auth_refresh_lease WHERE singleton = 1 AND generation = ?
            AND owner = ? AND expires_at > ? LIMIT 1`,
           expectedGeneration,
@@ -253,15 +312,17 @@ export async function revokeStoredSession(expectedGeneration?: number): Promise<
   let revoked = false;
   let revokedGeneration: number | null = null;
   try {
-    await database.withTransactionAsync(async () => {
+    await withExclusiveAuthTransaction(database, async (transaction) => {
+      // A newer durable intent fences a sign-in which has not committed yet.
       if (expectedGeneration === undefined) {
-        await database.runAsync(
+        await transaction.runAsync(AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL);
+        await transaction.runAsync(
           `INSERT INTO auth_control (singleton, generation, revoked) VALUES (1, 1, 1)
            ON CONFLICT(singleton) DO UPDATE SET generation = auth_control.generation + 1, revoked = 1`,
         );
         revoked = true;
       } else {
-        const result = await database.runAsync(
+        const result = await transaction.runAsync(
           `UPDATE auth_control SET generation = generation + 1, revoked = 1
            WHERE singleton = 1 AND generation = ? AND revoked = 0`,
           expectedGeneration,
@@ -269,7 +330,7 @@ export async function revokeStoredSession(expectedGeneration?: number): Promise<
         revoked = result.changes === 1;
       }
       if (revoked) {
-        const state = await database.getFirstAsync<{ generation: number }>(
+        const state = await transaction.getFirstAsync<{ generation: number }>(
           "SELECT generation FROM auth_control WHERE singleton = 1 LIMIT 1",
         );
         revokedGeneration = state?.generation ?? null;
@@ -280,11 +341,12 @@ export async function revokeStoredSession(expectedGeneration?: number): Promise<
       // Serialize deletion against a new sign-in. Without the second SQLite
       // guard, a delayed keychain delete could erase credentials written by a
       // newer identity after this revocation committed.
-      await database.withTransactionAsync(async () => {
-        const state = await database.getFirstAsync<{ generation: number; revoked: number }>(
+      await withExclusiveAuthTransaction(database, async (transaction) => {
+        const state = await transaction.getFirstAsync<{ generation: number; revoked: number }>(
           "SELECT generation, revoked FROM auth_control WHERE singleton = 1 LIMIT 1",
         );
         if (state !== null && shouldDeleteRevokedSession(state.generation, deleteGeneration, state.revoked === 1)) {
+          await transaction.runAsync("UPDATE auth_control SET generation = generation WHERE singleton = 1");
           await SecureStore.deleteItemAsync(MOBILE_AUTH_SESSION_KEY);
         }
       });

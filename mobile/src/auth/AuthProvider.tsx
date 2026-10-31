@@ -26,11 +26,13 @@ import {
   type SupabaseSession,
 } from "./authModel";
 import {
+  beginStoredSignInAttempt,
   readStoredAuthSession,
   revokeStoredSession,
   saveNewStoredSession,
 } from "./sessionStore";
 import { refreshStoredSession } from "./sessionRefresh";
+import { persistCurrentSignInAttempt } from "./authControlModel";
 import {
   fetchAuthUser,
   signInWithPassword,
@@ -181,13 +183,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       attemptRef.current = attempt;
       setError(null);
       try {
+        const durableAttempt = await beginStoredSignInAttempt();
+        if (attempt !== attemptRef.current) return;
         const tokenSession = await signInWithPassword(config, validated.email, password);
         // Only the verified user endpoint may populate the account identity;
         // token-grant user objects are not authoritative.
         const verified = await fetchAuthUser(config, tokenSession.accessToken);
         if (attempt !== attemptRef.current) return;
         const next: SupabaseSession = { ...tokenSession, user: verified };
-        const authGeneration = await saveNewStoredSession(next);
+        const authGeneration = await persistCurrentSignInAttempt(
+          attempt,
+          () => attemptRef.current,
+          () => saveNewStoredSession(next, durableAttempt),
+          (generation) => revokeStoredSession(generation).catch(() => undefined),
+        );
+        if (authGeneration === null) return;
         generationRef.current += 1;
         sessionGenerationRef.current = authGeneration;
         refreshInflightRef.current = null;

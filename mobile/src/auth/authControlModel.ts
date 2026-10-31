@@ -12,6 +12,43 @@ export const AUTH_REFRESH_LEASE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS auth_ref
   expires_at TEXT NOT NULL
 );`;
 
+/** Monotonic sign-in request fence, independent of the active session epoch. */
+export const AUTH_SIGN_IN_ATTEMPT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS auth_sign_in_attempt (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  attempt INTEGER NOT NULL
+);`;
+
+export const AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL = `INSERT INTO auth_sign_in_attempt (singleton, attempt) VALUES (1, 1)
+  ON CONFLICT(singleton) DO UPDATE SET attempt = auth_sign_in_attempt.attempt + 1`;
+export const AUTH_SIGN_IN_ATTEMPT_INVALIDATE_SQL = AUTH_SIGN_IN_ATTEMPT_BEGIN_SQL;
+export const AUTH_SIGN_IN_ATTEMPT_CURRENT_SQL =
+  "SELECT attempt FROM auth_sign_in_attempt WHERE singleton = 1 LIMIT 1";
+
+export function shouldApplySignInResult(
+  localAttempt: number,
+  currentLocalAttempt: number,
+  storedGeneration: number | null,
+): storedGeneration is number {
+  return Number.isSafeInteger(localAttempt) && localAttempt === currentLocalAttempt &&
+    storedGeneration !== null && Number.isSafeInteger(storedGeneration);
+}
+
+/** Persist only the latest local result; revoke a late save before exposing it. */
+export async function persistCurrentSignInAttempt(
+  attempt: number,
+  getCurrentAttempt: () => number,
+  save: () => Promise<number | null>,
+  revoke: (generation: number) => Promise<unknown>,
+): Promise<number | null> {
+  const generation = await save();
+  if (generation === null) return null;
+  if (!shouldApplySignInResult(attempt, getCurrentAttempt(), generation)) {
+    await revoke(generation);
+    return null;
+  }
+  return generation;
+}
+
 export const AUTH_REFRESH_LEASE_ACQUIRE_SQL = `INSERT INTO auth_refresh_lease (singleton, owner, generation, expires_at)
   SELECT 1, ?, ?, ? WHERE EXISTS (
     SELECT 1 FROM auth_control WHERE singleton = 1 AND generation = ? AND revoked = 0
