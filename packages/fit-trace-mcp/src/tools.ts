@@ -64,9 +64,32 @@ function textResult(text: string, structuredContent: Record<string, unknown>): C
 }
 
 /**
- * Map any thrown error to an `isError` result with a fixed shape: FitTraceError
- * keeps its stable code, anything else gets fixed copy without a stack, and
- * the process survives either way.
+ * A storage/authorization failure that carries a stable machine code but is
+ * not a domain `FitTraceError` — e.g. the cloud adapter's `ApiError`s
+ * (`CORRUPT_STORE`, `STORAGE_UNAVAILABLE`, `FORBIDDEN`, `UNAUTHENTICATED`),
+ * which live in `@agent-fit-trace/api-contracts` rather than core.
+ *
+ * The MCP package cannot import that type without pulling the HTTP contract
+ * into the local stdio server, so this narrows structurally on a string
+ * `code` only. The message is never forwarded: those messages are already
+ * sanitized, but the client only needs the code plus fixed copy.
+ */
+function codedErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code.trim() !== "" ? code : null;
+}
+
+/**
+ * Map any thrown error to an `isError` result with a fixed shape: a domain
+ * `FitTraceError` keeps its code and message, another coded error keeps only
+ * its code, and anything else gets fixed copy without a stack — the process
+ * survives either way.
+ *
+ * Preserving the code matters for operators and agents alike: collapsing
+ * `STORAGE_UNAVAILABLE` (a retryable outage) and `CORRUPT_STORE` (needs
+ * intervention) into one `INTERNAL_ERROR` text would make the failure
+ * unactionable while still revealing nothing extra.
  */
 function errorResult(error: unknown): CallToolResult {
   if (error instanceof FitTraceError) {
@@ -78,6 +101,15 @@ function errorResult(error: unknown): CallToolResult {
   // Unexpected failures never reach the client as-is (no stacks, no paths);
   // the detail goes to stderr so operators can still diagnose them.
   console.error("fit-trace-mcp unexpected tool failure:", error);
+  const code = codedErrorCode(error);
+  if (code !== null) {
+    return {
+      isError: true,
+      content: [
+        { type: "text", text: `${code}: the request could not be completed.` },
+      ],
+    };
+  }
   return {
     isError: true,
     content: [

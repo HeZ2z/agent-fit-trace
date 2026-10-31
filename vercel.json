@@ -5,9 +5,13 @@
   "buildCommand": "pnpm build",
   "outputDirectory": "app/dist",
   "functions": {
-    "api/**/*.mjs": { "includeFiles": "build/server/**" }
+    "api/**/*.mjs": { "includeFiles": "{build/server/**,.pi/skills/**}" }
   },
   "rewrites": [
+    {
+      "source": "/.well-known/oauth-protected-resource/api/mcp",
+      "destination": "/api/mcp?__fit_trace_mcp_metadata=1"
+    },
     {
       "source": "/api/v1/coaching/cloud/runs/:id/events",
       "destination": "/api/v1/coaching/cloud/runs/:id?__fit_trace_cloud_op=events"
@@ -21,6 +25,14 @@
   "headers": [
     {
       "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" }
+      ]
+    },
+    {
+      "source": "/.well-known/oauth-protected-resource/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "no-store" },
         { "key": "X-Content-Type-Options", "value": "nosniff" },

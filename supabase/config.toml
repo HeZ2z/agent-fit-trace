@@ -56,6 +56,36 @@ minimum_password_length = 8
 enabled = true
 uri = "pg-functions://postgres/public/hook_allow_anonymous_or_invited"
 
+# Remote MCP resource binding (see docs/mcp.md "Remote MCP (HTTP)").
+#
+# Stamps an additive `fit_trace_mcp_resource` claim on tokens issued to
+# allow-listed MCP OAuth clients, taken from
+# `public.mcp_oauth_client_resources`. `aud` is deliberately NOT rewritten:
+# the same token must keep working against Auth and PostgREST as
+# `aud: authenticated`. Every other token (browser login, unlisted OAuth
+# client) gets no claim, so the MCP endpoint rejects it.
+#
+# The hook becomes inert once its function exists and the mapping table is
+# empty: no row means no token carries the claim, so `/api/mcp` rejects
+# everything — the safe default. But the FUNCTION must exist before Auth starts
+# with this block enabled, or every token issuance fails; apply
+# `supabase/migrations/20261029000000_mcp_oauth_resource.sql` FIRST, exactly
+# like the creation hook above.
+#
+# Production additionally requires separate operator steps: applying the
+# migration (which alone changes nothing, because the hosted hook stays off),
+# enabling this same hook on the hosted project, registering the MCP OAuth
+# client in the Supabase dashboard (dynamic client registration is OFF for this
+# project), and setting Authentication -> OAuth Server -> Authorization Path to
+# `/oauth/consent` on the Site URL origin.
+#
+# Rollback: set `enabled = false` here (or remove the block), then
+# `drop function public.hook_stamp_mcp_resource(jsonb)`; see
+# docs/deployment.md.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/hook_stamp_mcp_resource"
+
 [auth.email]
 enabled = true
 # Keep email authentication enabled; the invitation hook denies uninvited signup.
