@@ -24,12 +24,28 @@ export interface WorkoutRow {
   session_type: string;
   payload: string;
   created_at: string;
+  origin?: "local" | "remote" | "legacy";
 }
 
 /** One ordered, idempotent schema migration applied via `PRAGMA user_version`. */
 export interface WorkoutMigration {
   version: number;
   statements: readonly string[];
+}
+
+/** Sync ownership identity; intentionally native-runtime independent. */
+export interface SyncScope {
+  accountId: string;
+  endpoint: string;
+  /** Present only for writes made by an active durable sync worker. */
+  leaseOwner?: string;
+  leaseGeneration?: number;
+}
+
+export interface SyncLease {
+  owner: string;
+  generation: number;
+  expiresAt: string;
 }
 
 export const WORKOUTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS workouts (
@@ -59,6 +75,68 @@ export const SESSION_DRAFT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS session_draft
   updated_at TEXT NOT NULL
 );`;
 
+/** Durable upload candidates; account and endpoint are pinned at enrollment. */
+export const SYNC_OUTBOX_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_outbox (
+  workout_id TEXT PRIMARY KEY NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+  account_id TEXT,
+  endpoint TEXT,
+  state TEXT NOT NULL DEFAULT 'unassigned',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL,
+  CHECK (state IN ('unassigned', 'pending', 'retry', 'complete', 'device-only')),
+  CHECK ((account_id IS NULL AND endpoint IS NULL) OR (account_id IS NOT NULL AND endpoint IS NOT NULL))
+);`;
+
+/** Explicit opt-in is independently scoped to one account and API endpoint. */
+export const SYNC_CONSENT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_consent (
+  account_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  include_existing INTEGER NOT NULL CHECK (include_existing IN (0, 1)),
+  enrollment_cutoff TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, endpoint)
+);`;
+
+export const SYNC_CONFLICT_ACK_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_conflict_ack (
+  account_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  workout_id TEXT NOT NULL,
+  local_fingerprint TEXT NOT NULL,
+  remote_fingerprint TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('keep-cloud', 'keep-local', 'export-local')),
+  acknowledged_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, endpoint, workout_id)
+);`;
+
+export const SYNC_REMOTE_MEMBERSHIP_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_remote_membership (
+  account_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  workout_id TEXT NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+  fingerprint TEXT NOT NULL,
+  pulled_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, endpoint, workout_id)
+);`;
+
+export const SYNC_STATUS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_status (
+  account_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  last_success_at TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, endpoint)
+);`;
+
+export const SYNC_LEASE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_lease (
+  account_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, endpoint)
+);`;
+
 /** Ordered migrations; every entry is applied once and recorded in user_version. */
 export const WORKOUTS_MIGRATIONS: readonly WorkoutMigration[] = [
   {
@@ -68,6 +146,31 @@ export const WORKOUTS_MIGRATIONS: readonly WorkoutMigration[] = [
   {
     version: 2,
     statements: [SESSION_DRAFT_TABLE_SQL],
+  },
+  {
+    version: 3,
+    statements: [
+      "ALTER TABLE workouts ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy' CHECK (origin IN ('local', 'remote', 'legacy'));",
+      SYNC_OUTBOX_TABLE_SQL,
+      SYNC_CONSENT_TABLE_SQL,
+      "CREATE INDEX IF NOT EXISTS sync_outbox_ready_idx ON sync_outbox (account_id, endpoint, state, next_attempt_at);",
+    ],
+  },
+  {
+    version: 4,
+    statements: [SYNC_CONFLICT_ACK_TABLE_SQL],
+  },
+  {
+    version: 5,
+    statements: [SYNC_REMOTE_MEMBERSHIP_TABLE_SQL],
+  },
+  {
+    version: 6,
+    statements: [SYNC_STATUS_TABLE_SQL],
+  },
+  {
+    version: 7,
+    statements: [SYNC_LEASE_TABLE_SQL],
   },
 ];
 
@@ -181,6 +284,7 @@ export function toWorkoutRow(record: WorkoutRecord, createdAt: string): WorkoutR
     session_type: record.session_type,
     payload: encodeWorkoutPayload(record),
     created_at: createdAt,
+    origin: "local",
   };
 }
 

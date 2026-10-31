@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { stableStringify } from "@agent-fit-trace/core";
 import {
@@ -69,24 +70,24 @@ function rowFor(draft: SessionDraft = createSessionDraft("2026-10-24")): Session
   return toSessionDraftRow(OWNER, draft, UPDATED_AT);
 }
 
-test("the migration list is contiguous and ends at schema version 2", () => {
-  assert.equal(WORKOUTS_DB_SCHEMA_VERSION, 2);
+test("the migration list is contiguous and ends at schema version 7", () => {
+  assert.equal(WORKOUTS_DB_SCHEMA_VERSION, 7);
   assert.equal(WORKOUTS_DB_SCHEMA_VERSION, latestWorkoutSchemaVersion());
   assert.deepEqual(
     WORKOUTS_MIGRATIONS.map((migration) => migration.version),
-    [1, 2],
-    "migration v2 is appended after the untouched v1",
+    [1, 2, 3, 4, 5, 6, 7],
+    "later migrations are appended after the untouched v1 and v2",
   );
   for (const migration of WORKOUTS_MIGRATIONS) {
     assert.ok(migration.statements.length > 0, `migration v${migration.version} has statements`);
   }
 });
 
-test("a v1 database only applies the session-draft migration", () => {
+test("a v1 database applies only the session-draft and later sync migrations", () => {
   const pending = pendingWorkoutMigrations(1);
   assert.deepEqual(
     pending.map((migration) => migration.version),
-    [2],
+    [2, 3, 4, 5, 6, 7],
     "the workouts table migration never re-runs",
   );
   assert.deepEqual(pending[0].statements, [SESSION_DRAFT_TABLE_SQL]);
@@ -96,8 +97,8 @@ test("a v1 database only applies the session-draft migration", () => {
   assert.deepEqual(pendingWorkoutMigrations(WORKOUTS_DB_SCHEMA_VERSION), []);
   assert.deepEqual(
     pendingWorkoutMigrations(0).map((migration) => migration.version),
-    [1, 2],
-    "a fresh database applies both migrations in order",
+    [1, 2, 3, 4, 5, 6, 7],
+    "a fresh database applies every migration in order",
   );
   assert.throws(
     () => pendingWorkoutMigrations(WORKOUTS_DB_SCHEMA_VERSION + 1),
@@ -128,6 +129,79 @@ test("migration v2 is exactly the draft table", () => {
   const v2 = WORKOUTS_MIGRATIONS[1];
   assert.equal(v2.version, 2);
   assert.deepEqual(v2.statements, [SESSION_DRAFT_TABLE_SQL]);
+});
+
+test("migration v3 adds provenance and account-endpoint scoped durable consent and outbox", () => {
+  const migration = WORKOUTS_MIGRATIONS[2];
+  assert.equal(migration.version, 3);
+  assert.match(migration.statements.join("\n"), /ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'/);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_outbox/);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_consent/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint\)/);
+  assert.match(migration.statements.join("\n"), /CHECK \(state IN \('unassigned', 'pending', 'retry', 'complete', 'device-only'\)\)/);
+});
+
+test("migration v4 stores account-endpoint scoped conflict acknowledgements", () => {
+  const migration = WORKOUTS_MIGRATIONS[3];
+  assert.equal(migration.version, 4);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_conflict_ack/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint, workout_id\)/);
+  assert.match(migration.statements.join("\n"), /local_fingerprint TEXT NOT NULL/);
+  assert.match(migration.statements.join("\n"), /remote_fingerprint TEXT NOT NULL/);
+});
+
+test("migration v5 scopes pulled remote membership to account, endpoint and payload fingerprint", () => {
+  const migration = WORKOUTS_MIGRATIONS[4];
+  assert.equal(migration.version, 5);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_remote_membership/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint, workout_id\)/);
+  assert.match(migration.statements.join("\n"), /fingerprint TEXT NOT NULL/);
+});
+
+test("migration v6 stores complete-sync status per account and endpoint", () => {
+  const migration = WORKOUTS_MIGRATIONS[5];
+  assert.equal(migration.version, 6);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_status/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint\)/);
+  assert.match(migration.statements.join("\n"), /last_success_at TEXT/);
+});
+
+test("migration v7 defines an account-endpoint lease with fencing generation and expiry", () => {
+  const migration = WORKOUTS_MIGRATIONS[6];
+  assert.equal(migration.version, 7);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_lease/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint\)/);
+  assert.match(migration.statements.join("\n"), /generation INTEGER NOT NULL/);
+  assert.match(migration.statements.join("\n"), /expires_at TEXT NOT NULL/);
+});
+
+test("all migrations execute and expired lease takeover fences the previous owner", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const migration of WORKOUTS_MIGRATIONS) {
+      for (const statement of migration.statements) database.exec(statement);
+      database.exec(`PRAGMA user_version = ${migration.version};`);
+    }
+    const columns = database.prepare("PRAGMA table_info(workouts)").all() as { name: string }[];
+    assert.ok(columns.some((column) => column.name === "origin"));
+
+    const acquire = database.prepare(`INSERT INTO sync_lease (account_id, endpoint, owner, generation, expires_at)
+      VALUES (?, ?, ?, 1, ?) ON CONFLICT(account_id, endpoint) DO UPDATE SET owner = excluded.owner,
+      generation = sync_lease.generation + 1, expires_at = excluded.expires_at
+      WHERE sync_lease.expires_at <= ?`);
+    const first = acquire.run("acct", "https://api", "worker-a", "2026-10-31T00:01:00.000Z", "2026-10-31T00:00:00.000Z");
+    assert.equal(first.changes, 1);
+    const blocked = acquire.run("acct", "https://api", "worker-b", "2026-10-31T00:02:00.000Z", "2026-10-31T00:00:30.000Z");
+    assert.equal(blocked.changes, 0);
+    const takeover = acquire.run("acct", "https://api", "worker-b", "2026-10-31T00:02:00.000Z", "2026-10-31T00:01:00.000Z");
+    assert.equal(takeover.changes, 1);
+    const row = database.prepare("SELECT owner, generation FROM sync_lease WHERE account_id = ? AND endpoint = ?").get("acct", "https://api") as { owner: string; generation: number };
+    assert.deepEqual({ ...row }, { owner: "worker-b", generation: 2 });
+    const staleRelease = database.prepare("DELETE FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ? AND generation = ?");
+    assert.equal(staleRelease.run("acct", "https://api", "worker-a", 1).changes, 0);
+  } finally {
+    database.close();
+  }
 });
 
 test("a row round-trips a timed draft through canonical payload JSON", () => {
