@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import type { ServerResponse } from "node:http";
 import { MAX_REQUEST_BODY_BYTES } from "../server/authenticatedHandler.ts";
-import { handleVercelApi } from "../server/vercel.ts";
+import { applyDataRouteRewrite, handleVercelApi } from "../server/vercel.ts";
 import type { VercelRequestLike } from "../server/vercel.ts";
 
 const ENV_KEYS = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY"] as const;
@@ -85,34 +85,61 @@ function serviceRoleJwt(): string {
   return `${encode({ alg: "HS256" })}.${encode({ role: "service_role" })}.sig`;
 }
 
-/**
- * Vercel only routes a request into `handleVercelApi` when a matching
- * `api/v1` Function file exists (the SPA rewrite excludes `/api/`). Every
- * authenticated path the HTTP client can call must therefore have a wrapper,
- * including dynamic `[id]`/`[kind]` segments and the nested cloud catch-all.
- */
 const DEPLOYED_FUNCTION_WRAPPERS = {
-  "workouts.mjs": "../../build/server/vercel.mjs",
-  "analysis.mjs": "../../build/server/vercel.mjs",
-  "public-config.mjs": "../../build/server/vercel.mjs",
-  "plans/drafts.mjs": "../../../build/server/vercel.mjs",
-  "imports.mjs": "../../build/server/vercel.mjs",
-  "imports/[id].mjs": "../../../build/server/vercel.mjs",
-  "import-selections/[kind].mjs": "../../../build/server/vercel.mjs",
-  "plan-adoption.mjs": "../../build/server/vercel.mjs",
+  "router.mjs": "../../build/server/vercel.mjs",
   "coaching/cloud/[...path].mjs": "../../../../build/server/vercel.mjs",
   "coaching/cloud/conversations/[...path].mjs": "../../../../../build/server/vercel.mjs",
   "coaching/cloud/runs/[...path].mjs": "../../../../../build/server/vercel.mjs",
   "coaching/cloud/sessions/[...path].mjs": "../../../../../build/server/vercel.mjs",
 } as const;
 
-test("vercel adapter: every client route has a deployed Function wrapper", async () => {
+test("vercel adapter: deployed wrappers use the shared adapter", async () => {
   for (const [wrapper, target] of Object.entries(DEPLOYED_FUNCTION_WRAPPERS)) {
     const source = await readFile(new URL(`../api/v1/${wrapper}`, import.meta.url), "utf8");
-    assert.ok(
-      source.includes(`export { handleVercelApi as default } from "${target}";`),
-      `missing shared adapter export in api/v1/${wrapper}`,
-    );
+    assert.ok(source.includes(`export { handleVercelApi as default } from "${target}";`));
+  }
+});
+
+test("data rewrites restore documented routes and preserve query parameters", () => {
+  for (const route of ["workouts", "analysis", "public-config", "plans/drafts", "imports", "imports/abc", "import-selections/plan", "plan-adoption"]) {
+    const url = new URL(`https://example.test/api/v1/router?from=2026-01-01&__fit_trace_route=${route}`);
+    applyDataRouteRewrite(url);
+    assert.equal(url.pathname, `/api/v1/${route}`);
+    assert.equal(url.searchParams.get("from"), "2026-01-01");
+    assert.equal(url.searchParams.has("__fit_trace_route"), false);
+  }
+  // The platform may expose the rewrite parameter only in request.query even
+  // when the original URL already contains a query string.
+  const url = new URL("https://example.test/api/v1/router?from=2026-01-01");
+  applyDataRouteRewrite(url, { __fit_trace_route: "analysis" });
+  assert.equal(url.pathname, "/api/v1/analysis");
+  assert.equal(url.searchParams.get("from"), "2026-01-01");
+});
+
+test("data rewrites cannot override original paths or introduce unlisted routes", () => {
+  const original = new URL("https://example.test/api/v1/workouts?__fit_trace_route=public-config");
+  applyDataRouteRewrite(original);
+  assert.equal(original.pathname, "/api/v1/workouts");
+  for (const value of ["coaching/cloud/runs", "../public-config", "imports/%2fsecret"]) {
+    const url = new URL("https://example.test/api/v1/router");
+    applyDataRouteRewrite(url, { __fit_trace_route: value });
+    assert.equal(url.pathname, "/api/v1/router");
+  }
+  const duplicate = new URL("https://example.test/api/v1/router?__fit_trace_route=analysis&__fit_trace_route=workouts");
+  applyDataRouteRewrite(duplicate);
+  assert.equal(duplicate.pathname, "/api/v1/router");
+});
+
+test("rewritten public config reaches the public handler", async () => {
+  const saved = saveEnv();
+  try {
+    setEnv("http://127.0.0.1:54321", "test-publishable-key");
+    const request = fakeRequest({ url: "/api/v1/router?locale=zh", query: { __fit_trace_route: "public-config" } });
+    const { response, captured } = fakeResponse();
+    await bounded(handleVercelApi(request, response), "rewritten public config");
+    assert.equal(captured.status, 200);
+  } finally {
+    restoreEnv(saved);
   }
 });
 
