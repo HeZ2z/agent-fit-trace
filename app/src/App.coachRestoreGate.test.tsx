@@ -218,7 +218,7 @@ describe("Coaching owner auth/coaching gate (batch 3 review item 1)", () => {
     );
 
     render(<App client={new FakeFitTraceClient({ records: [workout()] })} legacyLoopback />);
-    expect(await screen.findByText("agent-fit-trace")).toBeInTheDocument();
+    expect(await screen.findAllByText("FIT TRACE")).not.toHaveLength(0);
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(coachingRequests(seen)).toHaveLength(0);

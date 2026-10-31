@@ -85,7 +85,6 @@ import { useRestCue, vibrateRestEnded, vibrateSetChecked } from "@/workout/liveF
  */
 const copy = {
   title: "Log a session",
-  lede: "Capture sets, reps, load, and how the session felt while it is still fresh.",
   date: "Date",
   datePickHint: "Tap to choose the date.",
   sessionType: "Session type",
@@ -1041,7 +1040,6 @@ export default function LogScreen() {
       style={styles.flex}>
       <Screen contentContainerStyle={styles.content} testID="screen-log">
         <Display>{t(copy.title)}</Display>
-        <Body>{t(copy.lede)}</Body>
 
         {storeLoading ? (
           <Banner message={t(copy.openingStore)} testID="log-store-loading" />

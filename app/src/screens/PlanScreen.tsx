@@ -348,17 +348,7 @@ export function PlanScreen() {
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{t("Training Plan")}</h1>
-          <p className="screen-lede">
-            {t(
-              "A rule-based next-session draft. Every recommendation cites the evidence that produced it, and nothing is adopted without explicit confirmation.",
-            )}
-          </p>
         </div>
-        <p className="screen-actions">
-          <Link className="btn-ghost" to="/me">
-            {t("Manage imports and exports")}
-          </Link>
-        </p>
       </div>
 
       {historyStatus === "error" ? (
@@ -397,11 +387,8 @@ export function PlanScreen() {
             {currentAdoption.status === "ready" && (
               <p data-testid="current-adoption">
                 {currentAdoption.adoption === null
-                  ? t("Currently adopted plan snapshot: none.")
-                  : t("Currently adopted plan snapshot: {id} (confirmed {at}).", {
-                      id: currentAdoption.adoption.artifact_id,
-                      at: currentAdoption.adoption.confirmed_at,
-                    })}
+                  ? t("No plan adopted.")
+                  : t("A saved plan is adopted.")}
               </p>
             )}
             {currentAdoption.status === "ready" && currentAdoption.adoption !== null && (
@@ -411,7 +398,7 @@ export function PlanScreen() {
                   onClick={() => void revokeImportedPlan()}
                   disabled={adoptionSaving}
                 >
-                  {t("Revoke saved adoption (metadata only)")}
+                  {t("Revoke adoption")}
                 </button>
               </div>
             )}
@@ -419,17 +406,12 @@ export function PlanScreen() {
               <p data-testid="selected-snapshot-adoption">
                 {currentAdoption.status !== "ready"
                   ? t(
-                      "Selected saved snapshot {id}: the saved adoption is {status}. Viewing this snapshot never changes it.",
-                      { id: snapshot.id, status: currentAdoption.status },
+                      "Adoption status: {status}.",
+                      { status: currentAdoption.status },
                     )
                   : adoptedSnapshot
-                    ? t("Selected saved snapshot {id} is the currently adopted plan.", {
-                        id: snapshot.id,
-                      })
-                    : t(
-                        "Selected saved snapshot {id} is not adopted. Viewing a snapshot never adopts it; a new import does not inherit the previous adoption.",
-                        { id: snapshot.id },
-                      )}
+                    ? t("This saved plan is adopted.")
+                    : t("This saved plan is not adopted.")}
               </p>
             )}
             {snapshot !== null && !adoptedSnapshot && (
@@ -439,23 +421,9 @@ export function PlanScreen() {
                   onClick={() => void confirmImportedPlan()}
                   disabled={adoptionSaving || currentAdoption.status !== "ready"}
                 >
-                  {t("Confirm adopting this exact saved snapshot")}
+                  {t("Adopt this plan")}
                 </button>
               </div>
-            )}
-            {snapshot !== null && adoptedSnapshot && (
-              <p className="me-help">
-                {t(
-                  "Use Revoke above to clear the saved adoption; viewing any source never changes it.",
-                )}
-              </p>
-            )}
-            {snapshot !== null && (
-              <p className="me-help">
-                {t(
-                  "Adoption binds this exact artifact id and content digest. It never changes the snapshot’s draft flags and never writes workout records.",
-                )}
-              </p>
             )}
             {adoptionActionError !== null && (
               <div role="alert" className="validation-summary">
@@ -468,16 +436,7 @@ export function PlanScreen() {
             <>
               <ArtifactSnapshotMeta artifact={snapshot} records={records} />
               <p data-testid="plan-snapshot-draft" className="plan-status">
-                {t(
-                  "Snapshot status: draft flags is_draft={isDraft}, requires_confirmation={requiresConfirmation}. {note}",
-                  {
-                    isDraft: String(snapshot.payload.is_draft),
-                    requiresConfirmation: String(snapshot.payload.requires_confirmation),
-                    note: adoptedSnapshot
-                      ? t("The saved adoption is separate and does not change these flags.")
-                      : t("Viewing this snapshot does not adopt it."),
-                  },
-                )}
+                {adoptedSnapshot ? t("This plan is adopted.") : t("This plan is a draft.")}
               </p>
               {snapshot.payload.professional_care_prompt !== null && (
                 <div role="alert" data-testid="care-prompt" className="care-prompt">

@@ -23,7 +23,6 @@ import {
 const copy = {
   kicker: "PLAN",
   title: "Draft plans",
-  lede: "A local draft built from your on-device history. Nothing is applied automatically — explicit confirmation is required before a plan takes effect, and plan application arrives in a later update.",
   loading: "Loading your draft plan…",
   loadError: "Could not load your workout history for the plan: {message}",
   unknownError: "Unknown error.",
@@ -46,8 +45,6 @@ const copy = {
   safetyNotes: "Safety notes",
   noSafetyNotes: "No additional safety notes.",
   careTitle: "Professional care",
-  applyLater:
-    "Applying this plan comes later: accounts, saved snapshots, and adoption are not part of this local draft.",
 };
 
 interface LoadedPlan {
@@ -148,7 +145,6 @@ function PlanReport({ model }: { model: PlanModel }) {
         )}
       </View>
 
-      <Body>{t(copy.applyLater)}</Body>
     </>
   );
 }
@@ -264,7 +260,6 @@ export default function PlanScreen() {
   return (
     <Screen testID="screen-plan">
       <Display>{t(copy.title)}</Display>
-      <Body>{t(copy.lede)}</Body>
       {content}
     </Screen>
   );

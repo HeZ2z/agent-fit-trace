@@ -79,7 +79,7 @@ describe("App integration", () => {
     expect(
       screen.getByRole("button", { name: /confirm plan for this view only/i }),
     ).toBeInTheDocument();
-    expect(await screen.findByTestId("current-adoption")).toHaveTextContent(/none/i);
+    expect(await screen.findByTestId("current-adoption")).toHaveTextContent("No plan adopted.");
   });
 
   it("persists a saved workout across a fresh App over the same adapter", async () => {

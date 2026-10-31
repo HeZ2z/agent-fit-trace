@@ -1,6 +1,7 @@
+import { AccountSignOut } from "../auth/AccountSignOut.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import type { ValidationWarning } from "@agent-fit-trace/core";
 import type { FitTraceClient } from "@agent-fit-trace/api-contracts";
 import {
@@ -14,7 +15,6 @@ import type {
   ImportedArtifactKind,
   SaveImportedArtifactResult,
 } from "@agent-fit-trace/api-contracts";
-import { isHttpModeActive } from "../api/runtimeMode.ts";
 import { readTextFile } from "../api/fileTransport.ts";
 import { useWorkoutExport } from "../api/useWorkoutExport.ts";
 import {
@@ -284,13 +284,6 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
   return (
     <section className="me-section" aria-labelledby={`me-${kind}-import`}>
       <h2 id={`me-${kind}-import`}>{title}</h2>
-      <p className="me-help">
-        {t("Accepts")} <code>{kind}.json</code>{" "}
-        {t(
-          "or a saved v1 {kind} snapshot envelope. The whole file is validated before you can save it. Snapshots are immutable; saving uses content identity, so an identical re-import is a duplicate and never overwrites or renames the original.",
-          { kind: t(kind) },
-        )}
-      </p>
       <div className="field">
         <label htmlFor={`me-${kind}-file`}>{t("Choose {kind} file", { kind: t(kind) })}</label>
         <input
@@ -329,11 +322,6 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
                 : "."}
           </p>
           <Warnings warnings={preview.warnings} />
-          <p className="me-help">
-            {t(
-              "Saving creates an immutable account snapshot. It does not change what is selected for viewing and never adopts a plan.",
-            )}
-          </p>
           <button
             type="button"
             onClick={() => void saveSnapshot()}
@@ -378,7 +366,6 @@ function ImportArtifactSection({ kind }: { kind: ImportedArtifactKind }) {
           >
             {viewing ? t("Opening…") : t("View saved {kind} snapshot", { kind: t(kind) })}
           </button>
-          <p className="me-help">{t("Viewing selects this snapshot explicitly. Saving itself did not.")}</p>
         </div>
       )}
 
@@ -395,37 +382,30 @@ const LANGUAGE_OPTIONS: readonly {
   id: AppLanguage;
   label: string;
   preview: string;
-  description: string;
 }[] = [
   {
     id: "en",
     label: "English",
     preview: "EN",
-    description: "Source language. Data and exports stay in English.",
   },
   {
     id: "zh",
     label: "简体中文",
     preview: "中",
-    description:
-      "Display layer only: interface copy in Chinese; records and exports stay canonical English.",
   },
 ];
 
 const APPEARANCE_OPTIONS: readonly {
   id: ThemeName;
   label: string;
-  description: string;
 }[] = [
   {
     id: "pixel",
     label: "Pixel",
-    description: "3px rules · offset shadows · blueprint grid",
   },
   {
     id: "glass",
     label: "Glass",
-    description: "Hairlines · soft shadows · frosted chrome",
   },
 ];
 
@@ -650,39 +630,11 @@ export function MeScreen() {
     }
   }
 
-  const httpMode = isHttpModeActive(
-    (import.meta.env as Record<string, string | undefined> | undefined)?.VITE_FIT_TRACE_MODE,
-  );
-  // On the daemon the HTTP transport talks to this machine's local service,
-  // so "on the server" would be a lie — snapshots stay on this device.
   const daemonLocal = authSurface === "guest-local" || authSurface === "daemon-optional";
-  const storageSubject =
-    user === null
-      ? t("the current session")
-      : user.isAnonymous === true
-        ? t("this guest identity")
-        : t("the signed-in account");
-  const scope = daemonLocal
-    ? t("Storage scope: local daemon. Snapshots and selections belong to {subject} in this machine's local store.", {
-        subject: storageSubject,
-      })
-    : httpMode
-      ? t("Storage scope: HTTP mode. Snapshots and selections belong to {subject} on the server.{devNote}", {
-          subject: storageSubject,
-          devNote: import.meta.env.DEV
-            ? t(" The development in-memory API clears on restart.")
-            : "",
-        })
-      : t("Storage scope: local mode. Snapshots and selections stay in this browser on this device; they do not sync to another device.");
 
   return (
     <section data-screen="me">
       <h1>{t("Me")}</h1>
-      <p className="me-lede">
-        {t(
-          "One place to export and restore workout data and to save imported analysis or plan snapshots. Training history is never overwritten.",
-        )}
-      </p>
 
       <section className="me-section" aria-labelledby="me-account">
         <h2 id="me-account">{t("Account and storage")}</h2>
@@ -694,7 +646,7 @@ export function MeScreen() {
         ) : (
           <p data-testid="me-account-identity">{t("Local session (no signed-in account).")}</p>
         )}
-        {user?.isAnonymous === true && (
+        {user?.isAnonymous === true && !daemonLocal && (
           <p className="me-help">
             {t(
               "This guest keeps data under its guest identity. Another device can recover it only after the same guest is upgraded to a permanent account; signing in as a different account never merges it.",
@@ -702,18 +654,11 @@ export function MeScreen() {
           </p>
         )}
         <GuestUpgradePasswordNotice />
-        {user?.isAnonymous === true && <GuestAccountControls />}
-        <p className="me-help">{scope}</p>
+        {user?.isAnonymous === true ? <GuestAccountControls /> : <AccountSignOut />}
       </section>
 
       <section className="me-section" aria-labelledby="me-export">
         <h2 id="me-export">{t("Export workouts")}</h2>
-        <p className="me-help">
-          {t("Downloads every restorable record as")} <code>workout.json</code>
-          {t(
-            " in the v1 backup format. Histories that exceed the restore limits are split into numbered files, each within 1 MiB and 1000 records, so every downloaded file can be restored. A record that cannot be represented in a restorable file is left out and reported explicitly instead of blocking the rest of the backup.",
-          )}
-        </p>
         <button type="button" onClick={exportWorkouts} disabled={records.length === 0}>
           {t("Export workouts (JSON)")}
         </button>
@@ -768,12 +713,6 @@ export function MeScreen() {
 
       <section className="me-section" aria-labelledby="me-import-workouts">
         <h2 id="me-import-workouts">{t("Import workouts")}</h2>
-        <p className="me-help">
-          {t("Accepts a")} <code>{`{ schema_version: 1, records }`}</code>{" "}
-          {t(
-            "backup. Every record must keep its original id. The file is validated in full first; confirmation appends records one at a time. The import is not atomic: some records may be saved before a failure, and existing records are never overwritten.",
-          )}
-        </p>
         <div className="field">
           <label htmlFor="me-workout-file">{t("Choose workout backup file")}</label>
           <input
@@ -927,11 +866,6 @@ export function MeScreen() {
 
       <section className="me-section" aria-labelledby="me-appearance">
         <h2 id="me-appearance">{t("Appearance")}</h2>
-        <p className="me-help">
-          {t(
-            "Pixel draws structure with 3px rules, offset shadows and a blueprint grid. Glass keeps the same hierarchy with hairlines, soft shadows and a frosted chrome. The choice is stored in this browser and never changes workout data.",
-          )}
-        </p>
         <div className="theme-options" role="group" aria-label={t("Appearance theme")}>
           {APPEARANCE_OPTIONS.map((option) => {
             const selected = theme === option.id;
@@ -956,7 +890,6 @@ export function MeScreen() {
                       {t("On")}
                     </span>
                   </span>
-                  <span className="theme-option-desc">{t(option.description)}</span>
                 </span>
               </button>
             );
@@ -966,11 +899,6 @@ export function MeScreen() {
 
       <section className="me-section" aria-labelledby="me-language">
         <h2 id="me-language">{t("Language")}</h2>
-        <p className="me-help">
-          {t(
-            "Choose the interface language. Workout records, saved snapshots and exported JSON keep their original English; only the interface is translated.",
-          )}
-        </p>
         <div className="theme-options" role="group" aria-label={t("Interface language")}>
           {LANGUAGE_OPTIONS.map((option) => {
             const selected = language === option.id;
@@ -997,7 +925,6 @@ export function MeScreen() {
                       {t("On")}
                     </span>
                   </span>
-                  <span className="theme-option-desc">{t(option.description)}</span>
                 </span>
               </button>
             );
@@ -1008,11 +935,6 @@ export function MeScreen() {
       <ImportArtifactSection kind="analysis" />
       <ImportArtifactSection kind="plan" />
 
-      <p className="me-help">
-        {t("Jump to")} <Link to="/analysis">{t("Analysis")}</Link> {t("or")}{" "}
-        <Link to="/plan">{t("Plan")}</Link>{" "}
-        {t("to switch between current calculations and saved snapshots.")}
-      </p>
     </section>
   );
 }

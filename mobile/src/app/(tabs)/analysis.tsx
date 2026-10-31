@@ -30,7 +30,6 @@ import {
 const copy = {
   kicker: "ANALYSIS",
   title: "Evidence analysis",
-  lede: "Turn logged sessions into trends, stalls, and the evidence behind the next step.",
   loading: "Loading analysis…",
   loadError: "Could not load workout history: {message}",
   unknownError: "Unknown error.",
@@ -243,7 +242,6 @@ export default function AnalysisScreen() {
   return (
     <Screen testID="screen-analysis">
       <Display>{t(copy.title)}</Display>
-      <Body>{t(copy.lede)}</Body>
       {content}
     </Screen>
   );

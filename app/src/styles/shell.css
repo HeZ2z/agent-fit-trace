@@ -196,7 +196,7 @@
 }
 
 .app-header {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
@@ -518,6 +518,7 @@
   }
 
   .app-header {
+    display: flex;
     position: sticky;
     top: 0;
     z-index: 30;

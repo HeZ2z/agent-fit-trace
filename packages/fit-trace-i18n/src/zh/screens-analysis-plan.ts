@@ -67,6 +67,15 @@ export const messages: Record<string, string> = {
   "Currently adopted plan snapshot: none.": "当前采用的计划快照：无。",
   "Currently adopted plan snapshot: {id} (confirmed {at}).":
     "当前采用的计划快照：{id}（确认于 {at}）。",
+  "No plan adopted.": "尚未采用计划。",
+  "A saved plan is adopted.": "已采用一个已保存的计划。",
+  "Adoption status: {status}.": "采用状态：{status}。",
+  "This saved plan is adopted.": "已采用此已保存计划。",
+  "This saved plan is not adopted.": "尚未采用此已保存计划。",
+  "Revoke adoption": "撤销采用",
+  "Adopt this plan": "采用此计划",
+  "This plan is adopted.": "此计划已采用。",
+  "This plan is a draft.": "此计划为草稿。",
   "Revoke saved adoption (metadata only)": "撤销已保存的采用（仅元数据）",
   "Selected saved snapshot {id}: the saved adoption is {status}. Viewing this snapshot never changes it.":
     "已选保存的快照 {id}：已保存的采用状态为 {status}。查看此快照不会改变它。",

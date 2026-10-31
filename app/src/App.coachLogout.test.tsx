@@ -225,7 +225,8 @@ describe("App coach logout teardown (item 1)", () => {
     // The active run persisted a versioned, account-bound resume.
     expect(window.sessionStorage.getItem("fit-trace.coach.resume.v1")).not.toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /sign out/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
 
     const coachLogout = seen.find((entry) => entry.url.endsWith("/coaching/logout"));
@@ -285,7 +286,8 @@ describe("App coach logout teardown (item 1)", () => {
 
     // Signing out AFTER the unmount must still tear the run down with A's
     // retained credentials, before the auth sign-out.
-    await user.click(screen.getByRole("button", { name: /sign out/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
 
     const coachLogout = seen.find((entry) => entry.url.endsWith("/coaching/logout"));
