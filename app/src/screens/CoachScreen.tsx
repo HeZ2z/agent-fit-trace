@@ -205,7 +205,7 @@ export function CoachScreen() {
             <div className="coach-history" aria-label={t("Conversation history")}>
               <div className="coach-history-heading">
                 <h2>{t("Conversations")}</h2>
-                <button type="button" disabled={coach.isRunning || conversations.loading} onClick={() => { coach.newAnalysis(); void conversations.create(); }}>
+                <button type="button" disabled={coach.isRunning || conversations.loading} onClick={() => { coach.newAnalysis(); setSubmittedQuestion(null); void conversations.create(); }}>
                   {t("New conversation")}
                 </button>
               </div>

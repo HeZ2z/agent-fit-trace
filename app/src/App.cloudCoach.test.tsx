@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import {
@@ -599,6 +599,37 @@ describe("browser coach backend selection", () => {
     expect(resume.origin).toBe("cloud");
     expect(resume.lastSeq).toBe(1);
     expect(window.sessionStorage.getItem(RESUME_V1_KEY)).toBeNull();
+  });
+
+  it("clears the previous question when starting a new conversation", async () => {
+    const seen: SeenRequest[] = [];
+    installRouter(seen);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    await user.selectOptions(await screen.findByTestId("coach-backend-select"), "cloud-default");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("cloud answer");
+
+    // The completed run's question is visible in the transcript it belongs to.
+    const transcript = (): HTMLElement => screen.getByLabelText(/coach conversation/i);
+    expect(within(transcript()).getByText("How is my squat progressing?")).toBeInTheDocument();
+
+    const newConversation = screen.getByRole("button", { name: /new conversation/i });
+    await waitFor(() => expect(newConversation).toBeEnabled());
+    await user.click(newConversation);
+
+    // The new, empty conversation must not display the previous conversation's
+    // question, which it neither stores nor sends as context.
+    await waitFor(() =>
+      expect(
+        within(transcript()).queryByText("How is my squat progressing?"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("coach-text")).not.toBeInTheDocument();
   });
 
   it("recovers cloud availability after a transient discovery failure with a bounded retry", async () => {
