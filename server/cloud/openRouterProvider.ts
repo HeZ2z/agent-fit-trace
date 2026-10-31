@@ -159,9 +159,13 @@ export interface ProviderStepBudget {
   requests: number;
 }
 
+import { composeCoachPrompt } from "./conversationContext.ts";
+import type { CloudConversationTurn } from "./conversationContext.ts";
+
 export interface ProviderRunInput {
   runId: string;
   prompt: string;
+  conversationContext?: readonly CloudConversationTurn[];
   records: WorkoutRecord[];
   onAccepted(info: { generationId?: string; usage?: CloudUsage }): Promise<void>;
   onEvent(payload: CoachingEventPayload): Promise<void>;
@@ -427,7 +431,7 @@ export function createOpenRouterProvider(options: OpenRouterProviderOptions): Cl
         { role: "system", content: SYSTEM_PROMPT },
         {
           role: "user",
-          content: `${input.prompt}\n\nPinned snapshot: ${executor.recordCount} workout record(s). Use analyze_progress before answering.`,
+          content: composeCoachPrompt(input.prompt, executor.recordCount, input.conversationContext),
         },
       ];
       const deadline = now() + config.timeoutMs;

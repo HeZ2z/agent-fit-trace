@@ -257,6 +257,26 @@ export function createCloudCoachingHandler(
         });
       }
 
+      const conversationMatch = /^\/coaching\/cloud\/conversations\/([A-Za-z0-9_-]{1,128})$/.exec(pathname);
+      if (pathname === "/coaching/cloud/conversations" && method === "GET") {
+        if (!repository.listConversations) throw new CloudError("STORAGE_UNAVAILABLE", "Conversation history is unavailable.", 503);
+        return ok(await repository.listConversations());
+      }
+      if (pathname === "/coaching/cloud/conversations" && method === "POST") {
+        const body = parseJson(request.body, maxBodyBytes);
+        if (typeof body !== "object" || body === null || Array.isArray(body) || typeof (body as Record<string, unknown>).id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test((body as {id: string}).id)) throw new CloudError("VALIDATION_ERROR", "Invalid conversation id.", 400);
+        if (!repository.createConversation) throw new CloudError("STORAGE_UNAVAILABLE", "Conversation history is unavailable.", 503);
+        return ok(await repository.createConversation((body as {id: string}).id), 201);
+      }
+      if (conversationMatch !== null && method === "DELETE") {
+        if (!repository.deleteConversation) throw new CloudError("STORAGE_UNAVAILABLE", "Conversation history is unavailable.", 503);
+        return ok(await repository.deleteConversation(conversationMatch[1]!));
+      }
+      if (conversationMatch !== null && method === "GET") {
+        if (!repository.readConversation) throw new CloudError("STORAGE_UNAVAILABLE", "Conversation history is unavailable.", 503);
+        return ok(await repository.readConversation(conversationMatch[1]!));
+      }
+
       if (pathname === "/coaching/cloud/sessions" && method === "POST") {
         const parsed = parseCloudCreateSessionInput(parseJson(request.body, maxBodyBytes));
         return ok(await repository.createSession(parsed.id), 201);

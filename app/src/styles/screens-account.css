@@ -525,3 +525,182 @@
     background-position: 7px 8px, 7px 15px, 7px 24px, 0 0;
   }
 }
+
+/* Coach conversation */
+.coach-conversation {
+  display: grid;
+  gap: 14px;
+  max-width: var(--content-narrow);
+  min-height: 150px;
+  align-content: start;
+  padding: 20px 0;
+}
+
+.coach-conversation-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.coach-message {
+  min-width: 0;
+  padding: 14px 16px;
+  border: var(--border-w-thin) solid var(--border);
+  background: var(--bg);
+}
+
+.coach-message-user {
+  justify-self: end;
+  max-width: 85%;
+  background: var(--info-soft);
+}
+
+.coach-message-user p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.coach-message-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.coach-message-answer h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.coach-message-answer .coach-text {
+  margin: 0;
+}
+
+[data-screen="coach"] form {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+
+.coach-history {
+  max-width: var(--content-narrow);
+  margin: 16px 0 0;
+  padding: 14px 16px;
+  border: var(--border-w-thin) solid var(--border);
+  background: var(--soft);
+}
+
+.coach-history-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.coach-history-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.coach-history select {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.coach-message-answer p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Keep the conversation primary and secondary controls compact. */
+.coach-screen-reader-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.coach-backend {
+  max-width: 260px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.coach-disclosure {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.coach-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: var(--border-w-thin) solid var(--border);
+  background: transparent;
+}
+
+.coach-history-heading {
+  gap: 12px;
+}
+
+.coach-history-heading h2 {
+  display: none;
+}
+
+.coach-history select {
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+}
+
+.coach-conversation {
+  min-height: 0;
+  padding: 18px 0;
+}
+
+.coach-source-details,
+.coach-activity,
+.coach-range {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.coach-source-details summary,
+.coach-activity summary,
+.coach-range summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+[data-screen="coach"] form .coach-range {
+  grid-column: 1 / -1;
+  margin-bottom: 12px;
+}
+
+.coach-range-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 10px;
+}
+
+@media (max-width: 600px) {
+  .coach-range-fields {
+    grid-template-columns: 1fr;
+  }
+}

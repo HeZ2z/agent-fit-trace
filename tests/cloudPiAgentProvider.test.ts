@@ -209,7 +209,7 @@ test("pi-agent: happy path runs the real loop, emits bounded events, and settles
       return new Agent(options);
     },
   });
-  const { input, events, accepted, timeline } = providerInput();
+  const { input, events, accepted, timeline } = providerInput({ conversationContext: [{ role: "user", content: "Earlier knee pain" }] });
   const result = await provider.run(input);
 
   assert.equal(result.status, "completed");
@@ -225,6 +225,8 @@ test("pi-agent: happy path runs the real loop, emits bounded events, and settles
   });
   assert.equal(result.generationId, "gen-2");
   assert.equal(calls.length, 2);
+  assert.match(JSON.stringify(calls[0]?.body?.messages), /Earlier knee pain/);
+  assert.match(JSON.stringify(calls[0]?.body?.messages), /untrusted context/);
   for (const call of calls) {
     assert.equal(call.url, OPENROUTER_CHAT_COMPLETIONS_URL);
     assert.equal(call.body?.model, "test/model");

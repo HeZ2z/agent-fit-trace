@@ -254,6 +254,7 @@ export interface CoachToolActivity {
 
 export interface CoachSubmitInput {
   question: string;
+  conversationId?: string;
   from?: string;
   to?: string;
 }
@@ -263,6 +264,7 @@ type CoachSubmittedRun = Awaited<ReturnType<CoachRunClient["submitRun"]>>;
 
 interface PendingSubmit {
   prompt: string;
+  conversationId?: string;
   filter: { from?: string; to?: string };
   idempotencyKey: string;
   snapshotHandle: { snapshotId: string; source: string; accountId: string };
@@ -402,6 +404,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest }),
   );
   const [activeBackend, setActiveBackend] = useState<CoachingBackendId | null>(null);
+  const [runConversationId, setRunConversationId] = useState<string | null>(null);
   const [backends, setBackends] = useState<CoachBackendOption[]>(() =>
     initialBackendOptions({ mode: coachMode, piAvailable: runtimePiAvailable() }),
   );
@@ -595,6 +598,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   );
 
   const clearFold = useCallback(() => {
+    setRunConversationId(null);
     setSnapshot(null);
     setText("");
     setTools([]);
@@ -897,6 +901,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       clearStoredCoachResume();
       setBlockedResume(null);
       clearFold();
+      setRunConversationId(isCloudBackend(backendId) ? input.conversationId ?? null : null);
       setError(null);
       // Stable for this submission: reused by the explicit retry below, never
       // regenerated after network ambiguity. A fresh question mints a new key.
@@ -941,6 +946,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
         const handle = { snapshotId: created.snapshotId, source: created.source, accountId: created.accountId };
         pendingRetryRef.current = {
           prompt: question,
+          ...(isCloudBackend(backendId) && input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
           filter,
           idempotencyKey,
           snapshotHandle: handle,
@@ -954,6 +960,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
           submitted = await client.submitRun({
             sessionId,
             prompt: question,
+            ...(isCloudBackend(backendId) && input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
             idempotencyKey,
             snapshot: handle,
             ...localBackendSelection(backendId),
@@ -990,6 +997,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
           submitted = await client.submitRun({
             sessionId,
             prompt: question,
+            ...(isCloudBackend(backendId) && input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
             idempotencyKey,
             snapshot: handle,
             ...localBackendSelection(backendId),
@@ -1141,6 +1149,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       const submitted = await client.submitRun({
         sessionId,
         prompt: pending.prompt,
+        ...(pending.conversationId === undefined ? {} : { conversationId: pending.conversationId }),
         idempotencyKey: pending.idempotencyKey,
         snapshot: pending.snapshotHandle,
         ...localBackendSelection(pending.backendId),
@@ -1657,6 +1666,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
         restoreCompletedRef.current = accountId;
         sessionIdRef.current = session.id;
         runIdRef.current = read.run.id;
+        // The server verifies account ownership and supplies this association;
+        // never trust an unverified conversation id from browser storage.
+        setRunConversationId(isCloudBackend(record.backendId) ? read.run.conversationId ?? null : null);
         // Migrate/refresh the v2 record with the verified ids, origin, and
         // cursor. Replay always comes from this record, not the selector.
         persistResume();
@@ -1977,6 +1989,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     identityUnverified,
     backends,
     selectedBackend,
+    runConversationId,
     // The run's own backend, exposed only while it is pinned (active,
     // unresolved, restoring, cancelling, or awaiting a same-key retry).
     activeBackend: isBackendPinned ? activeBackend : null,

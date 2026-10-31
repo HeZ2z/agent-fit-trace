@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { filterRecords } from "@agent-fit-trace/core";
@@ -9,14 +9,45 @@ import { useWorkouts } from "../state/useWorkouts.ts";
 import { useCoach } from "../coaching/useCoach.ts";
 import { isCloudBackend } from "../coaching/coachBackend.ts";
 import { useI18n } from "../i18n/useI18n.ts";
+import { useAuth } from "../auth/AuthContext.tsx";
+import { useCloudConversations } from "../coaching/useCloudConversations.ts";
 
 export function CoachScreen() {
   const { t } = useI18n();
+  const { user, getAccessToken } = useAuth();
   const { records, status: historyStatus, loadError, reload } = useWorkouts();
   const coach = useCoach();
   const [question, setQuestion] = useState("");
+  const [submittedQuestion, setSubmittedQuestion] = useState<{ accountId: string | undefined; text: string } | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const cloudSelected = (coach.activeBackend ?? coach.selectedBackend ?? (coach.runConversationId === null ? null : "cloud-default")) === "cloud-default";
+  const conversationsEnabled = cloudSelected && user?.isAnonymous === false;
+  const conversations = useCloudConversations(user?.id ?? null, conversationsEnabled, getAccessToken);
+  const submitting = useRef(false);
+  // One-shot guard for restoring a run's server-verified conversation. It is
+  // keyed by account and dropped whenever the conversation store is disabled:
+  // switching to a local backend clears the selection and messages, so a guard
+  // that survived would let the switch back show the completed run's answer
+  // with no conversation selected, and a follow-up would start a NEW
+  // conversation without the history the user is looking at.
+  const attemptedResume = useRef<{ accountId: string; id: string } | null>(null);
+
+  useEffect(() => {
+    if (!conversationsEnabled) attemptedResume.current = null;
+  }, [conversationsEnabled]);
+  useEffect(() => {
+    const id = coach.runConversationId;
+    if (!conversationsEnabled || id === null || !conversations.initialized || conversations.loading) return;
+    const accountId = user?.id ?? "none";
+    if (attemptedResume.current?.accountId === accountId && attemptedResume.current.id === id) return;
+    attemptedResume.current = { accountId, id };
+    if (conversations.selectedId !== id) void conversations.select(id);
+  }, [coach.runConversationId, conversationsEnabled, user?.id, conversations.initialized, conversations.loading, conversations.selectedId, conversations.select]);
+
+  useEffect(() => {
+    if (coach.phase === "done" && cloudSelected) void conversations.refresh();
+  }, [coach.phase, cloudSelected, conversations.refresh]);
 
   // The run's own backend wins for disclosure while one is pinned; otherwise
   // show what the NEXT run would use. Backend availability is per-option:
@@ -52,10 +83,18 @@ export function CoachScreen() {
 
   const rangeEmpty = snapshot !== null && snapshot.recordCount === 0;
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (piUnavailable || !coach.canAsk) return;
-    void coach.submit({ question, from, to });
+    if (piUnavailable || !coach.canAsk || coach.isRunning || question.trim() === "" || submitting.current || conversations.loading) return;
+    submitting.current = true;
+    try {
+      const conversationId = cloudSelected ? conversations.selectedId ?? await conversations.create() : null;
+      if (cloudSelected && conversationId === null) return;
+      setSubmittedQuestion({ accountId: user?.id, text: question.trim() });
+      void coach.submit({ question, from, to, ...(conversationId === null ? {} : { conversationId }) });
+    } finally {
+      submitting.current = false;
+    }
   }
 
   return (
@@ -63,11 +102,6 @@ export function CoachScreen() {
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{t("Coach")}</h1>
-          <p className="coach-lede">
-            {t(
-              "Read-only analysis of your stored workouts. The coach reads a backend-issued snapshot of this account and the selected range — your records are never rewritten by a run.",
-            )}
-          </p>
         </div>
       </div>
 
@@ -121,7 +155,7 @@ export function CoachScreen() {
           {coach.activeBackend !== null && (
             <p className="coach-meta" data-testid="coach-active-backend">
               {t(
-                "This run is pinned to {backend}. Replay, cancel, and restore keep using that backend even if the selection changes.",
+                "{backend} · active",
                 { backend: disclosedLabel ?? coach.activeBackend },
               )}
             </p>
@@ -129,7 +163,7 @@ export function CoachScreen() {
         </div>
       )}
 
-      {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (
+      {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (!coach.canAsk || coach.canRetryBackendDiscovery) && (
         <>
           <p role="note" data-testid="coach-backend-notice" className="coach-meta">
             {coach.backendNotice}
@@ -155,10 +189,10 @@ export function CoachScreen() {
         >
           {disclosedLocation === "cloud"
             ? t(
-                "Cloud coach: the run executes in the hosted cloud and spends cloud coaching credits. Your question and the selected workout snapshot are sent to the configured cloud provider.",
+                "Hosted cloud coaching uses credits and sends your question and workout data to the provider.",
               )
             : t(
-                "Local coach ({backend}): the run executes on this machine through that local CLI. Your question and snapshot go to the model provider configured for it; workout storage stays local.",
+                "{backend} runs locally. Your question and workout data are sent to its model provider.",
                 { backend: disclosedLabel ?? disclosedBackend },
               )}
         </p>
@@ -175,6 +209,56 @@ export function CoachScreen() {
           {t(
             "pi is not installed on this machine, so the local pi coach cannot run. Select an available cloud or other local backend, install pi, or keep using workout logging and history.",
           )}
+        </div>
+      )}
+
+          {cloudSelected && user?.isAnonymous === false && (
+            <div className="coach-history" aria-label={t("Conversation history")}>
+              <div className="coach-history-heading">
+                <h2>{t("Conversations")}</h2>
+                <button type="button" disabled={coach.isRunning || conversations.loading} onClick={() => { coach.newAnalysis(); setSubmittedQuestion(null); void conversations.create(); }}>
+                  {t("New conversation")}
+                </button>
+              </div>
+              {conversations.conversations.length > 0 && (
+                <select aria-label={t("Select conversation")} value={conversations.selectedId ?? ""} disabled={coach.isRunning || conversations.loading} onChange={(event) => {
+                  if (event.currentTarget.value) {
+                    coach.newAnalysis();
+                    setSubmittedQuestion(null);
+                    void conversations.select(event.currentTarget.value);
+                  }
+                }}>
+                  <option value="">{t("Select conversation")}</option>
+                  {conversations.conversations.map((item) => <option key={item.id} value={item.id}>{new Date(item.updatedAt).toLocaleString()}</option>)}
+                </select>
+              )}
+              {conversations.selectedId !== null && (
+                <button type="button" disabled={coach.isRunning || conversations.loading} onClick={() => {
+                  if (window.confirm(t("Delete this conversation and its messages?"))) {
+                    void conversations.remove().then((removed) => {
+                      if (removed) {
+                        coach.newAnalysis();
+                        setSubmittedQuestion(null);
+                      }
+                    });
+                  }
+                }}>{t("Delete conversation")}</button>
+              )}
+              {conversations.error !== null && (
+                <button type="button" disabled={conversations.loading} onClick={() => void conversations.reloadList()}>{t("Retry")}</button>
+              )}
+              {conversations.loading && <p role="status">{t("Loading conversations…")}</p>}
+              {conversations.error !== null && <p role="alert">{conversations.error}</p>}
+            </div>
+          )}
+      {cloudSelected && conversations.messages.length > 0 && (
+        <div className="coach-conversation" aria-label={t("Conversation history")}>
+          {conversations.messages.map((message) => (
+            <div key={message.id} className={`coach-message ${message.role === "user" ? "coach-message-user" : "coach-message-answer"}`}>
+              <span className="coach-message-label">{message.role === "user" ? t("You") : t("Coach")}</span>
+              <p>{message.content}</p>
+            </div>
+          ))}
         </div>
       )}
 
@@ -198,67 +282,22 @@ export function CoachScreen() {
         </div>
       ) : (
         <>
-          <p data-testid="coach-history-count" className="coach-meta">
+          <p data-testid="coach-history-count" className="coach-screen-reader-only">
             {t("{count} workout(s) in history.", { count: records.length })}
           </p>
 
-          <form onSubmit={handleSubmit}>
-            <div className="field">
-              <label htmlFor="coach-question">{t("Analysis question")}</label>
-              <textarea
-                id="coach-question"
-                value={question}
-                onChange={(event) => setQuestion(event.currentTarget.value)}
-                placeholder={t("How is my squat progressing?")}
-                disabled={coach.isRunning || piUnavailable}
-              />
-              {!coach.canAsk && !piUnavailable && (
-                <p className="coach-meta" data-testid="coach-backend-required">
-                  {t("Select an available coach backend to ask.")}
-                </p>
-              )}
-            </div>
-            <div className="field">
-              <label htmlFor="coach-from">{t("From (optional)")}</label>
-              <input
-                id="coach-from"
-                type="date"
-                value={from}
-                onChange={(event) => setFrom(event.currentTarget.value)}
-                disabled={coach.isRunning || piUnavailable}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="coach-to">{t("To (optional)")}</label>
-              <input
-                id="coach-to"
-                type="date"
-                value={to}
-                onChange={(event) => setTo(event.currentTarget.value)}
-                disabled={coach.isRunning || piUnavailable}
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={
-                coach.isRunning ||
-                piUnavailable ||
-                !coach.canAsk ||
-                question.trim() === ""
-              }
-            >
-              {coach.phase === "preparing" || coach.phase === "streaming" || coach.phase === "cancelling"
-                ? t("Coach is working…")
-                : t("Ask coach")}
-            </button>{" "}
-            {coach.canCancel && (
-              <button type="button" onClick={() => void coach.cancel()}>
-                {coach.phase === "cancelling" ? t("Cancelling…") : t("Cancel")}
-              </button>
+          <div className="coach-conversation" aria-label={t("Coach conversation")}>
+
+            {submittedQuestion !== null && submittedQuestion.accountId === user?.id && (!cloudSelected || coach.isRunning || coach.phase !== "done" || !conversations.messages.some((message) => message.role === "user" && message.content === submittedQuestion.text)) && (
+              <div className="coach-message coach-message-user">
+                <span className="coach-message-label">{t("You")}</span>
+                <p>{submittedQuestion.text}</p>
+              </div>
             )}
-          </form>
 
           {snapshot !== null && (
+            <details className="coach-source-details">
+            <summary>{t("Analysis details")}</summary>
             <p data-testid="coach-source" className="coach-meta">
               {t("Snapshot {id}: {source} · {count} record(s){range}", {
                 id: snapshot.snapshotId,
@@ -270,6 +309,7 @@ export function CoachScreen() {
                     : "",
               })}
             </p>
+            </details>
           )}
 
           {rangeEmpty && (
@@ -294,8 +334,8 @@ export function CoachScreen() {
           {coach.phase === "cancelling" && <p role="status">{t("Cancelling coach run…")}</p>}
 
           {coach.tools.length > 0 && (
-            <section aria-label={t("Coach activity")}>
-              <h2>{t("Activity")}</h2>
+            <details className="coach-activity" aria-label={t("Coach activity")}>
+              <summary>{t("Activity")}</summary>
               <ul className="coach-tools">
                 {coach.tools.map((activity) => (
                   <li key={activity.callId}>
@@ -315,11 +355,11 @@ export function CoachScreen() {
                   </li>
                 ))}
               </ul>
-            </section>
+            </details>
           )}
 
-          {coach.text !== "" && (
-            <section aria-label={t("Coach answer")}>
+          {coach.text !== "" && (!cloudSelected || !conversations.messages.some((message) => message.role === "assistant" && message.content === coach.text)) && (
+            <section className="coach-message coach-message-answer" aria-label={t("Coach answer")}>
               <h2>{t("Answer")}</h2>
               <pre className="coach-text" data-testid="coach-text">
                 {coach.text}
@@ -406,6 +446,70 @@ export function CoachScreen() {
               </button>
             </div>
           )}
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            <div className="field">
+              <label htmlFor="coach-question">{t("Analysis question")}</label>
+              <textarea
+                id="coach-question"
+                value={question}
+                onChange={(event) => setQuestion(event.currentTarget.value)}
+                placeholder={t("How is my squat progressing?")}
+                disabled={coach.isRunning || piUnavailable}
+              />
+              {!coach.canAsk && !piUnavailable && (
+                <p className="coach-meta" data-testid="coach-backend-required">
+                  {t("Select an available coach backend to ask.")}
+                </p>
+              )}
+            </div>
+            <details className="coach-range">
+              <summary>{t("Date range")}</summary>
+              <div className="coach-range-fields">
+            <div className="field">
+              <label htmlFor="coach-from">{t("From (optional)")}</label>
+              <input
+                id="coach-from"
+                type="date"
+                value={from}
+                onChange={(event) => setFrom(event.currentTarget.value)}
+                disabled={coach.isRunning || piUnavailable}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="coach-to">{t("To (optional)")}</label>
+              <input
+                id="coach-to"
+                type="date"
+                value={to}
+                onChange={(event) => setTo(event.currentTarget.value)}
+                disabled={coach.isRunning || piUnavailable}
+              />
+            </div>
+              </div>
+            </details>
+            <button
+              type="submit"
+              disabled={
+                coach.isRunning ||
+                piUnavailable ||
+                !coach.canAsk ||
+                question.trim() === "" ||
+                (cloudSelected && conversations.loading)
+              }
+            >
+              {coach.phase === "preparing" || coach.phase === "streaming" || coach.phase === "cancelling"
+                ? t("Coach is working…")
+                : t("Ask coach")}
+            </button>{" "}
+            {coach.canCancel && (
+              <button type="button" onClick={() => void coach.cancel()}>
+                {coach.phase === "cancelling" ? t("Cancelling…") : t("Cancel")}
+              </button>
+            )}
+          </form>
+
         </>
       )}
     </section>

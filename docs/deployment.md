@@ -264,7 +264,8 @@ verification steps below have actually been run.
 
 Apply `supabase/migrations/20261017000200_coaching_cloud.sql`, then the
 additive correction `supabase/migrations/20261017000300_cloud_execution_guards.sql`,
-through the normal Supabase migration tooling for the target project. They are
+then `20261030000000_coaching_conversations.sql` and
+`20261030000100_coaching_conversation_runs.sql`, through the normal Supabase migration tooling for the target project. They are
 ordered after the workout/profile migrations (`20261010000000`,
 `20261011000000`, `20261017000000`, `20261017000100`). Do not reset a
 long-running local stack just to apply them; coordinate with its owner. The
@@ -281,6 +282,16 @@ serialized. Submission reserves a finite per-run token/request allocation
 against a server-configured formal-account quota (20 concurrent by default), and
 the corrected worker authorization RPC reads `coaching_quota.configured`
 instead of the base file's nonexistent `quota_configured` column.
+
+Conversation history is separate from expiring run events and is scoped to the
+formal account. Each account can retain up to 100 conversations, with up to 200
+messages per conversation; conversations can be deleted when no run is active or
+unconfirmed. Only completed answers are retained. Each new cloud run uses at
+most the latest 10 complete exchanges within a 16 KiB context budget; older
+history remains visible but is not included in that run. History is sent to the
+configured model provider and contributes to its input budget. The conversation
+migrations and cross-device flow also require real-database validation before
+production use.
 
 ### 2. Request-path environment (Vercel)
 

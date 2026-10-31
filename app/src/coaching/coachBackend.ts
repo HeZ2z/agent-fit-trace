@@ -37,14 +37,14 @@ export interface CoachRunClient {
   bootstrap(): Promise<unknown>;
   createSession(id?: string): Promise<{ id: string }>;
   createSnapshot(filter?: { from?: string; to?: string }): Promise<CoachingDataSnapshot>;
-  submitRun(input: SubmitCoachingRunInput): Promise<{
+  submitRun(input: SubmitCoachingRunInput & { conversationId?: string }): Promise<{
     run: { id: string; sessionId: string; snapshot: CoachingDataSnapshot };
     lastSeq: number;
     replayed: boolean;
   }>;
   readSession(id: string): Promise<{ id: string }>;
   readRun(id: string): Promise<{
-    run: { id: string; sessionId: string; snapshot: CoachingDataSnapshot };
+    run: { id: string; sessionId: string; snapshot: CoachingDataSnapshot; conversationId?: string | null };
     lastSeq: number;
     firstSeq?: number;
     expiresAt?: number;

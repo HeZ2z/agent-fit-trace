@@ -293,7 +293,7 @@ export class CloudCoachingClient {
     );
   }
 
-  async submitRun(input: SubmitCoachingRunInput): Promise<CloudSubmitRunResult> {
+  async submitRun(input: SubmitCoachingRunInput & { conversationId?: string }): Promise<CloudSubmitRunResult> {
     // Reuse the shared handle-only guard. Backend fields are deliberately not
     // forwarded: the cloud route is already the cloud backend.
     const parsed = parseSubmitCoachingRunInput(input);
@@ -306,6 +306,7 @@ export class CloudCoachingClient {
           prompt: parsed.prompt,
           idempotencyKey: parsed.idempotencyKey,
           snapshot: parsed.snapshot,
+          ...(input.conversationId === undefined ? {} : { conversationId: assertNonBlank(input.conversationId, "conversationId") }),
         },
         capability: null,
       },

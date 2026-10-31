@@ -68,6 +68,7 @@ export type CloudErrorCode = (typeof CLOUD_ERROR_CODES)[keyof typeof CLOUD_ERROR
 
 /** Client-visible cloud run. Never includes provider keys, service keys, or raw provider payloads. */
 export interface CloudCoachingRun {
+  conversationId?: string;
   id: string;
   sessionId: string;
   status: CloudRunStatus;
@@ -85,6 +86,7 @@ export interface CloudCoachingRun {
 }
 
 export interface CloudSubmitRunInput {
+  conversationId?: string;
   sessionId: string;
   prompt: string;
   idempotencyKey: string;
@@ -188,7 +190,9 @@ export function parseCloudSubmitRunInput(value: unknown): CloudSubmitRunInput {
   if ("records" in value.snapshot || "recordIds" in value.snapshot || "recordCount" in value.snapshot) {
     fail("snapshot", "must be a snapshot handle only: records are server-resolved");
   }
+  if (value.conversationId !== undefined && (typeof value.conversationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.conversationId))) fail("conversationId", "must be a valid conversation id");
   return {
+    ...(value.conversationId === undefined ? {} : { conversationId: value.conversationId as string }),
     sessionId: assertNonBlank(value.sessionId, "sessionId"),
     prompt: assertNonBlank(value.prompt, "prompt", MAX_PROMPT_LENGTH),
     idempotencyKey: assertNonBlank(value.idempotencyKey, "idempotencyKey"),
@@ -271,6 +275,10 @@ export function parseCloudCoachingRun(value: unknown): CloudCoachingRun {
     updatedAt: assertNonBlank(value.updatedAt, "updatedAt"),
     terminationConfirmed: value.terminationConfirmed === true,
   };
+  if (value.conversationId !== undefined && value.conversationId !== null) {
+    if (typeof value.conversationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.conversationId)) fail("conversationId", "must be a valid conversation id");
+    run.conversationId = value.conversationId;
+  }
   if (value.terminationConfirmed !== undefined && typeof value.terminationConfirmed !== "boolean") {
     fail("terminationConfirmed", "must be a boolean");
   }
@@ -374,4 +382,21 @@ export function parseCloudCapabilities(value: unknown): CloudCapabilities {
     maxTokens: assertSafeInt(value.maxTokens, "maxTokens", 0),
     timeoutMs: assertSafeInt(value.timeoutMs, "timeoutMs", 0),
   };
+}
+
+/** Durable account-scoped conversation history, independent of run retention. */
+export interface CloudConversation {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface CloudConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+export interface CloudConversationDetail {
+  conversation: CloudConversation;
+  messages: CloudConversationMessage[];
 }

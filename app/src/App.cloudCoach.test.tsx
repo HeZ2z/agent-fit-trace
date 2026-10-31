@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import {
@@ -78,6 +78,10 @@ interface RouterOptions {
   capabilityFailures?: number;
   /** Launcher mode: serve local discovery with pi missing and OpenCode ready. */
   launcherDiscovery?: boolean;
+  /** Launcher discovery also advertises an eligible cloud backend. */
+  discoveryCloud?: boolean;
+  emptyWorkoutsWithHistory?: boolean;
+  resumeConversation?: boolean;
 }
 
 function localBackendDescriptor(
@@ -113,6 +117,31 @@ function localBackendDescriptor(
       accountEligibility: "not-required",
       quotaReservation: "not-required",
       dataDestination: "cli-provider",
+    },
+  };
+}
+
+/** An eligible cloud descriptor from launcher discovery (contract-valid). */
+function cloudBackendDescriptor() {
+  return {
+    backendId: "cloud-default",
+    runtimeId: "hosted-sdk",
+    executionLocation: "cloud",
+    displayName: "Cloud coach",
+    available: true,
+    capabilities: {
+      capabilityVersion: COACHING_CAPABILITY_VERSION,
+      protocolVersion: COACHING_PROTOCOL_VERSION,
+      tools: ["get_training_history", "analyze_progress"],
+      productReplay: true,
+      nativeContinuation: true,
+      cancelConfirmation: "provider",
+      maxInputBytes: 65_536,
+      maxEvents: 1_000,
+      maxEventBytes: 4 * 1024 * 1024,
+      accountEligibility: "required",
+      quotaReservation: "required",
+      dataDestination: "vendor-api",
     },
   };
 }
@@ -236,6 +265,8 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
     [GUEST.token, GUEST],
   ]);
   const tails: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const conversations = new Map<string, { id: string; createdAt: string; updatedAt: string; owner: string }>();
+  if (options.emptyWorkoutsWithHistory || options.resumeConversation) conversations.set("saved-conversation", { id: "saved-conversation", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", owner: FORMAL_A.id });
   let cloudSubmits = 0;
   let cloudEventReads = 0;
   let cloudCapabilityReads = 0;
@@ -348,6 +379,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
               localBackendDescriptor("local-pi", "pi", "pi CLI (local)", false),
               localBackendDescriptor("local-codex", "codex", "Codex CLI (local)", false),
               localBackendDescriptor("local-opencode", "opencode", "OpenCode CLI (local)", true),
+              ...(options.discoveryCloud === true ? [cloudBackendDescriptor()] : []),
             ],
           });
         }
@@ -359,6 +391,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
           return jsonError("UNAUTHENTICATED", "Missing bearer token.", 401);
         }
         if (url === "/api/v1/workouts" && method === "GET") {
+          if (options.emptyWorkoutsWithHistory) return jsonData([]);
           return jsonData([
             {
               schema_version: 1,
@@ -383,6 +416,19 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
             throw new Error("socket hangup");
           }
           return jsonData(capabilities(options));
+        }
+        if (url === "/api/v1/coaching/cloud/conversations" && method === "GET") {
+          return jsonData({ conversations: [...conversations.values()].filter((item) => item.owner === principal.id) });
+        }
+        if (url === "/api/v1/coaching/cloud/conversations" && method === "POST") {
+          const { id } = parseBody(init) as { id: string };
+          const item = conversations.get(id) ?? { id, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", owner: principal.id };
+          conversations.set(id, item);
+          return jsonData(item, 201);
+        }
+        if (url.startsWith("/api/v1/coaching/cloud/conversations/") && method === "GET") {
+          const item = conversations.get(url.split("/").at(-1) ?? "");
+          return item?.owner === principal.id ? jsonData({ conversation: item, messages: options.emptyWorkoutsWithHistory ? [{ id: "saved-message", role: "assistant", content: "Saved coaching answer", createdAt: "2026-01-01T00:00:00Z" }] : [] }) : jsonError("NOT_FOUND", "Not found", 404);
         }
         if (url === "/api/v1/coaching/cloud/sessions" && method === "POST") {
           return jsonData({ id: CLOUD_SESSION }, 201);
@@ -436,7 +482,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
         }
         if (url.includes(`/api/v1/coaching/cloud/runs/${CLOUD_RUN}`) && method === "GET") {
           return jsonData({
-            run: cloudRun(principal.id, "completed"),
+            run: { ...cloudRun(principal.id, "completed"), ...(options.resumeConversation ? { conversationId: "saved-conversation" } : {}) },
             lastSeq: 1,
             firstSeq: 0,
             expiresAt: Date.now() + 600_000,
@@ -508,6 +554,20 @@ describe("browser coach backend selection", () => {
     ).toHaveLength(0);
   });
 
+  it("opens saved conversation history even when workout history is empty", async () => {
+    const seen: SeenRequest[] = [];
+    installRouter(seen, { emptyWorkoutsWithHistory: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    await user.selectOptions(await screen.findByTestId("coach-backend-select"), "cloud-default");
+    const select = await screen.findByRole("combobox", { name: /select conversation/i });
+    await user.selectOptions(select, "saved-conversation");
+    expect(await screen.findByText("Saved coaching answer")).toBeInTheDocument();
+    expect(screen.getByText(/no workout history to analyse/i)).toBeInTheDocument();
+  });
+
   it("advertises cloud only from server capabilities, defaults off, and submits exactly once to cloud", async () => {
     const seen: SeenRequest[] = [];
     installRouter(seen);
@@ -567,6 +627,37 @@ describe("browser coach backend selection", () => {
     expect(resume.origin).toBe("cloud");
     expect(resume.lastSeq).toBe(1);
     expect(window.sessionStorage.getItem(RESUME_V1_KEY)).toBeNull();
+  });
+
+  it("clears the previous question when starting a new conversation", async () => {
+    const seen: SeenRequest[] = [];
+    installRouter(seen);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    await user.selectOptions(await screen.findByTestId("coach-backend-select"), "cloud-default");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("cloud answer");
+
+    // The completed run's question is visible in the transcript it belongs to.
+    const transcript = (): HTMLElement => screen.getByLabelText(/coach conversation/i);
+    expect(within(transcript()).getByText("How is my squat progressing?")).toBeInTheDocument();
+
+    const newConversation = screen.getByRole("button", { name: /new conversation/i });
+    await waitFor(() => expect(newConversation).toBeEnabled());
+    await user.click(newConversation);
+
+    // The new, empty conversation must not display the previous conversation's
+    // question, which it neither stores nor sends as context.
+    await waitFor(() =>
+      expect(
+        within(transcript()).queryByText("How is my squat progressing?"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("coach-text")).not.toBeInTheDocument();
   });
 
   it("recovers cloud availability after a transient discovery failure with a bounded retry", async () => {
@@ -637,6 +728,20 @@ describe("browser coach backend selection", () => {
       seen.filter((entry) => entry.url.includes("/coaching/cloud/runs") && entry.method === "POST"),
     ).toHaveLength(0);
     expect(seen.filter((entry) => entry.url.endsWith("/coaching/bootstrap"))).toHaveLength(0);
+  });
+
+  it("restores a run's server-verified conversation while replaying", async () => {
+    window.sessionStorage.setItem(RESUME_V2_KEY, JSON.stringify({ version: 2, accountId: FORMAL_A.id, backendId: "cloud-default", origin: "cloud", sessionId: CLOUD_SESSION, runId: CLOUD_RUN, lastSeq: 0 }));
+    const seen: SeenRequest[] = [];
+    const tail = installRouter(seen, { resumeConversation: true, holdCloudEvents: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    const history = await screen.findByRole("combobox", { name: /select conversation/i });
+    await waitFor(() => expect(history).toHaveValue("saved-conversation"));
+    expect(seen.some((entry) => entry.url.endsWith("/coaching/cloud/conversations/saved-conversation"))).toBe(true);
+    tail.close();
   });
 
   it("does not inherit the previous account's cloud preference or run", async () => {
@@ -732,6 +837,9 @@ describe("browser coach backend selection", () => {
     const keys = posts.map((entry) => (entry.body as { idempotencyKey?: string })?.idempotencyKey);
     expect(keys[0]).toBeTruthy();
     expect(keys[0]).toBe(keys[1]);
+    const conversationIds = posts.map((entry) => (entry.body as { conversationId?: string })?.conversationId);
+    expect(conversationIds[0]).toBeTruthy();
+    expect(conversationIds[0]).toBe(conversationIds[1]);
     // An unknown prior request is resolved, never moved to a fresh session.
     expect(
       seen.filter(
@@ -798,6 +906,62 @@ describe("browser coach backend selection", () => {
 
     // Launcher discovery stays local; no cloud capability traffic.
     expect(seen.filter((entry) => entry.url.includes("/coaching/cloud"))).toHaveLength(0);
+  });
+
+  it("restores the run's conversation after switching to a local backend and back", async () => {
+    (globalThis as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME = {
+      mode: "http",
+      coaching: "same-origin",
+      piAvailable: false,
+    };
+    const seen: SeenRequest[] = [];
+    installRouter(seen, {
+      launcherDiscovery: true,
+      discoveryCloud: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    const select = await screen.findByTestId("coach-backend-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /^Cloud coach$/ })).not.toBeDisabled(),
+    );
+
+    await user.selectOptions(select, "cloud-default");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("cloud answer");
+
+    const submit = seen.find(
+      (entry) => entry.url === "/api/v1/coaching/cloud/runs" && entry.method === "POST",
+    );
+    const conversationId = (submit?.body as { conversationId?: string }).conversationId;
+    expect(conversationId).toBeTruthy();
+    const history = (): HTMLElement => screen.getByRole("combobox", { name: /select conversation/i });
+    await waitFor(() => expect(history()).toHaveValue(conversationId));
+    const readPath = `/api/v1/coaching/cloud/conversations/${conversationId}`;
+    const readsOfRunConversation = (): number =>
+      seen.filter((entry) => entry.url.endsWith(readPath) && entry.method === "GET").length;
+    await waitFor(() => expect(readsOfRunConversation()).toBeGreaterThan(0));
+
+    // Switch to a local backend: the cloud conversation store is disabled and
+    // its selection/messages are cleared.
+    await waitFor(() => expect(select).not.toBeDisabled());
+    const readsBeforeSwitch = readsOfRunConversation();
+    await user.selectOptions(select, "local-opencode");
+    await waitFor(() =>
+      expect(screen.queryByRole("combobox", { name: /select conversation/i })).not.toBeInTheDocument(),
+    );
+
+    // Switching back must re-establish the SAME conversation the answer on
+    // screen belongs to — a follow-up would otherwise start a new one and send
+    // none of the history the user is looking at.
+    await user.selectOptions(select, "cloud-default");
+    const restored = await screen.findByRole("combobox", { name: /select conversation/i });
+    await waitFor(() => expect(restored).toHaveValue(conversationId));
+    expect(readsOfRunConversation()).toBeGreaterThan(readsBeforeSwitch);
   });
 
   it("tails a cloud replay across GET page boundaries without a new run POST", async () => {
