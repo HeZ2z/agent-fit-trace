@@ -1000,8 +1000,50 @@ test("vercel.json maps the metadata path onto the mcp Function before the SPA fa
   assert.match(includeFiles, /build\/server/, "the Function bundle must include the built server");
 });
 
+test("every api entrypoint resolves its bundle import to <repo>/build/server/vercel.mjs", async () => {
+  // An entrypoint's relative depth depends on how many directories deep it
+  // sits, so a new Function (or a moved one) can silently point outside the
+  // repository: the specifier still looks plausible, but the Function fails to
+  // load at deploy time. Resolve each specifier and compare it with the real
+  // bundle location instead of matching source text, so the arithmetic is
+  // checked rather than restated.
+  const { readFile, readdir } = await import("node:fs/promises");
+  const { resolve, dirname, relative } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+
+  const apiRoot = fileURLToPath(new URL("../api", import.meta.url));
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const expected = resolve(repoRoot, "build/server/vercel.mjs");
+
+  async function collect(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const found: string[] = [];
+    for (const entry of entries) {
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) found.push(...(await collect(full)));
+      else if (entry.name.endsWith(".mjs")) found.push(full);
+    }
+    return found;
+  }
+
+  const entrypoints = await collect(apiRoot);
+  assert.ok(entrypoints.length > 1, "expected to find the api entrypoints");
+
+  for (const entry of entrypoints) {
+    const source = await readFile(entry, "utf8");
+    const specifier = /from\s+"([^"]*build\/server\/vercel\.mjs)"/.exec(source)?.[1];
+    assert.ok(specifier, `${relative(repoRoot, entry)} does not import the server bundle`);
+    const resolved = resolve(dirname(entry), specifier);
+    assert.equal(
+      resolved,
+      expected,
+      `${relative(repoRoot, entry)} resolves "${specifier}" to ${resolved}, not the built bundle`,
+    );
+  }
+});
+
 test("api/mcp.mjs exports the shared adapter as the default handler", async () => {
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("../api/mcp.mjs", import.meta.url), "utf8");
-  assert.match(source, /export \{ handleVercelApi as default \} from "\.\.\/\.\.\/build\/server\/vercel\.mjs";/);
+  assert.match(source, /export \{ handleVercelApi as default \} from "[^"]*build\/server\/vercel\.mjs";/);
 });
