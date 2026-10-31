@@ -195,18 +195,20 @@ served over Streamable HTTP at the app origin, so a hosted MCP client can reach
 a user's cloud data without a local Node process. The stdio server above is
 unchanged and still the local-first path.
 
-**Status: code complete; verified end-to-end on a local GoTrue v2.197.0 +
-PostgREST stack (34/34 assertions, built bundle); NOT yet applied to the hosted
-project.** The pieces are `server/mcp/auth.ts` + `env.ts` (token verification and
-fail-closed config), `server/mcp/httpHandler.ts` + `resourceMetadata.ts` (the
-request handler and Protected Resource Metadata), the Vercel entry `api/mcp.mjs`,
-`packages/fit-trace-mcp/src/cloudStore.ts` (the Supabase-backed store), the
-`app/` consent screen, and the Supabase hook migration below. This section
-deliberately separates what was actually proven from what was only reasoned
-about — see [Verification status](#verification-status). Do not describe remote
-MCP as production-ready on the strength of this document: the hosted project
-still needs the migration applied and the hook enabled, and no shipping MCP
-client has been run against it.
+**Status: code complete; verified end-to-end on a real local stack
+(GoTrue v2.197.0 + PostgREST v16.4) both by a scripted client and by a real MCP
+SDK client — 30/30 stack-contract and 18/18 client assertions; NOT yet applied
+to the hosted project.** The pieces are `server/mcp/auth.ts` + `env.ts` (token
+verification and fail-closed config), `server/mcp/httpHandler.ts` +
+`resourceMetadata.ts` (the request handler and Protected Resource Metadata), the
+Vercel entry `api/mcp.mjs`, `packages/fit-trace-mcp/src/cloudStore.ts` (the
+Supabase-backed store), the `app/` consent screen, and the Supabase hook
+migration below. This section deliberately separates what was actually proven
+from what was only reasoned about — see
+[Verification status](#verification-status). Do not describe remote MCP as
+production-ready on the strength of this document: the hosted project still
+needs the migration applied and the hook enabled, and no shipping desktop MCP
+client has completed its browser leg against it.
 
 ### Resource URL and endpoints
 
@@ -340,7 +342,7 @@ their resource claim no longer matches a configured resource.
 
 ### Verification status
 
-Two rounds, and they prove different things.
+Three rounds, and they prove different things.
 
 **Round 1 — hosted project (`zwmutsmqqormgtkjolgi`), 2026-10-29, HTTP probes only.**
 
@@ -352,37 +354,53 @@ Two rounds, and they prove different things.
 | `GET /auth/v1/oauth/authorizations/{id}` exists and requires a bearer | **Verified** (401 without a token) |
 | `POST /auth/v1/oauth/authorizations/{id}/consent` exists and requires a bearer | **Verified** (401 without a token) |
 | `/auth/v1/oauth/authorize` validates an RFC 8707 `resource` param (absolute URI, no fragment/query) and compares it at code exchange | **Verified** (probe), **and** the parameter does not become `aud` |
+| The mapping table exists on the hosted project | **Verified ABSENT** — `GET /rest/v1/mcp_oauth_client_resources` returns `PGRST205` (no such table), i.e. this migration has not been applied there |
 
-**Round 2 — local stack, 2026-10-30: GoTrue v2.197.0 + PostgREST v16.4 on
-Postgres, the repo's migrations applied in order (including
+**Round 2 — real stack, 2026-10-29: PostgreSQL 15 + GoTrue v2.197.0 +
+PostgREST v16.4, the repo's migrations applied in order (including
 `20261029000000_mcp_oauth_resource.sql`), the hook enabled, and the **built**
 Vercel bundle (`build/server/vercel.mjs`) driven through its real
-`handleVercelApi` entry. 34/34 assertions passed.**
+`handleVercelApi` entry. 30/30 assertions passed.**
 
 | Claim | Status |
 | --- | --- |
-| The migration applies cleanly (table, hook function, grants) | **Verified** — applied to a fresh database on GoTrue v2.197.0 |
+| The migration applies cleanly (table, hook function, grants) | **Verified** — all seven repo migrations applied to a fresh database, no errors |
 | The hook stamps `fit_trace_mcp_resource` with the exact resource URL for an allow-listed client | **Verified** — observed in the issued token and in GoTrue's `run_hook` success log on `/oauth/token` |
 | `aud` stays `authenticated` after stamping | **Verified** — decoded from the issued token |
 | A stamped token still authenticates against `GET /auth/v1/user` | **Verified** — 200 |
 | A stamped token still works against PostgREST (the reason `aud` is not rewritten) | **Verified** — 200 |
 | A browser session token (no `client_id`, no claim) is rejected by `/api/mcp` | **Verified** — 401 |
 | Two accounts cannot read each other's rows through the endpoint | **Verified** — real RLS: A sees 1 row, B sees 0, concurrently |
+| A second account cannot read another user's authorization request | **Verified** — `GET …/authorizations/{id}` cross-account returns 404, never the other user's data |
 | PKCE + consent + code exchange + a working `/api/mcp` session | **Verified** — authorize → consent → token → initialize/tools/resources/prompt |
 | `import_workout` conflict vs. idempotent replay over the real database | **Verified** — `CONFLICT` on changed content, no-op on identical replay |
 | `generate_next_plan` writes nothing | **Verified** — row count unchanged |
-| A real MCP client product (Claude Desktop, Cursor, …) end-to-end | **UNVERIFIED** — the flow was driven by a script, not by a shipping client |
-| The hosted Supabase project with the migration applied + hook enabled | **UNVERIFIED** — round 2 used a local stack; the hosted project has not had the migration applied |
-| Vercel Preview serving `/api/mcp` and the metadata route | **UNVERIFIED** — no preview deployment was exercised |
 
-Round 2 changes what the code can claim, not what has been deployed: the
+**Round 3 — real MCP client, 2026-10-29: the MCP TypeScript SDK's `Client` +
+`StreamableHTTPClientTransport` + `OAuthClientProvider`, against the same live
+stack. 18/18 assertions passed.** This is the code path a conforming client
+runs, not a hand-rolled JSON-RPC loop.
+
+| Claim | Status |
+| --- | --- |
+| The client refuses to connect without authorization and surfaces the MCP OAuth flow | **Verified** — no session opens on the unauthenticated attempt |
+| The client discovers this resource from the 401 challenge and builds a PKCE authorization URL | **Verified** — fetched the Protected Resource Metadata, then the AS metadata |
+| The client binds the authorization request to this resource (RFC 8707 `resource`) | **Verified** — `resource` equals the configured MCP URL |
+| A real PKCE exchange yields a token carrying the hook's claim, with `aud` intact | **Verified** |
+| An authenticated session, then all four tools, both resources, and the prompt over the real client | **Verified** |
+| `import_workout` write, identical replay, analysis, draft plan, and `CONFLICT` through the real client | **Verified** |
+| A shipping desktop MCP client (Claude Desktop, Cursor, …) completing its browser leg | **UNVERIFIED** — Claude Code 2.1.114 was exercised: it detects the endpoint, reads the Protected Resource Metadata and the AS metadata, honours the pre-registered `client_id`, and reports `Needs authentication` rather than failing — but it only starts the OAuth browser leg in an interactive session, so no shipping client completed the redirect in this environment |
+| The hosted Supabase project with the migration applied + hook enabled | **UNVERIFIED** — round 2/3 used a local stack; the hosted project has not had the migration applied (round 1 confirms the table is absent there) |
+| Vercel Preview serving `/api/mcp` and the metadata route | **UNVERIFIED** — the preview is behind Vercel Deployment Protection and no bypass credential was available |
+
+Rounds 2 and 3 change what the code can claim, not what has been deployed: the
 hosted project still needs the migration applied and the hook enabled, which is
 an operator step (see [`deployment.md`](deployment.md)). Do not upgrade the
 three UNVERIFIED rows above without running them.
 
-### Operational findings from round 2
+### Operational findings from the live rounds
 
-Three things that only showed up when the flow was actually executed:
+Things that only showed up when the flow was actually executed:
 
 - **Consent needs the details GET first.** `POST …/consent` requires the
   authorization row to already belong to the caller; `GET …/authorizations/{id}`
@@ -401,6 +419,19 @@ Three things that only showed up when the flow was actually executed:
   `http://client.local/callback` at client registration
   (`invalid redirect_uri … HTTP scheme only allowed for localhost`), which is
   correct behavior and worth knowing before debugging a preview deployment.
+- **Bare GoTrue serves the AS metadata at the origin root, not under the
+  issuer path.** `GET /.well-known/oauth-authorization-server` answers 200 while
+  `/.well-known/oauth-authorization-server/auth/v1` is a 404. Hosted Supabase
+  hides this because its gateway fronts the project origin and serves the
+  issuer-suffixed URL that clients actually request. Anyone standing up a local
+  stack or a proxy must reproduce that aliasing, or client discovery fails with
+  a bare 404 that looks unrelated to the endpoint.
+- **The client's `clientInformation()` is validated strictly.** The MCP SDK's
+  `OAuthClientInformationMixed` accepts `client_id` plus the optional
+  `client_secret`/`id_issued_at` fields only; adding `token_endpoint_auth_method`
+  there (a natural mistake, since the *client metadata* does carry it) fails
+  schema validation with a `ZodError` that names no field. Keep the two shapes
+  distinct.
 
 
 ## Limitations
@@ -417,11 +448,14 @@ Three things that only showed up when the flow was actually executed:
   per request and only ever touches the caller's own cloud rows.
 - Real-host QA (Claude Desktop, Cursor) is outstanding for stdio; verification
   today is the MCP inspector CLI and the `node:test` suite
-  (`tests/mcpServer.test.ts`, `tests/mcpSharedStore.test.ts`). Remote MCP has no
-  shipping-client QA either — it was verified by script against a local stack,
-  not by a real MCP client product.
-- Remote MCP has been verified end-to-end on a **local** GoTrue v2.197.0 +
-  PostgREST stack, including the hook, RLS isolation between two accounts, and
-  the built `/api/mcp` bundle. It has **not** been applied to or exercised on
-  the hosted Supabase project, and no Vercel Preview deployment has served it;
-  those remain operator steps with their own verification checklist.
+  (`tests/mcpServer.test.ts`, `tests/mcpSharedStore.test.ts`). Remote MCP has a
+  real-SDK-client pass (round 3) but still no shipping desktop client
+  completing its browser leg.
+- Remote MCP has been verified end-to-end on a **real local stack**
+  (PostgreSQL 15 + GoTrue v2.197.0 + PostgREST v16.4): the hook, RLS isolation
+  between two accounts, and the built `/api/mcp` bundle, driven by both a
+  scripted client and the MCP SDK client. It has **not** been applied to or
+  exercised on the hosted Supabase project — round 1 confirms the mapping table
+  is absent there — and no Vercel Preview deployment has served it (the preview
+  sits behind Deployment Protection). Those remain operator steps with their
+  own verification checklist.

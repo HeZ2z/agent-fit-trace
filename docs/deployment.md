@@ -196,29 +196,39 @@ or any user workout data.
 Run `pnpm typecheck`, `pnpm test`, and `pnpm build`. Those alone are **not**
 evidence about a live deployment.
 
-A local round of this checklist has been executed (2026-10-30): GoTrue
-v2.197.0 + PostgREST v16.4 against a fresh database with the repo migrations
-applied in order, the hook enabled, and the built `build/server/vercel.mjs`
-driven through `handleVercelApi`. It passed 34/34 assertions, covering: the
-migration applying cleanly, the hook stamping the exact resource, `aud` staying
-`authenticated`, the stamped token still working against `GET /auth/v1/user`
-and PostgREST, a browser token being rejected, real two-account RLS isolation,
-the full PKCE → consent → token → `/api/mcp` session, `import_workout`
+A real local round of this checklist has been executed (2026-10-29):
+PostgreSQL 15 + GoTrue v2.197.0 + PostgREST v16.4 against a fresh database with
+the repo migrations applied in order, the hook enabled, and the built
+`build/server/vercel.mjs` driven through `handleVercelApi`. It passed 30/30
+stack-contract assertions plus 18/18 with the MCP SDK's own client
+(`Client` + `StreamableHTTPClientTransport` + `OAuthClientProvider`), covering:
+all seven migrations applying cleanly, the hook stamping the exact resource,
+`aud` staying `authenticated`, the stamped token still working against
+`GET /auth/v1/user` and PostgREST, a browser token being rejected, real
+two-account RLS isolation, cross-account authorization reads failing closed, the
+full PKCE → consent → token → `/api/mcp` session, `import_workout`
 conflict/idempotency, and a plan draft writing nothing.
 
-What that local run does **not** cover, and still needs a disposable hosted
-project:
+What that run does **not** cover, and still needs a disposable hosted project:
 
-- Apply the migration there, then confirm the hook is listed as enabled.
+- Apply the migration there, then confirm the hook is listed as enabled. A
+  read-only probe of the hosted project on 2026-10-29 shows
+  `public.mcp_oauth_client_resources` absent (`PGRST205`), so this has not
+  happened yet.
 - With a bound client, complete PKCE + consent and confirm the issued token
   contains `fit_trace_mcp_resource` with the exact resource URL, and that `aud`
   is still `authenticated`.
-- Confirm a real MCP client product (not a script) completes discovery, consent,
-  and all four tools.
+- Confirm a shipping desktop MCP client (not a script, not the SDK) completes
+  its browser leg. Claude Code 2.1.114 was exercised locally: it detects the
+  endpoint, reads both discovery documents, honours the pre-registered
+  `client_id`, and reports `Needs authentication` — but it only starts the OAuth
+  browser leg in an interactive session, so that leg was never completed.
 - Confirm Vercel Preview (not just Production) serves `/api/mcp` and the
-  `.well-known` metadata with the configured resource.
+  `.well-known` metadata with the configured resource. The preview in this
+  branch is behind Vercel Deployment Protection and answered `302` to
+  `vercel.com/sso-api` to every unauthenticated probe.
 
-Two constraints found while running it, which apply to any deployment:
+Constraints found while running it, which apply to any deployment:
 
 - **Consent must load details first.** `POST …/authorizations/{id}/consent`
   requires the authorization to already belong to the caller;
@@ -230,6 +240,17 @@ Two constraints found while running it, which apply to any deployment:
   signing"` before any MCP request is made. This resource therefore advertises
   only `email`; enabling `openid` requires asymmetric signing keys (which
   Supabase recommends for OAuth regardless).
+- **The AS metadata lives at the origin root in bare GoTrue.**
+  `/.well-known/oauth-authorization-server` answers 200, while the
+  issuer-suffixed `/.well-known/oauth-authorization-server/auth/v1` is a 404.
+  Hosted Supabase hides this because its gateway serves the suffixed URL on the
+  project origin. If you front GoTrue yourself (a local stack, a proxy, a
+  self-hosted deployment), alias both paths or client discovery dies on a bare
+  404.
+- **Deployment Protection must be considered before testing a preview.** An
+  unauthenticated request to a protected preview never reaches the Function, so
+  a "failing" `/api/mcp` may simply be the Vercel SSO redirect. Use a bypass
+  token for automation, or test against a preview with protection disabled.
 
 ## Durable cloud coaching (server-side slice)
 
