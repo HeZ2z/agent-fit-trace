@@ -344,6 +344,39 @@ export function applyCloudSubpathRewrite(url: URL): boolean {
   return true;
 }
 
+const DATA_ROUTE_QUERY_KEY = "__fit_trace_route";
+const DATA_ROUTES = new Set([
+  "workouts", "analysis", "public-config", "plans/drafts", "imports", "plan-adoption",
+]);
+
+/** Restore only documented data routes when Vercel supplies the rewrite destination. */
+export function applyDataRouteRewrite(
+  url: URL,
+  query?: VercelRequestLike["query"],
+): void {
+  const values = url.searchParams.getAll(DATA_ROUTE_QUERY_KEY);
+  const queryValue = query?.[DATA_ROUTE_QUERY_KEY];
+  if (values.length === 0 && typeof queryValue === "string") values.push(queryValue);
+  else if (values.length === 0 && Array.isArray(queryValue)) values.push(...queryValue);
+  url.searchParams.delete(DATA_ROUTE_QUERY_KEY);
+
+  // When Vercel preserves the original URL it is authoritative. In particular,
+  // a client-supplied marker must never override a real route.
+  if (url.pathname !== "/api/v1/router" || values.length !== 1) return;
+  const value = values[0];
+  const dynamic = /^(imports|import-selections)\/([^/]+)$/.exec(value);
+  if (!DATA_ROUTES.has(value) && dynamic === null) return;
+  if (dynamic !== null) {
+    try {
+      const segment = decodeURIComponent(dynamic[2]);
+      if (segment === "." || segment === ".." || /[/\\]/.test(segment)) return;
+    } catch {
+      return;
+    }
+  }
+  url.pathname = `/api/v1/${value}`;
+}
+
 /** Route one Vercel request through the shared authenticated handler. */
 export async function handleVercelApi(
   request: VercelRequestLike,
@@ -416,6 +449,7 @@ export async function handleVercelApi(
 
   // Strip the `/api/v1` mount prefix so the shared handlers see bare routes.
   const url = new URL(rawUrl, "http://fit-trace.invalid");
+  applyDataRouteRewrite(url, query);
   // Vercel rewrites the two multi-segment cloud run subpaths to the nearest
   // single-segment Function; restore the documented path before routing.
   applyCloudSubpathRewrite(url);
