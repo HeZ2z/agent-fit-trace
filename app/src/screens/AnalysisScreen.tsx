@@ -65,11 +65,6 @@ export function AnalysisScreen() {
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{t("Progress Analysis")}</h1>
-          <p className="screen-lede">
-            {t(
-              "Deterministic metrics, exercise trends and safety flags computed from the same records every time. No model call is involved.",
-            )}
-          </p>
         </div>
         <p className="screen-actions">
           <Link className="btn-ghost" to="/me">

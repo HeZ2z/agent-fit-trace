@@ -51,11 +51,6 @@ export function HistoryScreen() {
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{t("Workout History")}</h1>
-          <p className="screen-lede">
-            {t(
-              "Append-only training records, newest first. Open a session for its metrics and safety review.",
-            )}
-          </p>
         </div>
         <p className="screen-actions">
           <Link className="btn-ghost" to="/me">

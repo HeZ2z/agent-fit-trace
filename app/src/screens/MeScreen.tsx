@@ -673,7 +673,7 @@ export function MeScreen() {
         ) : (
           <p data-testid="me-account-identity">{t("Local session (no signed-in account).")}</p>
         )}
-        {user?.isAnonymous === true && (
+        {user?.isAnonymous === true && !daemonLocal && (
           <p className="me-help">
             {t(
               "This guest keeps data under its guest identity. Another device can recover it only after the same guest is upgraded to a permanent account; signing in as a different account never merges it.",

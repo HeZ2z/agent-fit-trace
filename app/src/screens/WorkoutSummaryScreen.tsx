@@ -175,13 +175,6 @@ export function WorkoutSummaryScreen() {
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{notFound ? t("Workout not found") : t("Workout Summary")}</h1>
-          {!notFound && (
-            <p className="screen-lede">
-              {t(
-                "One stored session: sets, computed metrics and any safety flags that apply to it.",
-              )}
-            </p>
-          )}
         </div>
       </div>
       {renderBody()}
