@@ -52,11 +52,6 @@ export function HistoryScreen() {
         <div className="screen-head-main">
           <h1>{t("Workout History")}</h1>
         </div>
-        <p className="screen-actions">
-          <Link className="btn-ghost" to="/me">
-            {t("Manage imports and exports")}
-          </Link>
-        </p>
       </div>
 
       {status === "loading" && <p role="status">{t("Loading workout history…")}</p>}

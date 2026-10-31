@@ -141,7 +141,9 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     expect(await screen.findByRole("heading", { name: /analysis/i })).toBeInTheDocument();
     expect(state.guestSignupCalls).toBe(1);
 
-    // Guest sign-out is a two-step, explicit destructive action.
+    // Account actions live on Me; guest sign-out remains a two-step,
+    // explicit destructive action there.
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
     await user.click(await screen.findByRole("button", { name: /sign out guest/i }));
     expect(screen.getByText(/may be lost and cannot be guaranteed recoverable/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /sign out and lose guest access/i }));
@@ -162,10 +164,9 @@ describe("guest and deep-link gates (HTTP mode)", () => {
     await user.click(guestButton);
     expect(await screen.findByRole("heading", { level: 1, name: /^training plan$/i })).toBeInTheDocument();
 
-    // The compact header only points at /me. The switch lives once, in the
-    // shared full control on the Me page.
+    // Account switching is available on the Me page, not in the header.
     expect(screen.queryByRole("button", { name: /sign in to an existing account/i })).toBeNull();
-    await user.click(screen.getByRole("link", { name: /account details/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
     expect(await screen.findByRole("heading", { name: /^me$/i })).toBeInTheDocument();
     await user.click(screen.getByText(/upgrade to an account/i));
     expect(screen.getByText(/upgrade to an account/i)).toBeInTheDocument();

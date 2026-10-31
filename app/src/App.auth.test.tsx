@@ -239,8 +239,10 @@ describe("App auth integration (HTTP mode)", () => {
     expect(screen.queryByText(/2026-10-02/)).not.toBeInTheDocument();
     const token = state.apiCalls[0]?.authorization;
     expect(token).toMatch(/^Bearer access-user-a-/);
+    expect(screen.queryByRole("button", { name: /^sign out$/i })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /sign out/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
     // No protected content and no stored token linger after logout.
     expect(screen.queryByText(/2026-09-01/)).not.toBeInTheDocument();
@@ -259,7 +261,8 @@ describe("App auth integration (HTTP mode)", () => {
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
     expect(await screen.findByText(/2026-09-01/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /sign out/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Email"), "b@example.com");

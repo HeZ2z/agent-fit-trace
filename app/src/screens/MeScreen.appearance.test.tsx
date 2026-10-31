@@ -1,13 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../auth/AuthContext.tsx";
 import { MemoryStorageAdapter } from "../storage/adapter.ts";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
 import { clientFor } from "../test/asyncClient.ts";
 import { THEME_STORAGE_KEY } from "../theme/theme.ts";
 import { MeScreen } from "./MeScreen.tsx";
+
+vi.mock("../coaching/useCoach.ts", () => ({ useCoach: () => ({ teardown: vi.fn() }) }));
 
 function renderMe() {
   return render(

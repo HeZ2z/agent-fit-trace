@@ -349,11 +349,6 @@ export function PlanScreen() {
         <div className="screen-head-main">
           <h1>{t("Training Plan")}</h1>
         </div>
-        <p className="screen-actions">
-          <Link className="btn-ghost" to="/me">
-            {t("Manage imports and exports")}
-          </Link>
-        </p>
       </div>
 
       {historyStatus === "error" ? (

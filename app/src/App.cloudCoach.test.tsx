@@ -754,7 +754,8 @@ describe("browser coach backend selection", () => {
     await user.selectOptions(await screen.findByTestId("coach-backend-select"), "cloud-default");
     expect(window.localStorage.getItem("fit-trace.coach.backend.v1:user-a")).toBe("cloud-default");
 
-    await user.click(screen.getByRole("button", { name: /^sign out$/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
     expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
 
     await signIn(user, FORMAL_B);

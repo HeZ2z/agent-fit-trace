@@ -358,7 +358,7 @@ describe("Coach route gating", () => {
     const { unmount } = render(
       <App client={new FakeFitTraceClient({ records: [] })} legacyLoopback />,
     );
-    expect(screen.getByText("agent-fit-trace")).toBeInTheDocument();
+    expect(screen.getAllByText("FIT TRACE")).not.toHaveLength(0);
     expect(screen.queryByRole("link", { name: /^coach$/i })).not.toBeInTheDocument();
     unmount();
 

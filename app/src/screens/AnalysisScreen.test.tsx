@@ -152,10 +152,7 @@ describe("AnalysisScreen", () => {
       "href",
       "/workout/new",
     );
-    expect(screen.getByRole("link", { name: /manage imports and exports/i })).toHaveAttribute(
-      "href",
-      "/me",
-    );
+    expect(screen.queryByRole("link", { name: /manage imports and exports/i })).toBeNull();
   });
 
   it("renders metrics from local records with no independent file input", async () => {

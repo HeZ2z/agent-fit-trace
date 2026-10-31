@@ -1,3 +1,4 @@
+import { AccountSignOut } from "../auth/AccountSignOut.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
@@ -653,7 +654,7 @@ export function MeScreen() {
           </p>
         )}
         <GuestUpgradePasswordNotice />
-        {user?.isAnonymous === true && <GuestAccountControls />}
+        {user?.isAnonymous === true ? <GuestAccountControls /> : <AccountSignOut />}
       </section>
 
       <section className="me-section" aria-labelledby="me-export">

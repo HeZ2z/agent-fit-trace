@@ -66,11 +66,6 @@ export function AnalysisScreen() {
         <div className="screen-head-main">
           <h1>{t("Progress Analysis")}</h1>
         </div>
-        <p className="screen-actions">
-          <Link className="btn-ghost" to="/me">
-            {t("Manage imports and exports")}
-          </Link>
-        </p>
       </div>
 
       {historyStatus === "error" ? (

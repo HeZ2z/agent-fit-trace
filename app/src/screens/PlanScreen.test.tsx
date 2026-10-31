@@ -136,10 +136,7 @@ describe("PlanScreen", () => {
     expect(await screen.findByTestId("plan-status")).toHaveTextContent(/draft/i);
     expect(screen.queryByText(/rule-based next-session draft/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("plan-source")).toHaveTextContent(/current computed/i);
-    expect(screen.getByRole("link", { name: /manage imports and exports/i })).toHaveAttribute(
-      "href",
-      "/me",
-    );
+    expect(screen.queryByRole("link", { name: /manage imports and exports/i })).toBeNull();
     const recommendations = container.querySelectorAll("[data-recommendation-action]");
     expect(recommendations.length).toBeGreaterThan(0);
     expect(screen.queryByLabelText(/import plan\.json/i)).not.toBeInTheDocument();

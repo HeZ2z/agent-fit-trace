@@ -228,7 +228,7 @@ describe("app guest-local daemon mode", () => {
     // The Me page reflects the truthful local-guest state: no sign-out, no
     // upgrade, no account switch — the daemon guest store is machine-local.
     const user = userEvent.setup();
-    await user.click(screen.getByRole("link", { name: /account details/i }));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
     expect(await screen.findByRole("heading", { name: /^me$/i })).toBeInTheDocument();
     expect(screen.getByText(/local guest on this machine's daemon/i)).toBeInTheDocument();
     expect(screen.queryByText(/another device can recover it only/i)).toBeNull();

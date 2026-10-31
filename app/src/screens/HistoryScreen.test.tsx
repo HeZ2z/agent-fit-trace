@@ -135,14 +135,11 @@ describe("HistoryScreen", () => {
     expect(await screen.findByText(/avg RPE n\/a/)).toBeInTheDocument();
   });
 
-  it("links to the Me page and has no independent export action", async () => {
+  it("keeps history free of import and export actions", async () => {
     renderHistoryOver(new MemoryStorageAdapter());
     await screen.findByText(/no workouts yet/i);
 
-    expect(screen.getByRole("link", { name: /manage imports and exports/i })).toHaveAttribute(
-      "href",
-      "/me",
-    );
+    expect(screen.queryByRole("link", { name: /manage imports and exports/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /export workouts/i })).not.toBeInTheDocument();
     expect(document.querySelector('input[type="file"]')).toBeNull();
   });
