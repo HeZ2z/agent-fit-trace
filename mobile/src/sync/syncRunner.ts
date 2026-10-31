@@ -1,5 +1,5 @@
 /**
- * One manual workout sync run.
+ * One workout sync run shared by manual and automatic triggers.
  *
  * Sequence: gate on a signed-in token and a configured client, read both
  * sides, compute the pure plan, insert remote-only records locally, then push
@@ -57,6 +57,14 @@ export interface SyncRunRepository {
   listUploadCandidates?(scope: SyncScope): Promise<WorkoutRecord[]>;
   isSyncEnabled?(scope: SyncScope): Promise<boolean>;
   markUploadComplete?(scope: SyncScope, workoutId: string): Promise<void>;
+  scheduleUploadRetry?(scope: SyncScope, workoutId: string): Promise<void>;
+  listConflictAcknowledgements?(scope: SyncScope): Promise<readonly {
+    workoutId: string;
+    localFingerprint: string;
+    remoteFingerprint: string;
+  }[]>;
+  recordSuccessfulReconciliation?(scope: SyncScope): Promise<void>;
+  getSyncStatus?(scope: SyncScope): Promise<{ pendingCount: number; lastSuccessAt: string | null }>;
   acquireSyncLease?(scope: SyncScope, owner: string, now: Date, ttlMs?: number): Promise<SyncLease | null>;
   renewSyncLease?(scope: SyncScope, now: Date, ttlMs?: number): Promise<boolean>;
   isSyncLeaseCurrent?(scope: SyncScope, now: Date): Promise<boolean>;
@@ -104,6 +112,8 @@ export interface SyncRunAccount {
   readonly userId: string | null | undefined;
   /** Access token; missing/blank fails closed before any read. */
   readonly accessToken: string | null | undefined;
+  /** Durable auth epoch when available; sign-out revokes even same-user runs. */
+  readonly authGeneration?: number;
 }
 
 function hasAccessToken(token: string | null | undefined): token is string {
@@ -122,7 +132,8 @@ function hasAccountId(id: string | null | undefined): id is string {
  * the client for the rest of the run.
  */
 function sameAccount(pinned: SyncRunAccount, current: SyncRunAccount): boolean {
-  return hasAccountId(pinned.userId) && current.userId === pinned.userId;
+  return hasAccountId(pinned.userId) && current.userId === pinned.userId &&
+    (pinned.authGeneration === undefined || current.authGeneration === pinned.authGeneration);
 }
 
 /**
@@ -175,13 +186,14 @@ function sameRecord(a: WorkoutRecord, b: WorkoutRecord): boolean {
  * identical is a race, not a conflict.
  */
 async function collectPushConflicts(
-  client: SyncRunRemoteClient,
+  options: RunWorkoutSyncOptions,
+  scope: SyncScope,
   localOnly: readonly WorkoutRecord[],
   state: SyncRunAccumulator,
 ): Promise<SyncRunAccumulator> {
   let refreshed: WorkoutRecord[];
   try {
-    refreshed = await client.listRemoteWorkouts();
+    refreshed = await options.client.listRemoteWorkouts();
   } catch (error) {
     return recordSyncFailure(state, classifySyncFailure(error));
   }
@@ -201,6 +213,21 @@ async function collectPushConflicts(
       continue;
     }
     if (sameRecord(localRecord, remoteRecord)) {
+      const stopped = await stopIfAccountChanged(options, next);
+      if (stopped !== null) {
+        next = stopped;
+        continue;
+      }
+      try {
+        if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+          next = recordSyncFailure(next, "auth");
+          continue;
+        }
+        await options.repository.markUploadComplete?.(scope, localRecord.id);
+      } catch {
+        next = recordSyncFailure(next, "other");
+        continue;
+      }
       next = recordPushedRecord(next);
       continue;
     }
@@ -214,7 +241,7 @@ async function collectPushConflicts(
 }
 
 /**
- * Run one optional, user-initiated sync.
+ * Run one optional sync after consent and current identity have been verified.
  *
  * Returns a structured result for every expected outcome and never throws for
  * a network/storage/conflict failure. Preflight aborts perform no reads and no
@@ -248,26 +275,41 @@ async function runWorkoutSyncUnderLease(
   }
 
   let local: WorkoutRecord[];
-  let remote: WorkoutRecord[];
+  let candidates: WorkoutRecord[];
   try {
-    [local, remote] = await Promise.all([
+    [local, candidates] = await Promise.all([
       options.repository.listSyncWorkouts === undefined
         ? options.repository.listWorkouts()
         : options.repository.listSyncWorkouts(scope),
-      options.client.listRemoteWorkouts(),
+      options.repository.listUploadCandidates === undefined
+        ? Promise.resolve([])
+        : options.repository.listUploadCandidates(scope),
     ]);
   } catch (error) {
-    // Both reads start together, but neither has written anything yet.
     return abortForFailure(classifySyncFailure(error));
   }
 
-  let candidates: WorkoutRecord[];
+  let remote: WorkoutRecord[];
   try {
-    candidates = options.repository.listUploadCandidates === undefined
-      ? local
-      : await options.repository.listUploadCandidates(scope);
+    remote = await options.client.listRemoteWorkouts();
   } catch (error) {
-    return abortForFailure(classifySyncFailure(error));
+    const failure = classifySyncFailure(error);
+    if (failure === "offline" || isRetryableSyncFailure(error)) {
+      const emptyState = beginSyncRun(planSync([], []));
+      for (const candidate of candidates) {
+        const stopped = await stopIfAccountChanged(options, emptyState);
+        if (stopped !== null) break;
+        try {
+          if (options.repository.isSyncEnabled === undefined || await options.repository.isSyncEnabled(scope)) {
+            await options.repository.scheduleUploadRetry?.(scope, candidate.id);
+          } else break;
+        } catch {
+          // A pending item remains safe for a later foreground/background run.
+          break;
+        }
+      }
+    }
+    return abortForFailure(failure);
   }
 
   let plan: SyncPlan;
@@ -280,6 +322,17 @@ async function runWorkoutSyncUnderLease(
       ...fullPlan,
       toPush: candidatePlan.toPush,
       summary: { ...fullPlan.summary, toPush: candidatePlan.toPush.length },
+    };
+    const acknowledgements = await options.repository.listConflictAcknowledgements?.(scope) ?? [];
+    const acknowledged = new Set(acknowledgements.map((entry) =>
+      `${entry.workoutId}\u0000${entry.localFingerprint}\u0000${entry.remoteFingerprint}`));
+    const unresolvedConflicts = plan.conflicts.filter((conflict) => !acknowledged.has(
+      `${conflict.id}\u0000${stableStringify(conflict.local)}\u0000${stableStringify(conflict.remote)}`,
+    ));
+    plan = {
+      ...plan,
+      conflicts: unresolvedConflicts,
+      summary: { ...plan.summary, conflicts: unresolvedConflicts.length },
     };
   } catch {
     // Inconsistent input lists are a data-integrity problem, not a network one.
@@ -295,7 +348,11 @@ async function runWorkoutSyncUnderLease(
     if (stopped !== null) return completeSyncRun(stopped);
     try {
       await options.repository.saveWorkout(record, { origin: "remote", scope });
-      await options.repository.linkRemoteMembership?.(scope, record);
+      if (options.repository.linkRemoteMembership !== undefined) {
+        const membershipWrite = await stopIfAccountChanged(options, state);
+        if (membershipWrite !== null) return completeSyncRun(membershipWrite);
+        await options.repository.linkRemoteMembership(scope, record);
+      }
       state = recordPulledRecord(state);
     } catch (error) {
       if (classifySyncFailure(error) !== "conflict") {
@@ -313,7 +370,11 @@ async function runWorkoutSyncUnderLease(
         return completeSyncRun(state);
       }
       if (sameRecord(existing, record)) {
-        await options.repository.linkRemoteMembership?.(scope, record);
+        if (options.repository.linkRemoteMembership !== undefined) {
+          const membershipWrite = await stopIfAccountChanged(options, state);
+          if (membershipWrite !== null) return completeSyncRun(membershipWrite);
+          await options.repository.linkRemoteMembership(scope, record);
+        }
         state = recordPulledRecord(state);
         continue;
       }
@@ -322,6 +383,26 @@ async function runWorkoutSyncUnderLease(
         local: existing,
         remote: record,
       });
+    }
+  }
+
+  // A prior create may have reached the server while its response was lost.
+  // On the next reconciliation the record is already present remotely, so it
+  // is absent from `toPush`; nevertheless its durable outbox item must be
+  // completed or the queue will remain pending forever.
+  const remoteById = new Map(remote.map((record) => [record.id, record]));
+  for (const candidate of candidates) {
+    const remoteRecord = remoteById.get(candidate.id);
+    if (remoteRecord === undefined || !sameRecord(candidate, remoteRecord)) continue;
+    const stopped = await stopIfAccountChanged(options, state);
+    if (stopped !== null) return completeSyncRun(stopped);
+    try {
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        return completeSyncRun(recordSyncFailure(state, "auth"));
+      }
+      await options.repository.markUploadComplete?.(scope, candidate.id);
+    } catch {
+      return completeSyncRun(recordSyncFailure(state, "other"));
     }
   }
 
@@ -347,6 +428,15 @@ async function runWorkoutSyncUnderLease(
     }
     try {
       await options.client.createRemoteWorkout(record);
+      const completionWrite = await stopIfAccountChanged(options, state);
+      if (completionWrite !== null) {
+        state = completionWrite;
+        break;
+      }
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        state = recordSyncFailure(state, "auth");
+        break;
+      }
       await options.repository.markUploadComplete?.(scope, record.id);
       state = recordPushedRecord(state);
     } catch (error) {
@@ -354,16 +444,57 @@ async function runWorkoutSyncUnderLease(
         pushConflicts.push(record);
         continue;
       }
-      state = recordSyncFailure(state, classifySyncFailure(error));
+      const failure = classifySyncFailure(error);
+      if (failure === "offline" || isRetryableSyncFailure(error)) {
+        const retryWrite = await stopIfAccountChanged(options, state);
+        if (retryWrite !== null) {
+          state = retryWrite;
+          break;
+        }
+        try {
+          if (options.repository.isSyncEnabled === undefined || await options.repository.isSyncEnabled(scope)) {
+            await options.repository.scheduleUploadRetry?.(scope, record.id);
+          } else {
+            state = recordSyncFailure(state, "auth");
+            break;
+          }
+        } catch {
+          // The queue remains pending and is safe to retry on the next run.
+        }
+      }
+      state = recordSyncFailure(state, failure);
       break;
     }
   }
 
   if (pushConflicts.length > 0) {
-    state = await collectPushConflicts(options.client, pushConflicts, state);
+    state = await collectPushConflicts(options, scope, pushConflicts, state);
   }
 
-  return completeSyncRun(state);
+  const result = completeSyncRun(state);
+  if (result.status === "done" && result.conflicts.length === 0) {
+    const stopped = await stopIfAccountChanged(options, state);
+    if (stopped !== null) return completeSyncRun(stopped);
+    try {
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        return completeSyncRun(recordSyncFailure(state, "auth"));
+      }
+      const queueStatus = await options.repository.getSyncStatus?.(scope);
+      if (queueStatus === undefined || queueStatus.pendingCount === 0) {
+        await options.repository.recordSuccessfulReconciliation?.(scope);
+      }
+    } catch {
+      // Network reconciliation remains complete; failure to persist the status
+      // cannot turn that result into a claim of a newer durable timestamp.
+    }
+  }
+  return result;
+}
+
+function isRetryableSyncFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" && (status === 408 || status === 425 || status === 429 || status >= 500);
 }
 
 /** Serialize independent JS runtimes and fence every sync-owned local write. */

@@ -1,5 +1,5 @@
 /**
- * Pure apply/result model for one manual workout sync run.
+ * Pure apply/result model for one workout sync run.
  *
  * The runner owns network and SQLite I/O; this module owns what a completed
  * step means: how plan results become run counts, how a newly discovered
@@ -199,9 +199,9 @@ export function decideSyncConflict(action: SyncConflictAction): SyncConflictDeci
 /**
  * Drop one acknowledged conflict from the current result only.
  *
- * Persistence is deliberately absent: the local record stays immutable, so the
- * next manual sync plans the same conflict again. An unknown or already
- * acknowledged id returns the same result object.
+ * Persistence is deliberately absent: the caller stores the fingerprinted
+ * choice separately. An unknown or already acknowledged id returns the same
+ * result object.
  */
 export function acknowledgeSyncConflict(result: SyncRunResult, id: string): SyncRunResult {
   const conflicts = result.conflicts.filter((conflict) => conflict.id !== id);

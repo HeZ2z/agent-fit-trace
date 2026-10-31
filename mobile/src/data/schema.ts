@@ -172,6 +172,14 @@ export const WORKOUTS_MIGRATIONS: readonly WorkoutMigration[] = [
     version: 7,
     statements: [SYNC_LEASE_TABLE_SQL],
   },
+  {
+    version: 8,
+    statements: [
+      `INSERT INTO sync_outbox (workout_id, state, updated_at)
+       SELECT w.id, 'unassigned', w.created_at FROM workouts w
+       WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.workout_id = w.id);`,
+    ],
+  },
 ];
 
 /** Highest migration version understood by this build. */

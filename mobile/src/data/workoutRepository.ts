@@ -204,6 +204,8 @@ export class WorkoutRepository {
            SELECT ?, ?, ?, ?, ? WHERE EXISTS (
              SELECT 1 FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ?
                AND generation = ? AND expires_at > ?
+           ) AND EXISTS (
+             SELECT 1 FROM sync_consent WHERE account_id = ? AND endpoint = ? AND enabled = 1
            ) ON CONFLICT(account_id, endpoint, workout_id) DO UPDATE SET
              fingerprint = excluded.fingerprint, pulled_at = excluded.pulled_at`
         : `INSERT INTO sync_remote_membership (account_id, endpoint, workout_id, fingerprint, pulled_at)
@@ -211,7 +213,8 @@ export class WorkoutRepository {
              fingerprint = excluded.fingerprint, pulled_at = excluded.pulled_at`,
       ...(fenced
         ? [scope.accountId, scope.endpoint, record.id, stableStringify(record), now,
-            scope.accountId, scope.endpoint, scope.leaseOwner!, scope.leaseGeneration!, now]
+            scope.accountId, scope.endpoint, scope.leaseOwner!, scope.leaseGeneration!, now,
+            scope.accountId, scope.endpoint]
         : [scope.accountId, scope.endpoint, record.id, stableStringify(record), now]),
     );
     if (fenced && result.changes !== 1) throw new Error("Sync lease expired before remote membership was stored.");
@@ -251,6 +254,8 @@ export class WorkoutRepository {
            SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (
              SELECT 1 FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ?
                AND generation = ? AND expires_at > ?
+             ) AND EXISTS (
+               SELECT 1 FROM sync_consent WHERE account_id = ? AND endpoint = ? AND enabled = 1
            ) ON CONFLICT(id) DO NOTHING;`
         : INSERT_WORKOUT_SQL;
       const values: (string | number)[] = [
@@ -263,7 +268,8 @@ export class WorkoutRepository {
         origin,
       ];
       if (fenced && scope !== undefined) {
-        values.push(scope.accountId, scope.endpoint, scope.leaseOwner!, scope.leaseGeneration!, this.now().toISOString());
+        values.push(scope.accountId, scope.endpoint, scope.leaseOwner!, scope.leaseGeneration!, this.now().toISOString(),
+          scope.accountId, scope.endpoint);
       }
       const result = await this.database.runAsync(insertSql, values);
       inserted = result.changes > 0;
@@ -374,12 +380,27 @@ export class WorkoutRepository {
 
   async recordSuccessfulReconciliation(scope: SyncScope): Promise<void> {
     const timestamp = this.now().toISOString();
-    await this.database.runAsync(
-      `INSERT INTO sync_status (account_id, endpoint, last_success_at, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(account_id, endpoint) DO UPDATE SET last_success_at = excluded.last_success_at,
-         updated_at = excluded.updated_at`,
-      scope.accountId, scope.endpoint, timestamp, timestamp,
+    const fenced = scope.leaseOwner !== undefined && scope.leaseGeneration !== undefined;
+    const result = await this.database.runAsync(
+      fenced
+        ? `INSERT INTO sync_status (account_id, endpoint, last_success_at, updated_at)
+           SELECT ?, ?, ?, ? WHERE EXISTS (
+             SELECT 1 FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ?
+               AND generation = ? AND expires_at > ?
+           ) AND EXISTS (
+             SELECT 1 FROM sync_consent WHERE account_id = ? AND endpoint = ? AND enabled = 1
+           ) ON CONFLICT(account_id, endpoint) DO UPDATE SET last_success_at = excluded.last_success_at,
+             updated_at = excluded.updated_at`
+        : `INSERT INTO sync_status (account_id, endpoint, last_success_at, updated_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(account_id, endpoint) DO UPDATE SET last_success_at = excluded.last_success_at,
+             updated_at = excluded.updated_at`,
+      ...(fenced
+        ? [scope.accountId, scope.endpoint, timestamp, timestamp,
+          scope.accountId, scope.endpoint, scope.leaseOwner!, scope.leaseGeneration!, timestamp,
+          scope.accountId, scope.endpoint]
+        : [scope.accountId, scope.endpoint, timestamp, timestamp]),
     );
+    if (fenced && result.changes !== 1) throw new Error("Sync lease or consent expired before reconciliation status was stored.");
   }
 
   async markUploadComplete(scope: SyncScope, workoutId: string): Promise<void> {
@@ -391,12 +412,14 @@ export class WorkoutRepository {
            WHERE workout_id = ? AND account_id = ? AND endpoint = ? AND EXISTS (
              SELECT 1 FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ?
                AND generation = ? AND expires_at > ?
+           ) AND EXISTS (
+             SELECT 1 FROM sync_consent WHERE account_id = ? AND endpoint = ? AND enabled = 1
            )`
         : `UPDATE sync_outbox SET state = 'complete', last_error = NULL, next_attempt_at = NULL, updated_at = ?
            WHERE workout_id = ? AND account_id = ? AND endpoint = ?`,
       ...(fenced
         ? [now, workoutId, scope.accountId, scope.endpoint, scope.accountId, scope.endpoint,
-            scope.leaseOwner!, scope.leaseGeneration!, now]
+            scope.leaseOwner!, scope.leaseGeneration!, now, scope.accountId, scope.endpoint]
         : [now, workoutId, scope.accountId, scope.endpoint]),
     );
     if (fenced && result.changes !== 1) throw new Error("Sync lease expired before upload completion was stored.");
@@ -413,13 +436,34 @@ export class WorkoutRepository {
   async scheduleUploadRetry(
     scope: SyncScope,
     workoutId: string,
-    nextAttemptAt: string,
   ): Promise<void> {
-    await this.database.runAsync(
-      `UPDATE sync_outbox SET state = 'retry', attempts = attempts + 1, next_attempt_at = ?,
-       last_error = 'retryable', updated_at = ? WHERE workout_id = ? AND account_id = ? AND endpoint = ?`,
-      nextAttemptAt, this.now().toISOString(), workoutId, scope.accountId, scope.endpoint,
+    const now = this.now();
+    const row = await this.database.getFirstAsync<{ attempts: number }>(
+      `SELECT attempts FROM sync_outbox WHERE workout_id = ? AND account_id = ? AND endpoint = ? LIMIT 1`,
+      workoutId, scope.accountId, scope.endpoint,
     );
+    if (row === null) return;
+    const delayMs = Math.min(6 * 60 * 60_000, 30_000 * 2 ** Math.min(row.attempts, 10));
+    const jitteredDelay = Math.round(delayMs * (0.8 + Math.random() * 0.4));
+    const nextAttemptAt = new Date(now.getTime() + jitteredDelay).toISOString();
+    const fenced = scope.leaseOwner !== undefined && scope.leaseGeneration !== undefined;
+    const result = await this.database.runAsync(
+      fenced
+        ? `UPDATE sync_outbox SET state = 'retry', attempts = attempts + 1, next_attempt_at = ?,
+           last_error = 'retryable', updated_at = ? WHERE workout_id = ? AND account_id = ? AND endpoint = ?
+           AND EXISTS (SELECT 1 FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ?
+             AND generation = ? AND expires_at > ?) AND EXISTS (
+               SELECT 1 FROM sync_consent WHERE account_id = ? AND endpoint = ? AND enabled = 1
+             )`
+        : `UPDATE sync_outbox SET state = 'retry', attempts = attempts + 1, next_attempt_at = ?,
+           last_error = 'retryable', updated_at = ? WHERE workout_id = ? AND account_id = ? AND endpoint = ?`,
+      ...(fenced
+        ? [nextAttemptAt, now.toISOString(), workoutId, scope.accountId, scope.endpoint,
+          scope.accountId, scope.endpoint, scope.leaseOwner!, scope.leaseGeneration!, now.toISOString(),
+          scope.accountId, scope.endpoint]
+        : [nextAttemptAt, now.toISOString(), workoutId, scope.accountId, scope.endpoint]),
+    );
+    if (fenced && result.changes !== 1) throw new Error("Sync lease expired before upload retry was stored.");
   }
 
   async listConflictAcknowledgements(scope: SyncScope): Promise<SyncConflictAcknowledgement[]> {
