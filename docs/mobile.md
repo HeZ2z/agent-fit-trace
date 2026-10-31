@@ -23,9 +23,9 @@ not written. Android is the only configured native target.
 | Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, compact per-set rows (set number, kg, reps, RPE, completion check), per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
 | Account preferences | Skin and language mirrored to Supabase `user_metadata`; account wins on sign-in; write-through while signed in | — |
-| Sync | Account/endpoint consent, durable upload outbox, remote provenance, fingerprinted conflict choices and manual pull/push | Background/reconnect coordinator, fenced lease, headless auth recovery and native scheduler verification |
+| Sync | Account/endpoint consent, durable upload outbox, remote provenance, fingerprinted conflict choices, manual pull/push, foreground/reconnect triggers, fenced lease, headless auth recovery and Expo background-task registration | Native scheduler registration and end-to-end headless execution verification |
 | Hosted coach | Signed-in hosted coaching with session/snapshot/run flow, SSE, cancel and mapped errors | — |
-| Notifications | None; coaching and sync are foreground-only. Rest cues are best-effort haptics/audio while the app is open, with no background service | Push notifications |
+| Notifications | No push notifications; rest cues are best-effort haptics/audio while the app is open. Sync can be scheduled through Android WorkManager | Push notifications; reliable or immediate background delivery |
 | Platforms | Android-first; EAS preview APK and linked Expo project | iOS build and device verification |
 | Quality gates | Ten mobile `node:test` suites (141 tests), mobile typecheck and Android export pass locally | Mobile typecheck/export in CI |
 
@@ -772,11 +772,24 @@ checks.
 - **Background sync is best effort.** Android emulator export does not prove
   WorkManager delivery after force-stop or under battery restrictions. The OS
   may defer background work. The coach stream remains foreground-only.
-- **Background task native execution is unverified for this change.** An API 35
-  emulator was available over SSH, but it had no Fit Trace or Expo Go package
-  installed and its host exposes `adb` without Node, pnpm or Gradle. The JS
-  export and Expo prebuild configuration resolve; a native dev build and actual
-  scheduled task run still need verification.
+- **Android release startup fix is verified; background sync is not.** The first
+  R8-minified EAS APK (`be6b809f-bb45-441f-9abf-c8314f776f9c`) crashed during
+  WorkManager initialization because R8 removed reflectively-created Room and
+  WorkManager constructors. The follow-up APK (`410eba52-1c20-4811-ab8a-0e9d25f07070`)
+  includes explicit keep rules and launched on an Android API 35 emulator; the
+  foreground activity was `MainActivity`, WorkManager initialized, and no
+  `AndroidRuntime` error was logged. Its manifest contains the WorkManager and
+  Expo task services/receiver. This verifies startup and native component
+  packaging only: no signed-in account was used, no task was registered or
+  dispatched, and workout upload/retry behavior was not exercised on the emulator.
+- **Isolated native sync verification is pending.** A follow-up EAS build with a
+  unique test package and dummy loopback-only auth/API configuration was
+  uploaded from a temporary source export, but EAS refused to start the build
+  because the account had exhausted its free Android build quota (reset shown
+  as 2026-11-01). No fixture APK was produced. WorkManager registration,
+  headless auth recovery, workout upload, retry and backoff therefore remain
+  unverified on a native runtime; automated tests exercise model/runner behavior
+  with injected dependencies, but do not cover OS task dispatch.
 - **No email verification or reset deep links.** Email confirmation and password
   recovery have no in-app or deep-link flow yet.
 - **Mobile CI is partial.** The pure mobile model suites run in root CI, but
