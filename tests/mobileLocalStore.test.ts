@@ -90,6 +90,7 @@ test("toWorkoutRow and fromWorkoutRow preserve the canonical record", () => {
     session_type: "strength",
     payload: encodeWorkoutPayload(input),
     created_at: CREATED_AT,
+    origin: "local",
   });
   assert.deepEqual(fromWorkoutRow(row), input);
   assert.deepEqual(toWorkoutRow(input, CREATED_AT), row);

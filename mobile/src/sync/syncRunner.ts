@@ -1,5 +1,5 @@
 /**
- * One manual workout sync run.
+ * One workout sync run shared by manual and automatic triggers.
  *
  * Sequence: gate on a signed-in token and a configured client, read both
  * sides, compute the pure plan, insert remote-only records locally, then push
@@ -38,6 +38,8 @@ import {
 import { classifySyncFailure, planSync } from "./syncModel.ts";
 import type { SyncFailureKind, SyncPlan } from "./syncModel.ts";
 import type { SyncConfig } from "./syncConfig.ts";
+import type { SyncScope } from "../data/schema.ts";
+import type { SyncLease } from "../data/schema.ts";
 
 /** Outcome of one cloud create; mirrors the client without importing Expo. */
 export type SyncRemoteCreateOutcome = "created" | "duplicate";
@@ -45,8 +47,35 @@ export type SyncRemoteCreateOutcome = "created" | "duplicate";
 /** The subset of `WorkoutRepository` the runner needs. */
 export interface SyncRunRepository {
   listWorkouts(): Promise<WorkoutRecord[]>;
-  saveWorkout(record: WorkoutRecord): Promise<{ created: boolean }>;
+  listSyncWorkouts?(scope: SyncScope): Promise<WorkoutRecord[]>;
+  linkRemoteMembership?(scope: SyncScope, record: WorkoutRecord): Promise<void>;
+  saveWorkout(
+    record: WorkoutRecord,
+    options?: { origin?: "local" | "remote"; scope?: SyncScope },
+  ): Promise<{ created: boolean }>;
   getWorkout(id: string): Promise<WorkoutRecord | null>;
+  listUploadCandidates?(scope: SyncScope): Promise<WorkoutRecord[]>;
+  isSyncEnabled?(scope: SyncScope): Promise<boolean>;
+  markUploadComplete?(scope: SyncScope, workoutId: string): Promise<void>;
+  scheduleUploadRetry?(scope: SyncScope, workoutId: string): Promise<void>;
+  listConflictAcknowledgements?(scope: SyncScope): Promise<readonly {
+    workoutId: string;
+    localFingerprint: string;
+    remoteFingerprint: string;
+  }[]>;
+  recordSuccessfulReconciliation?(scope: SyncScope): Promise<void>;
+  getSyncStatus?(scope: SyncScope): Promise<{ pendingCount: number; lastSuccessAt: string | null }>;
+  acquireSyncLease?(scope: SyncScope, owner: string, now: Date, ttlMs?: number): Promise<SyncLease | null>;
+  renewSyncLease?(scope: SyncScope, now: Date, ttlMs?: number): Promise<boolean>;
+  isSyncLeaseCurrent?(scope: SyncScope, now: Date): Promise<boolean>;
+  releaseSyncLease?(scope: SyncScope): Promise<void>;
+}
+
+const SYNC_LEASE_TTL_MS = 60_000;
+const SYNC_LEASE_RENEW_MS = 15_000;
+
+function syncLeaseOwner(): string {
+  return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** The subset of `WorkoutSyncClient` the runner needs. */
@@ -74,6 +103,7 @@ export interface RunWorkoutSyncOptions {
    * the same user does not stop the run; the run keeps its pinned token.
    */
   getCurrentAccount: () => SyncRunAccount | Promise<SyncRunAccount>;
+  scope?: SyncScope;
 }
 
 /** User id and access token pinned for one sync run. */
@@ -82,6 +112,8 @@ export interface SyncRunAccount {
   readonly userId: string | null | undefined;
   /** Access token; missing/blank fails closed before any read. */
   readonly accessToken: string | null | undefined;
+  /** Durable auth epoch when available; sign-out revokes even same-user runs. */
+  readonly authGeneration?: number;
 }
 
 function hasAccessToken(token: string | null | undefined): token is string {
@@ -100,7 +132,8 @@ function hasAccountId(id: string | null | undefined): id is string {
  * the client for the rest of the run.
  */
 function sameAccount(pinned: SyncRunAccount, current: SyncRunAccount): boolean {
-  return hasAccountId(pinned.userId) && current.userId === pinned.userId;
+  return hasAccountId(pinned.userId) && current.userId === pinned.userId &&
+    (pinned.authGeneration === undefined || current.authGeneration === pinned.authGeneration);
 }
 
 /**
@@ -115,6 +148,18 @@ async function stopIfAccountChanged(
   options: RunWorkoutSyncOptions,
   state: SyncRunAccumulator,
 ): Promise<SyncRunAccumulator | null> {
+  if (
+    options.scope?.leaseOwner !== undefined &&
+    options.repository.isSyncLeaseCurrent !== undefined
+  ) {
+    try {
+      if (!(await options.repository.isSyncLeaseCurrent(options.scope, new Date()))) {
+        return recordSyncFailure(state, "other");
+      }
+    } catch {
+      return recordSyncFailure(state, "other");
+    }
+  }
   let current: SyncRunAccount;
   try {
     current = await options.getCurrentAccount();
@@ -133,6 +178,14 @@ function sameRecord(a: WorkoutRecord, b: WorkoutRecord): boolean {
   return stableStringify(a) === stableStringify(b);
 }
 
+function conflictFingerprintKey(
+  workoutId: string,
+  local: WorkoutRecord,
+  remote: WorkoutRecord,
+): string {
+  return `${workoutId}\u0000${stableStringify(local)}\u0000${stableStringify(remote)}`;
+}
+
 /**
  * Pair a push-time 409 with the current cloud original.
  *
@@ -141,13 +194,14 @@ function sameRecord(a: WorkoutRecord, b: WorkoutRecord): boolean {
  * identical is a race, not a conflict.
  */
 async function collectPushConflicts(
-  client: SyncRunRemoteClient,
+  options: RunWorkoutSyncOptions,
+  scope: SyncScope,
   localOnly: readonly WorkoutRecord[],
   state: SyncRunAccumulator,
 ): Promise<SyncRunAccumulator> {
   let refreshed: WorkoutRecord[];
   try {
-    refreshed = await client.listRemoteWorkouts();
+    refreshed = await options.client.listRemoteWorkouts();
   } catch (error) {
     return recordSyncFailure(state, classifySyncFailure(error));
   }
@@ -167,6 +221,21 @@ async function collectPushConflicts(
       continue;
     }
     if (sameRecord(localRecord, remoteRecord)) {
+      const stopped = await stopIfAccountChanged(options, next);
+      if (stopped !== null) {
+        next = stopped;
+        continue;
+      }
+      try {
+        if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+          next = recordSyncFailure(next, "auth");
+          continue;
+        }
+        await options.repository.markUploadComplete?.(scope, localRecord.id);
+      } catch {
+        next = recordSyncFailure(next, "other");
+        continue;
+      }
       next = recordPushedRecord(next);
       continue;
     }
@@ -180,13 +249,13 @@ async function collectPushConflicts(
 }
 
 /**
- * Run one optional, user-initiated sync.
+ * Run one optional sync after consent and current identity have been verified.
  *
  * Returns a structured result for every expected outcome and never throws for
  * a network/storage/conflict failure. Preflight aborts perform no reads and no
  * writes; a mid-run failure stops further writes and reports what completed.
  */
-export async function runWorkoutSync(
+async function runWorkoutSyncUnderLease(
   options: RunWorkoutSyncOptions,
 ): Promise<SyncRunResult> {
   if (
@@ -198,22 +267,82 @@ export async function runWorkoutSync(
   if (options.client.config.status !== "configured") {
     return abortSyncRun("other", "unconfigured");
   }
+  const scope: SyncScope = options.scope ?? {
+    accountId: options.account.userId as string,
+    endpoint: options.client.config.baseUrl,
+  };
+  if (scope.accountId !== options.account.userId || scope.endpoint !== options.client.config.baseUrl) {
+    return abortSyncRun("auth", "unauthenticated");
+  }
+  try {
+    if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+      return abortSyncRun("auth", "unauthenticated");
+    }
+  } catch {
+    return abortSyncRun("other");
+  }
 
   let local: WorkoutRecord[];
-  let remote: WorkoutRecord[];
+  let candidates: WorkoutRecord[];
   try {
-    [local, remote] = await Promise.all([
-      options.repository.listWorkouts(),
-      options.client.listRemoteWorkouts(),
+    [local, candidates] = await Promise.all([
+      options.repository.listSyncWorkouts === undefined
+        ? options.repository.listWorkouts()
+        : options.repository.listSyncWorkouts(scope),
+      options.repository.listUploadCandidates === undefined
+        ? Promise.resolve([])
+        : options.repository.listUploadCandidates(scope),
     ]);
   } catch (error) {
-    // Both reads start together, but neither has written anything yet.
     return abortForFailure(classifySyncFailure(error));
   }
 
-  let plan: SyncPlan;
+  let remote: WorkoutRecord[];
   try {
-    plan = planSync(local, remote);
+    remote = await options.client.listRemoteWorkouts();
+  } catch (error) {
+    const failure = classifySyncFailure(error);
+    if (failure === "offline" || isRetryableSyncFailure(error)) {
+      const emptyState = beginSyncRun(planSync([], []));
+      for (const candidate of candidates) {
+        const stopped = await stopIfAccountChanged(options, emptyState);
+        if (stopped !== null) break;
+        try {
+          if (options.repository.isSyncEnabled === undefined || await options.repository.isSyncEnabled(scope)) {
+            await options.repository.scheduleUploadRetry?.(scope, candidate.id);
+          } else break;
+        } catch {
+          // A pending item remains safe for a later foreground/background run.
+          break;
+        }
+      }
+    }
+    return abortForFailure(failure);
+  }
+
+  let plan: SyncPlan;
+  let acknowledgedConflicts = new Set<string>();
+  try {
+    const fullPlan = planSync(local, remote);
+    const candidatePlan = planSync(candidates, remote);
+    // Every local record participates in conflict detection, but only records
+    // explicitly enrolled for this account and endpoint can be uploaded.
+    plan = {
+      ...fullPlan,
+      toPush: candidatePlan.toPush,
+      summary: { ...fullPlan.summary, toPush: candidatePlan.toPush.length },
+    };
+    const acknowledgements = await options.repository.listConflictAcknowledgements?.(scope) ?? [];
+    acknowledgedConflicts = new Set(acknowledgements.map((entry) =>
+      `${entry.workoutId}\u0000${entry.localFingerprint}\u0000${entry.remoteFingerprint}`));
+    const unresolvedConflicts = plan.conflicts.filter((conflict) => !acknowledgedConflicts.has(
+      conflictFingerprintKey(conflict.id, conflict.local, conflict.remote),
+    ));
+    plan = {
+      ...plan,
+      conflicts: unresolvedConflicts,
+      summary: { ...plan.summary, conflicts: unresolvedConflicts.length },
+    };
   } catch {
     // Inconsistent input lists are a data-integrity problem, not a network one.
     return abortSyncRun("other");
@@ -227,7 +356,12 @@ export async function runWorkoutSync(
     const stopped = await stopIfAccountChanged(options, state);
     if (stopped !== null) return completeSyncRun(stopped);
     try {
-      await options.repository.saveWorkout(record);
+      await options.repository.saveWorkout(record, { origin: "remote", scope });
+      if (options.repository.linkRemoteMembership !== undefined) {
+        const membershipWrite = await stopIfAccountChanged(options, state);
+        if (membershipWrite !== null) return completeSyncRun(membershipWrite);
+        await options.repository.linkRemoteMembership(scope, record);
+      }
       state = recordPulledRecord(state);
     } catch (error) {
       if (classifySyncFailure(error) !== "conflict") {
@@ -245,14 +379,41 @@ export async function runWorkoutSync(
         return completeSyncRun(state);
       }
       if (sameRecord(existing, record)) {
+        if (options.repository.linkRemoteMembership !== undefined) {
+          const membershipWrite = await stopIfAccountChanged(options, state);
+          if (membershipWrite !== null) return completeSyncRun(membershipWrite);
+          await options.repository.linkRemoteMembership(scope, record);
+        }
         state = recordPulledRecord(state);
         continue;
       }
-      state = recordSyncConflict(state, {
-        id: record.id,
-        local: existing,
-        remote: record,
-      });
+      if (!acknowledgedConflicts.has(conflictFingerprintKey(record.id, existing, record))) {
+        state = recordSyncConflict(state, {
+          id: record.id,
+          local: existing,
+          remote: record,
+        });
+      }
+    }
+  }
+
+  // A prior create may have reached the server while its response was lost.
+  // On the next reconciliation the record is already present remotely, so it
+  // is absent from `toPush`; nevertheless its durable outbox item must be
+  // completed or the queue will remain pending forever.
+  const remoteById = new Map(remote.map((record) => [record.id, record]));
+  for (const candidate of candidates) {
+    const remoteRecord = remoteById.get(candidate.id);
+    if (remoteRecord === undefined || !sameRecord(candidate, remoteRecord)) continue;
+    const stopped = await stopIfAccountChanged(options, state);
+    if (stopped !== null) return completeSyncRun(stopped);
+    try {
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        return completeSyncRun(recordSyncFailure(state, "auth"));
+      }
+      await options.repository.markUploadComplete?.(scope, candidate.id);
+    } catch {
+      return completeSyncRun(recordSyncFailure(state, "other"));
     }
   }
 
@@ -268,21 +429,132 @@ export async function runWorkoutSync(
       break;
     }
     try {
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        state = recordSyncFailure(state, "auth");
+        break;
+      }
+    } catch {
+      state = recordSyncFailure(state, "other");
+      break;
+    }
+    try {
       await options.client.createRemoteWorkout(record);
+      const completionWrite = await stopIfAccountChanged(options, state);
+      if (completionWrite !== null) {
+        state = completionWrite;
+        break;
+      }
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        state = recordSyncFailure(state, "auth");
+        break;
+      }
+      await options.repository.markUploadComplete?.(scope, record.id);
       state = recordPushedRecord(state);
     } catch (error) {
       if (classifySyncFailure(error) === "conflict") {
         pushConflicts.push(record);
         continue;
       }
-      state = recordSyncFailure(state, classifySyncFailure(error));
+      const failure = classifySyncFailure(error);
+      if (failure === "offline" || isRetryableSyncFailure(error)) {
+        const retryWrite = await stopIfAccountChanged(options, state);
+        if (retryWrite !== null) {
+          state = retryWrite;
+          break;
+        }
+        try {
+          if (options.repository.isSyncEnabled === undefined || await options.repository.isSyncEnabled(scope)) {
+            await options.repository.scheduleUploadRetry?.(scope, record.id);
+          } else {
+            state = recordSyncFailure(state, "auth");
+            break;
+          }
+        } catch {
+          // The queue remains pending and is safe to retry on the next run.
+        }
+      }
+      state = recordSyncFailure(state, failure);
       break;
     }
   }
 
   if (pushConflicts.length > 0) {
-    state = await collectPushConflicts(options.client, pushConflicts, state);
+    state = await collectPushConflicts(options, scope, pushConflicts, state);
   }
 
-  return completeSyncRun(state);
+  const result = completeSyncRun(state);
+  if (result.status === "done" && result.conflicts.length === 0) {
+    const stopped = await stopIfAccountChanged(options, state);
+    if (stopped !== null) return completeSyncRun(stopped);
+    try {
+      if (options.repository.isSyncEnabled !== undefined && !(await options.repository.isSyncEnabled(scope))) {
+        return completeSyncRun(recordSyncFailure(state, "auth"));
+      }
+      const queueStatus = await options.repository.getSyncStatus?.(scope);
+      if (queueStatus === undefined || queueStatus.pendingCount === 0) {
+        await options.repository.recordSuccessfulReconciliation?.(scope);
+      }
+    } catch {
+      // Network reconciliation remains complete; failure to persist the status
+      // cannot turn that result into a claim of a newer durable timestamp.
+    }
+  }
+  return result;
+}
+
+function isRetryableSyncFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" && (status === 408 || status === 425 || status === 429 || status >= 500);
+}
+
+/** Serialize independent JS runtimes and fence every sync-owned local write. */
+export async function runWorkoutSync(options: RunWorkoutSyncOptions): Promise<SyncRunResult> {
+  const repository = options.repository;
+  if (repository.acquireSyncLease === undefined) {
+    return runWorkoutSyncUnderLease(options);
+  }
+  if (
+    repository.renewSyncLease === undefined ||
+    repository.isSyncLeaseCurrent === undefined ||
+    repository.releaseSyncLease === undefined
+  ) {
+    return abortSyncRun("other");
+  }
+  const scope: SyncScope = options.scope ?? {
+    accountId: options.account.userId as string,
+    endpoint: options.client.config.status === "configured"
+      ? options.client.config.baseUrl
+      : "",
+  };
+  if (!hasAccountId(scope.accountId) || scope.endpoint === "") {
+    return runWorkoutSyncUnderLease(options);
+  }
+  const owner = syncLeaseOwner();
+  let lease: SyncLease | null;
+  try {
+    lease = await repository.acquireSyncLease(scope, owner, new Date(), SYNC_LEASE_TTL_MS);
+  } catch {
+    return abortSyncRun("other");
+  }
+  if (lease === null) return abortSyncRun("other");
+
+  const leasedScope: SyncScope = {
+    ...scope,
+    leaseOwner: owner,
+    leaseGeneration: lease.generation,
+  };
+  const renewal = setInterval(() => {
+    void repository.renewSyncLease!(leasedScope, new Date(), SYNC_LEASE_TTL_MS).catch(() => undefined);
+  }, SYNC_LEASE_RENEW_MS);
+  try {
+    return await runWorkoutSyncUnderLease({ ...options, scope: leasedScope });
+  } finally {
+    clearInterval(renewal);
+    try {
+      await repository.releaseSyncLease!(leasedScope);
+    } catch {
+      // Expiry recovers a lease if local cleanup fails or the runtime is killed.
+    }
+  }
 }

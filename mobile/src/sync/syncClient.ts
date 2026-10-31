@@ -13,6 +13,7 @@ import { ValidationError, stableStringify, validateWorkoutRecord } from "@agent-
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { SYNC_API_URL_ENV, resolveSyncConfig } from "./syncConfig.ts";
 import type { SyncConfig } from "./syncConfig.ts";
+import { validateRemoteWorkoutList } from "./syncModel.ts";
 
 export { SYNC_API_URL_ENV, resolveSyncConfig };
 export type { SyncConfig, SyncConfigProblem, SyncConfigStatus } from "./syncConfig.ts";
@@ -36,11 +37,13 @@ export type { SyncConfig, SyncConfigProblem, SyncConfigStatus } from "./syncConf
 
 /** Default maximum accepted response body; protects the device from a huge list. */
 export const SYNC_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+export const SYNC_REQUEST_TIMEOUT_MS = 20_000;
 
 export interface SyncRequestInit {
   method?: string;
   body?: string;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
 export interface SyncResponseLike {
@@ -56,7 +59,7 @@ export type SyncFetch = (
 
 export type SyncAccessTokenProvider = () => string | null | Promise<string | null>;
 
-/** A remote record that failed validation; the rest of the list still loads. */
+/** A remote record that failed validation; the list is incomplete and sync stops. */
 export interface MalformedRemoteWorkout {
   /** Zero-based position in the server's list. */
   index: number;
@@ -339,10 +342,18 @@ export class WorkoutSyncClient {
     };
 
     let response: SyncResponseLike;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
     try {
-      response = await this.fetchImpl(`${baseUrl}${path}`, { ...init, headers });
+      response = await this.fetchImpl(`${baseUrl}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers,
+      });
     } catch (error) {
       throw new NetworkError(undefined, { cause: error });
+    } finally {
+      clearTimeout(timeout);
     }
 
     const declared = declaredByteLength(response);
@@ -384,29 +395,14 @@ export class WorkoutSyncClient {
   /**
    * List the signed-in owner's cloud workouts.
    *
-   * The response must be an array. Each entry is validated with the shared
-   * core; malformed entries are dropped and reported through
-   * `onMalformedRecord` instead of failing (or hiding) the whole list.
+   * The response must be an array and every entry must validate. Malformed
+   * entries are reported without exposing their payload, then the entire read
+   * fails so callers cannot claim a complete reconciliation.
    */
   async listRemoteWorkouts(): Promise<WorkoutRecord[]> {
     const { data } = await this.request(API_ENDPOINTS.workouts);
-    if (!Array.isArray(data)) {
-      throw new MalformedResponseError("(root)", "must be an array");
-    }
-
-    const records: WorkoutRecord[] = [];
-    data.forEach((entry, index) => {
-      try {
-        records.push(validateWorkoutRecord(entry).record);
-      } catch (error) {
-        if (this.onMalformedRecord === undefined) return;
-        this.onMalformedRecord({
-          index,
-          reason: error instanceof Error ? error.message : "Workout record failed validation.",
-        });
-      }
-    });
-    return records;
+    if (!Array.isArray(data)) throw new MalformedResponseError("(root)", "must be an array");
+    return validateRemoteWorkoutList(data, (notice) => this.onMalformedRecord?.(notice));
   }
 
   /**

@@ -14,8 +14,10 @@ import {
   classifySyncFailure,
   classifySyncStatus,
   planSync,
+  validateRemoteWorkoutList,
 } from "../mobile/src/sync/syncModel.ts";
 import { resolveSyncConfig } from "../mobile/src/sync/syncConfig.ts";
+import { shouldRunSyncForTrigger } from "../mobile/src/sync/syncTriggerModel.ts";
 
 /**
  * Pure coverage for the mobile sync foundation.
@@ -36,6 +38,19 @@ function record(id: string, overrides: Partial<WorkoutRecord> = {}): WorkoutReco
     ...overrides,
   };
 }
+
+test("sync trigger gate requires account, configuration, consent and trigger conditions", () => {
+  const authorized = { authenticated: true, configured: true, consented: true };
+  assert.equal(shouldRunSyncForTrigger("manual", authorized), true, "manual still reaches offline messaging");
+  assert.equal(shouldRunSyncForTrigger("foreground", { ...authorized, appActive: true }), true);
+  assert.equal(shouldRunSyncForTrigger("foreground", { ...authorized, appActive: false }), false);
+  assert.equal(shouldRunSyncForTrigger("reconnect", { ...authorized, networkAvailable: true }), true);
+  assert.equal(shouldRunSyncForTrigger("reconnect", { ...authorized, networkAvailable: false }), false);
+  assert.equal(shouldRunSyncForTrigger("background", { ...authorized, networkAvailable: false }), false);
+  assert.equal(shouldRunSyncForTrigger("manual", { ...authorized, consented: false }), false);
+  assert.equal(shouldRunSyncForTrigger("manual", { ...authorized, authenticated: false }), false);
+  assert.equal(shouldRunSyncForTrigger("manual", { ...authorized, configured: false }), false);
+});
 
 function ids(records: readonly WorkoutRecord[]): string[] {
   return records.map((entry) => entry.id);
@@ -259,6 +274,19 @@ test("canSync requires both a signed-in session and configured cloud sync", () =
       );
     }
   }
+});
+
+test("remote list validation rejects a partial list and reports only redacted diagnostics", () => {
+  const malformed: unknown = { id: "bad", notes: "private workout text" };
+  const notices: { index: number; reason: string }[] = [];
+  assert.throws(
+    () => validateRemoteWorkoutList([record("valid"), malformed], (notice) => notices.push(notice)),
+    /Remote workout list is incomplete \(1 invalid record\)/,
+  );
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].index, 1);
+  assert.doesNotMatch(notices[0].reason, /private workout text/);
+  assert.deepEqual(validateRemoteWorkoutList([record("valid")]).map((entry) => entry.id), ["valid"]);
 });
 
 test("sync config treats missing or blank values as unconfigured", () => {

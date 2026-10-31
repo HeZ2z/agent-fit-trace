@@ -96,6 +96,14 @@ function createRepository(
       calls.list += 1;
       return [...stored.values()].filter((entry) => !options.hiddenIds?.has(entry.id));
     },
+    async listSyncWorkouts(): Promise<WorkoutRecord[]> {
+      calls.list += 1;
+      return [...stored.values()].filter((entry) => !options.hiddenIds?.has(entry.id));
+    },
+    async listUploadCandidates(): Promise<WorkoutRecord[]> {
+      return [...stored.values()];
+    },
+    async isSyncEnabled(): Promise<boolean> { return true; },
     async saveWorkout(entry: WorkoutRecord): Promise<{ id: string; created: boolean }> {
       calls.saves.push(entry.id);
       const existing = stored.get(entry.id);
@@ -357,6 +365,296 @@ test("runner pulls remote-only, pushes local-only, and preserves both conflict o
   assert.equal(client.stored.get("a-local"), onlyLocal);
 });
 
+test("runner uploads only explicitly enrolled candidates and marks pulled records remote-origin", async () => {
+  const local = record("scoped-local");
+  const remote = record("cloud-only");
+  const candidates: WorkoutRecord[] = [local];
+  const savedOrigins: string[] = [];
+  const completed: string[] = [];
+  const base = createRepository([local]);
+  const repository = {
+    ...base,
+    async listUploadCandidates(scope: { accountId: string; endpoint: string }) {
+      assert.deepEqual(scope, { accountId: ACCOUNT_A.userId, endpoint: CONFIGURED.baseUrl });
+      return candidates;
+    },
+    async isSyncEnabled() { return true; },
+    async markUploadComplete(_scope: unknown, id: string) { completed.push(id); },
+    async saveWorkout(entry: WorkoutRecord, options?: { origin?: "local" | "remote" }) {
+      savedOrigins.push(options?.origin ?? "local");
+      return base.saveWorkout(entry);
+    },
+  };
+  const client = createClient([remote]);
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => ACCOUNT_A,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(client.calls.creates, [local.id]);
+  assert.deepEqual(completed, [local.id]);
+  assert.deepEqual(savedOrigins, ["remote"]);
+});
+
+test("runner fails closed when repository cannot prove explicit upload enrollment", async () => {
+  const local = record("not-enrolled");
+  const client = createClient([]);
+  const result = await runWorkoutSync({
+    repository: {
+      async listWorkouts() { return [local]; },
+      async listSyncWorkouts() { return [local]; },
+      async isSyncEnabled() { return true; },
+      async saveWorkout() { return { created: true }; },
+      async getWorkout() { return null; },
+    },
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+  });
+  assert.equal(result.status, "done");
+  assert.deepEqual(client.calls.creates, [], "the runner must never substitute a full local-store scan for enrollment");
+});
+
+test("runner completes an outbox item when a prior ambiguous upload is already remote", async () => {
+  const local = record("lost-response");
+  const completed: string[] = [];
+  const repository = {
+    ...createRepository([local]),
+    async listSyncWorkouts() { return [local]; },
+    async listUploadCandidates() { return [local]; },
+    async isSyncEnabled() { return true; },
+    async markUploadComplete(_scope: unknown, id: string) { completed.push(id); },
+  };
+  const client = createClient([local]);
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.counts.identical, 1);
+  assert.deepEqual(client.calls.creates, [], "an already-present record is never written again");
+  assert.deepEqual(completed, [local.id], "the durable queue is cleared after reconciliation");
+});
+
+test("runner schedules a bounded retry after a retryable upload response", async () => {
+  const local = record("retry-me");
+  const retries: string[] = [];
+  const repository = {
+    ...createRepository([local]),
+    async listSyncWorkouts() { return [local]; },
+    async listUploadCandidates() { return [local]; },
+    async isSyncEnabled() { return true; },
+    async scheduleUploadRetry(_scope: unknown, id: string) { retries.push(id); },
+  };
+  const client = createClient([], {
+    createErrorOnce: new ApiError({ code: API_ERROR_CODES.API_ERROR, message: "temporary", status: 503 }),
+  });
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.deepEqual(retries, [local.id]);
+  assert.deepEqual(client.calls.creates, [local.id], "the ambiguous/error response is attempted once");
+});
+
+test("runner backs off enrolled items after a retryable cloud read failure", async () => {
+  const local = record("read-retry");
+  const retries: string[] = [];
+  const repository = {
+    ...createRepository([local]),
+    async scheduleUploadRetry(_scope: unknown, id: string) { retries.push(id); },
+  };
+  const client = createClient([], {
+    listErrorOnce: new ApiError({ code: API_ERROR_CODES.API_ERROR, message: "temporary", status: 503 }),
+  });
+
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "aborted");
+  assert.deepEqual(retries, [local.id]);
+  assert.deepEqual(client.calls.creates, []);
+});
+
+test("runner suppresses only an unchanged, explicitly acknowledged device-only conflict", async () => {
+  const local = record("acknowledged", { notes: "device copy" });
+  const remote = record("acknowledged", { notes: "cloud copy" });
+  let reconciled = 0;
+  const repository = {
+    ...createRepository([local]),
+    async listSyncWorkouts() { return [local]; },
+    async listUploadCandidates() { return []; },
+    async isSyncEnabled() { return true; },
+    async listConflictAcknowledgements() {
+      return [{
+        workoutId: local.id,
+        localFingerprint: stableStringify(local),
+        remoteFingerprint: stableStringify(remote),
+        action: "keep-local" as const,
+      }];
+    },
+    async recordSuccessfulReconciliation() { reconciled += 1; },
+  };
+  const client = createClient([remote]);
+  const options = {
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  };
+
+  const result = await runWorkoutSync(options);
+  assert.equal(result.status, "done");
+  assert.equal(result.counts.conflicts, 0);
+  assert.equal(reconciled, 1);
+
+  const changed = record("acknowledged", { notes: "edited device copy" });
+  const changedRepository = { ...repository, async listSyncWorkouts() { return [changed]; } };
+  const changedResult = await runWorkoutSync({ ...options, repository: changedRepository });
+  assert.equal(changedResult.counts.conflicts, 1, "fingerprint changes reopen the conflict");
+  assert.equal(reconciled, 1, "unresolved divergence does not advance last-success status");
+});
+
+test("runner applies acknowledgements to conflicts discovered while pulling into an occupied local id", async () => {
+  const local = record("pulled-conflict", { notes: "account A copy" });
+  const remote = record("pulled-conflict", { notes: "account B copy" });
+  let reconciled = 0;
+  const makeRepository = (currentLocal: WorkoutRecord) => ({
+    ...createRepository([currentLocal]),
+    async listSyncWorkouts() { return []; },
+    async listUploadCandidates() { return []; },
+    async isSyncEnabled() { return true; },
+    async listConflictAcknowledgements() {
+      return [{
+        workoutId: currentLocal.id,
+        localFingerprint: stableStringify(local),
+        remoteFingerprint: stableStringify(remote),
+        action: "keep-local" as const,
+      }];
+    },
+    async recordSuccessfulReconciliation() { reconciled += 1; },
+  });
+  const client = createClient([remote]);
+  const options = {
+    repository: makeRepository(local),
+    client,
+    account: ACCOUNT_B,
+    getCurrentAccount: () => ACCOUNT_B,
+    scope: { accountId: ACCOUNT_B.userId!, endpoint: CONFIGURED.baseUrl },
+  };
+
+  const unchanged = await runWorkoutSync(options);
+  assert.equal(unchanged.status, "done");
+  assert.equal(unchanged.counts.conflicts, 0, "the pull-time conflict matches its saved fingerprints");
+  assert.deepEqual(unchanged.conflicts, []);
+  assert.equal(reconciled, 1, "an unchanged acknowledged pull conflict allows last-success to advance");
+
+  const changedLocal = record("pulled-conflict", { notes: "account A edited copy" });
+  const changed = await runWorkoutSync({ ...options, repository: makeRepository(changedLocal) });
+  assert.equal(changed.counts.conflicts, 1, "changed local content no longer matches the acknowledgement");
+  assert.deepEqual(changed.conflicts, [{ id: local.id, local: changedLocal, remote }]);
+  assert.equal(reconciled, 1, "the reopened conflict blocks last-success advancement");
+});
+
+test("runner does not advance complete status while queued work is still in backoff", async () => {
+  let reconciled = 0;
+  const repository = {
+    ...createRepository([]),
+    async listUploadCandidates() { return []; },
+    async getSyncStatus() { return { pendingCount: 1, lastSuccessAt: null }; },
+    async recordSuccessfulReconciliation() { reconciled += 1; },
+  };
+  const result = await runWorkoutSync({
+    repository,
+    client: createClient([]),
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+  assert.equal(result.status, "done");
+  assert.equal(reconciled, 0);
+});
+
+test("remote membership from another account is excluded from sync planning", async () => {
+  const accountARecord = record("from-account-a");
+  const saves: string[] = [];
+  const client = createClient([]);
+  const result = await runWorkoutSync({
+    repository: {
+      async listWorkouts() { return [accountARecord]; },
+      async listSyncWorkouts(scope) {
+        assert.deepEqual(scope, { accountId: ACCOUNT_B.userId, endpoint: CONFIGURED.baseUrl });
+        return [];
+      },
+      async listUploadCandidates() { return []; },
+      async isSyncEnabled() { return true; },
+      async markUploadComplete() {},
+      async saveWorkout(entry) { saves.push(entry.id); return { created: true }; },
+      async getWorkout() { return null; },
+    },
+    client,
+    account: ACCOUNT_B,
+    getCurrentAccount: () => ACCOUNT_B,
+    scope: { accountId: ACCOUNT_B.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.counts.conflicts, 0);
+  assert.deepEqual(client.calls.creates, []);
+  assert.deepEqual(saves, []);
+});
+
+test("a stale sync lease stops a suspended worker before its next write", async () => {
+  const local = record("fenced-local");
+  const client = createClient([]);
+  let released = false;
+  const result = await runWorkoutSync({
+    repository: {
+      async listWorkouts() { return [local]; },
+      async listSyncWorkouts() { return [local]; },
+      async listUploadCandidates() { return [local]; },
+      async isSyncEnabled() { return true; },
+      async markUploadComplete() {},
+      async saveWorkout() { return { created: true }; },
+      async getWorkout() { return null; },
+      async acquireSyncLease() { return { owner: "worker-a", generation: 1, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
+      async renewSyncLease() { return false; },
+      async isSyncLeaseCurrent() { return false; },
+      async releaseSyncLease() { released = true; },
+    },
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: () => ACCOUNT_A,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure, "other");
+  assert.deepEqual(client.calls.creates, []);
+  assert.equal(released, true);
+});
+
 test("a CONFLICT while inserting locally becomes a conflict, not a failed run", async () => {
   const racedLocal = record("r1", { notes: "device version" });
   const remote = record("r1", { notes: "cloud version" });
@@ -415,6 +713,27 @@ test("a 409 on push re-reads the cloud and pairs the remote original", async () 
   assert.equal(client.calls.list, 2, "one plan read plus one conflict pairing read");
   assert.equal(repository.stored.get("only-local"), local);
   assert.equal(client.stored.get("only-local"), cloud);
+});
+
+test("a 409 race with an identical remote record completes the outbox item", async () => {
+  const local = record("409-identical");
+  const completed: string[] = [];
+  const repository = {
+    ...createRepository([local]),
+    async markUploadComplete(_scope: unknown, id: string) { completed.push(id); },
+  };
+  const client = createClient([], { conflictOnCreate: () => local });
+  const result = await runWorkoutSync({
+    repository,
+    client,
+    account: ACCOUNT_A,
+    getCurrentAccount: fixedAccount,
+    scope: { accountId: ACCOUNT_A.userId!, endpoint: CONFIGURED.baseUrl },
+  });
+  assert.equal(result.status, "done");
+  assert.equal(result.counts.pushed, 1);
+  assert.equal(result.counts.conflicts, 0);
+  assert.deepEqual(completed, [local.id]);
 });
 
 test("runner aborts before reading when no signed-in token is supplied", async () => {

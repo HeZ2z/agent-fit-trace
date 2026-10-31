@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { stableStringify } from "@agent-fit-trace/core";
 import {
@@ -11,6 +12,7 @@ import {
 import type { SessionDraft } from "../packages/fit-trace-workout-session/src/index.ts";
 import {
   SESSION_DRAFT_TABLE_SQL,
+  REENROLL_EXISTING_OUTBOX_SQL,
   WORKOUTS_DB_SCHEMA_VERSION,
   WORKOUTS_MIGRATIONS,
   WORKOUTS_TABLE_SQL,
@@ -69,24 +71,24 @@ function rowFor(draft: SessionDraft = createSessionDraft("2026-10-24")): Session
   return toSessionDraftRow(OWNER, draft, UPDATED_AT);
 }
 
-test("the migration list is contiguous and ends at schema version 2", () => {
-  assert.equal(WORKOUTS_DB_SCHEMA_VERSION, 2);
+test("the migration list is contiguous and ends at schema version 8", () => {
+  assert.equal(WORKOUTS_DB_SCHEMA_VERSION, 8);
   assert.equal(WORKOUTS_DB_SCHEMA_VERSION, latestWorkoutSchemaVersion());
   assert.deepEqual(
     WORKOUTS_MIGRATIONS.map((migration) => migration.version),
-    [1, 2],
-    "migration v2 is appended after the untouched v1",
+    [1, 2, 3, 4, 5, 6, 7, 8],
+    "later migrations are appended without changing earlier versions",
   );
   for (const migration of WORKOUTS_MIGRATIONS) {
     assert.ok(migration.statements.length > 0, `migration v${migration.version} has statements`);
   }
 });
 
-test("a v1 database only applies the session-draft migration", () => {
+test("a v1 database applies only the session-draft and later sync migrations", () => {
   const pending = pendingWorkoutMigrations(1);
   assert.deepEqual(
     pending.map((migration) => migration.version),
-    [2],
+    [2, 3, 4, 5, 6, 7, 8],
     "the workouts table migration never re-runs",
   );
   assert.deepEqual(pending[0].statements, [SESSION_DRAFT_TABLE_SQL]);
@@ -96,8 +98,8 @@ test("a v1 database only applies the session-draft migration", () => {
   assert.deepEqual(pendingWorkoutMigrations(WORKOUTS_DB_SCHEMA_VERSION), []);
   assert.deepEqual(
     pendingWorkoutMigrations(0).map((migration) => migration.version),
-    [1, 2],
-    "a fresh database applies both migrations in order",
+    [1, 2, 3, 4, 5, 6, 7, 8],
+    "a fresh database applies every migration in order",
   );
   assert.throws(
     () => pendingWorkoutMigrations(WORKOUTS_DB_SCHEMA_VERSION + 1),
@@ -128,6 +130,177 @@ test("migration v2 is exactly the draft table", () => {
   const v2 = WORKOUTS_MIGRATIONS[1];
   assert.equal(v2.version, 2);
   assert.deepEqual(v2.statements, [SESSION_DRAFT_TABLE_SQL]);
+});
+
+test("migration v3 adds provenance and account-endpoint scoped durable consent and outbox", () => {
+  const migration = WORKOUTS_MIGRATIONS[2];
+  assert.equal(migration.version, 3);
+  assert.match(migration.statements.join("\n"), /ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'/);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_outbox/);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_consent/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint\)/);
+  assert.match(migration.statements.join("\n"), /CHECK \(state IN \('unassigned', 'pending', 'retry', 'complete', 'device-only'\)\)/);
+});
+
+test("migration v4 stores account-endpoint scoped conflict acknowledgements", () => {
+  const migration = WORKOUTS_MIGRATIONS[3];
+  assert.equal(migration.version, 4);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_conflict_ack/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint, workout_id\)/);
+  assert.match(migration.statements.join("\n"), /local_fingerprint TEXT NOT NULL/);
+  assert.match(migration.statements.join("\n"), /remote_fingerprint TEXT NOT NULL/);
+});
+
+test("migration v5 scopes pulled remote membership to account, endpoint and payload fingerprint", () => {
+  const migration = WORKOUTS_MIGRATIONS[4];
+  assert.equal(migration.version, 5);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_remote_membership/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint, workout_id\)/);
+  assert.match(migration.statements.join("\n"), /fingerprint TEXT NOT NULL/);
+});
+
+test("migration v6 stores complete-sync status per account and endpoint", () => {
+  const migration = WORKOUTS_MIGRATIONS[5];
+  assert.equal(migration.version, 6);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_status/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint\)/);
+  assert.match(migration.statements.join("\n"), /last_success_at TEXT/);
+});
+
+test("migration v7 defines an account-endpoint lease with fencing generation and expiry", () => {
+  const migration = WORKOUTS_MIGRATIONS[6];
+  assert.equal(migration.version, 7);
+  assert.match(migration.statements.join("\n"), /CREATE TABLE IF NOT EXISTS sync_lease/);
+  assert.match(migration.statements.join("\n"), /PRIMARY KEY \(account_id, endpoint\)/);
+  assert.match(migration.statements.join("\n"), /generation INTEGER NOT NULL/);
+  assert.match(migration.statements.join("\n"), /expires_at TEXT NOT NULL/);
+});
+
+test("migration v8 creates explicit unassigned enrollment rows for preexisting workouts", () => {
+  const migration = WORKOUTS_MIGRATIONS[7];
+  assert.equal(migration.version, 8);
+  assert.match(migration.statements.join("\n"), /INSERT INTO sync_outbox/);
+  assert.match(migration.statements.join("\n"), /'unassigned'/);
+  assert.match(migration.statements.join("\n"), /NOT EXISTS/);
+});
+
+test("all migrations execute and expired lease takeover fences the previous owner", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const migration of WORKOUTS_MIGRATIONS) {
+      for (const statement of migration.statements) database.exec(statement);
+      database.exec(`PRAGMA user_version = ${migration.version};`);
+    }
+    const columns = database.prepare("PRAGMA table_info(workouts)").all() as { name: string }[];
+    assert.ok(columns.some((column) => column.name === "origin"));
+
+    const acquire = database.prepare(`INSERT INTO sync_lease (account_id, endpoint, owner, generation, expires_at)
+      VALUES (?, ?, ?, 1, ?) ON CONFLICT(account_id, endpoint) DO UPDATE SET owner = excluded.owner,
+      generation = sync_lease.generation + 1, expires_at = excluded.expires_at
+      WHERE sync_lease.expires_at <= ?`);
+    const first = acquire.run("acct", "https://api", "worker-a", "2026-10-31T00:01:00.000Z", "2026-10-31T00:00:00.000Z");
+    assert.equal(first.changes, 1);
+    const blocked = acquire.run("acct", "https://api", "worker-b", "2026-10-31T00:02:00.000Z", "2026-10-31T00:00:30.000Z");
+    assert.equal(blocked.changes, 0);
+    const takeover = acquire.run("acct", "https://api", "worker-b", "2026-10-31T00:02:00.000Z", "2026-10-31T00:01:00.000Z");
+    assert.equal(takeover.changes, 1);
+    const row = database.prepare("SELECT owner, generation FROM sync_lease WHERE account_id = ? AND endpoint = ?").get("acct", "https://api") as { owner: string; generation: number };
+    assert.deepEqual({ ...row }, { owner: "worker-b", generation: 2 });
+    const staleRelease = database.prepare("DELETE FROM sync_lease WHERE account_id = ? AND endpoint = ? AND owner = ? AND generation = ?");
+    assert.equal(staleRelease.run("acct", "https://api", "worker-a", 1).changes, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("legacy workouts receive unassigned outbox rows and are enrolled only by include-existing opt-in", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const statement of WORKOUTS_MIGRATIONS[0].statements) database.exec(statement);
+    database.prepare(`INSERT INTO workouts (id, schema_version, date, session_type, payload, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run("legacy-a", 1, "2026-01-01", "strength", "{}", "2026-01-02T00:00:00.000Z");
+
+    for (const migration of WORKOUTS_MIGRATIONS.slice(1)) {
+      for (const statement of migration.statements) database.exec(statement);
+    }
+    const pendingBeforeConsent = database.prepare("SELECT state FROM sync_outbox WHERE workout_id = ?")
+      .get("legacy-a") as { state: string };
+    assert.deepEqual({ ...pendingBeforeConsent }, { state: "unassigned" });
+
+    const scope = { account: "acct-a", endpoint: "https://api.example.test/api/v1" };
+    database.prepare(`INSERT INTO sync_consent (account_id, endpoint, enabled, include_existing, enrollment_cutoff, updated_at)
+      VALUES (?, ?, 1, 1, ?, ?)`)
+      .run(scope.account, scope.endpoint, "2026-01-03T00:00:00.000Z", "2026-01-03T00:00:00.000Z");
+    database.prepare(`UPDATE sync_outbox SET account_id = ?, endpoint = ?, state = 'pending', updated_at = ?
+      WHERE state = 'unassigned' AND workout_id IN (SELECT id FROM workouts WHERE origin IN ('local', 'legacy'))`)
+      .run(scope.account, scope.endpoint, "2026-01-03T00:00:00.000Z");
+    const enrolled = database.prepare("SELECT account_id, endpoint, state FROM sync_outbox WHERE workout_id = ?")
+      .get("legacy-a") as { account_id: string; endpoint: string; state: string };
+    assert.deepEqual({ ...enrolled }, { account_id: scope.account, endpoint: scope.endpoint, state: "pending" });
+  } finally {
+    database.close();
+  }
+});
+
+test("re-enabling existing records preserves unchanged conflict acknowledgements but re-enrolls changed content", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const migration of WORKOUTS_MIGRATIONS) {
+      for (const statement of migration.statements) database.exec(statement);
+    }
+    const scope = { account: "acct-a", endpoint: "https://api.example.test/api/v1" };
+    const workout = {
+      id: "conflict-a",
+      schema_version: 1,
+      date: "2026-01-01",
+      session_type: "strength",
+      exercises: [{ name: "bench_press", sets: [{ weight: 80, reps: 5, rpe: 8 }] }],
+      notes: "device copy",
+    };
+    const remote = { ...workout, notes: "cloud copy" };
+    const localPayload = stableStringify(workout);
+    database.prepare(`INSERT INTO workouts (id, schema_version, date, session_type, payload, created_at, origin)
+      VALUES (?, ?, ?, ?, ?, ?, 'local')`)
+      .run(workout.id, workout.schema_version, workout.date, workout.session_type, localPayload, "2026-01-02T00:00:00.000Z");
+    database.prepare(`INSERT INTO sync_outbox (workout_id, account_id, endpoint, state, updated_at)
+      VALUES (?, ?, ?, 'pending', ?)`)
+      .run(workout.id, scope.account, scope.endpoint, "2026-01-02T00:00:00.000Z");
+    database.prepare(`INSERT INTO sync_consent (account_id, endpoint, enabled, include_existing, enrollment_cutoff, updated_at)
+      VALUES (?, ?, 1, 1, ?, ?)`)
+      .run(scope.account, scope.endpoint, "2026-01-02T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+    database.prepare(`INSERT INTO sync_conflict_ack (account_id, endpoint, workout_id, local_fingerprint,
+      remote_fingerprint, action, acknowledged_at) VALUES (?, ?, ?, ?, ?, 'keep-local', ?)`)
+      .run(scope.account, scope.endpoint, workout.id, localPayload, stableStringify(remote), "2026-01-02T00:00:00.000Z");
+
+    const disable = () => {
+      database.prepare("UPDATE sync_consent SET enabled = 0 WHERE account_id = ? AND endpoint = ?")
+        .run(scope.account, scope.endpoint);
+      database.prepare("UPDATE sync_outbox SET state = 'device-only' WHERE account_id = ? AND endpoint = ?")
+        .run(scope.account, scope.endpoint);
+    };
+    const enableExisting = (timestamp: string) => {
+      database.prepare("UPDATE sync_consent SET enabled = 1, include_existing = 1 WHERE account_id = ? AND endpoint = ?")
+        .run(scope.account, scope.endpoint);
+      database.prepare(REENROLL_EXISTING_OUTBOX_SQL).run(
+        scope.account, scope.endpoint, timestamp, scope.account, scope.endpoint, scope.account, scope.endpoint,
+      );
+    };
+    const state = () => database.prepare("SELECT state FROM sync_outbox WHERE workout_id = ?")
+      .get(workout.id) as { state: string };
+
+    disable();
+    enableExisting("2026-01-03T00:00:00.000Z");
+    assert.deepEqual({ ...state() }, { state: "device-only" }, "same acknowledged content stays out of the pending queue");
+
+    const changedPayload = stableStringify({ ...workout, notes: "edited device copy" });
+    database.prepare("UPDATE workouts SET payload = ? WHERE id = ?").run(changedPayload, workout.id);
+    disable();
+    enableExisting("2026-01-04T00:00:00.000Z");
+    assert.deepEqual({ ...state() }, { state: "pending" }, "changed content is enrolled so sync can surface the new conflict");
+  } finally {
+    database.close();
+  }
 });
 
 test("a row round-trips a timed draft through canonical payload JSON", () => {

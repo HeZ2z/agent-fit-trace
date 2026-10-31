@@ -219,8 +219,8 @@ test("retention expiry after restart removes the run/session and refuses a repla
   let serviceB: CoachingService | null = null;
   try {
     serviceA = serviceFor(stores, path, completingFactory(capturesA), {
-      retentionMs: 100,
-      snapshotTtlMs: 1_000,
+      retentionMs: 60_000,
+      snapshotTtlMs: 60_000,
     });
     const session = serviceA.createSession(PRINCIPAL_A, "journal-expiry-sess");
     const snapshot = await serviceA.createSnapshot(PRINCIPAL_A);
@@ -230,10 +230,21 @@ test("retention expiry after restart removes the run/session and refuses a repla
     await serviceA.shutdown();
     serviceA = null;
 
-    await wait(300);
+    // Advance persisted retention time directly instead of relying on a short
+    // wall-clock TTL that can expire before submitRun under CI load.
+    const persisted = JSON.parse(readFileSync(path, "utf8")) as CoachingJournalState & {
+      generation: number;
+    };
+    const expiredAt = Date.now() - 1;
+    writeCoachingJournal(path, persisted.generation, {
+      ...persisted,
+      sessions: persisted.sessions.map((entry) => ({ ...entry, expiresAt: expiredAt })),
+      runs: persisted.runs.map((entry) => ({ ...entry, expiresAt: expiredAt })),
+    });
+
     serviceB = serviceFor(stores, path, completingFactory(capturesB), {
-      retentionMs: 100,
-      snapshotTtlMs: 1_000,
+      retentionMs: 60_000,
+      snapshotTtlMs: 60_000,
     });
     assert.equal(serviceB.runCount(), 0, "expired terminal run must not be resurrected");
     assert.throws(() => serviceB?.readRun(PRINCIPAL_A, first.run.id), /not found/i);
