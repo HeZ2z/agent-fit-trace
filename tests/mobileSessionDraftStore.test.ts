@@ -12,6 +12,7 @@ import {
 import type { SessionDraft } from "../packages/fit-trace-workout-session/src/index.ts";
 import {
   SESSION_DRAFT_TABLE_SQL,
+  REENROLL_EXISTING_OUTBOX_SQL,
   WORKOUTS_DB_SCHEMA_VERSION,
   WORKOUTS_MIGRATIONS,
   WORKOUTS_TABLE_SQL,
@@ -237,6 +238,66 @@ test("legacy workouts receive unassigned outbox rows and are enrolled only by in
     const enrolled = database.prepare("SELECT account_id, endpoint, state FROM sync_outbox WHERE workout_id = ?")
       .get("legacy-a") as { account_id: string; endpoint: string; state: string };
     assert.deepEqual({ ...enrolled }, { account_id: scope.account, endpoint: scope.endpoint, state: "pending" });
+  } finally {
+    database.close();
+  }
+});
+
+test("re-enabling existing records preserves unchanged conflict acknowledgements but re-enrolls changed content", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const migration of WORKOUTS_MIGRATIONS) {
+      for (const statement of migration.statements) database.exec(statement);
+    }
+    const scope = { account: "acct-a", endpoint: "https://api.example.test/api/v1" };
+    const workout = {
+      id: "conflict-a",
+      schema_version: 1,
+      date: "2026-01-01",
+      session_type: "strength",
+      exercises: [{ name: "bench_press", sets: [{ weight: 80, reps: 5, rpe: 8 }] }],
+      notes: "device copy",
+    };
+    const remote = { ...workout, notes: "cloud copy" };
+    const localPayload = stableStringify(workout);
+    database.prepare(`INSERT INTO workouts (id, schema_version, date, session_type, payload, created_at, origin)
+      VALUES (?, ?, ?, ?, ?, ?, 'local')`)
+      .run(workout.id, workout.schema_version, workout.date, workout.session_type, localPayload, "2026-01-02T00:00:00.000Z");
+    database.prepare(`INSERT INTO sync_outbox (workout_id, account_id, endpoint, state, updated_at)
+      VALUES (?, ?, ?, 'pending', ?)`)
+      .run(workout.id, scope.account, scope.endpoint, "2026-01-02T00:00:00.000Z");
+    database.prepare(`INSERT INTO sync_consent (account_id, endpoint, enabled, include_existing, enrollment_cutoff, updated_at)
+      VALUES (?, ?, 1, 1, ?, ?)`)
+      .run(scope.account, scope.endpoint, "2026-01-02T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+    database.prepare(`INSERT INTO sync_conflict_ack (account_id, endpoint, workout_id, local_fingerprint,
+      remote_fingerprint, action, acknowledged_at) VALUES (?, ?, ?, ?, ?, 'keep-local', ?)`)
+      .run(scope.account, scope.endpoint, workout.id, localPayload, stableStringify(remote), "2026-01-02T00:00:00.000Z");
+
+    const disable = () => {
+      database.prepare("UPDATE sync_consent SET enabled = 0 WHERE account_id = ? AND endpoint = ?")
+        .run(scope.account, scope.endpoint);
+      database.prepare("UPDATE sync_outbox SET state = 'device-only' WHERE account_id = ? AND endpoint = ?")
+        .run(scope.account, scope.endpoint);
+    };
+    const enableExisting = (timestamp: string) => {
+      database.prepare("UPDATE sync_consent SET enabled = 1, include_existing = 1 WHERE account_id = ? AND endpoint = ?")
+        .run(scope.account, scope.endpoint);
+      database.prepare(REENROLL_EXISTING_OUTBOX_SQL).run(
+        scope.account, scope.endpoint, timestamp, scope.account, scope.endpoint, scope.account, scope.endpoint,
+      );
+    };
+    const state = () => database.prepare("SELECT state FROM sync_outbox WHERE workout_id = ?")
+      .get(workout.id) as { state: string };
+
+    disable();
+    enableExisting("2026-01-03T00:00:00.000Z");
+    assert.deepEqual({ ...state() }, { state: "device-only" }, "same acknowledged content stays out of the pending queue");
+
+    const changedPayload = stableStringify({ ...workout, notes: "edited device copy" });
+    database.prepare("UPDATE workouts SET payload = ? WHERE id = ?").run(changedPayload, workout.id);
+    disable();
+    enableExisting("2026-01-04T00:00:00.000Z");
+    assert.deepEqual({ ...state() }, { state: "pending" }, "changed content is enrolled so sync can surface the new conflict");
   } finally {
     database.close();
   }

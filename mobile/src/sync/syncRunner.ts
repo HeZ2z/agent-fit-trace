@@ -178,6 +178,14 @@ function sameRecord(a: WorkoutRecord, b: WorkoutRecord): boolean {
   return stableStringify(a) === stableStringify(b);
 }
 
+function conflictFingerprintKey(
+  workoutId: string,
+  local: WorkoutRecord,
+  remote: WorkoutRecord,
+): string {
+  return `${workoutId}\u0000${stableStringify(local)}\u0000${stableStringify(remote)}`;
+}
+
 /**
  * Pair a push-time 409 with the current cloud original.
  *
@@ -313,6 +321,7 @@ async function runWorkoutSyncUnderLease(
   }
 
   let plan: SyncPlan;
+  let acknowledgedConflicts = new Set<string>();
   try {
     const fullPlan = planSync(local, remote);
     const candidatePlan = planSync(candidates, remote);
@@ -324,10 +333,10 @@ async function runWorkoutSyncUnderLease(
       summary: { ...fullPlan.summary, toPush: candidatePlan.toPush.length },
     };
     const acknowledgements = await options.repository.listConflictAcknowledgements?.(scope) ?? [];
-    const acknowledged = new Set(acknowledgements.map((entry) =>
+    acknowledgedConflicts = new Set(acknowledgements.map((entry) =>
       `${entry.workoutId}\u0000${entry.localFingerprint}\u0000${entry.remoteFingerprint}`));
-    const unresolvedConflicts = plan.conflicts.filter((conflict) => !acknowledged.has(
-      `${conflict.id}\u0000${stableStringify(conflict.local)}\u0000${stableStringify(conflict.remote)}`,
+    const unresolvedConflicts = plan.conflicts.filter((conflict) => !acknowledgedConflicts.has(
+      conflictFingerprintKey(conflict.id, conflict.local, conflict.remote),
     ));
     plan = {
       ...plan,
@@ -378,11 +387,13 @@ async function runWorkoutSyncUnderLease(
         state = recordPulledRecord(state);
         continue;
       }
-      state = recordSyncConflict(state, {
-        id: record.id,
-        local: existing,
-        remote: record,
-      });
+      if (!acknowledgedConflicts.has(conflictFingerprintKey(record.id, existing, record))) {
+        state = recordSyncConflict(state, {
+          id: record.id,
+          local: existing,
+          remote: record,
+        });
+      }
     }
   }
 

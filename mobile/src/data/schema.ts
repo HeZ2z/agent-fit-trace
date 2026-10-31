@@ -111,6 +111,17 @@ export const SYNC_CONFLICT_ACK_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_conf
   PRIMARY KEY (account_id, endpoint, workout_id)
 );`;
 
+/** Re-enroll old device rows without resurrecting an unchanged acknowledged conflict. */
+export const REENROLL_EXISTING_OUTBOX_SQL = `UPDATE sync_outbox SET account_id = ?, endpoint = ?,
+  state = 'pending', updated_at = ?
+  WHERE (state = 'unassigned' OR (state = 'device-only' AND (account_id IS NULL OR (account_id = ? AND endpoint = ?))))
+    AND workout_id IN (SELECT id FROM workouts WHERE origin IN ('local', 'legacy'))
+    AND NOT EXISTS (
+      SELECT 1 FROM sync_conflict_ack a JOIN workouts w ON w.id = a.workout_id
+      WHERE a.account_id = ? AND a.endpoint = ? AND a.workout_id = sync_outbox.workout_id
+        AND a.local_fingerprint = w.payload
+    );`;
+
 export const SYNC_REMOTE_MEMBERSHIP_TABLE_SQL = `CREATE TABLE IF NOT EXISTS sync_remote_membership (
   account_id TEXT NOT NULL,
   endpoint TEXT NOT NULL,

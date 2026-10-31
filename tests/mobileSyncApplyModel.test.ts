@@ -536,6 +536,47 @@ test("runner suppresses only an unchanged, explicitly acknowledged device-only c
   assert.equal(reconciled, 1, "unresolved divergence does not advance last-success status");
 });
 
+test("runner applies acknowledgements to conflicts discovered while pulling into an occupied local id", async () => {
+  const local = record("pulled-conflict", { notes: "account A copy" });
+  const remote = record("pulled-conflict", { notes: "account B copy" });
+  let reconciled = 0;
+  const makeRepository = (currentLocal: WorkoutRecord) => ({
+    ...createRepository([currentLocal]),
+    async listSyncWorkouts() { return []; },
+    async listUploadCandidates() { return []; },
+    async isSyncEnabled() { return true; },
+    async listConflictAcknowledgements() {
+      return [{
+        workoutId: currentLocal.id,
+        localFingerprint: stableStringify(local),
+        remoteFingerprint: stableStringify(remote),
+        action: "keep-local" as const,
+      }];
+    },
+    async recordSuccessfulReconciliation() { reconciled += 1; },
+  });
+  const client = createClient([remote]);
+  const options = {
+    repository: makeRepository(local),
+    client,
+    account: ACCOUNT_B,
+    getCurrentAccount: () => ACCOUNT_B,
+    scope: { accountId: ACCOUNT_B.userId!, endpoint: CONFIGURED.baseUrl },
+  };
+
+  const unchanged = await runWorkoutSync(options);
+  assert.equal(unchanged.status, "done");
+  assert.equal(unchanged.counts.conflicts, 0, "the pull-time conflict matches its saved fingerprints");
+  assert.deepEqual(unchanged.conflicts, []);
+  assert.equal(reconciled, 1, "an unchanged acknowledged pull conflict allows last-success to advance");
+
+  const changedLocal = record("pulled-conflict", { notes: "account A edited copy" });
+  const changed = await runWorkoutSync({ ...options, repository: makeRepository(changedLocal) });
+  assert.equal(changed.counts.conflicts, 1, "changed local content no longer matches the acknowledgement");
+  assert.deepEqual(changed.conflicts, [{ id: local.id, local: changedLocal, remote }]);
+  assert.equal(reconciled, 1, "the reopened conflict blocks last-success advancement");
+});
+
 test("runner does not advance complete status while queued work is still in backoff", async () => {
   let reconciled = 0;
   const repository = {

@@ -3,6 +3,7 @@ import type { SQLiteDatabase } from "expo-sqlite";
 import { ConflictError, stableStringify, validateWorkoutRecord } from "@agent-fit-trace/core";
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import {
+  REENROLL_EXISTING_OUTBOX_SQL,
   WORKOUTS_DB_NAME,
   classifyWorkoutWrite,
   fromWorkoutRow,
@@ -513,12 +514,12 @@ export class WorkoutRepository {
       );
       if (includeExisting) {
         await this.database.runAsync(
-          `UPDATE sync_outbox SET account_id = ?, endpoint = ?, state = 'pending', updated_at = ?
-           WHERE (state = 'unassigned' OR (state = 'device-only' AND (account_id IS NULL OR (account_id = ? AND endpoint = ?))))
-             AND workout_id IN (SELECT id FROM workouts WHERE origin IN ('local', 'legacy'))`,
+        REENROLL_EXISTING_OUTBOX_SQL,
           scope.accountId,
           scope.endpoint,
           timestamp,
+          scope.accountId,
+          scope.endpoint,
           scope.accountId,
           scope.endpoint,
         );
