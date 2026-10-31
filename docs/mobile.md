@@ -23,7 +23,7 @@ not written. Android is the only configured native target.
 | Workout session | One Log editor for after-the-fact and live sessions: start/pause/resume/finish, compact per-set rows (set number, kg, reps, RPE, completion check), per-exercise rest, owner-scoped draft restore/autosave/discard, haptics and a bundled rest cue | Background rest notifications; multi-device or multiple drafts |
 | Accounts | Invite-only email/password sign-in, SecureStore session, restore/refresh/sign-out, account state on Me | Email verification and password-reset deep links |
 | Account preferences | Skin and language mirrored to Supabase `user_metadata`; account wins on sign-in; write-through while signed in | — |
-| Sync | Manual workout pull/push, content-ID idempotency and three device-only conflict choices | Background sync; persistent conflict acknowledgement |
+| Sync | Account/endpoint consent, durable upload outbox, remote provenance, fingerprinted conflict choices and manual pull/push | Background/reconnect coordinator, fenced lease, headless auth recovery and native scheduler verification |
 | Hosted coach | Signed-in hosted coaching with session/snapshot/run flow, SSE, cancel and mapped errors | — |
 | Notifications | None; coaching and sync are foreground-only. Rest cues are best-effort haptics/audio while the app is open, with no background service | Push notifications |
 | Platforms | Android-first; EAS preview APK and linked Expo project | iOS build and device verification |
@@ -302,18 +302,23 @@ mobile shell and mobile coach copy.
 
 ## Optional sync
 
-Cloud sync is optional, follows explicit sign-in and a manual tap, and never
-uploads on its own. It is reached from Me → Open sync. The run is disabled unless
-the auth state is `signed-in`, `EXPO_PUBLIC_FIT_TRACE_API_URL` resolves to a
-configured API base, the local database is open and no sync is already running.
-There is no background sync, scheduled upload or device backup.
+Cloud sync is optional and requires a signed-in account, a configured
+`EXPO_PUBLIC_FIT_TRACE_API_URL`, and explicit consent scoped to that account and
+API endpoint. The sync screen asks whether existing device records should be
+included. Declining leaves them device-only; records saved while consent is
+enabled enter a durable upload queue. Uploads still run only after a manual
+sync tap. This build has no background or reconnect worker and does not promise
+automatic or immediate uploads.
 
 Only **workouts** are synchronized. Imported artifacts, plan adoption, coaching
 data and account preferences are not part of this flow; preferences use the
 Auth metadata path above.
 
-The sync plan is computed from two already-loaded lists and never writes. It
-partitions records by content id:
+The sync plan is computed from the account's local records and remote list and
+never writes. Only durable outbox candidates explicitly enrolled for the
+current account/endpoint can be uploaded. Pulled records carry remote
+membership for the account/endpoint that fetched them and never enter the local
+upload queue. The plan partitions records by content id:
 
 | Device | Cloud | Planned action |
 | --- | --- | --- |
@@ -324,27 +329,35 @@ partitions records by content id:
 
 Every list is ordered by id, and the plan is stable regardless of input order.
 
-The runner reads both sides in parallel before any write. Remote-only records are
-inserted through the local repository, which never overwrites; a concurrent
-same-id local record becomes a conflict. Local-only records are posted one at a
-time to `POST /workouts`: `201` creates, `200` is an identical duplicate, and
-`409` is a same-id content difference. There is no retry loop; a non-conflict
-write failure stops later writes and reports what completed, and a 409 triggers
-one extra cloud read so both originals can be shown. The client bounds response
-bodies, validates every remote record and drops malformed entries rather than
-failing the whole list.
+The runner reads both sides before any write. Remote-only records are inserted
+through the local repository, which never overwrites; a same-id local record
+becomes a conflict. Enrolled candidates are posted one at a time to
+`POST /workouts`: `201` creates, `200` is an identical duplicate, and `409` is
+a same-id content difference. Successful uploads leave the durable queue. The
+client bounds response bodies and validates every remote record.
 
 Conflicts preserve both originals. Each offers three device-only choices:
 
-- **Keep cloud** and **Keep local only** acknowledge the difference for this
-  result; neither changes a record.
+- **Keep cloud** and **Keep local only** save an acknowledgement for the
+  account, endpoint, id and fingerprints of both copies; neither changes a
+  record. The choice appears again if either payload changes.
 - **Export local** shares the canonical local record as JSON through the system
   share sheet and acknowledges the row when the share completes.
 
 None of the three uploads the local record, deletes either copy or rewrites the
-cloud original. Stored records are immutable, so an acknowledged conflict
-appears again on the next manual sync. Acknowledgement is deliberately not
-persisted in this slice.
+cloud original. Export is acknowledged only after the system share sheet
+returns successfully. Records stay immutable.
+
+Schema migrations are additive and tracked by SQLite `user_version`. SQLite
+does not provide an app-level downgrade path: rollback requires restoring the
+pre-upgrade database backup or shipping a forward migration. The app rejects a
+database created by a newer build rather than writing to an unknown schema.
+
+The local workout table remains globally keyed by workout id to preserve the
+existing append-only store. If two accounts return different payloads under the
+same id, the second pull is surfaced as a conflict and does not replace the
+stored row; this schema cannot materialize both account copies as separate local
+rows.
 
 A failed or postponed sync does not block local use. Failures are classified as
 offline, auth, conflict or other, and the screen reports the corresponding

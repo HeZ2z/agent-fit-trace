@@ -142,6 +142,20 @@ export const messages: Record<string, string> = {
   /* ── Cloud sync ──────────────────────────────────────────────── */
   SYNC: "同步",
   "Cloud sync": "云端同步",
+  "Cloud sync consent": "云端同步授权",
+  "Sync is scoped to this account and API endpoint. Pulled workouts are never queued for upload.":
+    "同步仅适用于此账号和 API 地址。拉取的训练记录不会进入上传队列。",
+  "Cloud sync is enabled for this account on this API endpoint. Uploads run when you start a manual sync.":
+    "此账号已在此 API 地址启用云端同步。上传会在你手动开始同步时执行。",
+  "Turn off cloud sync": "关闭云端同步",
+  "{count} existing device records are not yet authorized for upload.":
+    "还有 {count} 条现有设备记录尚未获准上传。",
+  "Existing records: include": "现有记录：纳入同步",
+  "Existing records: leave on device": "现有记录：保留在设备",
+  "This choice applies at opt-in. New local workouts are queued while enabled; records created while disabled stay on this device until you explicitly include existing records.":
+    "此选择在启用时生效。启用期间的新本地训练会加入上传队列；关闭期间创建的记录会保留在设备，直到你明确选择纳入现有记录。",
+  "Enable cloud sync": "启用云端同步",
+  "Saving…": "正在保存…",
   "Optional and manual. Nothing is uploaded until you start a sync; your device stays the source of truth.":
     "可选且手动。在你开始同步之前不会上传任何内容；你的设备始终是数据的权威来源。",
   "Sync status": "同步状态",
@@ -157,10 +171,10 @@ export const messages: Record<string, string> = {
   Conflicts: "冲突",
   "Same workout id, different content. Nothing is overwritten and nothing is deleted.":
     "相同的训练 id、不同的内容。系统不会覆盖任何一方，也不会删除任何记录。",
-  "Acknowledging a conflict removes it from this result only. Nothing is deleted and nothing is uploaded.":
-    "确认冲突只会将其从本次结果中移除。不会删除任何内容，也不会自动上传。",
-  "Workout records are immutable, so the same conflict appears again on the next manual sync; keeping the cloud copy does not delete your device copy.":
-    "训练记录不可变，因此同一冲突会在下次手动同步时再次出现；保留云端副本不会删除你设备上的副本。",
+  "Your choice is remembered for these exact copies. If either copy changes, the conflict appears again. Both records remain unchanged.":
+    "系统会记住你对这两个副本的选择。如果任一副本发生变化，冲突会再次出现。两条记录都保持不变。",
+  "Keeping the cloud copy does not delete your device copy. Keeping local leaves it device-only; exporting shares the local copy.":
+    "保留云端副本不会删除设备副本。仅保留本地会让它继续留在设备上；导出会分享本地副本。",
   "Device copy: {date} · {type}": "设备副本：{date} · {type}",
   "Cloud copy: {date} · {type}": "云端副本：{date} · {type}",
   "Keep cloud": "保留云端",
@@ -175,8 +189,8 @@ export const messages: Record<string, string> = {
     "无法打开分享面板。此冲突仍保留在列表中。",
   "No conflicts. Local and cloud records agree where they overlap.":
     "没有冲突。本地与云端重叠的记录内容一致。",
-  "Conflict acknowledged for this run only. Nothing was deleted or uploaded; it will appear again on the next manual sync.":
-    "此冲突仅在本次同步中确认。未删除或上传任何内容；它会在下次手动同步时再次出现。",
+  "This unchanged conflict has a saved choice. Both original records remain intact.":
+    "此冲突内容未变化，已保存你的选择。两个原始记录都保持完整。",
   "You appear to be offline. Nothing was uploaded; local workouts stay on this device. Try again when you reconnect.":
     "似乎已离线。未上传任何内容；本地训练仍保存在此设备上。重新联网后再试。",
   "Your session is no longer valid. Sign in again to sync.":

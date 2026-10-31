@@ -41,6 +41,7 @@ import { useWorkoutData } from "@/data/provider";
 import { LOCAL_GUEST_OWNER_ID } from "@/data/sessionDraftSchema";
 import { readSleepEntries, resolveAttachableSleep, type SleepEntry } from "@/health/sleepStore";
 import { useI18n } from "@/i18n";
+import { readSyncConfig } from "@/sync/syncClient";
 import { SPACING } from "@/theme";
 import { useSkin } from "@/theme/skin";
 import {
@@ -715,7 +716,11 @@ export default function LogScreen() {
     setSaving(true);
     setSaveError(null);
     try {
-      const result = await repository.saveWorkout(toSaveInput(record));
+      const syncConfig = readSyncConfig();
+      const scope = authStatus === "signed-in" && session?.user.id && syncConfig.status === "configured"
+        ? { accountId: session.user.id, endpoint: syncConfig.baseUrl }
+        : undefined;
+      const result = await repository.saveWorkout(toSaveInput(record), { scope });
       setSuccess(result.created ? "created" : "duplicate");
       // Clear the saved draft only when this editor still shows the submitted
       // session for the same owner. Edits during the write (or an owner switch)
