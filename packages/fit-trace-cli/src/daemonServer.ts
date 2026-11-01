@@ -285,9 +285,16 @@ function defaultExtensionPath(): string {
   return join(resolve(here, "..", "..", ".."), ".pi", "extensions", "fit-trace", "index.ts");
 }
 
-/** Why local-pi cannot run, when it cannot. */
+/** Whether local-pi can run, and which extension file to use when it can. */
 export interface PiAvailability {
   available: boolean;
+  /**
+   * Present iff `available` is true: the extension file that was actually
+   * found. A coached run MUST use this rather than the requested path, so a
+   * fallback candidate is honoured instead of silently reverting to the first
+   * (possibly absent) choice.
+   */
+  path?: string;
   /**
    * Present iff `available` is false. `code` reuses the shared availability
    * enum so the app renders it without a daemon-specific vocabulary.
@@ -296,32 +303,46 @@ export interface PiAvailability {
 }
 
 /**
- * Decide whether the local-pi backend can actually run a coached session.
+ * Decide whether the local-pi backend can run a coached session, and WHICH
+ * extension file it should load.
  *
- * Both halves are required, and they fail for different reasons that the user
- * must be able to tell apart:
+ * The path is not taken on faith. A packaged app ships the extension as a
+ * resource next to the daemon, but the exact location can differ between a
+ * repackaged build, an operator override, and a source checkout; hard-failing
+ * on the first candidate would turn a recoverable path mismatch into "local
+ * coaching is broken". So the candidates are tried in order and the first
+ * existing one wins.
  *
- * - the `pi` CLI is not on PATH → install pi;
- * - the CLI is present but the extension is missing → the build is broken or
- *   the path override is wrong. Reporting this as `cli-not-installed` would
- *   send the user to reinstall a CLI they already have, which is the exact
- *   inversion this function exists to remove.
+ * Candidates, in priority order:
+ *   1. `extensionPath` — the explicit caller's choice (`--extension`, which the
+ *      desktop shell always passes when packaged);
+ *   2. `<daemonDir>/pi-extension.mjs` — the resource layout this daemon ships
+ *      with, resolved from the running file rather than assumed;
+ *   3. `<daemonDir>/../pi-extension.mjs` — one level up, covering a launcher
+ *      that stages resources in a sibling directory;
+ *   4. the source-checkout default under `<repo>/.pi/extensions/`.
  *
- * `extensionPath` is resolved and probed here rather than inside the runtime
- * factory because availability is advertised on discovery, long before any run
- * starts. A file-existence check is deliberately the bar: it cannot prove the
- * extension *loads*, so a present-but-broken extension still fails at run time
- * with `EXTENSION_ERROR`. That is preferable to the alternative — treating
- * "cannot prove it loads" as unavailable would disable coaching on every pi
- * version, including the verified one.
+ * The returns distinguish the failures a user can act on:
+ * - no `pi` CLI at all → `cli-not-installed`;
+ * - a CLI but no extension anywhere in the candidate list → a packaging/build
+ *   failure, reported with every path that was tried. It is deliberately NOT
+ *   reported as "install pi": that sends the user to fix something that is
+ *   already correct, the exact inversion this function exists to remove.
+ *
+ * A file-existence check is deliberately the bar. It cannot prove the extension
+ * *loads*, so a present-but-broken file still fails at run time with
+ * `EXTENSION_ERROR`; requiring a load probe would disable coaching on every pi
+ * version we support, including the verified one.
  *
  * Pure apart from the injected `pathExists`, so every branch is unit-testable.
  */
 export function resolvePiAvailability(options: {
   /** Result of the `pi --version` presence probe. */
   cliAvailable: boolean;
-  /** Absolute path the coached run will pass to `pi -e`. */
-  extensionPath: string;
+  /** Explicitly requested extension path (already resolved by the caller). */
+  extensionPath?: string;
+  /** Directory of the running daemon file; drives candidates 2 and 3. */
+  daemonDir?: string;
   /** Injected for tests; defaults to `fs.existsSync`. */
   pathExists?: (path: string) => boolean;
 }): PiAvailability {
@@ -335,19 +356,49 @@ export function resolvePiAvailability(options: {
     };
   }
   const exists = options.pathExists ?? existsSync;
-  if (!exists(options.extensionPath)) {
-    return {
-      available: false,
-      reason: {
-        code: "cli-version-unsupported",
-        message:
-          `pi CLI is installed, but its Fit Trace extension is missing at ` +
-          `${options.extensionPath}. This build cannot run local coaching; ` +
-          `reinstall it or run from a source checkout.`,
-      },
-    };
+  const candidates = piExtensionCandidates(options);
+  for (const candidate of candidates) {
+    if (exists(candidate)) {
+      // `path` is the value a coached run must pass to `pi -e`; it may differ
+      // from the caller's request when a fallback matched.
+      return { available: true, path: candidate };
+    }
   }
-  return { available: true };
+  return {
+    available: false,
+    reason: {
+      code: "cli-version-unsupported",
+      message:
+        `pi CLI is installed, but no Fit Trace extension was found. Tried: ` +
+        `${candidates.join(", ")}. This build cannot run local coaching; ` +
+        `reinstall it or run from a source checkout.`,
+    },
+  };
+}
+
+/**
+ * The extension locations to try, most specific first, deduplicated.
+ *
+ * Kept separate from the check so the ordering is directly testable and the
+ * failure message can list exactly what was attempted.
+ */
+export function piExtensionCandidates(options: {
+  extensionPath?: string;
+  daemonDir?: string;
+}): string[] {
+  const candidates: string[] = [];
+  const push = (value: string | undefined): void => {
+    if (value !== undefined && value !== "" && !candidates.includes(value)) {
+      candidates.push(value);
+    }
+  };
+  push(options.extensionPath);
+  if (options.daemonDir !== undefined && options.daemonDir !== "") {
+    push(join(options.daemonDir, "pi-extension.mjs"));
+    push(join(options.daemonDir, "..", "pi-extension.mjs"));
+  }
+  push(defaultExtensionPath());
+  return candidates;
 }
 
 function defaultDistDir(): string {
@@ -494,17 +545,20 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
 
   // Resolve once: the same path feeds both the availability check and the
   // runtime factory, so discovery and execution cannot disagree about which
-  // extension a coached run will load.
-  const extensionPath = options.extensionPath ?? defaultExtensionPath();
+  // extension a coached run will load. `resolvePiAvailability` may return a
+  // fallback candidate rather than the requested path, so the RUN must use
+  // `piAvailability.path` — using `extensionPath` here would re-break exactly
+  // the mismatch the fallback exists to absorb.
   const piAvailability = resolvePiAvailability({
     cliAvailable: options.piAvailable !== false,
-    extensionPath,
+    ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
+    daemonDir: dirname(fileURLToPath(import.meta.url)),
     ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
   });
   const runtimeFactory =
     options.runtimeFactory ??
-    (piAvailability.available
-      ? defaultRuntimeFactory(extensionPath, process.cwd())
+    (piAvailability.available && piAvailability.path !== undefined
+      ? defaultRuntimeFactory(piAvailability.path, process.cwd())
       : unavailablePiRuntimeFactory());
   // An injected factory is an explicit test/embedding opt-in: it owns its own
   // extension resolution and must not be gated by this path check.

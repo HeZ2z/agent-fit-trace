@@ -8,7 +8,11 @@ import { join } from "node:path";
 import { validateWorkoutRecord } from "@agent-fit-trace/core";
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { parseCoachingCapabilityDiscovery } from "@agent-fit-trace/api-contracts";
-import { resolvePiAvailability, startDaemonServer } from "../packages/fit-trace-cli/src/daemonServer.ts";
+import {
+  piExtensionCandidates,
+  resolvePiAvailability,
+  startDaemonServer,
+} from "../packages/fit-trace-cli/src/daemonServer.ts";
 import type { DaemonServer, DaemonServerOptions } from "../packages/fit-trace-cli/src/daemonServer.ts";
 import { LOCAL_DAEMON_BEARER } from "../server/auth/localVerifier.ts";
 import { CAPABILITY_HEADER } from "../server/coaching/coachingServer.ts";
@@ -412,23 +416,54 @@ test("resolvePiAvailability separates a missing CLI from a missing extension", (
   assert.equal(noCli.available, false);
   assert.equal(noCli.reason?.code, "cli-not-installed");
 
-  // CLI present and the extension is there: packaging is sound.
+  // CLI present and the extension is there: packaging is sound, and the
+  // resolved path is reported back so the run uses exactly what was verified.
   const ok = resolvePiAvailability({ cliAvailable: true, extensionPath: "/app/pi-extension.mjs", pathExists: exists });
   assert.equal(ok.available, true);
   assert.equal(ok.reason, undefined);
+  assert.equal(ok.path, "/app/pi-extension.mjs");
 
-  // CLI present but the extension is gone. This must NOT be reported as
+  // CLI present but no candidate exists anywhere. This must NOT be reported as
   // "cli-not-installed": that would send the user to reinstall a CLI they
   // already have, which is the exact inversion #67 exists to remove.
   const noExtension = resolvePiAvailability({
     cliAvailable: true,
     extensionPath: "/app/pi-extension.mjs",
+    daemonDir: "/app/Contents/Resources",
     pathExists: missing,
   });
   assert.equal(noExtension.available, false);
   assert.equal(noExtension.reason?.code, "cli-version-unsupported");
-  assert.match(noExtension.reason?.message ?? "", /pi-extension\.mjs/, "the message must name the path");
+  assert.match(noExtension.reason?.message ?? "", /pi-extension\.mjs/, "the message must name the paths tried");
   assert.doesNotMatch(noExtension.reason?.message ?? "", /on PATH/, "must not blame the CLI");
+});
+
+test("a wrong --extension falls back to the resource next to the daemon", () => {
+  // The self-healing case: the shell passes a path that does not exist (a
+  // repackaged layout, an operator override, a moved resource), but the
+  // extension shipped beside the daemon. Hard-failing on the first candidate
+  // would report "local coaching broken" for a recoverable mismatch.
+  const daemonDir = "/app/Contents/Resources";
+  const shipped = `${daemonDir}/pi-extension.mjs`;
+  const resolution = resolvePiAvailability({
+    cliAvailable: true,
+    extensionPath: "/stale/path/pi-extension.mjs",
+    daemonDir,
+    pathExists: (candidate) => candidate === shipped,
+  });
+  assert.equal(resolution.available, true);
+  assert.equal(resolution.path, shipped, "the RUN must get the path that was actually found");
+});
+
+test("piExtensionCandidates orders the explicit path before the shipped resources", () => {
+  const candidates = piExtensionCandidates({
+    extensionPath: "/explicit/pi-extension.mjs",
+    daemonDir: "/app/Contents/Resources",
+  });
+  assert.equal(candidates[0], "/explicit/pi-extension.mjs");
+  assert.ok(candidates.includes("/app/Contents/Resources/pi-extension.mjs"));
+  // Deduplicated: the same path requested twice must not appear twice.
+  assert.equal(new Set(candidates).size, candidates.length);
 });
 
 test("a packaged daemon with pi but a missing extension advertises coaching unavailable", async () => {
