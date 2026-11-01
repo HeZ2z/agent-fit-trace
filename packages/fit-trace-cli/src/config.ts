@@ -23,6 +23,15 @@ export interface LauncherFlags {
   runtime?: string;
   /** `daemon` only: data directory. `start` never reads it. */
   data?: string;
+  /**
+   * `daemon` only: absolute path to the pi extension coached runs load.
+   *
+   * Packaged builds must set this — the default is derived from
+   * `import.meta.url` and is only correct in a source checkout. When set, the
+   * path also decides `local-pi` availability, so a missing extension is
+   * reported instead of advertised.
+   */
+  extension?: string;
 }
 
 export interface ResolvedLauncherConfig {

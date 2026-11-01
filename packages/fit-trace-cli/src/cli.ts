@@ -41,6 +41,10 @@ function printUsage(): void {
       "  --data PATH    data directory (default $FIT_TRACE_DATA_DIR or ~/.fit-trace/data)",
       "  --dist PATH    built app shell directory (default <repo>/app/dist; the shell is",
       "                 served only when a build exists — headless data plane works without)",
+      "  --extension PATH",
+      "                 pi extension coached runs load (default <repo>/.pi/extensions/fit-trace).",
+      "                 Packaged builds must set it; a missing file reports local coaching",
+      "                 unavailable instead of advertising a coach that cannot start)",
     ].join("\n"),
   );
 }
@@ -74,6 +78,9 @@ function parseArgs(argv: string[]): { command: string; flags: LauncherFlags } {
       index += 1;
     } else if (token === "--runtime") {
       flags.runtime = takeValue(argv, index + 1, "--runtime");
+      index += 1;
+    } else if (token === "--extension") {
+      flags.extension = takeValue(argv, index + 1, "--extension");
       index += 1;
     } else if (token === "--help" || token === "-h") {
       printUsage();
@@ -125,6 +132,7 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
     ...(flags.port !== undefined ? { port: flags.port } : {}),
     dataDir,
     ...(flags.dist !== undefined ? { distDir: flags.dist } : {}),
+    ...(flags.extension !== undefined ? { extensionPath: resolve(flags.extension) } : {}),
     piAvailable: pi.available,
   });
   console.log(`fit-trace daemon listening at ${server.url}`);
