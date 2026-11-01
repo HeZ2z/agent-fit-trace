@@ -6,6 +6,14 @@ dist/
 build/
 *.tsbuildinfo
 
+# Desktop packaging output: electron-builder installers (`release/`) and the
+# staged daemon bundle + App shell copy (`staging/`). Both are reproducible via
+# `pnpm desktop:package`; CI uploads the installers as workflow artifacts instead
+# of committing them. The desktop package also keeps a package-local .gitignore;
+# these entries keep CI artifacts out of the tree even without it.
+packages/fit-trace-desktop/release/
+packages/fit-trace-desktop/staging/
+
 # Test output
 coverage/
 
@@ -23,6 +31,18 @@ pnpm-debug.log*
 
 # Local orchestration state
 .omx/
+
+# Local package-manager and tool caches. pnpm's real store lives outside the
+# repo (`pnpm store path` → ~/Library/pnpm/store/v10); a `.pnpm-store/` here is
+# an orphan from a one-off invocation, never the configured store.
+.pnpm-store/
+.npm-cache/
+**/.npm-cache/
+
+# Local scratch/experiment directories that are not part of the product or the
+# workspace package list.
+prototypes/
+sites/
 
 # Local app data (workout store, durable coaching journal)
 .pi/fit-trace/
