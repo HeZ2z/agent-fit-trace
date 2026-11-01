@@ -692,7 +692,8 @@ the Android package is `com.pifittrace.app` in
 [`mobile/app.json`](../mobile/app.json). The Expo project is already linked in
 `app.json`, so no `eas init` step is needed.
 
-Build from `mobile/` with an authenticated Expo account:
+Builds run from CI; the same commands work locally with an authenticated Expo
+account:
 
 ```sh
 cd mobile
@@ -701,10 +702,14 @@ npx eas build -p android --profile production
 ```
 
 The preview command produces the internal APK used for device testing; the
-production command produces the release AAB. Native builds are manual and only
-for fixed versions, not every commit. Checks stay light (typecheck, tests,
-`expo export`); build time is not spent on artifacts with no native change. EAS
-only builds on demand, not from CI.
+production command produces the release AAB. **CI owns both now**: a `v*` tag
+builds the preview APK and attaches it to the GitHub Release, and the production
+AAB requires an explicit manual dispatch of the release workflow (never a tag,
+because `production` increments the remote version code). See
+[`docs/release.md`](release.md) for triggers, secrets and the artifact matrix —
+this section only records the mobile-side profiles. Native builds are still not
+run per commit: checks stay light (typecheck, tests, `expo export`), and build
+time is not spent on artifacts with no native change.
 
 Android is the only supported target. iOS is deferred until before the public
 store release; there is no iOS build configuration or verification yet.
@@ -808,8 +813,10 @@ checks.
   on a device with Health Connect installed; the native adapter is deliberately
   thin so the pure coverage is the contract. Resting heart rate is requested and
   shown in the status line but not read yet.
-- **EAS builds are manual.** Builds require an authenticated Expo account and
-  are not triggered per commit.
+- **EAS builds are CI-driven but not per commit.** A `v*` tag builds the
+  preview APK (see [`docs/release.md`](release.md)); ordinary commits produce no
+  artifacts. The production AAB and every store upload remain explicit manual
+  steps, and nothing submits to Play automatically.
 
 ### PR3 device screenshots (Expo Go, build env configured)
 

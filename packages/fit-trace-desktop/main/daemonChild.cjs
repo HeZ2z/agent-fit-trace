@@ -8,8 +8,9 @@
  * process (`main.cjs`) is the only electron-aware consumer.
  *
  * Responsibilities:
- *   - spawn `node <cli.ts> daemon --port 0 --data <dir>` and resolve the
- *     daemon's loopback URL from its stdout ("listening at <url>");
+ *   - spawn `node <cli.ts|daemon.mjs> daemon --port 0 --data <dir> [--dist <dir>]`
+ *     and resolve the daemon's loopback URL from its stdout
+ *     ("listening at <url>");
  *   - health-check the daemon via GET /api/v1/public-config;
  *   - restart backoff planning (exponential 1s/2s/4s, capped at 4s);
  *   - stop with SIGTERM → 3s grace → SIGKILL (preserving the daemon's own
@@ -92,12 +93,20 @@ function healthCheck(url) {
  * Spawn the daemon and resolve its loopback URL once stdout announces it.
  *
  * @param {object} options
- * @param {string} options.nodePath absolute path to a real node binary
- *   (NOT process.execPath, which is the Electron binary inside the shell)
- * @param {string} options.cliPath path to packages/fit-trace-cli/src/cli.ts
+ * @param {string} options.nodePath absolute path to a node-compatible binary.
+ *   Dev: a real `node` (NOT process.execPath, which is the Electron binary);
+ *   packaged: the Electron binary re-entered as Node via
+ *   `ELECTRON_RUN_AS_NODE=1`, which `main/paths.cjs` supplies.
+ * @param {string} options.cliPath path to the daemon entry: the source
+ *   `packages/fit-trace-cli/src/cli.ts` in dev, or the esbuild `daemon.mjs`
+ *   bundle inside the packaged app's resources directory
  * @param {string | undefined} options.dataDir daemon data directory (--data);
  *   when omitted the daemon resolves its own default (`resolveDataDir`:
  *   `$FIT_TRACE_DATA_DIR` or `~/.fit-trace/data`)
+ * @param {string | undefined} [options.distDir] built app shell directory
+ *   (--dist). Omitted in dev so the daemon keeps its own `<repo>/app/dist`
+ *   default; set in packaged builds, where that default resolves against the
+ *   bundle and would be wrong.
  * @param {number} [options.port=0] preferred port; 0 lets the OS pick a free one
  * @param {NodeJS.ProcessEnv} [options.env] child environment (FIT_TRACE_DATA_DIR etc.)
  * @param {number} [options.urlTimeoutMs] how long to wait for the listen line
@@ -105,7 +114,7 @@ function healthCheck(url) {
  * @returns {{ child: import("node:child_process").ChildProcess, url: Promise<string> }}
  *   `url` rejects if the child exits or stays silent past the timeout.
  */
-function spawnDaemon({ nodePath, cliPath, dataDir, port = 0, env, urlTimeoutMs = URL_TIMEOUT_MS }) {
+function spawnDaemon({ nodePath, cliPath, dataDir, distDir, port = 0, env, urlTimeoutMs = URL_TIMEOUT_MS }) {
   const child = spawn(
     nodePath,
     [
@@ -114,6 +123,7 @@ function spawnDaemon({ nodePath, cliPath, dataDir, port = 0, env, urlTimeoutMs =
       "--port",
       String(port),
       ...(dataDir ? ["--data", dataDir] : []),
+      ...(distDir ? ["--dist", distDir] : []),
     ],
     { env, stdio: ["ignore", "pipe", "pipe"] },
   );

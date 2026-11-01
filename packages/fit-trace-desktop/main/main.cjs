@@ -12,7 +12,8 @@
  *
  * Lifecycle:
  *   1. single-instance lock (second launch focuses the existing window);
- *   2. spawn the daemon (`node cli.ts daemon --port 0 --data <dir>`);
+ *   2. spawn the daemon (`node cli.ts daemon --port 0 --data <dir>` in dev;
+ *      package: the Electron binary as Node + bundled `daemon.mjs` + `--dist`);
  *   3. BrowserWindow (contextIsolation, sandbox, no nodeIntegration) loads
  *      the daemon URL;
  *   4. health poll every 5s: two consecutive failures trigger a daemon
@@ -27,9 +28,14 @@
  * Testing trade-off: the startup/recovery/retry/give-up orchestration in this
  * file is coupled to electron (app, BrowserWindow, dialog) and is deliberately
  * NOT extracted behind injection seams for automated tests — the pure helpers
- * it uses are covered by tests/desktopDaemonChild.test.ts, while the
- * orchestration itself is covered by reproducible manual verification
- * (documented in the PR description).
+ * it uses are covered by tests/desktopDaemonChild.test.ts and
+ * tests/desktopPaths.test.ts, while the orchestration itself is covered by
+ * reproducible manual verification (documented in the PR description).
+ *
+ * Packaging: the same file runs in dev and in an unsigned packaged build.
+ * `main/paths.cjs` owns the difference (daemon bundle + staged app-dist +
+ * `ELECTRON_RUN_AS_NODE=1` under `process.resourcesPath` vs. the repo's
+ * `cli.ts` and a real `node`); nothing here path-joins a repo layout.
  */
 
 const path = require("node:path");
@@ -42,9 +48,8 @@ const {
   spawnDaemon,
   stopDaemonChild,
 } = require("./daemonChild.cjs");
+const { MIN_NODE_MAJOR, describeLaunchPlan, isSupportedNodeVersion, resolveLaunchPlan } = require("./paths.cjs");
 
-const REPO_ROOT = path.join(__dirname, "..", "..", "..");
-const CLI_PATH = path.join(REPO_ROOT, "packages", "fit-trace-cli", "src", "cli.ts");
 const DATA_DIR = process.env.FIT_TRACE_DATA_DIR || undefined;
 /** Health poll cadence. */
 const HEALTH_POLL_MS = 5_000;
@@ -77,28 +82,33 @@ const RETRY_PAGE_URL =
   );
 
 /**
- * Resolve a real node binary. Inside the Electron main process
- * `process.execPath` is the Electron binary itself, which cannot run the
- * CLI; dev.cjs passes the node that started it via this env var.
+ * Launch plan for this run. `app.isPackaged` is read once at startup; both
+ * branches and their invariants live in `main/paths.cjs` so they are testable
+ * without electron. Logged once so a packaged failure is diagnosable from a
+ * user's log excerpt.
  */
-function resolveNodePath() {
-  const fromEnv = process.env.FIT_TRACE_DESKTOP_NODE;
-  if (fromEnv && fromEnv.length > 0) {
-    return fromEnv;
-  }
-  return "node";
-}
+const LAUNCH_PLAN = resolveLaunchPlan({
+  packaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  devRepoRoot: path.join(__dirname, "..", "..", ".."),
+  execPath: process.execPath,
+  env: process.env,
+});
 
 function startDaemon() {
   daemon = spawnDaemon({
-    nodePath: resolveNodePath(),
-    cliPath: CLI_PATH,
+    nodePath: LAUNCH_PLAN.nodePath,
+    cliPath: LAUNCH_PLAN.daemonPath,
     // FIT_TRACE_DATA_DIR passes through the env untouched (dev.cjs inherits
     // the caller's environment); unset means the daemon applies its own
     // default resolution ($FIT_TRACE_DATA_DIR or ~/.fit-trace/data).
     dataDir: DATA_DIR,
+    // Packaged builds must name the staged shell explicitly: the daemon's own
+    // default is `<import.meta.url>/../../..`-relative, and when bundled that
+    // is the resources dir, not a repo root.
+    distDir: LAUNCH_PLAN.distDir,
     port: 0,
-    env: process.env,
+    env: LAUNCH_PLAN.env,
   });
   daemon.child.stdout.on("data", (chunk) => process.stdout.write(`[daemon] ${chunk}`));
   daemon.child.stderr.on("data", (chunk) => process.stderr.write(`[daemon] ${chunk}`));
@@ -212,7 +222,8 @@ async function givingUp() {
   dialog.showErrorBox(
     "fit-trace daemon",
     "The local fit-trace daemon failed to start after 3 restart attempts.\n\n" +
-      "Check the terminal output for details, then relaunch: pnpm desktop:dev",
+      "Check the terminal output for details, then " +
+      (app.isPackaged ? "relaunch the app." : "relaunch: pnpm desktop:dev"),
   );
   // Last exit path: the final child must not survive the shell. stop is
   // idempotent, so an already-stopped (or never-spawned) child is a no-op.
@@ -302,6 +313,20 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    console.log(describeLaunchPlan(LAUNCH_PLAN));
+    // The daemon bundle needs `node:sqlite` (Node >= 24). In dev the caller's
+    // node is checked by the CLI itself; packaged, the runtime is Electron's
+    // own Node, so a mismatch would otherwise surface as an obscure child
+    // failure — fail visibly with the version instead.
+    if (!isSupportedNodeVersion(process.versions.node)) {
+      dialog.showErrorBox(
+        "fit-trace",
+        `This build needs Node >= ${MIN_NODE_MAJOR} (Electron's bundled runtime reports ` +
+          `${process.versions.node}).\n\nReinstall the app from an official internal build.`,
+      );
+      app.exit(1);
+      return;
+    }
     startDaemon()
       .then(() => bootShell())
       .catch((error) => {

@@ -77,6 +77,15 @@ error. A full release additionally requires authenticated API tests,
 ownership/RLS tests, database persistence tests, login/session tests, and
 default pi coaching integration tests.
 
+This section covers the **web** deployment only. Mobile (Android APK/AAB) and
+desktop (unsigned macOS/Windows/Linux) artifacts are built by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) — see
+[`release.md`](release.md) for its trigger model, secrets and artifact matrix.
+A `v*` tag fans out to both: Vercel deploys the web app from the same commit
+while the release workflow attaches the native artifacts to a GitHub Release.
+Before tagging, `node scripts/sync-versions.mjs --check` must pass; it also runs
+in CI on every push and PR.
+
 ## Remote MCP endpoint (`/api/mcp`)
 
 The remote MCP endpoint is an OAuth 2.1 resource server for hosted MCP clients.

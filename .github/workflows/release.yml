@@ -1,0 +1,363 @@
+# Release artifacts built in CI instead of by hand.
+#
+# Why this exists: `docs/mobile.md` used to say "EAS builds are manual and only
+# for fixed versions, not every commit", and the desktop shell had no build
+# chain at all. That made every release a hand-run checklist on a maintainer's
+# laptop, with no reproducible inputs and no artifact provenance. This workflow
+# makes the two decisions explicit instead:
+#
+#   * the version guard runs on every trigger and is cheap;
+#   * artifacts are built only for releases — tags `v*`, or a manual dispatch
+#     where you pick the platform. Pull requests never build artifacts (see the
+#     `if:` guards below); PR-side version drift is caught by `ci.yml`.
+#
+# Cost model, deliberately split:
+#
+#   fast  ─ version-guard (seconds, ubuntu-latest)
+#   slow  ─ android (EAS cloud, tens of minutes, needs the EXPO_TOKEN secret)
+#   slow  ─ desktop (3-OS matrix: install, Vite build, esbuild daemon bundle,
+#            electron-builder)
+#   cheap ─ release (collect artifacts, publish; no rebuild)
+#
+# What this does NOT do this round: no iOS, no signing/notarization, no
+# auto-update, no store submission. See `docs/release.md` for the artifact
+# matrix, the secret checklist, dry runs and promotion.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "What to build"
+        type: choice
+        options: [all, android, desktop]
+        default: all
+      android_profile:
+        description: "Android EAS profile (production ships an AAB with remote auto-increment; never chosen on a tag push)"
+        type: choice
+        options: [preview, production]
+        default: preview
+      publish:
+        description: "Attach the collected artifacts to a GitHub Release (tags always publish)"
+        type: boolean
+        default: false
+
+# Least privilege by default; the `release` job opts into `contents: write`.
+permissions:
+  contents: read
+
+# One release lane per ref: a second tag push for the same tag (or a re-run
+# racing a manual dispatch) queues instead of fighting over the same GitHub
+# Release. `cancel-in-progress` stays false — killing a half-uploaded release is
+# worse than waiting, and artifact uploads are the expensive part.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # `mobile/eas.json` declares `cli.version: ">= 16.0.0"`; pinning the major keeps
+  # CI on a CLI the profile file is known to accept instead of tracking latest.
+  EAS_VERSION: "16.x"
+
+jobs:
+  # ── fast ────────────────────────────────────────────────────────────────────
+  # Every versioned file must agree with the root package.json before anything
+  # expensive starts. On a tag push the tag itself must match too.
+  version-guard:
+    name: Version guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No pnpm install and no store cache: `sync-versions.mjs` is plain Node
+      # with only `node:*` imports, so the guard stays a few seconds even when
+      # the dependency cache is cold.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Matches `.nvmrc` (24) and the runtime the desktop app ships.
+          node-version: 24
+
+      - name: Versions are in lockstep
+        run: node scripts/sync-versions.mjs --check
+
+      - name: Tag matches the package version
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match the root package.json version ${version}"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches package.json ${version}"
+
+  # ── slow: Android via EAS ───────────────────────────────────────────────────
+  # `preview` = internal APK (what device testing uses). `production` = AAB with
+  # remote auto-increment and is reachable only through an explicit manual
+  # dispatch input, never from a tag push.
+  #
+  # We wait for the EAS build and download the artifact so the GitHub Release can
+  # attach it: a detached `--no-wait` build would leave the release without the
+  # APK and would need a second workflow just to collect it later. The tradeoff
+  # is a long-running job (the EAS queue is included in its wall time); raise
+  # `timeout-minutes` rather than switching to `--no-wait` on a whim.
+  #
+  # A missing EXPO_TOKEN is a hard failure when Android was explicitly
+  # requested, and a skipped-with-notice job on a tag push: a tag must still be
+  # able to publish the desktop artifacts even before the secret is provisioned.
+  android:
+    name: Android (EAS)
+    needs: version-guard
+    if: github.event_name == 'push' || inputs.platform == 'android' || inputs.platform == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # A tag push always builds the internal preview APK; only a manual dispatch
+      # may name `production`.
+      ANDROID_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.android_profile || 'preview' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check EXPO_TOKEN
+        id: expo_token
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # A tag push is implicit ("build everything"); a manual dispatch names
+          # the platform, so asking for `android` explicitly must not silently
+          # succeed with no APK.
+          ANDROID_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'android' || inputs.platform == 'all') }}
+        run: |
+          if [ -n "${EXPO_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          if [ "${ANDROID_REQUESTED}" = "true" ]; then
+            echo "::error::EXPO_TOKEN is missing. Android was requested explicitly, so this job fails. Add the EXPO_TOKEN repository secret (see docs/release.md) and re-run."
+            exit 1
+          fi
+          echo "::notice::EXPO_TOKEN is not configured — skipping the Android artifact for this tag. Add the secret and re-run this workflow to attach an APK; see docs/release.md."
+
+      - name: Setup EAS
+        if: steps.expo_token.outputs.present == 'true'
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: ${{ env.EAS_VERSION }}
+          token: ${{ secrets.EXPO_TOKEN }}
+          # The app's JS dependencies are installed by EAS itself; do not pay for
+          # a local pnpm install in this job.
+          packager: false
+
+      - name: Build Android artifact
+        if: steps.expo_token.outputs.present == 'true'
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          mkdir -p ../artifacts
+          eas build --platform android --profile "${ANDROID_PROFILE}" --non-interactive --wait --json > ../artifacts/eas-build.json
+          # Tolerant parse: `--json` prints the build array to stdout, but the CLI
+          # may prepend progress chatter on some versions. Take the last JSON
+          # document and read the newest build's artifact URL.
+          url="$(node -e '
+            const fs = require("node:fs");
+            const raw = fs.readFileSync(process.argv[1], "utf8");
+            const start = raw.search(/[[{]/);
+            if (start === -1) { console.error("EAS --json output contained no JSON: " + raw.slice(0, 400)); process.exit(1); }
+            const parsed = JSON.parse(raw.slice(start));
+            const build = Array.isArray(parsed) ? parsed[parsed.length - 1] : parsed;
+            const url = build?.artifacts?.buildUrl ?? build?.artifacts?.applicationArchiveUrl;
+            if (!url) { console.error("EAS build finished without an artifact URL"); process.exit(1); }
+            process.stdout.write(url);
+          ' ../artifacts/eas-build.json)"
+          extension="apk"
+          if [ "${ANDROID_PROFILE}" = "production" ]; then extension="aab"; fi
+          # A tag ref is already a safe filename; a branch ref is not (slashes
+          # would create nested directories and break the upload glob below).
+          label="$(printf '%s' "${GITHUB_REF_NAME}" | tr '/ ' '__')"
+          curl --fail --location --output "../artifacts/fit-trace-android-${ANDROID_PROFILE}-${label}.${extension}" "${url}"
+          ls -lh ../artifacts
+
+      - name: Upload Android artifact
+        if: steps.expo_token.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ env.ANDROID_PROFILE }}
+          # Only the distributable: the raw EAS report (`artifacts/eas-build.json`)
+          # stays on the runner for debugging and is not published.
+          path: artifacts/fit-trace-android-*.*
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── slow: desktop (unsigned internal builds) ────────────────────────────────
+  # Three runners, one packaging chain: the Electron shell plus the bundled
+  # loopback daemon. No Node runtime is downloaded — the daemon runs on the app's
+  # own Electron binary with ELECTRON_RUN_AS_NODE=1 (`process.execPath`).
+  #
+  # Unsigned on purpose this round: no Apple Developer ID, no Windows
+  # code-signing certificate. macOS Gatekeeper and Windows SmartScreen will warn
+  # on first launch; `docs/release.md` records that and the phase-C secrets.
+  #
+  # pnpm 10 does not run electron's postinstall, so the binary is fetched
+  # explicitly below — the same `install.js` invocation `scripts/dev.cjs` uses.
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: version-guard
+    if: github.event_name == 'push' || inputs.platform == 'desktop' || inputs.platform == 'all'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+          - name: windows
+            os: windows-latest
+          - name: linux
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Matches `.nvmrc` (24) and the runtime the desktop app ships.
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare electron binary
+        # Mirrors the check in packages/fit-trace-desktop/scripts/dev.cjs: the
+        # npm package is installed but its binary is not, because pnpm 10 skips
+        # unapproved postinstall scripts. install.js is idempotent and fills the
+        # gap without approving scripts repository-wide.
+        run: pnpm --filter @agent-fit-trace/desktop exec node node_modules/electron/install.js
+
+      # Must run BEFORE packaging: the desktop staging step copies the built App
+      # shell out of `app/dist` and asserts it exists rather than building it, so
+      # that a desktop build never silently triggers a full Vite build.
+      - name: Build web app shell
+        run: pnpm build
+
+      - name: Build desktop runtime
+        # `desktop:build` → `pnpm --filter @agent-fit-trace/desktop run build`,
+        # which chains the package's own steps:
+        #   build:daemon    → packages/fit-trace-desktop/staging/daemon.mjs (esbuild)
+        #   prepare:runtime → asserts the electron binary (step above) and
+        #                     app/dist; no Node download happens — the daemon is
+        #                     spawned with ELECTRON_RUN_AS_NODE=1 from the app's
+        #                     own Electron binary (process.execPath)
+        #   build:runtime   → stages daemon + app shell for packaging
+        run: pnpm desktop:build
+
+      - name: Package unsigned
+        # `desktop:package` → `pnpm --filter @agent-fit-trace/desktop run package`,
+        # electron-builder writing to packages/fit-trace-desktop/release/.
+        # The electron-builder config already sets mac.identity: null and no
+        # notarize hooks; CSC_IDENTITY_AUTO_DISCOVERY=false is redundant but
+        # states the intent and would block accidental signing on a runner that
+        # carries an identity.
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm desktop:package
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          # Every path is under the electron-builder output dir. Real names from
+          # the packaging config (electron-builder appends the arch on macOS):
+          #   macOS   `fit-trace-<version>-arm64.dmg` / `...-mac.zip`
+          #   Windows `fit-trace Setup <version>.exe` (NSIS) / `fit-trace <version>.exe`
+          #   Linux   `fit-trace-<version>.AppImage`
+          # `staging/` (staged daemon + app shell) is intentionally not uploaded.
+          # `latest*.yml` and `*.blockmap` updater metadata are excluded: they are
+          # unsigned-build leftovers that no client consumes yet (docs/release.md).
+          path: |
+            packages/fit-trace-desktop/release/*.dmg
+            packages/fit-trace-desktop/release/*.pkg
+            packages/fit-trace-desktop/release/*.zip
+            packages/fit-trace-desktop/release/*.exe
+            packages/fit-trace-desktop/release/*.AppImage
+            packages/fit-trace-desktop/release/*.deb
+            packages/fit-trace-desktop/release/*.rpm
+            packages/fit-trace-desktop/release/*.snap
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── cheap: publish ──────────────────────────────────────────────────────────
+  # Collects whatever the build jobs uploaded and attaches it to the GitHub
+  # Release for the tag. Nothing is rebuilt and nothing is signed.
+  #
+  # Publishing requires a tag ref — a GitHub Release belongs to a tag, and a
+  # manual dispatch on a branch must never create one. On a tag push it
+  # publishes automatically; on a manual dispatch it also requires the `publish`
+  # input, so a dry run can build and inspect the artifacts without touching the
+  # Releases page.
+  release:
+    name: Publish release
+    needs: [version-guard, android, desktop]
+    # Run when the guard passed and at least one build job succeeded, with no
+    # build job failed. Skipped builds are expected (a `platform: android`
+    # re-dispatch, or an Android job skipped for a missing EXPO_TOKEN), and a
+    # job that merely skipped must not block attaching what *did* build.
+    if: >-
+      always() &&
+      needs.version-guard.result == 'success' &&
+      !contains(fromJSON('["failure", "cancelled"]'), needs.android.result) &&
+      !contains(fromJSON('["failure", "cancelled"]'), needs.desktop.result) &&
+      (needs.android.result == 'success' || needs.desktop.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: |
+          set -euo pipefail
+          count="$(find artifacts -type f ! -name 'eas-build.json' | wc -l | tr -d ' ')"
+          echo "collected ${count} distributable file(s)"
+          find artifacts -type f -exec ls -lh {} \;
+          if [ "${count}" = "0" ]; then
+            echo "::error::no artifacts were produced; refusing to publish an empty release"
+            exit 1
+          fi
+
+      - name: Nothing to publish for this run
+        if: >-
+          !startsWith(github.ref, 'refs/tags/') ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish != true)
+        run: |
+          echo "::notice::Artifacts are available on this run; no GitHub Release was published (not a tag push, or \`publish\` was not selected)."
+
+      - name: Publish to GitHub Release
+        if: >-
+          startsWith(github.ref, 'refs/tags/') &&
+          (github.event_name == 'push' || inputs.publish == true)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          # Unsigned internal builds: no firmware/auto-update metadata yet.
+          files: artifacts/**/*
+          fail_on_unmatched_files: true
