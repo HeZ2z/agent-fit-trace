@@ -27,6 +27,8 @@ const daemonChild = require("../packages/fit-trace-desktop/main/daemonChild.cjs"
     nodePath: string;
     cliPath: string;
     dataDir?: string;
+    distDir?: string;
+    extensionPath?: string;
     port?: number;
     env?: NodeJS.ProcessEnv;
     urlTimeoutMs?: number;
@@ -285,4 +287,55 @@ test("reclaimStaleJournalLock removes only a lock owned by a confirmed-dead pid"
   // No lock file at all: nothing to do.
   await rm(lockPath);
   assert.equal(daemonChild.reclaimStaleJournalLock(dir), false);
+});
+
+test("spawnDaemon forwards --extension only when a path is supplied", async () => {
+  // A stand-in for the CLI that behaves like `daemon` far enough for the URL
+  // promise to settle, and echoes the argv it actually received. The real CLI
+  // cannot be used here: it would probe for pi and boot a listener, and the
+  // assertion is about the flag, not about the daemon.
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-argv-"));
+  const argvLog = join(dir, "argv.json");
+  const fakeCli = join(dir, "fake-cli.mjs");
+  await writeFile(
+    fakeCli,
+    [
+      'import { writeFileSync } from "node:fs";',
+      `writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));`,
+      'console.log("fit-trace daemon listening at http://127.0.0.1:9");',
+      "setInterval(() => {}, 1000);",
+    ].join("\n"),
+  );
+
+  try {
+    // With an extension: the flag and its value are adjacent, in that order.
+    const withExtension = daemonChild.spawnDaemon({
+      nodePath: process.execPath,
+      cliPath: fakeCli,
+      extensionPath: "/app/Contents/Resources/pi-extension.mjs",
+      port: 0,
+      env: childEnv(),
+    });
+    await withExtension.url;
+    await daemonChild.stopDaemonChild(withExtension.child);
+    const forwarded = JSON.parse(await readFile(argvLog, "utf8")) as string[];
+    const index = forwarded.indexOf("--extension");
+    assert.notEqual(index, -1, "--extension must be forwarded");
+    assert.equal(forwarded[index + 1], "/app/Contents/Resources/pi-extension.mjs");
+
+    // Without one (dev): the flag is absent, so the daemon keeps its own
+    // repo-relative default.
+    const withoutExtension = daemonChild.spawnDaemon({
+      nodePath: process.execPath,
+      cliPath: fakeCli,
+      port: 0,
+      env: childEnv(),
+    });
+    await withoutExtension.url;
+    await daemonChild.stopDaemonChild(withoutExtension.child);
+    const plain = JSON.parse(await readFile(argvLog, "utf8")) as string[];
+    assert.equal(plain.includes("--extension"), false, "dev must not pass an explicit extension");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

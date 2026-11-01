@@ -19,6 +19,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const paths = require("../packages/fit-trace-desktop/main/paths.cjs") as {
   PACKAGED_DAEMON_FILE: string;
+  PACKAGED_EXTENSION_FILE: string;
   PACKAGED_DIST_DIR: string;
   MIN_NODE_MAJOR: number;
   resolveLaunchPlan: (options: {
@@ -32,6 +33,7 @@ const paths = require("../packages/fit-trace-desktop/main/paths.cjs") as {
     nodePath: string;
     daemonPath: string;
     distDir: string | undefined;
+    extensionPath: string | undefined;
     env: NodeJS.ProcessEnv;
   };
   nodeMajor: (version: string) => number;
@@ -41,6 +43,7 @@ const paths = require("../packages/fit-trace-desktop/main/paths.cjs") as {
     nodePath: string;
     daemonPath: string;
     distDir?: string;
+    extensionPath?: string;
   }) => string;
 };
 
@@ -49,6 +52,7 @@ const REPO_ROOT = "/repo/agent-fit-trace";
 const APP_BINARY = "/Applications/fit-trace.app/Contents/MacOS/fit-trace";
 const DAEMON_BUNDLE = join(RESOURCES, "daemon.mjs");
 const STAGED_DIST = join(RESOURCES, "app-dist");
+const BUNDLED_EXTENSION = join(RESOURCES, "pi-extension.mjs");
 
 test("packaged: launches the bundled daemon with the app's own binary as node", () => {
   const plan = paths.resolveLaunchPlan({
@@ -66,6 +70,11 @@ test("packaged: launches the bundled daemon with the app's own binary as node", 
   // The shell path must be explicit: the daemon's own default is
   // import.meta.url-relative and would resolve against the bundle.
   assert.equal(plan.distDir, STAGED_DIST);
+  // Same for the pi extension: the bundled copy is the only loadable one
+  // inside the app, and the daemon also derives coaching availability from it.
+  assert.equal(plan.extensionPath, BUNDLED_EXTENSION);
+  // The file name is a contract with electron-builder.yml extraResources.
+  assert.equal(paths.PACKAGED_EXTENSION_FILE, "pi-extension.mjs");
   // The child only behaves as node when this is set for the child.
   assert.equal(plan.env.ELECTRON_RUN_AS_NODE, "1");
   // Unrelated environment passes through untouched.
@@ -92,9 +101,14 @@ test("packaged: nothing resolves outside the app bundle (no repo dependency)", (
   );
   assert.ok(plan.daemonPath.startsWith(RESOURCES));
   assert.ok(plan.distDir?.startsWith(RESOURCES));
+  assert.ok(
+    plan.extensionPath !== undefined && plan.extensionPath.startsWith(RESOURCES),
+    `packaged extensionPath must live in resources: ${String(plan.extensionPath)}`,
+  );
   // The file names are a contract with electron-builder.yml extraResources.
   assert.equal(paths.PACKAGED_DAEMON_FILE, "daemon.mjs");
   assert.equal(paths.PACKAGED_DIST_DIR, "app-dist");
+  assert.equal(paths.PACKAGED_EXTENSION_FILE, "pi-extension.mjs");
 });
 
 test("dev: keeps the repo cli.ts and lets the daemon resolve its own app/dist", () => {
@@ -113,6 +127,9 @@ test("dev: keeps the repo cli.ts and lets the daemon resolve its own app/dist", 
   // Deliberately undefined: dev behaviour must be byte-for-byte unchanged, so
   // the daemon keeps its own <repo>/app/dist default.
   assert.equal(plan.distDir, undefined);
+  // Symmetrically undefined: the daemon resolves
+  // <repo>/.pi/extensions/fit-trace/index.ts itself in a checkout.
+  assert.equal(plan.extensionPath, undefined);
   assert.equal(plan.env.ELECTRON_RUN_AS_NODE, undefined);
 });
 
