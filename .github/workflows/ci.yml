@@ -34,3 +34,12 @@ jobs:
 
       - name: Exercise catalog is current
         run: node scripts/build-exercise-catalog.mjs --check
+
+      # Release guard: every versioned manifest (app/, packages/*,
+      # mobile/package.json, mobile/app.json expo.version) must match the root
+      # package.json version, which is the single source of truth. Same
+      # read-only `--check` shape as the catalog step above: it writes nothing
+      # and exits non-zero listing the drifted files. The script has no
+      # dependencies beyond `node:*`, so this step is nearly free here.
+      - name: Package versions are in lockstep
+        run: node scripts/sync-versions.mjs --check
