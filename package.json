@@ -16,6 +16,8 @@
     "start": "node packages/fit-trace-cli/src/cli.ts start",
     "daemon": "node packages/fit-trace-cli/src/cli.ts daemon",
     "desktop:dev": "pnpm --filter @agent-fit-trace/desktop run dev",
+    "desktop:build": "pnpm --filter @agent-fit-trace/desktop run build",
+    "desktop:package": "pnpm --filter @agent-fit-trace/desktop run package",
     "coach:local": "node packages/fit-trace-cli/src/cli.ts start",
     "build": "pnpm build:server && pnpm --filter @agent-fit-trace/app build",
     "build:server": "pnpm --filter @agent-fit-trace/app exec vite build --config vite.server.config.ts",
@@ -36,6 +38,7 @@
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.1",
     "typebox": "^1.3.30",
     "typescript": "^5.9.0"
   }

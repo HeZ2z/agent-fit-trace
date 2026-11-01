@@ -1,0 +1,157 @@
+# electron-builder configuration for the fit-trace desktop shell.
+#
+# SCOPE: UNSIGNED INTERNAL BUILDS ONLY. No code signing, no notarization, no
+# auto-update, no publisher. See docs/adr/0006-desktop-packaging.md for the
+# decision and docs/local-daemon.md ("Desktop shell") for the user-facing
+# caveats (Gatekeeper / SmartScreen warnings, no update channel).
+#
+# Layout contract with the shell — keep in sync with main/paths.cjs:
+#   <resources>/daemon.mjs     the esbuild daemon bundle (from staging/)
+#   <resources>/app-dist/      the built web shell served by the daemon
+# Both come from `scripts/*.cjs` staging, never from the repo tree directly, so
+# the packaged app cannot accidentally reference a checkout.
+#
+# What is deliberately ABSENT:
+#   - `publish:` — no auto-update channel exists this round.
+#   - `afterSign` / `notarize` hooks — nothing is signed or notarized.
+#   - `mac.identity` is explicitly null rather than unset, so a keychain
+#     identity can never be picked up by accident.
+
+appId: com.agentfittrace.desktop
+productName: fit-trace
+copyright: Copyright © 2026 fit-trace contributors
+
+directories:
+  # Electron-builder's build-resources dir (icons, entitlements). Only used for
+  # assets that exist in this repo; missing optional files are fine.
+  buildResources: build
+  output: release
+
+# The Electron version comes from the installed devDependency (electron 45),
+# which is also the runtime the daemon bundle executes on via
+# ELECTRON_RUN_AS_NODE. Pinning `electronVersion` here would let the two drift.
+npmRebuild: false
+# No node_modules are shipped: the daemon is a self-contained esbuild bundle and
+# the shell is plain .cjs. Installer deps (nsis, 7z) come from electron-builder.
+asar: true
+asarUnpack: []
+
+# Only the shell goes into the asar. The daemon bundle and the web shell are
+# extraResources (see below), so `app.asar` is ~75 KB of .cjs + package.json.
+#
+# `!node_modules/**` is LOAD-BEARING, not tidiness. electron-builder computes a
+# separate `nodeModuleFilePatterns` that appends `**/*`, which force-includes
+# any node_modules it finds in the project — and this package sits in a pnpm
+# workspace, so the first build packed the entire dependency graph (~40 MB,
+# 5869 files: @aws-sdk, @babel, @esbuild, the pi SDK...) into app.asar. The
+# packaged app never reads it: the daemon is a self-contained esbuild bundle and
+# every script in this package is plain .cjs using Node built-ins only. Exclude
+# it explicitly so a future dependency added to this manifest cannot silently
+# inflate the app.
+files:
+  - main/**/*.cjs
+  - scripts/*.cjs
+  - package.json
+  - "!node_modules/**"
+  - "!staging/**"
+  - "!release/**"
+  - "!**/*.map"
+  # Never ship signing material or local data inside the asar.
+  - "!**/*.p12"
+  - "!**/*.pfx"
+  - "!**/*.cer"
+  - "!**/*.mobileprovision"
+  - "!**/*.provisionprofile"
+  - "!**/*.pem"
+  - "!**/*.key"
+  - "!**/*.db"
+  - "!**/*.sqlite"
+  - "!**/*.sqlite3"
+
+# Extra resources land in <resources>/ next to app.asar.
+extraResources:
+  # The daemon bundle, executed by the app's own binary as node.
+  - from: staging/daemon.mjs
+    to: daemon.mjs
+  # The built web shell the daemon serves (passed as --dist by main/paths.cjs).
+  - from: staging/app-dist
+    to: app-dist
+  # Build provenance for support/bug reports (verified runtime versions,
+  # coaching posture). Not read at runtime.
+  - from: staging/runtime.json
+    to: runtime.json
+  - from: staging/resources.json
+    to: resources.json
+
+mac:
+  category: public.app-category.healthcare-fitness
+  target:
+    # dmg for humans, zip for "just give me the .app".
+    #
+    # NO `arch:` LIST — and that is deliberate. The Electron payload is the one
+    # already installed in the workspace (`--config.electronDist`, see
+    # scripts/package.cjs), which is the HOST's architecture. Declaring
+    # `arch: [arm64, x64]` made electron-builder emit two "identical" zips from
+    # the same arm64 payload — one labelled arm64, one labelled x64 — i.e. an
+    # arm64 binary shipped under an x64 name. Omitting arch makes
+    # electron-builder use the host arch, which is the only arch the pinned
+    # payload can actually be. A universal build would need both payloads and is
+    # not attempted (see docs/adr/0006).
+    - target: dmg
+    - target: zip
+  # UNSIGNED, on purpose. `identity: null` tells electron-builder to skip
+  # signing entirely (and disables hardened-runtime/entitlements handling).
+  identity: null
+  # No notarization: `notarize: false` is explicit so a future reader does not
+  # have to infer it from the absence of an afterSign hook.
+  notarize: false
+  # No hardened runtime / disabled library validation gymnastics: those only
+  # matter once the app is signed.
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+dmg:
+  # Deterministic, unsigned content: no signing of the dmg, no background
+  # installer wizard assets. `writeUpdateInfo: false` because nothing consumes
+  # update metadata this round.
+  writeUpdateInfo: false
+  sign: false
+  title: fit-trace ${version}
+
+win:
+  # Host arch (x64 on windows-latest), same reasoning as mac above.
+  target:
+    - target: nsis
+    - target: portable
+  # No certificate: unsigned build.
+  signAndEditExecutable: true
+  # electron-builder refuses to build NSIS installers on non-Windows hosts
+  # unless wine is present; CI builds Windows artifacts on a Windows runner.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # No signing of the uninstaller either.
+  artifactName: ${productName} Setup ${version}.${ext}
+
+portable:
+  artifactName: ${productName} ${version}.${ext}
+
+linux:
+  # Host arch (x64 on ubuntu-latest), same reasoning as mac above.
+  target:
+    - target: AppImage
+  category: Utility
+  # No desktop-entry auto-update, no signing.
+  synopsis: fit-trace — local workout tracking and coaching
+
+appImage:
+  artifactName: ${productName}-${version}.${ext}
+
+# No `publish:` block and no updater provider: this build has NO auto-update.
+# Adding one without signing would ship an unsigned update path, which is worse
+# than no updates at all.

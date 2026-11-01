@@ -20,9 +20,10 @@
  *      by the main process and stops with it.
  */
 
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { ensureElectronBinaryForBuild } = require("./electronBinary.cjs");
 
 const pkgDir = path.join(__dirname, "..");
 const repoRoot = path.join(pkgDir, "..", "..");
@@ -33,58 +34,22 @@ function fail(message) {
   process.exit(1);
 }
 
-/** Resolve the electron package dir through this package's node_modules. */
-function resolveElectronDir() {
-  try {
-    return path.dirname(require.resolve("electron/package.json", { paths: [pkgDir] }));
-  } catch {
-    fail('electron is not installed — run "pnpm install" at the repo root first.');
-  }
-}
-
 /**
- * Path of the electron binary IF the postinstall has run, else null.
- *
- * Deliberately filesystem-based: `require("electron")` must NOT be used here —
- * in electron >= 45 the package's index.js triggers a synchronous binary
- * download as a side effect of being required when the binary is missing,
- * which would hide a slow network fetch inside a "check".
+ * Step 1: the binary (not just the npm package) must be present. The lookup
+ * and the one-shot `install.js` download live in `electronBinary.cjs` so the
+ * dev entry and the build (`scripts/prepareRuntime.cjs`) cannot disagree.
  */
-function electronBinaryPath(electronDir) {
-  const pathFile = path.join(electronDir, "path.txt");
-  if (!fs.existsSync(pathFile)) {
-    return null;
-  }
-  const relative = fs.readFileSync(pathFile, "utf-8").trim();
-  if (relative === "") {
-    return null;
-  }
-  const fullPath = path.join(electronDir, "dist", relative);
-  return fs.existsSync(fullPath) ? fullPath : null;
-}
-
-/** Step 1: the binary (not just the npm package) must be present. */
-function ensureElectronBinary(electronDir) {
-  let binaryPath = electronBinaryPath(electronDir);
-  if (binaryPath !== null) {
-    return binaryPath;
-  }
-  console.log(
-    "[desktop:dev] electron binary missing (pnpm 10 skips unapproved postinstall scripts; " +
-      "this is expected after a plain `pnpm install`). Running electron's install.js once…",
-  );
-  const result = spawnSync(process.execPath, [path.join(electronDir, "install.js")], {
-    stdio: "inherit",
-    env: process.env,
+function ensureElectronBinary() {
+  return ensureElectronBinaryForBuild({
+    pkgDir,
+    onDownloadStart: () => {
+      console.log(
+        "[desktop:dev] electron binary missing (pnpm 10 skips unapproved postinstall scripts; " +
+          "this is expected after a plain `pnpm install`). Running electron's install.js once…",
+      );
+    },
+    onFailure: (message) => fail(message),
   });
-  if (result.status !== 0) {
-    fail("electron binary download failed — check your network or set ELECTRON_MIRROR, then rerun.");
-  }
-  binaryPath = electronBinaryPath(electronDir);
-  if (binaryPath === null) {
-    fail("electron binary still missing after install.js — please report this.");
-  }
-  return binaryPath;
 }
 
 /** Step 2: app/dist must already be built. */
@@ -100,8 +65,7 @@ function ensureAppDist() {
   );
 }
 
-const electronDir = resolveElectronDir();
-const electronBinary = ensureElectronBinary(electronDir);
+const electronBinary = ensureElectronBinary();
 ensureAppDist();
 
 console.log(`[desktop:dev] electron ${electronBinary}`);

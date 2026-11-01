@@ -3,12 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
-  "description": "Electron thin shell over the local daemon (dev-mode only): the desktop app is a carrier, not a second application.",
+  "description": "Electron thin shell over the local daemon: the desktop app is a carrier, not a second application. Ships as an UNSIGNED internal build (no signing, no notarization, no auto-update).",
+  "productName": "fit-trace",
   "main": "main/main.cjs",
   "scripts": {
-    "dev": "node scripts/dev.cjs"
+    "dev": "node scripts/dev.cjs",
+    "build": "node scripts/build.cjs",
+    "build:daemon": "node scripts/buildDaemon.cjs",
+    "prepare:runtime": "node scripts/prepareRuntime.cjs",
+    "build:runtime": "node scripts/buildRuntime.cjs",
+    "package": "node scripts/package.cjs",
+    "package:dir": "node scripts/package.cjs --dir"
   },
   "devDependencies": {
-    "electron": "^45.0.0"
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
   }
 }
