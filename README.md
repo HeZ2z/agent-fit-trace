@@ -25,7 +25,7 @@ App JSON → `import_workout` → deterministic analysis → `generate_next_plan
 
 ## Desktop shell
 
-`pnpm desktop:dev` opens the App in an Electron window over its own local daemon — one command, one dataset, zero custom IPC (dev-mode only; see [docs/local-daemon.md](docs/local-daemon.md)).
+`pnpm desktop:dev` opens the App in an Electron window over its own local daemon — one command, one dataset, zero custom IPC. `pnpm desktop:build && pnpm desktop:package` produces **unsigned internal builds** (no signing, no notarization, no auto-update; coaching unavailable in packaged builds). See [docs/local-daemon.md](docs/local-daemon.md) and [docs/release.md](docs/release.md).
 
 ## Development
 

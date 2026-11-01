@@ -173,12 +173,106 @@ Child-process plumbing lives in `main/daemonChild.cjs` — plain Node, no
 electron import — and is covered by `tests/desktopDaemonChild.test.ts`;
 `tests/desktopPackageIsolation.test.ts` guards the dependency boundary.
 
-Scope (v1): **dev-mode only**. No installer, no code signing, no
-auto-update. Electron is a devDependency of
-`packages/fit-trace-desktop` alone; pnpm 10 does not run unapproved
-postinstall scripts, so a plain root `pnpm install` does **not** download
-the ~100MB electron binary (CI stays lean) — the first
-`pnpm desktop:dev` prepares it automatically.
+Electron is a devDependency of `packages/fit-trace-desktop` alone;
+pnpm 10 does not run unapproved postinstall scripts, so a plain root
+`pnpm install` does **not** download the ~100MB electron binary (CI stays
+lean) — the first `pnpm desktop:dev` prepares it automatically.
+
+### Unsigned internal builds (`pnpm desktop:package`)
+
+The shell can also be packaged as an app. **These are unsigned internal
+builds**: no code signing, no notarization, no auto-update, no publisher.
+Do not describe or hand them out as signed or shippable installers. The
+decision and its consequences are recorded in
+[`adr/0006-desktop-packaging.md`](adr/0006-desktop-packaging.md).
+
+```sh
+pnpm build             # builds app/dist (the web shell the daemon serves)
+pnpm desktop:build     # daemon bundle + runtime check + staged resources
+pnpm desktop:package   # electron-builder for THIS host, unsigned
+```
+
+`desktop:build` runs three stages inside the package, each also runnable
+on its own with `pnpm --filter @agent-fit-trace/desktop run <stage>`:
+
+| stage | what it produces |
+| --- | --- |
+| `build:daemon` | `staging/daemon.mjs` — esbuild bundle of `packages/fit-trace-cli/src/cli.ts` |
+| `prepare:runtime` | downloads Electron if missing, then **proves** it can run `node:sqlite` + WAL |
+| `build:runtime` | `staging/app-dist/` — a copy of `app/dist` |
+
+`build` also runs `pnpm build` for you **only when** `app/dist/index.html`
+is missing. Unlike `desktop:dev` (which refuses and prints `pnpm build`), a
+command named `build` is expected to produce its inputs; an existing
+`app/dist` is never rebuilt behind your back.
+
+Artifacts land in `packages/fit-trace-desktop/release/` (gitignored):
+macOS dmg + zip, Windows NSIS installer + portable, Linux AppImage.
+Builds are host-native — no cross-compilation. `pnpm --filter
+@agent-fit-trace/desktop run package:dir` produces just the unpacked app,
+which is the fast way to check the packaged layout.
+
+**How the packaged app runs the daemon (strategy A, no bundled Node).**
+The app's *own* Electron binary is re-entered as Node, so nothing extra
+ships or needs patching:
+
+```text
+ELECTRON_RUN_AS_NODE=1 <app>/Contents/MacOS/fit-trace \
+  <app>/Contents/Resources/daemon.mjs daemon --port 0 --dist <app>/Contents/Resources/app-dist
+```
+
+`main/paths.cjs` resolves that layout from `app.isPackaged` and is the only
+place that knows the difference; dev keeps spawning `node` on
+`packages/fit-trace-cli/src/cli.ts` with the daemon's own default
+`app/dist`. The daemon bundle and staged shell ship as electron-builder
+`extraResources`, and `--dist` is passed explicitly because the daemon's
+own default is `import.meta.url`-relative — inside a bundle that resolves
+against the bundle, not a repo root.
+
+This depends on the app runtime exposing `node:sqlite` (Node >= 24;
+Electron 45 bundles Node 24.22). `prepare:runtime` verifies it against the
+exact binary that will ship — including a file-backed
+`PRAGMA journal_mode = WAL`, since WAL is impossible in memory — and fails
+the build (non-zero) with an actionable message if it breaks. A pinned
+Node extraResource is the documented fallback in the ADR; it is not built
+today.
+
+**What a packaged build cannot do**
+
+- **Coaching is unavailable.** The pi extension is deliberately not
+  shipped: the daemon resolves it from `import.meta.url` and
+  `packages/fit-trace-cli` exposes no `--extension` override, and the
+  extension imports `@agent-fit-trace/{core,api-contracts,store}` plus the
+  pi SDK, none of which resolve inside a packaged app. Copying the file in
+  would look like working coaching and fail at run time. Packaged runs
+  report it out loud ("pi CLI not found on PATH — workout tracking works;
+  coaching runs report unconfigured until pi is installed") and a coaching
+  run fails as `PI_UNAVAILABLE`. Workout tracking, the app shell, and the
+  whole `/api/v1` data plane are unaffected.
+- **The OS will warn on first launch.** macOS Gatekeeper blocks an
+  unsigned app until the user right-clicks → Open (or clears quarantine);
+  Windows SmartScreen shows "unrecognized app". This is inherent to the
+  unsigned scope, not a bug to file.
+- **No auto-update.** Every build is a fresh manual install; there is no
+  channel and no update metadata (`dmg.writeUpdateInfo` is off).
+- **Windows and Linux artifacts are built by CI only** and have not been
+  launched by anyone; macOS/arm64 is the verified configuration.
+
+Two packaging facts that will bite the next person:
+
+- electron-builder's default Electron cache is
+  `~/Library/Caches/electron`, which fails with `EPERM: mkdir …` on a
+  sandboxed/restricted-home build. `scripts/package.cjs` therefore passes
+  `--config.electronDist <installed electron>/dist`, reusing the Electron
+  pnpm already installed — which also guarantees the packaged runtime is
+  exactly the one `prepare:runtime` verified. Pass the `dist` **directory**
+  (the one containing `Electron.app`/`electron.exe`); passing the binary's
+  own directory yields the opaque error `corrupted Electron dist`.
+- `ELECTRON_RUN_AS_NODE=1` is applied to a **copy** of the child
+  environment, never to the shell's own `process.env` — a global flag makes
+  the main process itself behave as Node and refuse to open a window.
+  (Some tooling exports it session-wide; unset it when launching the app
+  manually.)
 
 ## Relationships to #39 and #40
 

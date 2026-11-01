@@ -25,7 +25,7 @@ App JSON → `import_workout` → 确定性分析 → `generate_next_plan` 草�
 
 ## 桌面壳
 
-`pnpm desktop:dev` 在 Electron 窗口中打开 App，窗口背后是它自己拉起的本地 daemon——一条命令、一份数据、零自定义 IPC（仅 dev 模式；见 [docs/local-daemon.md](docs/local-daemon.md)）。
+`pnpm desktop:dev` 在 Electron 窗口中打开 App，窗口背后是它自己拉起的本地 daemon——一条命令、一份数据、零自定义 IPC。`pnpm desktop:build && pnpm desktop:package` 可产出**未签名的内部构建**（不签名、不公证、无自动更新；打包版不含教练功能）。详见 [docs/local-daemon.md](docs/local-daemon.md) 与 [docs/release.md](docs/release.md)。
 
 ## 开发
 
