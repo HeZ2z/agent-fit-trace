@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { CloudCapabilities } from "@agent-fit-trace/api-contracts";
 import {
   cloudOptionFromCapabilities,
+  descriptorToOption,
   isBackendSupportedInMode,
+  localPiOption,
 } from "./coachBackend.ts";
 
 function capabilities(overrides: Partial<CloudCapabilities> = {}): CloudCapabilities {
@@ -79,5 +81,46 @@ describe("mode-bound restore compatibility", () => {
   it("never replays a local launcher run through a plain browser", () => {
     expect(isBackendSupportedInMode("local-pi", "browser")).toBe(false);
     expect(isBackendSupportedInMode("cloud-default", "browser")).toBe(true);
+  });
+});
+
+describe("local pi availability messaging", () => {
+  it("the launcher's own reason survives the piAvailable=false path", () => {
+    // Regression for the inversion this project fixed twice: when a packaged
+    // build lacks its extension, the server says so. Flattening every
+    // `piAvailable === false` into the "install pi" text would send the user to
+    // fix a CLI that is already installed.
+    const serverSays = descriptorToOption({
+      backendId: "local-pi",
+      runtimeId: "pi",
+      executionLocation: "local",
+      displayName: "pi CLI (local)",
+      available: false,
+      unavailableReason: {
+        code: "cli-version-unsupported",
+        message: "pi CLI is installed, but no Fit Trace extension was found.",
+      },
+      capabilities: {
+        capabilityVersion: 1,
+        protocolVersion: 1,
+        tools: ["get_training_history", "analyze_progress"],
+        productReplay: false,
+        nativeContinuation: true,
+        cancelConfirmation: "process-exit",
+        maxInputBytes: 1024,
+        maxEvents: 10,
+        maxEventBytes: 1024,
+        accountEligibility: "not-required",
+        quotaReservation: "not-required",
+        dataDestination: "cli-provider",
+      },
+    });
+    expect(serverSays.available).toBe(false);
+    expect(serverSays.unavailableReason?.code).toBe("cli-version-unsupported");
+    expect(serverSays.unavailableReason?.message).toContain("extension");
+
+    // The fallback text is still what a genuinely absent CLI gets, so the two
+    // states remain distinguishable rather than collapsing into one.
+    expect(localPiOption(false).unavailableReason?.code).toBe("cli-not-installed");
   });
 });

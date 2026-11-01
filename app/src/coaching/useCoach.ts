@@ -1861,11 +1861,22 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
           if (cancelled) return;
           const piAvailable = runtimePiAvailable();
           setBackends(
-            discovery.backends.map((descriptor) =>
-              descriptor.backendId === "local-pi" && piAvailable === false
-                ? localPiOption(false)
-                : descriptorToOption(descriptor),
-            ),
+            discovery.backends.map((descriptor) => {
+              if (descriptor.backendId !== "local-pi" || piAvailable !== false) {
+                return descriptorToOption(descriptor);
+              }
+              // The launcher says local coaching cannot run. Prefer the
+              // SERVER's reason: it distinguishes a missing pi CLI from a
+              // missing/broken extension, and only the former is fixed by
+              // installing pi. Falling back to `localPiOption(false)` here
+              // would flatten both into "install pi" — wrong advice for a
+              // packaged build whose extension is the actual problem.
+              const option = descriptorToOption(descriptor);
+              if (option.available === false && option.unavailableReason !== undefined) {
+                return option;
+              }
+              return localPiOption(false);
+            }),
           );
         }
         if (cancelled) return;
