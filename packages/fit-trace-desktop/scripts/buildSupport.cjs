@@ -36,10 +36,13 @@ const REPO_ROOT = path.join(PKG_DIR, "..", "..");
 
 const STAGING_DIR = path.join(PKG_DIR, "staging");
 const STAGED_DAEMON = path.join(STAGING_DIR, "daemon.mjs");
+const STAGED_EXTENSION = path.join(STAGING_DIR, "pi-extension.mjs");
 const STAGED_DIST = path.join(STAGING_DIR, "app-dist");
 const RELEASE_DIR = path.join(PKG_DIR, "release");
 const APP_DIST = path.join(REPO_ROOT, "app", "dist");
 const CLI_ENTRY = path.join(REPO_ROOT, "packages", "fit-trace-cli", "src", "cli.ts");
+/** The pi extension coached runs load; bundled separately from the daemon. */
+const EXTENSION_ENTRY = path.join(REPO_ROOT, ".pi", "extensions", "fit-trace", "index.ts");
 
 /**
  * Electron packages esbuild must NOT inline. The pi SDK is a runtime
@@ -56,8 +59,31 @@ const CLI_ENTRY = path.join(REPO_ROOT, "packages", "fit-trace-cli", "src", "cli.
  */
 const EXTERNAL_PACKAGES = ["@earendil-works/*"];
 
+/**
+ * What the EXTENSION bundle may leave external.
+ *
+ * Not a superset of EXTERNAL_PACKAGES, and the difference is load-bearing:
+ * pi's extension loader resolves a fixed alias table in-process
+ * (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`,
+ * `@earendil-works/pi-ai`, `typebox`, plus the legacy `@sinclair/typebox` and
+ * `@mariozechner/*` aliases), so those specifiers must survive bundling.
+ * `typebox` in particular MUST stay external — inlining it would ship a second
+ * copy of the schema library that pi's own tool plumbing never sees.
+ *
+ * Everything else, notably the `@agent-fit-trace/*` workspace packages, is
+ * inlined: a packaged app has no workspace links to resolve.
+ */
+const EXTENSION_EXTERNAL_PACKAGES = [
+  "@earendil-works/*",
+  "@mariozechner/*",
+  "typebox",
+  "@sinclair/typebox",
+];
+
 /** Name of the app bundle's daemon entry inside `resources/`. */
 const PACKAGED_DAEMON_FILE = "daemon.mjs";
+/** Name of the bundled pi extension inside `resources/`. */
+const PACKAGED_EXTENSION_FILE = "pi-extension.mjs";
 /** Name of the staged web shell inside `resources/`. */
 const PACKAGED_DIST_DIR = "app-dist";
 
@@ -160,6 +186,76 @@ function esbuildDaemonArgs(entry, outfile) {
     `--outfile=${outfile}`,
     ...EXTERNAL_PACKAGES.map((spec) => `--external:${spec}`),
   ];
+}
+
+/**
+ * Args for the pi extension bundle.
+ *
+ * Same platform/target as the daemon (it is loaded by the same `pi` child on
+ * the same runtime), but a DIFFERENT external list — see
+ * EXTENSION_EXTERNAL_PACKAGES for why `typebox` must not be inlined.
+ *
+ * `--format=esm` matches the `.mjs` extension: pi loads CLI extensions through
+ * its own ESM loader, and an ESM file with `.mjs` needs no package.json scope
+ * to be interpreted correctly inside the app bundle.
+ *
+ * @param {string} entry
+ * @param {string} outfile
+ * @returns {string[]}
+ */
+function esbuildExtensionArgs(entry, outfile) {
+  return [
+    entry,
+    "--bundle",
+    "--platform=node",
+    "--format=esm",
+    "--target=node24",
+    "--log-level=warning",
+    `--outfile=${outfile}`,
+    ...EXTENSION_EXTERNAL_PACKAGES.map((spec) => `--external:${spec}`),
+  ];
+}
+
+/**
+ * Verify the extension bundle kept exactly the host-provided imports external.
+ *
+ * Unlike the daemon bundle, external specifiers here are EXPECTED (pi supplies
+ * them). What must fail the build is the inverse two-sided error:
+ *   - a workspace package left external → `ERR_MODULE_NOT_FOUND` when pi loads
+ *     the extension, which no type check catches; and
+ *   - a host-provided package accidentally inlined → a second copy of the SDK
+ *     or of `typebox`, whose tool schemas pi's own plumbing would not
+ *     recognise.
+ *
+ * @param {string} bundlePath
+ * @returns {{ok: boolean, sizeBytes: number, bareImports: string[], inlinedHostImports: string[]}}
+ */
+function inspectExtensionBundle(bundlePath) {
+  if (!fs.existsSync(bundlePath)) {
+    return { ok: false, sizeBytes: 0, bareImports: [], inlinedHostImports: [] };
+  }
+  const sizeBytes = fs.statSync(bundlePath).size;
+  const text = fs.readFileSync(bundlePath, "utf8");
+  const allowed = (spec) => EXTENSION_EXTERNAL_PACKAGES.some((pattern) => globMatch(pattern, spec));
+  const bareImports = new Set();
+  const importRe = /(?:^|\n)\s*(?:import|export)\s[^"']*?from\s*["']([^"']+)["']/g;
+  let match;
+  while ((match = importRe.exec(text)) !== null) {
+    const spec = match[1];
+    if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) continue;
+    if (/^[a-z]+:/i.test(spec)) continue;
+    bareImports.add(spec);
+  }
+  const unexpected = [...bareImports].filter((spec) => !allowed(spec)).sort();
+  // A host package that no longer appears as an import was inlined.
+  const declaredExternals = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "typebox"];
+  const inlinedHostImports = declaredExternals.filter((spec) => !bareImports.has(spec));
+  return {
+    ok: sizeBytes > 0 && unexpected.length === 0 && inlinedHostImports.length === 0,
+    sizeBytes,
+    bareImports: unexpected,
+    inlinedHostImports,
+  };
 }
 
 /**
@@ -314,12 +410,16 @@ module.exports = {
   REPO_ROOT,
   STAGING_DIR,
   STAGED_DAEMON,
+  STAGED_EXTENSION,
   STAGED_DIST,
   RELEASE_DIR,
   APP_DIST,
   CLI_ENTRY,
+  EXTENSION_ENTRY,
   EXTERNAL_PACKAGES,
+  EXTENSION_EXTERNAL_PACKAGES,
   PACKAGED_DAEMON_FILE,
+  PACKAGED_EXTENSION_FILE,
   PACKAGED_DIST_DIR,
   FORBIDDEN_PACKAGED_PATTERNS,
   MIN_NODE_MAJOR,
@@ -329,7 +429,9 @@ module.exports = {
   resolveEsbuildPath,
   resolveElectronBinary,
   esbuildDaemonArgs,
+  esbuildExtensionArgs,
   inspectDaemonBundle,
+  inspectExtensionBundle,
   globMatch,
   copyDirSync,
   appDistReady,
