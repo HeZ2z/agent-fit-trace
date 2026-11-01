@@ -128,48 +128,49 @@ shell itself refuse to start as a GUI app.
 `daemonChild.cjs` gained one additive option (`distDir` → `--dist`). It stays
 electron-free and its existing tests stay green.
 
-### 4. Coaching is **not** shipped, and says so
+### 4. Coaching ships as a bundle; the pi CLI does not
 
-The daemon resolves its pi extension from `import.meta.url`
-(`defaultExtensionPath()`), and `packages/fit-trace-cli` exposes no
-`--extension` override. Shipping `.pi/extensions/fit-trace/index.ts` as data
-would **not** work anyway: the extension imports
-`@agent-fit-trace/{core,api-contracts,store}` and the pi SDK, none of which
-exist inside the packaged app. Shipping it would look like working coaching and
-fail at run time — worse than not shipping it.
+*(Superseded by #67. The original decision here was "coaching is not shipped at
+all"; that was correct for the packaging change alone but wrong as a product
+posture, and it also left packaged builds advertising a coach they could not
+run. This section records the correction.)*
 
-So packaged builds report coaching unavailable, which the daemon already does
-honestly: `cli.ts` prints "pi CLI not found on PATH — workout tracking works;
-coaching runs report unconfigured until pi is installed", and a launched
-coaching run fails as `PI_UNAVAILABLE` rather than hanging. Workout tracking,
-the app shell, and the whole `/api/v1` data plane are unaffected. The staging
-step records this posture in `staging/resources.json` and the docs state it;
-`server/vercel.ts` and `SKILL.md` are not in the daemon bundle graph, so there
-is no half-wired skill path in the packaged app.
+Two facts forced the original exclusion: the daemon resolved its pi extension
+from `import.meta.url` (which, bundled, points outside the app bundle), and
+`packages/fit-trace-cli` had no `--extension` override.
 
-**What packaged coaching would need (future design, not attempted here).**
-The blocker is structural, not a missing file. Three things must all be true,
-and each one is a separate change:
+Both are now fixed:
 
-1. **An extension-path override in `packages/fit-trace-cli`.** The daemon
-   needs a `--extension <path>` flag (or a documented env override) instead of
-   deriving `defaultExtensionPath()` from `import.meta.url`. That package is
-   outside this change's scope.
-2. **A bundled or self-contained extension.** `.pi/extensions/fit-trace/index.ts`
-   is TypeScript importing `@agent-fit-trace/{core,api-contracts,store}` and the
-   pi SDK. Shipping it as source inside the app does not run — the pi host
-   would have to resolve those specifiers. The realistic options are (a) bundle
-   the extension with esbuild too, externalizing only the pi SDK and relying on
-   the user's `pi` install for that, or (b) keep coaching out of the packaged
-   app entirely and point users at `pnpm daemon` + their own pi.
-3. **A `pi` runtime on the user's machine.** The coaching path spawns the
-   user's `pi` CLI over RPC; the app does not and should not bundle a model
-   runtime or credentials. So even with (1) and (2), packaged coaching would be
-   "works if pi is installed", exactly like the source-run daemon today.
+1. **The extension is bundled.** `scripts/buildExtension.cjs` runs esbuild on
+   `.pi/extensions/fit-trace/index.ts` into `staging/pi-extension.mjs`, shipped
+   by `extraResources`. The workspace packages are inlined; `@earendil-works/*`,
+   `@mariozechner/*`, `typebox` and `@sinclair/typebox` stay **external**
+   because pi's extension loader supplies them from an in-process alias table.
+   `typebox` must not be inlined — a second copy would produce tool schemas
+   pi's own plumbing never sees. `inspectExtensionBundle()` fails the build if
+   either side of that contract breaks.
+2. **The daemon takes `--extension`.** `main/paths.cjs` resolves
+   `<resources>/pi-extension.mjs` in packaged mode, `daemonChild.cjs` forwards
+   it, and dev passes nothing so the daemon's own repo-relative default stays
+   in charge — the same rule `--dist` already follows.
 
-Until (1) and (2) land, shipping the extension file would convert a *clear*
-"coaching unavailable" into an *unclear* run-time failure, which is why the
-exclusion is deliberate rather than deferred.
+**What is still absent: the `pi` CLI itself.** A coached run executes
+`pi --mode rpc -e <resources>/pi-extension.mjs`, so coaching works only where
+the user has pi installed, exactly like the source-run daemon. The app does not
+and should not bundle a model runtime or credentials.
+
+Availability is now decided by `resolvePiAvailability()`, which requires both a
+successful `pi --version` probe **and** an existing extension file. The two
+failures are reported separately — `cli-not-installed` versus a message naming
+the missing extension path — because reporting a packaging defect as "install
+pi" sends the user to fix something that is already correct. The injected
+runtime script (`piAvailable`) is derived from the same result, so the Coach UI
+and server discovery cannot disagree.
+
+Honest limit: a file-existence probe cannot prove the bundle *loads*. A
+present-but-broken extension still fails at run time as `EXTENSION_ERROR`.
+Treating "cannot prove it loads" as unavailable was rejected — it would disable
+coaching on every pi version, including the one under test.
 
 ### 5. Unsigned distribution, stated plainly
 
@@ -279,11 +280,14 @@ unsigned posture, no committed signing material), plus the pre-existing
   channel, no metadata, and `dmg.writeUpdateInfo` is off.
 - **Windows and Linux are unverified locally.** They are configured and built
   by CI only; no one has launched a Windows or Linux artifact.
-- **Packaged coaching is unavailable** until `packages/fit-trace-cli` grows an
-  extension-path override (or the extension is bundled), which is out of scope
-  here. Tracked as follow-up, not hidden.
+- **Packaged coaching needs the user's own `pi` CLI.** The extension ships, but
+  pi does not; without pi on `PATH` a coached run reports `cli-not-installed`.
+  A present-but-unloadable extension still fails at run time, because the
+  availability probe checks the file's existence, not whether it loads.
 - **The daemon bundle can go stale** relative to `packages/fit-trace-cli`; the
   build always rebuilds it, but a checked-in artifact is not a thing — the
   bundle is gitignored and must be produced for every package run.
+- **The extension bundle can go stale** relative to
+  `.pi/extensions/fit-trace/`, under the same rule.
 - macOS artifacts are host-native (no cross-build); a universal binary would
   need both arch payloads and has not been attempted.
