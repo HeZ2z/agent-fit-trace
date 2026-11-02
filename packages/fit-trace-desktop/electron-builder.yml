@@ -73,6 +73,11 @@ extraResources:
   # The daemon bundle, executed by the app's own binary as node.
   - from: staging/daemon.mjs
     to: daemon.mjs
+  # The pi extension a coached run loads (`pi -e <path>`). main/paths.cjs passes
+  # it as --extension; when the file is missing the daemon reports local
+  # coaching unavailable instead of advertising a coach that cannot start.
+  - from: staging/pi-extension.mjs
+    to: pi-extension.mjs
   # The built web shell the daemon serves (passed as --dist by main/paths.cjs).
   - from: staging/app-dist
     to: app-dist

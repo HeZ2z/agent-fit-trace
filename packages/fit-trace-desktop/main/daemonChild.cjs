@@ -8,9 +8,9 @@
  * process (`main.cjs`) is the only electron-aware consumer.
  *
  * Responsibilities:
- *   - spawn `node <cli.ts|daemon.mjs> daemon --port 0 --data <dir> [--dist <dir>]`
- *     and resolve the daemon's loopback URL from its stdout
- *     ("listening at <url>");
+ *   - spawn `node <cli.ts|daemon.mjs> daemon --port 0 --data <dir> [--dist <dir>]
+ *     [--extension <path>]` and resolve the daemon's loopback URL from its
+ *     stdout ("listening at <url>");
  *   - health-check the daemon via GET /api/v1/public-config;
  *   - restart backoff planning (exponential 1s/2s/4s, capped at 4s);
  *   - stop with SIGTERM → 3s grace → SIGKILL (preserving the daemon's own
@@ -107,6 +107,12 @@ function healthCheck(url) {
  *   (--dist). Omitted in dev so the daemon keeps its own `<repo>/app/dist`
  *   default; set in packaged builds, where that default resolves against the
  *   bundle and would be wrong.
+ * @param {string | undefined} [options.extensionPath] bundled pi extension
+ *   (--extension). Same rule as distDir: omitted in dev so the daemon keeps
+ *   resolving `<repo>/.pi/extensions/fit-trace/index.ts`, set in packaged
+ *   builds where the bundled `pi-extension.mjs` is the only loadable copy. The
+ *   daemon also uses this path to decide `local-pi` availability, so a missing
+ *   file is reported instead of advertised.
  * @param {number} [options.port=0] preferred port; 0 lets the OS pick a free one
  * @param {NodeJS.ProcessEnv} [options.env] child environment (FIT_TRACE_DATA_DIR etc.)
  * @param {number} [options.urlTimeoutMs] how long to wait for the listen line
@@ -114,7 +120,16 @@ function healthCheck(url) {
  * @returns {{ child: import("node:child_process").ChildProcess, url: Promise<string> }}
  *   `url` rejects if the child exits or stays silent past the timeout.
  */
-function spawnDaemon({ nodePath, cliPath, dataDir, distDir, port = 0, env, urlTimeoutMs = URL_TIMEOUT_MS }) {
+function spawnDaemon({
+  nodePath,
+  cliPath,
+  dataDir,
+  distDir,
+  extensionPath,
+  port = 0,
+  env,
+  urlTimeoutMs = URL_TIMEOUT_MS,
+}) {
   const child = spawn(
     nodePath,
     [
@@ -124,6 +139,9 @@ function spawnDaemon({ nodePath, cliPath, dataDir, distDir, port = 0, env, urlTi
       String(port),
       ...(dataDir ? ["--data", dataDir] : []),
       ...(distDir ? ["--dist", distDir] : []),
+      // Mirrors the distDir handling exactly: only passed when set, so dev
+      // argv stays byte-for-byte what it was before packaged builds existed.
+      ...(extensionPath ? ["--extension", extensionPath] : []),
     ],
     { env, stdio: ["ignore", "pipe", "pipe"] },
   );

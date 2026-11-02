@@ -41,11 +41,20 @@ const support = require("../packages/fit-trace-desktop/scripts/buildSupport.cjs"
   isSupportedBuildHost: (platform: string) => boolean;
   resolveEsbuildPath: (repoRoot?: string) => string | null;
   esbuildDaemonArgs: (entry: string, outfile: string) => string[];
+  esbuildExtensionArgs: (entry: string, outfile: string) => string[];
   inspectDaemonBundle: (bundlePath: string) => {
     ok: boolean;
     sizeBytes: number;
     bareImports: string[];
   };
+  inspectExtensionBundle: (bundlePath: string) => {
+    ok: boolean;
+    sizeBytes: number;
+    bareImports: string[];
+    inlinedHostImports: string[];
+  };
+  EXTENSION_EXTERNAL_PACKAGES: string[];
+  PACKAGED_EXTENSION_FILE: string;
   globMatch: (pattern: string, value: string) => boolean;
   copyDirSync: (from: string, to: string) => void;
   appDistReady: (appDist?: string) => boolean;
@@ -119,6 +128,57 @@ test("build:daemon args bundle for the packaged runtime and externalize only the
   assert.ok(!args.some((arg) => arg.includes("@agent-fit-trace")), "workspace packages must be bundled");
   assert.ok(!args.some((arg) => arg.includes("packages=external")));
   assert.deepEqual(support.EXTERNAL_PACKAGES, ["@earendil-works/*"]);
+});
+
+test("the extension bundle keeps pi's host-provided modules external", () => {
+  const args = support.esbuildExtensionArgs("/repo/.pi/extensions/fit-trace/index.ts", "/out/pi-extension.mjs");
+  assert.equal(args[0], "/repo/.pi/extensions/fit-trace/index.ts");
+  assert.ok(args.includes("--bundle"));
+  assert.ok(args.includes("--format=esm"));
+  assert.ok(args.includes("--outfile=/out/pi-extension.mjs"));
+  // pi's loader resolves these from an in-process alias table, so they must not
+  // be inlined. `typebox` is the dangerous one: a second copy would produce
+  // tool schemas pi's own plumbing does not recognise.
+  assert.ok(args.includes("--external:@earendil-works/*"));
+  assert.ok(args.includes("--external:typebox"), "typebox MUST stay external");
+  assert.ok(args.includes("--external:@sinclair/typebox"), "the legacy typebox alias is the same package");
+  // The workspace packages are the whole reason for bundling: never external.
+  assert.ok(!args.some((arg) => arg.includes("@agent-fit-trace")), "workspace packages must be bundled");
+});
+
+test("inspectExtensionBundle rejects a bundle that inlined a host module", async () => {
+  const dir = await tempDir("fit-trace-ext-inlined-");
+  const bundle = join(dir, "pi-extension.mjs");
+  // `typebox` inlined (no bare import) while the pi SDK stayed external — the
+  // shape that silently ships a second schema library.
+  await writeFile(
+    bundle,
+    ['import { defineTool } from "@earendil-works/pi-coding-agent";', "const x = 1;", "export default x;"].join("\n"),
+  );
+  const report = support.inspectExtensionBundle(bundle);
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.inlinedHostImports.sort(), ["@earendil-works/pi-ai", "typebox"]);
+  assert.deepEqual(report.bareImports, []);
+});
+
+test("inspectExtensionBundle rejects a workspace package left external", async () => {
+  const dir = await tempDir("fit-trace-ext-external-");
+  const bundle = join(dir, "pi-extension.mjs");
+  // The ERR_MODULE_NOT_FOUND-at-load-time regression: a workspace package the
+  // packaged app has no way to resolve.
+  await writeFile(
+    bundle,
+    [
+      'import { defineTool } from "@earendil-works/pi-coding-agent";',
+      'import { StringEnum } from "@earendil-works/pi-ai";',
+      'import { Type } from "typebox";',
+      'import { estimateOneRepMax } from "@agent-fit-trace/core";',
+      "export default { defineTool, StringEnum, Type, estimateOneRepMax };",
+    ].join("\n"),
+  );
+  const report = support.inspectExtensionBundle(bundle);
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.bareImports, ["@agent-fit-trace/core"]);
 });
 
 test("inspectDaemonBundle accepts a self-contained bundle", async () => {
@@ -247,13 +307,14 @@ test("the desktop manifest declares the packaging script set", () => {
   assert.deepEqual(Object.keys(manifest.scripts ?? {}).sort(), [
     "build",
     "build:daemon",
+    "build:extension",
     "build:runtime",
     "dev",
     "package",
     "package:dir",
     "prepare:runtime",
   ]);
-  for (const script of ["build:daemon", "prepare:runtime", "build:runtime", "package"]) {
+  for (const script of ["build:daemon", "build:extension", "prepare:runtime", "build:runtime", "package"]) {
     const command = manifest.scripts?.[script] ?? "";
     assert.match(command, /^node scripts\/\w+\.cjs/, `${script} must be a plain node .cjs entry`);
     assert.ok(

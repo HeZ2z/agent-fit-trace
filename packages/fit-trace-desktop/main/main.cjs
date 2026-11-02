@@ -107,6 +107,10 @@ function startDaemon() {
     // default is `<import.meta.url>/../../..`-relative, and when bundled that
     // is the resources dir, not a repo root.
     distDir: LAUNCH_PLAN.distDir,
+    // Same reasoning for the pi extension: bundled, the daemon's own default
+    // lands outside the app bundle. Undefined in dev, where the repo layout is
+    // correct and the daemon's default must stay in charge.
+    extensionPath: LAUNCH_PLAN.extensionPath,
     port: 0,
     env: LAUNCH_PLAN.env,
   });

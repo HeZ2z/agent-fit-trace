@@ -239,16 +239,17 @@ today.
 
 **What a packaged build cannot do**
 
-- **Coaching is unavailable.** The pi extension is deliberately not
-  shipped: the daemon resolves it from `import.meta.url` and
-  `packages/fit-trace-cli` exposes no `--extension` override, and the
-  extension imports `@agent-fit-trace/{core,api-contracts,store}` plus the
-  pi SDK, none of which resolve inside a packaged app. Copying the file in
-  would look like working coaching and fail at run time. Packaged runs
-  report it out loud ("pi CLI not found on PATH — workout tracking works;
-  coaching runs report unconfigured until pi is installed") and a coaching
-  run fails as `PI_UNAVAILABLE`. Workout tracking, the app shell, and the
-  whole `/api/v1` data plane are unaffected.
+- **Coaching needs the user's own `pi` CLI.** The extension *is* shipped
+  (`staging/pi-extension.mjs`, bundled by `build:extension`, passed to the
+  daemon as `--extension`), but pi itself is not: a coached run executes
+  `pi --mode rpc -e <resources>/pi-extension.mjs`, so it only works where pi is
+  installed and on `PATH`. Missing CLI and missing extension produce
+  **different** reasons — `cli-not-installed` versus a message naming the
+  extension path — because telling someone to install a CLI they already have
+  is the wrong fix. Availability is probed by file existence, which cannot
+  prove the bundle *loads*: a present-but-broken extension still fails at run
+  time as `EXTENSION_ERROR`. Workout tracking, the app shell, and the whole
+  `/api/v1` data plane are unaffected either way.
 - **The OS will warn on first launch.** macOS Gatekeeper blocks an
   unsigned app until the user right-clicks → Open (or clears quarantine);
   Windows SmartScreen shows "unrecognized app". This is inherent to the

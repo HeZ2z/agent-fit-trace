@@ -7,11 +7,13 @@
  *
  * Steps (each runs as its own child process so a failure names the stage):
  *   1. `build:daemon`      esbuild → staging/daemon.mjs (self-containment checked)
- *   2. `prepare:runtime`   download Electron if absent, then PROVE the app's own
+ *   2. `build:extension`   esbuild → staging/pi-extension.mjs (the pi extension a
+ *                          coached run loads; external list differs from the daemon)
+ *   3. `prepare:runtime`   download Electron if absent, then PROVE the app's own
  *                          runtime can open `node:sqlite` (strategy A)
- *   3. the app shell       `pnpm build` at the repo root, ONLY when
+ *   4. the app shell       `pnpm build` at the repo root, ONLY when
  *                          `app/dist/index.html` is missing
- *   4. `build:runtime`     stage app-dist → staging/app-dist
+ *   5. `build:runtime`     stage app-dist → staging/app-dist
  *
  * Step 3 is the one judgement call. Unlike `desktop:dev` (interactive: it
  * refuses to build behind your back and prints `pnpm build`), a command whose
@@ -55,6 +57,7 @@ function stage(label, scriptPath) {
 }
 
 stage("build:daemon", path.join(__dirname, "buildDaemon.cjs"));
+stage("build:extension", path.join(__dirname, "buildExtension.cjs"));
 stage("prepare:runtime", path.join(__dirname, "prepareRuntime.cjs"));
 
 // Step 3: only when actually missing.
@@ -94,8 +97,8 @@ if (appDistReady(APP_DIST)) {
 stage("build:runtime", path.join(__dirname, "buildRuntime.cjs"));
 
 // Say plainly what was produced and what it is not.
-const resourceFiles = ["daemon.mjs", "app-dist", "runtime.json", "resources.json"].filter((name) =>
-  fs.existsSync(path.join(PKG_DIR, "staging", name)),
+const resourceFiles = ["daemon.mjs", "pi-extension.mjs", "app-dist", "runtime.json", "resources.json"].filter(
+  (name) => fs.existsSync(path.join(PKG_DIR, "staging", name)),
 );
 console.log(
   `\n[desktop:${SCRIPT}] ok — staged: ${resourceFiles.join(", ")}\n` +

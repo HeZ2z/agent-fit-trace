@@ -64,6 +64,13 @@ export function CoachScreen() {
   // found no pi CLI. Scope that to the local pi backend actually in use: the
   // cloud and other local runtimes stay selectable when they are available.
   const piUnavailable = disclosedBackend === "local-pi" && runtimePiAvailable() === false;
+  // The notice text must use the SERVER's reason when there is one. A packaged
+  // build whose extension is missing reports that path; telling the user to
+  // "install pi" would send them to fix something that is already installed.
+  const piUnavailableMessage =
+    disclosedOption?.available === false && disclosedOption.unavailableReason?.message !== undefined
+      ? disclosedOption.unavailableReason.message
+      : "pi is not installed on this machine, so the local pi coach cannot run. Select an available cloud or other local backend, install pi, or keep using workout logging and history.";
   const backendLocked = coach.isBackendPinned || coach.isRunning;
 
   const historyEmpty = historyStatus === "ready" && records.length === 0;
@@ -206,9 +213,7 @@ export function CoachScreen() {
 
       {piUnavailable && (
         <div role="alert" data-testid="coach-pi-unavailable" className="validation-warnings">
-          {t(
-            "pi is not installed on this machine, so the local pi coach cannot run. Select an available cloud or other local backend, install pi, or keep using workout logging and history.",
-          )}
+          {t(piUnavailableMessage)}
         </div>
       )}
 

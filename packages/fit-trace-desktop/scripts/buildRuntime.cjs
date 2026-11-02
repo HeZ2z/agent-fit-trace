@@ -20,21 +20,22 @@
  *     i.e. `<bundleDir>/../../../.pi/extensions/fit-trace/index.ts`. In a
  *     packaged app that lands OUTSIDE the app bundle (next to the .app /
  *     above `resources/`) and is not writable or meaningful.
- *   - `packages/fit-trace-cli` exposes no `--extension` override, and that
- *     package is outside this change's scope — so a packaged build cannot
- *     point the daemon at a shipped copy.
- *   - Copying `.pi/extensions/fit-trace/index.ts` in as data would NOT fix it
- *     anyway: the extension imports `@agent-fit-trace/{core,api-contracts,store}`
- *     and the pi SDK, none of which exist inside the packaged app. Shipping it
- *     would look like working coaching and fail at run time — worse than not
- *     shipping it.
+ *   - Copying `.pi/extensions/fit-trace/index.ts` in as *data* would NOT fix
+ *     that anyway: the extension imports
+ *     `@agent-fit-trace/{core,api-contracts,store}` and the pi SDK, none of
+ *     which resolve inside the packaged app.
  *
- * So a packaged build reports coaching as unavailable, which the daemon
- * already does out loud: `cli.ts` probes `pi --version` and prints "pi CLI not
- * found on PATH — workout tracking works; coaching runs report unconfigured
- * until pi is installed", and a launched coaching run fails as
- * `PI_UNAVAILABLE` instead of hanging. Workout tracking, the app shell, and
- * the whole `/api/v1` data plane are unaffected. See docs/local-daemon.md
+ * Both halves are now addressed elsewhere: `build:extension` bundles the
+ * extension into `staging/pi-extension.mjs`, electron-builder ships it as an
+ * extraResource, and `main/paths.cjs` passes it as `--extension` (see #67).
+ * The daemon decides availability from that file's existence, so a build that
+ * somehow lost it reports coaching unavailable with the real cause instead of
+ * advertising a coach that cannot start.
+ *
+ * What is still absent is the `pi` CLI itself: a coached run executes
+ * `pi --mode rpc -e <resources>/pi-extension.mjs`, so coaching works only where
+ * the user has pi installed. Workout tracking, the app shell, and the whole
+ * `/api/v1` data plane are unaffected either way. See docs/local-daemon.md
  * ("Desktop shell") and docs/adr/0006.
  *
  * Nothing here builds the app shell: that is `pnpm build` at the repo root (a
@@ -90,12 +91,13 @@ fs.writeFileSync(
     {
       daemon: PACKAGED_DAEMON_FILE,
       appDist: "app-dist",
-      piExtension: null,
-      coachingIncluded: false,
+      piExtension: "pi-extension.mjs",
+      coachingIncluded: true,
       coachingNote:
-        "Packaged builds do not ship the pi extension: the daemon resolves it from import.meta.url " +
-        "and has no --extension override, so it would not resolve inside the app. Coaching runs " +
-        "report unavailable (PI_UNAVAILABLE); workout tracking and the app shell are unaffected.",
+        "The pi extension ships as pi-extension.mjs and is passed to the daemon as --extension. " +
+        "Coaching still requires the user's own pi CLI on PATH; when pi is missing the daemon " +
+        "reports cli-not-installed, and when the extension file is missing it reports the real " +
+        "cause instead of advertising coaching. Workout tracking and the app shell are unaffected.",
     },
     null,
     2,
@@ -104,5 +106,5 @@ fs.writeFileSync(
 
 console.log(
   `[desktop:${SCRIPT}] ok — daemon + app shell staged ` +
-    "(coaching not shipped: reported unavailable at run time)",
+    "(coaching needs the user's own pi CLI; the extension itself ships)",
 );

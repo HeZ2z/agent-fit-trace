@@ -21,6 +21,13 @@ const path = require("node:path");
 
 /** Staged daemon bundle inside the packaged app's resources directory. */
 const PACKAGED_DAEMON_FILE = "daemon.mjs";
+/**
+ * Bundled pi extension inside the packaged app's resources directory
+ * (`scripts/buildExtension.cjs` → `extraResources`). A coached run loads it as
+ * `pi -e <path>`, so it must travel with the app: the daemon's own default is
+ * `import.meta.url`-relative and, bundled, points outside the app bundle.
+ */
+const PACKAGED_EXTENSION_FILE = "pi-extension.mjs";
 /** Staged `app/dist` copy inside the packaged app's resources directory. */
 const PACKAGED_DIST_DIR = "app-dist";
 /**
@@ -37,6 +44,7 @@ const MIN_NODE_MAJOR = 24;
  *   nodePath  = `process.execPath` — the app's OWN binary, re-entered as Node
  *   daemonPath = `<resourcesPath>/daemon.mjs` (the esbuild bundle)
  *   distDir    = `<resourcesPath>/app-dist` (passed to the daemon as `--dist`)
+ *   extensionPath = `<resourcesPath>/pi-extension.mjs` (passed as `--extension`)
  *   env        = caller env + `ELECTRON_RUN_AS_NODE=1`
  *
  * Dev mode is deliberately byte-for-byte the previous behaviour:
@@ -44,10 +52,14 @@ const MIN_NODE_MAJOR = 24;
  *   daemonPath = `<repo>/packages/fit-trace-cli/src/cli.ts`
  *   distDir    = undefined, so the daemon keeps resolving `<repo>/app/dist`
  *                with its own `import.meta.url` default.
+ *   extensionPath = undefined, for the same reason: the daemon keeps
+ *                resolving `<repo>/.pi/extensions/fit-trace/index.ts` itself.
  *
  * The `distDir` omission in dev is intentional, not an oversight: passing an
  * explicit path would change which default wins if the daemon's own
  * resolution ever changes, and dev is specified to stay unchanged.
+ * `extensionPath` follows exactly the same rule — dev stays undefined so the
+ * daemon's own default (and the file-existence check it feeds) is unchanged.
  *
  * @param {object} options
  * @param {boolean} options.packaged `app.isPackaged`
@@ -60,6 +72,7 @@ const MIN_NODE_MAJOR = 24;
  *   nodePath: string,
  *   daemonPath: string,
  *   distDir: string | undefined,
+ *   extensionPath: string | undefined,
  *   env: NodeJS.ProcessEnv,
  * }}
  */
@@ -70,6 +83,9 @@ function resolveLaunchPlan({ packaged, resourcesPath, devRepoRoot, execPath, env
       nodePath: execPath,
       daemonPath: path.join(resourcesPath, PACKAGED_DAEMON_FILE),
       distDir: path.join(resourcesPath, PACKAGED_DIST_DIR),
+      // The bundled extension, not the source `.ts`: the app carries no
+      // workspace packages, and the bundle is what pi can actually load.
+      extensionPath: path.join(resourcesPath, PACKAGED_EXTENSION_FILE),
       // Electron's binary runs as plain Node only when this flag is set for
       // the child. Verified on this repo: electron 45 / Node 24.22.0 loads
       // `node:sqlite` in this mode (see docs/adr/0006-*).
@@ -82,6 +98,9 @@ function resolveLaunchPlan({ packaged, resourcesPath, devRepoRoot, execPath, env
     nodePath: typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : "node",
     daemonPath: path.join(devRepoRoot, "packages", "fit-trace-cli", "src", "cli.ts"),
     distDir: undefined,
+    // Same symmetry as distDir: dev passes nothing and the daemon resolves
+    // `<repo>/.pi/extensions/fit-trace/index.ts` from its own location.
+    extensionPath: undefined,
     // Dev passes the caller environment through untouched (dev.cjs hands the
     // shell the node that started it via FIT_TRACE_DESKTOP_NODE).
     env: { ...env },
@@ -124,11 +143,17 @@ function describeLaunchPlan(plan) {
   if (plan.distDir !== undefined) {
     parts.push(`dist=${plan.distDir}`);
   }
+  // Mirror the `dist` handling: only named when actually set, so a dev line
+  // keeps its previous shape and a packaged line names every resource it uses.
+  if (plan.extensionPath !== undefined) {
+    parts.push(`extension=${plan.extensionPath}`);
+  }
   return `[desktop] ${parts.join(" ")}`;
 }
 
 module.exports = {
   PACKAGED_DAEMON_FILE,
+  PACKAGED_EXTENSION_FILE,
   PACKAGED_DIST_DIR,
   MIN_NODE_MAJOR,
   resolveLaunchPlan,

@@ -10,6 +10,7 @@
     "dev": "node scripts/dev.cjs",
     "build": "node scripts/build.cjs",
     "build:daemon": "node scripts/buildDaemon.cjs",
+    "build:extension": "node scripts/buildExtension.cjs",
     "prepare:runtime": "node scripts/prepareRuntime.cjs",
     "build:runtime": "node scripts/buildRuntime.cjs",
     "package": "node scripts/package.cjs",
