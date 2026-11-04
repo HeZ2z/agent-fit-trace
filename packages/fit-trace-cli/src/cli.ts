@@ -13,6 +13,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { BIND_HOST, checkNodeRuntime, checkPiCli, isSafeOpenUrl, resolveLauncherConfig } from "./config.ts";
+import type { CoachingRuntimeId } from "@agent-fit-trace/api-contracts";
+import { isCoachingRuntimeId, resolveCoachingBackendSelection } from "@agent-fit-trace/api-contracts";
 import type { LauncherFlags } from "./config.ts";
 import { startLauncherServer } from "./launcherServer.ts";
 import { startDaemonServer } from "./daemonServer.ts";
@@ -27,7 +29,7 @@ function printUsage(): void {
     [
       "Usage:",
       "  agent-fit-trace start [--port N] [--no-open] [--upstream URL] [--dist PATH] [--runtime ID]",
-      "  agent-fit-trace daemon [--port N] [--data PATH] [--dist PATH]",
+      "  agent-fit-trace daemon [--port N] [--data PATH] [--dist PATH] [--runtime ID]",
       "",
       "start (fixed upstream composite):",
       "  --port N       preferred loopback port (default 5198, falls forward when busy)",
@@ -41,6 +43,9 @@ function printUsage(): void {
       "  --data PATH    data directory (default $FIT_TRACE_DATA_DIR or ~/.fit-trace/data)",
       "  --dist PATH    built app shell directory (default <repo>/app/dist; the shell is",
       "                 served only when a build exists — headless data plane works without)",
+      "  --runtime ID   DEFAULT local coaching backend for new runs: pi (default),",
+      "                 codex, or opencode. It does NOT filter discovery: every",
+      "                 installed CLI is still reported.",
       "  --extension PATH",
       "                 pi extension coached runs load (default <repo>/.pi/extensions/fit-trace).",
       "                 Packaged builds must set it; a missing file reports local coaching",
@@ -114,6 +119,25 @@ function tryOpenBrowser(url: string): void {
   }
 }
 
+/**
+ * Parse `--runtime` for the daemon: only LOCAL runtimes are selectable.
+ *
+ * Mirrors the launcher's validation vocabulary so both commands reject the same
+ * way, and deliberately refuses a cloud runtime: the daemon has no cloud
+ * execution path (#69 adds that), so accepting `hosted-sdk` here would promise a
+ * default it cannot run.
+ */
+function parseDaemonRuntime(raw: string): CoachingRuntimeId {
+  if (!isCoachingRuntimeId(raw)) {
+    throw new Error(`invalid coaching runtime: ${raw} (expected pi, codex, or opencode)`);
+  }
+  const selection = resolveCoachingBackendSelection({ runtimeId: raw });
+  if (selection.executionLocation !== "local") {
+    throw new Error(`the daemon cannot run the ${raw} cloud runtime`);
+  }
+  return raw;
+}
+
 /** `agent-fit-trace daemon`: resident local data plane (no browser open). */
 async function runDaemon(flags: LauncherFlags): Promise<void> {
   checkNodeRuntime();
@@ -126,8 +150,15 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
   // only when it needs the answer.
   const piProbe = checkPiCli();
 
+  // `--runtime` names the DEFAULT backend for a new run; it never filters what
+  // discovery reports (see `DaemonServerOptions.defaultRuntime`). Validated here
+  // so a typo fails fast with a clear message instead of silently defaulting to
+  // pi; `hosted-sdk`/cloud is refused because the daemon serves local coaching.
+  const defaultRuntime =
+    flags.runtime === undefined ? undefined : parseDaemonRuntime(flags.runtime);
   const server = await startDaemonServer({
     ...(flags.port !== undefined ? { port: flags.port } : {}),
+    ...(defaultRuntime !== undefined ? { defaultRuntime } : {}),
     dataDir,
     ...(flags.dist !== undefined ? { distDir: flags.dist } : {}),
     ...(flags.extension !== undefined ? { extensionPath: resolve(flags.extension) } : {}),
@@ -135,6 +166,7 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
   });
   console.log(`fit-trace daemon listening at ${server.url}`);
   console.log(`data directory: ${server.dataDir}`);
+  console.log(`default coaching backend: ${server.defaultBackendId}`);
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
