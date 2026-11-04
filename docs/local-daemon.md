@@ -300,8 +300,29 @@ Two packaging facts that will bite the next person:
 - Guest login upgrading, per-principal switching through the daemon, and
   cross-process principal negotiation are not implemented; #40 delivered the
   follower side only (MCP/pi read `identity.json`), not a switch writer.
-- The daemon registers only the local pi coaching backend; the launcher's
-  experimental Codex/OpenCode gates are not wired here.
+- **All three local backends are registered, but installed is not available.**
+  The daemon reports `local-pi`, `local-codex` and `local-opencode`, each with
+  its own reason when unusable. Codex needs positive evidence that the installed
+  app-server excludes its built-in tool inventory; OpenCode needs positive
+  isolation evidence that production wiring does not supply. Both therefore stay
+  unavailable on a normal machine even when the CLI is installed. That is the
+  gate working, not a bug — a CLI that cannot prove isolation would hand the
+  model a shell.
+- **Probing never blocks startup.** The listener binds first; Codex/OpenCode are
+  probed afterwards and the result is published by swapping the runtime
+  registry, so discovery updates without a restart. Until a probe lands, those
+  backends report "not probed yet" rather than "not installed" — claiming
+  absence would send a user to install something they already have. A probe that
+  hangs is bounded (`LOCAL_CLI_PROBE_TIMEOUT_MS`) and cannot delay the data
+  plane; `close()` aborts the probe and waits only a short grace period.
+- **Detection and execution share one resolved executable.** Each CLI command is
+  resolved to an absolute path once, and that path is what both the capability
+  probe and the coached run use. A probe that verified one binary while the run
+  spawned another would advertise a capability the run does not have.
+- `--runtime ID` names the DEFAULT backend for a new run (`pi`, `codex`,
+  `opencode`). It does not filter discovery: every installed CLI is still
+  reported. A cloud runtime is refused because the daemon has no cloud execution
+  path yet.
 - Cloud coaching stays unqualified for every principal (no trusted
   identity/quota/provider is configured locally).
 - `start` still owns the documented same-origin proxy contract; the two
