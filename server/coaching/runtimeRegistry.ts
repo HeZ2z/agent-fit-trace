@@ -158,6 +158,66 @@ export function createCoachingRuntimeRegistry(
   };
 }
 
+/**
+ * A registry whose contents can be swapped after construction.
+ *
+ * Why this exists: some capabilities are only knowable by running a child
+ * process (does this machine have Codex? what version? does its app-server
+ * expose the dynamic-tool surface?). Blocking server startup on those probes
+ * would make the local data plane unavailable for seconds, and a machine with
+ * several CLIs installed could wait far longer. So the server starts with
+ * whatever is known immediately and swaps in the probed result later.
+ *
+ * The service captures whatever registry object it is handed, so the object
+ * itself must be STABLE while its contents change: `get`/`list` delegate to the
+ * current snapshot on every call. Returning a new registry instead would leave
+ * the service reading the stale one.
+ *
+ * Concurrency contract, because this is read on request paths:
+ * - each update is validated first (the same checks as `createCoachingRuntimeRegistry`),
+ *   so an invalid registration list throws and leaves the previous snapshot
+ *   intact rather than half-applying;
+ * - the snapshot is replaced atomically (single reference assignment), so a
+ *   reader sees either the whole old set or the whole new set, never a mix;
+ * - `get`/`list` never throw on a missing backend — they return `undefined` /
+ *   the current list, exactly like the immutable registry.
+ *
+ * It deliberately does NOT decide policy: callers pass a complete, validated
+ * registration list. Deciding which backends to advertise stays in the caller.
+ */
+export interface ReplaceableCoachingRuntimeRegistry extends CoachingRuntimeRegistry {
+  /**
+   * Replace every registration atomically. Throws (leaving the previous
+   * snapshot in place) if the new list is invalid.
+   */
+  replace(registrations: readonly CoachingRuntimeRegistration[]): void;
+  /** The snapshot currently being served. Never mutated in place. */
+  current(): CoachingRuntimeRegistry;
+}
+
+export function createReplaceableCoachingRuntimeRegistry(
+  initial: readonly CoachingRuntimeRegistration[] = [],
+): ReplaceableCoachingRuntimeRegistry {
+  let snapshot = createCoachingRuntimeRegistry(initial);
+  return {
+    get(backendId: CoachingBackendId): CoachingRuntimeRegistration | undefined {
+      return snapshot.get(backendId);
+    },
+    list(): readonly CoachingRuntimeRegistration[] {
+      return snapshot.list();
+    },
+    replace(registrations: readonly CoachingRuntimeRegistration[]): void {
+      // Build (and therefore validate) FIRST: a duplicate or mismatched entry
+      // must not destroy the registry that is currently serving requests.
+      const next = createCoachingRuntimeRegistry(registrations);
+      snapshot = next;
+    },
+    current(): CoachingRuntimeRegistry {
+      return snapshot;
+    },
+  };
+}
+
 /** Normalize the option seam: an already-built registry or a registration list. */
 export function asCoachingRuntimeRegistry(
   value: CoachingRuntimeRegistry | readonly CoachingRuntimeRegistration[] | undefined,
