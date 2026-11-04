@@ -41,6 +41,7 @@ import { probeOpenCodeRun } from "./opencodeCapability.ts";
 import type { OpenCodeIsolationEvidence, OpenCodeRunSupport } from "./opencodeCapability.ts";
 import { CoachedPiProcess } from "./piProcessAdapter.ts";
 import type { CoachingRuntimeRegistration, RuntimeFactory } from "./runtimeRegistry.ts";
+import { resolveExecutable } from "./executableResolution.ts";
 
 /** Display names are part of the wire payload; keep one spelling. */
 export const LOCAL_PI_DISPLAY_NAME = "pi CLI (local)";
@@ -58,6 +59,10 @@ const GATED_CLI_CAPABILITIES = {
 } as const;
 
 /** Concrete missing capability when a probe found no `gap` of its own. */
+/** Default command names, named once so the probe and the factory agree. */
+const DEFAULT_CODEX_BINARY = "codex";
+const DEFAULT_OPENCODE_BINARY = "opencode";
+
 const DEFAULT_CODEX_GAP =
   "the installed Codex app-server cannot guarantee an isolated read-only tool surface";
 const DEFAULT_OPENCODE_GAP =
@@ -218,8 +223,14 @@ export function localPiRegistration(input: LocalPiRegistrationInput): CoachingRu
 }
 
 export interface LocalCodexRegistrationOptions {
-  /** `codex` binary name or resolved path (default `codex`). */
+  /** `codex` binary name or already-resolved path (default `codex`). */
   binary?: string;
+  /**
+   * Pre-resolved executable path. Passed through so a caller that already
+   * resolved (the daemon, which also probes) reports and spawns the SAME file
+   * instead of resolving twice and risking a different answer.
+   */
+  executablePath?: string;
 }
 
 /**
@@ -235,6 +246,17 @@ export function resolveLocalCodexRegistration(
   support: CodexAppServerSupport,
   options: LocalCodexRegistrationOptions = {},
 ): CoachingRuntimeRegistration {
+  // This module NEVER resolves: resolution belongs to detection, which then
+  // hands the same path to both the probe and this registration. Resolving here
+  // as a fallback would be a SECOND lookup, and a `PATH` change in between is
+  // enough to report one binary and spawn another — the exact failure the
+  // single-resolution rule exists to prevent. `undefined` therefore means
+  // "detection found no executable", which is reported as absent rather than
+  // guessed at.
+  const executablePath = options.executablePath;
+  // Spawn the exact file detection verified; a caller that named a binary
+  // explicitly (the launcher's `--runtime` path) keeps that name unchanged.
+  const spawnBinary = options.binary ?? executablePath;
   if (support.supported && support.builtinIsolationVerified === true) {
     return {
       backendId: "local-codex",
@@ -243,8 +265,9 @@ export function resolveLocalCodexRegistration(
       displayName: LOCAL_CODEX_DISPLAY_NAME,
       available: true,
       ...(support.version !== undefined ? { version: support.version } : {}),
+      ...(executablePath !== undefined ? { executablePath } : {}),
       capabilities: { ...GATED_CLI_CAPABILITIES },
-      factory: codexRuntimeFactory(options.binary !== undefined ? { binary: options.binary } : {}),
+      factory: codexRuntimeFactory(spawnBinary !== undefined ? { binary: spawnBinary } : {}),
     };
   }
   return {
@@ -254,14 +277,23 @@ export function resolveLocalCodexRegistration(
     displayName: LOCAL_CODEX_DISPLAY_NAME,
     available: false,
     unavailableReason: gateReason(support, DEFAULT_CODEX_GAP),
-    // Deliberately no `version` here: `start` has always reported version only
-    // on an available backend, and this module must not change that payload.
+    // Path AND version are reported even when unavailable. A settings page must
+    // be able to say "Codex 0.9.0 at /usr/local/bin/codex — installed, but its
+    // isolation is unproven"; that is the sentence that stops a user from
+    // trying to fix by reinstalling. Reporting them only when available would
+    // leave exactly the unavailable case unexplained, which is the case that
+    // matters. Both are additive optional fields, so consumers that ignore
+    // them parse as before.
+    ...(support.version !== undefined ? { version: support.version } : {}),
+    ...(executablePath !== undefined ? { executablePath } : {}),
   };
 }
 
 export interface LocalOpenCodeRegistrationOptions {
-  /** `opencode` binary name or resolved path (default `opencode`). */
+  /** `opencode` binary name or already-resolved path (default `opencode`). */
   binary?: string;
+  /** Pre-resolved executable path (see `LocalCodexRegistrationOptions`). */
+  executablePath?: string;
 }
 
 /**
@@ -278,6 +310,9 @@ export function resolveLocalOpenCodeRegistration(
   options: LocalOpenCodeRegistrationOptions & { model?: string } = {},
 ): CoachingRuntimeRegistration {
   const model = support.model ?? options.model ?? "";
+  // Same single-resolution rule as Codex.
+  const executablePath = options.executablePath;
+  const spawnBinary = options.binary ?? executablePath;
   if (support.supported && support.isolationVerified === true && model !== "") {
     return {
       backendId: "local-opencode",
@@ -286,9 +321,10 @@ export function resolveLocalOpenCodeRegistration(
       displayName: LOCAL_OPENCODE_DISPLAY_NAME,
       available: true,
       ...(support.version !== undefined ? { version: support.version } : {}),
+      ...(executablePath !== undefined ? { executablePath } : {}),
       capabilities: { ...GATED_CLI_CAPABILITIES },
       factory: openCodeRuntimeFactory({
-        ...(options.binary !== undefined ? { binary: options.binary } : {}),
+        ...(spawnBinary !== undefined ? { binary: spawnBinary } : {}),
         model,
       }),
     };
@@ -300,7 +336,9 @@ export function resolveLocalOpenCodeRegistration(
     displayName: LOCAL_OPENCODE_DISPLAY_NAME,
     available: false,
     unavailableReason: gateReason(support, DEFAULT_OPENCODE_GAP),
-    // Same rule as Codex: version is reported for available backends only.
+    // Same rule as Codex: report path and version even while unavailable.
+    ...(support.version !== undefined ? { version: support.version } : {}),
+    ...(executablePath !== undefined ? { executablePath } : {}),
   };
 }
 
@@ -324,6 +362,33 @@ export async function probeLocalCodex(
   if (options.support !== undefined) return options.support;
   if (options.probe !== undefined) return options.probe(options.binary);
   return probeCodexAppServer(options.binary !== undefined ? { binary: options.binary } : {});
+}
+
+/** A probe result bound to the exact executable it was produced from. */
+export interface DetectedLocalCli<T> {
+  support: T;
+  /** Resolved absolute path, or undefined when no executable was found. */
+  executablePath?: string;
+}
+
+/**
+ * Resolve the executable, then probe THAT file.
+ *
+ * The order is the entire point: probing a bare `codex` and reporting a path
+ * resolved afterwards would let the two disagree whenever `PATH` changed in
+ * between, and reporting nothing would leave a settings page unable to say
+ * which binary was verified. Passing the resolved path into the probe and into
+ * the registration binds detection and execution to one file.
+ */
+export async function detectLocalCodex(
+  options: LocalCodexProbeOptions = {},
+): Promise<DetectedLocalCli<CodexAppServerSupport>> {
+  const executablePath = resolveExecutable(options.binary ?? DEFAULT_CODEX_BINARY) ?? undefined;
+  const support = await probeLocalCodex({
+    ...options,
+    ...(executablePath !== undefined ? { binary: executablePath } : {}),
+  });
+  return { support, ...(executablePath !== undefined ? { executablePath } : {}) };
 }
 
 export interface LocalOpenCodeProbeOptions {
@@ -365,4 +430,16 @@ export async function probeLocalOpenCode(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.verifyIsolation !== undefined ? { verifyIsolation: options.verifyIsolation } : {}),
   });
+}
+
+/** OpenCode counterpart of {@link detectLocalCodex}. */
+export async function detectLocalOpenCode(
+  options: LocalOpenCodeProbeOptions = {},
+): Promise<DetectedLocalCli<OpenCodeRunSupport>> {
+  const executablePath = resolveExecutable(options.binary ?? DEFAULT_OPENCODE_BINARY) ?? undefined;
+  const support = await probeLocalOpenCode({
+    ...options,
+    ...(executablePath !== undefined ? { binary: executablePath } : {}),
+  });
+  return { support, ...(executablePath !== undefined ? { executablePath } : {}) };
 }

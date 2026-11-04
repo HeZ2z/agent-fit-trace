@@ -24,12 +24,13 @@ import { CoachedPiProcess } from "../../../server/coaching/piProcessAdapter.ts";
 import type { RuntimeFactory } from "../../../server/coaching/coachingService.ts";
 import { createReplaceableCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
 import {
+  detectLocalCodex,
+  detectLocalOpenCode,
   localPiRegistration,
-  probeLocalCodex,
-  probeLocalOpenCode,
   resolveLocalCodexRegistration,
   resolveLocalOpenCodeRegistration,
 } from "../../../server/coaching/localRuntimeRegistrations.ts";
+import type { DetectedLocalCli } from "../../../server/coaching/localRuntimeRegistrations.ts";
 import type { CodexAppServerSupport } from "../../../server/coaching/codexAppServerCapability.ts";
 import type { OpenCodeRunSupport } from "../../../server/coaching/opencodeCapability.ts";
 import {
@@ -42,8 +43,8 @@ import {
   resolveDataDir,
   writeIdentity,
 } from "@agent-fit-trace/store";
-import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
-import { API_ENDPOINTS } from "@agent-fit-trace/api-contracts";
+import type { AuthPrincipal, CoachingBackendId, CoachingRuntimeId } from "@agent-fit-trace/api-contracts";
+import { API_ENDPOINTS, resolveCoachingBackendSelection } from "@agent-fit-trace/api-contracts";
 
 /**
  * Standalone local daemon server (`agent-fit-trace daemon`): ONE loopback
@@ -91,16 +92,20 @@ import { API_ENDPOINTS } from "@agent-fit-trace/api-contracts";
  * a reason that will change, rather than dispatched to a factory that does not
  * exist.
  */
-const UNPROBED_CODEX: CodexAppServerSupport = {
-  supported: false,
-  builtinIsolationVerified: false,
-  gap: "the Codex CLI has not been probed yet; availability is still being determined",
+const UNPROBED_CODEX: DetectedLocalCli<CodexAppServerSupport> = {
+  support: {
+    supported: false,
+    builtinIsolationVerified: false,
+    gap: "the Codex CLI has not been probed yet; availability is still being determined",
+  },
 };
 
-const UNPROBED_OPENCODE: OpenCodeRunSupport = {
-  supported: false,
-  isolationVerified: false,
-  gap: "the OpenCode CLI has not been probed yet; availability is still being determined",
+const UNPROBED_OPENCODE: DetectedLocalCli<OpenCodeRunSupport> = {
+  support: {
+    supported: false,
+    isolationVerified: false,
+    gap: "the OpenCode CLI has not been probed yet; availability is still being determined",
+  },
 };
 
 /**
@@ -112,6 +117,35 @@ const UNPROBED_OPENCODE: OpenCodeRunSupport = {
  * waiting and publish what is known.
  */
 const LOCAL_CLI_PROBE_TIMEOUT_MS = 20_000;
+
+/**
+ * How long `close()` waits for an in-flight probe refresh after aborting it.
+ *
+ * Small on purpose: the desktop shell allows the daemon only a few seconds
+ * before SIGKILL, and a probe child is reaped by its own kill timer regardless.
+ * This is a teardown bound, not a probe bound.
+ */
+const LOCAL_CLI_SHUTDOWN_GRACE_MS = 250;
+
+/**
+ * Map an operator's `--runtime` to the backend id it names.
+ *
+ * `--runtime` is a SELECTION, not a filter. The known default (`pi`) is used
+ * when nothing is named, and an unknown/cloud runtime is refused earlier by
+ * config parsing, so this only has to translate the local ids.
+ */
+export function defaultBackendIdFor(runtimeId: CoachingRuntimeId | undefined): CoachingBackendId {
+  if (runtimeId === undefined) return "local-pi";
+  const selection = resolveCoachingBackendSelection({ runtimeId });
+  // The daemon serves local coaching only. A cloud runtime named as the local
+  // default would preselect a backend this server cannot run, so it is refused
+  // here rather than advertised and failing at submit time. `cli.ts` validates
+  // the flag first; this is the belt-and-braces check for the embedding seam.
+  if (selection.executionLocation !== "local") {
+    throw new Error(`the daemon cannot default to the ${runtimeId} cloud runtime`);
+  }
+  return selection.backendId;
+}
 
 const DEFAULT_DAEMON_PORT = 5199;
 const PORT_SCAN_LIMIT = 20;
@@ -162,17 +196,58 @@ export interface DaemonServerOptions {
   /** Injectable `fs.existsSync`-style probe (tests). */
   pathExists?: (path: string) => boolean;
   /**
+   * Test/embedding seam: replace the installed-CLI probes.
+   *
+   * Production never sets this. It exists so the availability matrix and the
+   * late-probe behaviour can be tested without a real Codex or OpenCode on the
+   * build machine — the gates stay closed in every normal run, which is
+   * correct but would otherwise make the "becomes available" path untestable.
+   */
+  localCliProbes?: {
+    codex?: () => Promise<DetectedLocalCli<CodexAppServerSupport>>;
+    openCode?: () => Promise<DetectedLocalCli<OpenCodeRunSupport>>;
+  };
+  /**
+   * How long one probe may take before the refresh publishes what it has.
+   * Production leaves this at the default; tests shorten it so a deliberately
+   * hanging probe does not force every run to sit through the real bound.
+   */
+  localCliProbeTimeoutMs?: number;
+  /**
    * Durable coaching journal path (default `<dataDir>/coaching-journal.json`,
    * held under the same process lock as the launcher's). `null` keeps the
    * daemon in-process only (tests).
    */
   journalPath?: string | null;
+  /**
+   * Operator-selected DEFAULT local coaching backend (`--runtime`).
+   *
+   * It selects which backend a NEW coached run should preselect. It does NOT
+   * filter what is discovered: the daemon reports every local CLI it can see,
+   * because a settings page (#69) has to offer all of them, and hiding an
+   * installed CLI would make it unreachable. Defaulting to `pi` preserves
+   * today's behavior exactly for an operator who passes nothing.
+   *
+   * Unavailable values are accepted and reported, never silently coerced: a
+   * caller that asked for Codex must be able to see that Codex is the default
+   * AND that it is unavailable, rather than quietly getting pi.
+   *
+   * Documented in `docs/local-daemon.md`.
+   */
+  defaultRuntime?: CoachingRuntimeId;
 }
 
 export interface DaemonServer {
   url: string;
   port: number;
   dataDir: string;
+  /**
+   * The backend a NEW run should preselect, derived from `--runtime`.
+   * `local-pi` when the operator named none.
+   */
+  defaultBackendId: CoachingBackendId;
+  /** Resolves once the in-flight local CLI probe refresh has published. */
+  localCliRefreshSettled(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -638,8 +713,8 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // then swap the snapshot in once the probes settle (see `refreshLocalClis`).
   // This ordering is the point: the data plane and the shell must never wait
   // for a child process that may be slow, hung, or absent.
-  const rawCodexRegistration = resolveLocalCodexRegistration(UNPROBED_CODEX);
-  const rawOpenCodeRegistration = resolveLocalOpenCodeRegistration(UNPROBED_OPENCODE);
+  const rawCodexRegistration = resolveLocalCodexRegistration(UNPROBED_CODEX.support);
+  const rawOpenCodeRegistration = resolveLocalOpenCodeRegistration(UNPROBED_OPENCODE.support);
   const runtimeRegistry = createReplaceableCoachingRuntimeRegistry([
     piRegistration,
     rawCodexRegistration,
@@ -860,15 +935,31 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
    */
   let refreshInFlight: Promise<void> | null = null;
   let refreshGeneration = 0;
+  /**
+   * Aborted on `close()`. A probe that is still running when the daemon shuts
+   * down must not keep the process alive waiting for its own timeout — the
+   * desktop shell gives the daemon only a few seconds before SIGKILL. Aborting
+   * makes the refresh settle immediately; each probe's own kill timer still
+   * reaps its child process, so nothing is left running either way.
+   */
+  const shutdownProbes = new AbortController();
 
   async function runLocalCliRefresh(generation: number): Promise<void> {
     // The pi probe was started by the caller and is awaited HERE, not before
     // the listener bound. A rejected probe is treated as "absent" rather than
     // propagating: the refresh must always be able to publish.
-    const [piCliAvailable, codex, openCode] = await Promise.all([
+    // DETECTION, not just capability: each helper resolves the executable first
+    // and probes that exact file, so the path reported by discovery is the path
+    // the factory will spawn. Resolving inside the registration instead would
+    // resolve a SECOND time — a shadowed PATH entry between the two calls is
+    // then enough to verify one binary and run another.
+    const codexProbe = options.localCliProbes?.codex ?? (() => detectLocalCodex({}));
+    const openCodeProbe = options.localCliProbes?.openCode ?? (() => detectLocalOpenCode({}));
+    const probeTimeoutMs = options.localCliProbeTimeoutMs ?? LOCAL_CLI_PROBE_TIMEOUT_MS;
+    const [piCliAvailable, codexDetected, openCodeDetected] = await Promise.all([
       piProbe.catch(() => false),
-      settleWithin(probeLocalCodex({}), LOCAL_CLI_PROBE_TIMEOUT_MS, UNPROBED_CODEX),
-      settleWithin(probeLocalOpenCode({}), LOCAL_CLI_PROBE_TIMEOUT_MS, UNPROBED_OPENCODE),
+      settleWithin(codexProbe(), probeTimeoutMs, UNPROBED_CODEX, shutdownProbes.signal),
+      settleWithin(openCodeProbe(), probeTimeoutMs, UNPROBED_OPENCODE, shutdownProbes.signal),
     ]);
     // The optimistic registration above assumed pi was fine. Now that the real
     // answer is in, recompute so discovery stops advertising a pi that is not
@@ -894,8 +985,16 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
             : unavailablePiRuntimeFactory()),
         ...(settledPiAvailable ? {} : { reason: settledPi.reason }),
       }),
-      resolveLocalCodexRegistration(codex),
-      resolveLocalOpenCodeRegistration(openCode),
+      resolveLocalCodexRegistration(codexDetected.support, {
+        ...(codexDetected.executablePath !== undefined
+          ? { executablePath: codexDetected.executablePath }
+          : {}),
+      }),
+      resolveLocalOpenCodeRegistration(openCodeDetected.support, {
+        ...(openCodeDetected.executablePath !== undefined
+          ? { executablePath: openCodeDetected.executablePath }
+          : {}),
+      }),
     ]);
   }
 
@@ -920,20 +1019,39 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   }
 
   // Kick off the first refresh without awaiting it: startup must not depend on
-  // any child process. `void` makes the intent explicit.
-  void refreshLocalClis();
+  // any child process. The promise is RETAINED (not discarded with `void`) so a
+  // caller can await the startup result even after it settles — reading
+  // `refreshInFlight` alone returns an empty promise once it has finished,
+  // which would let a caller observe the pre-probe snapshot and conclude the
+  // probe never landed.
+  const firstRefresh = refreshLocalClis();
 
   return {
     url: bound.url,
     port: bound.port,
     dataDir,
+    defaultBackendId: defaultBackendIdFor(options.defaultRuntime),
+    /**
+     * Resolve once the current probe refresh has published its result.
+     *
+     * Tests need this to observe the post-probe state without sleeping; it is
+     * harmless in production and callers may ignore it. It never starts a new
+     * probe.
+     */
+    localCliRefreshSettled: (): Promise<void> => firstRefresh,
     close: async () => {
       try {
         await bound.close();
       } finally {
-        // Let an in-flight probe settle so its child process is not orphaned by
-        // this process exiting; it is already bounded by the probe timeout.
-        await refreshInFlight?.catch(() => undefined);
+        // Stop waiting on any in-flight probe: shutdown must be prompt, and a
+        // probe that is still running is bounded by its own kill timer. Bounded
+        // again here so even a half-implemented probe cannot hold teardown open.
+        shutdownProbes.abort();
+        await settleWithin(
+          refreshInFlight ?? Promise.resolve(),
+          LOCAL_CLI_SHUTDOWN_GRACE_MS,
+          undefined,
+        );
         journalLock?.release();
         stores.closeAll();
       }
@@ -946,18 +1064,34 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
  * return `fallback` so a refresh always publishes something rather than
  * becoming unobservable.
  */
-async function settleWithin<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<T>((resolve) => {
         timer = setTimeout(() => resolve(fallback), timeoutMs);
       }),
+      new Promise<T>((resolve) => {
+        if (signal === undefined) return;
+        if (signal.aborted) {
+          resolve(fallback);
+          return;
+        }
+        onAbort = () => resolve(fallback);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
     ]);
   } catch {
     return fallback;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
   }
 }

@@ -92,6 +92,11 @@ export interface CoachingRuntimeRegistration {
   /** Required when unavailable; forbidden when available. */
   unavailableReason?: CoachingAvailabilityReason;
   version?: string;
+  /**
+   * Absolute path of the executable that was detected AND will be spawned.
+   * Optional: only a backend whose CLI was actually resolved has one.
+   */
+  executablePath?: string;
   /** Absent for discovery-only planned backends. */
   factory?: RuntimeFactory;
   /**
@@ -305,6 +310,9 @@ function registrationDescriptor(registration: CoachingRuntimeRegistration): Coac
     descriptor.unavailableReason = { ...registration.unavailableReason };
   }
   if (registration.version !== undefined) descriptor.version = registration.version;
+  if (registration.executablePath !== undefined) {
+    descriptor.executablePath = registration.executablePath;
+  }
   return descriptor;
 }
 

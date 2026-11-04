@@ -233,6 +233,23 @@ export interface CoachingBackendDescriptor {
   /** Required when `available` is false; forbidden when true. */
   unavailableReason?: CoachingAvailabilityReason;
   version?: string;
+  /**
+   * Absolute path of the executable this backend was DETECTED as, when the
+   * server resolved one. Additive and optional: `discoveryVersion` stays 1
+   * because a client that ignores this field parses the payload exactly as
+   * before, and no existing meaning changed.
+   *
+   * It exists because a settings page has to show the user WHICH binary will
+   * run. "Codex 0.9.0" is not actionable when three versions sit on PATH; the
+   * path is. It is also the executable the server will actually spawn — a
+   * probe that verified one binary while the run spawned another would be
+   * worse than no probe, so this field is the resolved path that both paths
+   * use, never a display-only copy.
+   *
+   * Absent when no executable could be resolved (the backend is unavailable
+   * for that reason, and inventing a guessed path would be a lie).
+   */
+  executablePath?: string;
   capabilities: CoachingBackendCapabilities;
 }
 
@@ -1281,6 +1298,11 @@ export function parseCoachingBackendDescriptor(value: unknown): CoachingBackendD
   };
   if (unavailableReason !== undefined) descriptor.unavailableReason = unavailableReason;
   if (value.version !== undefined) descriptor.version = assertNonBlankString(value.version, "version");
+  // Optional and additive: a client written before this field still parses,
+  // and a server that does not resolve paths simply omits it.
+  if (value.executablePath !== undefined) {
+    descriptor.executablePath = assertNonBlankString(value.executablePath, "executablePath");
+  }
   return descriptor;
 }
 
