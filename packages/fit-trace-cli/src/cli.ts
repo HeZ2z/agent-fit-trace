@@ -119,21 +119,19 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
   checkNodeRuntime();
   const dataDir = flags.data ?? resolveDataDir(process.env);
 
-  const pi = await checkPiCli();
-  if (pi.available) {
-    console.log(`pi CLI detected${pi.version === null ? "" : `: ${pi.version}`}`);
-  } else {
-    console.log(
-      "pi CLI not found on PATH — workout tracking works; coaching runs report unconfigured until pi is installed.",
-    );
-  }
+  // Probe pi CONCURRENTLY with startup rather than before it. `checkPiCli`
+  // spawns a child process; awaiting it here delayed the listener on every
+  // launch, which is the wrong trade for a local data plane that works without
+  // coaching (see #68). The promise is handed to the server, which awaits it
+  // only when it needs the answer.
+  const piProbe = checkPiCli();
 
   const server = await startDaemonServer({
     ...(flags.port !== undefined ? { port: flags.port } : {}),
     dataDir,
     ...(flags.dist !== undefined ? { distDir: flags.dist } : {}),
     ...(flags.extension !== undefined ? { extensionPath: resolve(flags.extension) } : {}),
-    piAvailable: pi.available,
+    piAvailable: piProbe.then((probe) => probe.available),
   });
   console.log(`fit-trace daemon listening at ${server.url}`);
   console.log(`data directory: ${server.dataDir}`);

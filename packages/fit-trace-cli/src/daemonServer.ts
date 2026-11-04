@@ -22,8 +22,16 @@ import type { AuthenticatedResponse } from "../../../server/authenticatedHandler
 import { createSqlitePrincipalStores } from "../../../server/sqlitePrincipalStores.ts";
 import { CoachedPiProcess } from "../../../server/coaching/piProcessAdapter.ts";
 import type { RuntimeFactory } from "../../../server/coaching/coachingService.ts";
-import { createCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
-import type { CoachingRuntimeRegistration } from "../../../server/coaching/runtimeRegistry.ts";
+import { createReplaceableCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
+import {
+  localPiRegistration,
+  probeLocalCodex,
+  probeLocalOpenCode,
+  resolveLocalCodexRegistration,
+  resolveLocalOpenCodeRegistration,
+} from "../../../server/coaching/localRuntimeRegistrations.ts";
+import type { CodexAppServerSupport } from "../../../server/coaching/codexAppServerCapability.ts";
+import type { OpenCodeRunSupport } from "../../../server/coaching/opencodeCapability.ts";
 import {
   acquireCoachingJournalLock,
 } from "../../../server/coaching/coachingJournal.ts";
@@ -72,6 +80,39 @@ import { API_ENDPOINTS } from "@agent-fit-trace/api-contracts";
  * bounded bodies. Nothing credential-bearing is logged.
  */
 
+/**
+ * Placeholders used BEFORE the real probes run.
+ *
+ * They are not "unavailable because the user lacks the CLI" — that would be a
+ * lie we cannot yet support, and it would make a machine WITH Codex look
+ * broken for as long as the probe takes. `supported: false` plus this gap
+ * says exactly what is true: we have not asked yet. The registration helper
+ * keeps them unavailable, so a submit before the probe lands is rejected with
+ * a reason that will change, rather than dispatched to a factory that does not
+ * exist.
+ */
+const UNPROBED_CODEX: CodexAppServerSupport = {
+  supported: false,
+  builtinIsolationVerified: false,
+  gap: "the Codex CLI has not been probed yet; availability is still being determined",
+};
+
+const UNPROBED_OPENCODE: OpenCodeRunSupport = {
+  supported: false,
+  isolationVerified: false,
+  gap: "the OpenCode CLI has not been probed yet; availability is still being determined",
+};
+
+/**
+ * How long any single CLI probe may take before the refresh gives up on it.
+ *
+ * Bounded on purpose: these probes spawn child processes, and an installed-but-
+ * broken CLI must not keep a refresh (and therefore a rescan) pending forever.
+ * The daemon serves normally regardless — this only decides when to stop
+ * waiting and publish what is known.
+ */
+const LOCAL_CLI_PROBE_TIMEOUT_MS = 20_000;
+
 const DEFAULT_DAEMON_PORT = 5199;
 const PORT_SCAN_LIMIT = 20;
 export const RUNTIME_SCRIPT_PATH = "/fit-trace-runtime.js";
@@ -94,8 +135,15 @@ export interface DaemonServerOptions {
   verifier?: TokenVerifier;
   /** Injected runtime factory (tests). Undefined uses CoachedPiProcess. */
   runtimeFactory?: RuntimeFactory;
-  /** Pi CLI presence (default: coaching advertises available). */
-  piAvailable?: boolean;
+  /**
+   * Pi CLI presence (default: coaching advertises available).
+   *
+   * A promise is accepted so a caller can start the probe WITHOUT awaiting it
+   * before binding the listener (#68): startup must not depend on a child
+   * process, but availability still needs the real answer. The daemon awaits it
+   * once, when it builds the initial registrations.
+   */
+  piAvailable?: boolean | Promise<boolean>;
   /**
    * Path to the pi extension that coached runs load (`pi -e <path>`).
    *
@@ -549,8 +597,24 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // fallback candidate rather than the requested path, so the RUN must use
   // `piAvailability.path` — using `extensionPath` here would re-break exactly
   // the mismatch the fallback exists to absorb.
+  // The pi probe may still be running: the caller is allowed to start it and
+  // hand over the promise so the LISTENER does not wait (#68). We therefore
+  // resolve availability twice: once optimistically for the listener (see
+  // below), and once for real once the probe settles, publishing the result
+  // through the replaceable registry.
+  const piProbe: Promise<boolean> =
+    options.piAvailable === undefined
+      ? Promise.resolve(true)
+      : typeof options.piAvailable === "boolean"
+        ? Promise.resolve(options.piAvailable)
+        : options.piAvailable;
+  // Optimism is ONLY justified when the caller handed us a not-yet-settled
+  // probe: then we genuinely do not know. An explicit `boolean` IS the answer,
+  // so it must be honoured immediately — treating a known `false` as "probably
+  // fine" would advertise a coach that cannot run until the refresh lands.
+  const piKnownUpFront = typeof options.piAvailable === "boolean" ? options.piAvailable : true;
   const piAvailability = resolvePiAvailability({
-    cliAvailable: options.piAvailable !== false,
+    cliAvailable: piKnownUpFront,
     ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
     daemonDir: dirname(fileURLToPath(import.meta.url)),
     ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
@@ -564,29 +628,27 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // extension resolution and must not be gated by this path check.
   const localPiAvailable = piAvailability.available || options.runtimeFactory !== undefined;
   const enablePiSignal = localPiAvailable ? piAvailability.available : false;
-  const registrations: CoachingRuntimeRegistration[] = [
-    {
-      backendId: "local-pi",
-      runtimeId: "pi",
-      executionLocation: "local",
-      displayName: "pi CLI (local)",
-      available: localPiAvailable,
-      ...(localPiAvailable
-        ? {}
-        : {
-            unavailableReason: piAvailability.reason ?? {
-              code: "cli-not-installed" as const,
-              message: "pi CLI is not available on PATH.",
-            },
-          }),
-      factory: runtimeFactory,
-    },
-  ];
-  const runtimeRegistry = createCoachingRuntimeRegistry(registrations);
+  const piRegistration = localPiRegistration({
+    available: localPiAvailable,
+    factory: runtimeFactory,
+    ...(localPiAvailable ? {} : { reason: piAvailability.reason }),
+  });
+  // Codex and OpenCode are registered from their probe results, which may not
+  // be known yet. Start with them UNAVAILABLE and a truthful "not probed" gap,
+  // then swap the snapshot in once the probes settle (see `refreshLocalClis`).
+  // This ordering is the point: the data plane and the shell must never wait
+  // for a child process that may be slow, hung, or absent.
+  const rawCodexRegistration = resolveLocalCodexRegistration(UNPROBED_CODEX);
+  const rawOpenCodeRegistration = resolveLocalOpenCodeRegistration(UNPROBED_OPENCODE);
+  const runtimeRegistry = createReplaceableCoachingRuntimeRegistry([
+    piRegistration,
+    rawCodexRegistration,
+    rawOpenCodeRegistration,
+  ]);
   // The injected flag must reflect whether a run can actually start, not the
   // raw CLI probe: an installed pi whose extension is missing must report
   // `false` here, otherwise the Coach UI offers a backend that fails on use.
-  const runtimeScript = buildRuntimeScriptBody({ piAvailable: enablePiSignal });
+  let runtimeScript = buildRuntimeScriptBody({ piAvailable: enablePiSignal });
 
   async function servePublicConfig(response: ServerResponse): Promise<void> {
     // The standard Supabase fields are carried ONLY when a project is
@@ -781,6 +843,86 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     throw lastError instanceof Error ? lastError : new Error("daemon could not bind an available port");
   }
 
+  /**
+   * Probe Codex and OpenCode AFTER the listener is up, then publish the result
+   * by swapping the registry snapshot.
+   *
+   * Sequencing matters. `createCoachingService` captured the registry OBJECT,
+   * so replacing its contents is enough — no restart, no re-wiring, and the
+   * already-served listener keeps answering throughout. A probe that hangs is
+   * bounded by `LOCAL_CLI_PROBE_TIMEOUT_MS` and leaves the backend reported as
+   * "not probed yet" rather than blocking anything.
+   *
+   * Overlapping rescans coalesce: `refreshInFlight` holds the current attempt,
+   * and a completion from a superseded attempt is discarded by comparing the
+   * generation counter. Otherwise two quick rescans could publish an older
+   * result over a newer one.
+   */
+  let refreshInFlight: Promise<void> | null = null;
+  let refreshGeneration = 0;
+
+  async function runLocalCliRefresh(generation: number): Promise<void> {
+    // The pi probe was started by the caller and is awaited HERE, not before
+    // the listener bound. A rejected probe is treated as "absent" rather than
+    // propagating: the refresh must always be able to publish.
+    const [piCliAvailable, codex, openCode] = await Promise.all([
+      piProbe.catch(() => false),
+      settleWithin(probeLocalCodex({}), LOCAL_CLI_PROBE_TIMEOUT_MS, UNPROBED_CODEX),
+      settleWithin(probeLocalOpenCode({}), LOCAL_CLI_PROBE_TIMEOUT_MS, UNPROBED_OPENCODE),
+    ]);
+    // The optimistic registration above assumed pi was fine. Now that the real
+    // answer is in, recompute so discovery stops advertising a pi that is not
+    // there — or starts advertising one that is.
+    const settledPi = resolvePiAvailability({
+      cliAvailable: piCliAvailable,
+      ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
+      daemonDir: dirname(fileURLToPath(import.meta.url)),
+      ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
+    });
+    // A newer refresh started while we were probing: publish nothing, or the
+    // stale result would overwrite fresher evidence.
+    if (generation !== refreshGeneration) return;
+    const settledPiAvailable =
+      options.runtimeFactory !== undefined || settledPi.available;
+    runtimeRegistry.replace([
+      localPiRegistration({
+        available: settledPiAvailable,
+        factory:
+          options.runtimeFactory ??
+          (settledPi.available && settledPi.path !== undefined
+            ? defaultRuntimeFactory(settledPi.path, process.cwd())
+            : unavailablePiRuntimeFactory()),
+        ...(settledPiAvailable ? {} : { reason: settledPi.reason }),
+      }),
+      resolveLocalCodexRegistration(codex),
+      resolveLocalOpenCodeRegistration(openCode),
+    ]);
+  }
+
+  function refreshLocalClis(): Promise<void> {
+    if (refreshInFlight !== null) return refreshInFlight;
+    refreshGeneration += 1;
+    const generation = refreshGeneration;
+    const attempt = runLocalCliRefresh(generation)
+      .catch((error: unknown) => {
+        // A probe failure is never fatal: the backends simply stay as they are
+        // (unavailable, with the "not probed yet" gap) and the data plane is
+        // unaffected. Log once so a persistent failure is diagnosable.
+        console.error(
+          `[daemon] local CLI probe failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        if (refreshInFlight === attempt) refreshInFlight = null;
+      });
+    refreshInFlight = attempt;
+    return attempt;
+  }
+
+  // Kick off the first refresh without awaiting it: startup must not depend on
+  // any child process. `void` makes the intent explicit.
+  void refreshLocalClis();
+
   return {
     url: bound.url,
     port: bound.port,
@@ -789,9 +931,33 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
       try {
         await bound.close();
       } finally {
+        // Let an in-flight probe settle so its child process is not orphaned by
+        // this process exiting; it is already bounded by the probe timeout.
+        await refreshInFlight?.catch(() => undefined);
         journalLock?.release();
         stores.closeAll();
       }
     },
   };
+}
+
+/**
+ * Await `promise`, but never longer than `timeoutMs`; on timeout or rejection
+ * return `fallback` so a refresh always publishes something rather than
+ * becoming unobservable.
+ */
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
