@@ -150,13 +150,51 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
   // only when it needs the answer.
   const piProbe = checkPiCli();
 
+  /**
+   * Install the shutdown handlers BEFORE binding, not after.
+   *
+   * `startDaemonServer` acquires the coaching-journal process lock and binds a
+   * listener. From the moment the lock exists until the handlers are installed
+   * there is a window in which SIGTERM has no handler: the default action kills
+   * the process immediately, `close()` never runs, and the lock file is left
+   * behind. The next daemon then refuses to start with the fail-closed stale
+   * lock error (exit code 3) — a supervisor restart loop caused by a signal
+   * that arrived microseconds early.
+   *
+   * So the handlers are registered first and hold the server once it exists.
+   * A signal that arrives during startup waits for `server` to settle and then
+   * performs the same orderly close; nothing is skipped.
+   */
+  let server: Awaited<ReturnType<typeof startDaemonServer>> | null = null;
+  let shuttingDown = false;
+  let shutdownRequested = false;
+  const shutdown = (signal: string): void => {
+    void signal;
+    if (shuttingDown) {
+      process.exit(1);
+    }
+    shuttingDown = true;
+    if (server === null) {
+      // Startup still in flight: finish it, then close. Guarded by
+      // `shutdownRequested` so the await below performs the close exactly once.
+      shutdownRequested = true;
+      return;
+    }
+    void server.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+
   // `--runtime` names the DEFAULT backend for a new run; it never filters what
   // discovery reports (see `DaemonServerOptions.defaultRuntime`). Validated here
   // so a typo fails fast with a clear message instead of silently defaulting to
   // pi; `hosted-sdk`/cloud is refused because the daemon serves local coaching.
   const defaultRuntime =
     flags.runtime === undefined ? undefined : parseDaemonRuntime(flags.runtime);
-  const server = await startDaemonServer({
+  const started = await startDaemonServer({
     ...(flags.port !== undefined ? { port: flags.port } : {}),
     ...(defaultRuntime !== undefined ? { defaultRuntime } : {}),
     dataDir,
@@ -164,24 +202,18 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
     ...(flags.extension !== undefined ? { extensionPath: resolve(flags.extension) } : {}),
     piAvailable: piProbe.then((probe) => probe.available),
   });
+  server = started;
   console.log(`fit-trace daemon listening at ${server.url}`);
   console.log(`data directory: ${server.dataDir}`);
   console.log(`default coaching backend: ${server.defaultBackendId}`);
 
-  let shuttingDown = false;
-  const shutdown = (signal: string): void => {
-    if (shuttingDown) {
-      process.exit(1);
-    }
-    shuttingDown = true;
-    void server.close().then(
-      () => process.exit(0),
-      () => process.exit(1),
-    );
-    void signal;
-  };
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  // A signal arrived while startup was in flight and deliberately did not
+  // interrupt it (interrupting would have orphaned the journal lock). The
+  // listener is up now, so honour it with the same orderly close.
+  if (shutdownRequested) {
+    await server.close();
+    process.exit(0);
+  }
 }
 
 async function main(): Promise<void> {

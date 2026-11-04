@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateWorkoutRecord } from "@agent-fit-trace/core";
@@ -1065,4 +1066,90 @@ test("--runtime maps each local runtime to its backend, and refuses cloud", () =
   // The daemon has no cloud execution path; naming it as the local default
   // would promise a backend this server cannot run.
   assert.throws(() => defaultBackendIdFor("hosted-sdk"), /cannot default to the hosted-sdk cloud runtime/);
+});
+
+// --- shutdown signal safety: no orphaned journal lock ---
+
+test("SIGTERM during startup still releases the journal lock", async () => {
+  // The regression this pins: the SIGTERM/SIGINT handlers used to be installed
+  // only AFTER `startDaemonServer` returned. Between the journal lock being
+  // acquired and the handlers existing, a signal hit Node's default action, the
+  // process died without `close()`, and `<dataDir>/coaching-journal.json.lock`
+  // survived. The NEXT daemon then refused to start with the fail-closed stale
+  // lock error (exit code 3) — so a supervisor restarting the daemon could be
+  // wedged by a signal it sent microseconds too early.
+  //
+  // The window is real but narrow, so this asserts the INVARIANT rather than a
+  // specific timing: kill as soon as startup is visibly in progress (the
+  // identity file exists), then require that (a) the process exits cleanly and
+  // (b) a fresh daemon on the same data dir can start.
+  const dataDir = await makeDataDir();
+  tempDirs.push(dataDir);
+  const child = spawn(
+    process.execPath,
+    [
+      "packages/fit-trace-cli/src/cli.ts",
+      "daemon",
+      "--port",
+      "0",
+      "--data",
+      dataDir,
+      "--dist",
+      join(dataDir, "no-dist-here"),
+    ],
+    {
+      env: {
+        ...process.env,
+        SUPABASE_URL: "",
+        SUPABASE_PUBLISHABLE_KEY: "",
+        SUPABASE_ANON_KEY: "",
+      },
+      timeout: 30_000,
+    },
+  );
+  const exit = new Promise<number | null>((resolve) => child.on("close", resolve));
+
+  // `identity.json` is written before the listener binds, so this lands inside
+  // the window the old code left uncovered.
+  await new Promise<void>((resolve, reject) => {
+    const deadline = Date.now() + 15_000;
+    const poll = (): void => {
+      if (existsSync(join(dataDir, "identity.json"))) {
+        child.kill("SIGTERM");
+        resolve();
+        return;
+      }
+      if (Date.now() > deadline) {
+        reject(new Error("daemon never began startup"));
+        return;
+      }
+      setTimeout(poll, 5);
+    };
+    poll();
+  });
+
+  assert.equal(await exit, 0, "a signal during startup must still shut down cleanly");
+  // The lock is released, so a second daemon on the same data dir starts.
+  assert.equal(
+    existsSync(join(dataDir, "coaching-journal.json.lock")),
+    false,
+    "shutdown must release the coaching journal lock",
+  );
+  const restarted = await startDaemonServer({
+    port: 0,
+    dataDir,
+    distDir: null,
+    env: NO_SUPABASE_ENV,
+    piAvailable: false,
+    localCliProbeTimeoutMs: 50,
+    localCliProbes: {
+      codex: detected({ supported: false, builtinIsolationVerified: false, gap: "x" }),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "y" }),
+    },
+  });
+  try {
+    assert.equal((await fetch(`${restarted.url}/api/v1/public-config`)).status, 200);
+  } finally {
+    await restarted.close();
+  }
 });
