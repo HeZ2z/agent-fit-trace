@@ -319,6 +319,13 @@ Two packaging facts that will bite the next person:
   resolved to an absolute path once, and that path is what both the capability
   probe and the coached run use. A probe that verified one binary while the run
   spawned another would advertise a capability the run does not have.
+- **Discovery carries what a settings page needs** (issue #69 consumes this):
+  per backend, `available`, `version`, `unavailableReason` and the additive
+  optional `executablePath` — distinct fields, not a bare boolean. The path is
+  the executable that was detected AND will be spawned, so the UI can never
+  show one binary and run another. `executablePath` is additive and
+  `discoveryVersion` stays `1`: a client that ignores it parses the payload
+  exactly as before.
 - `--runtime ID` names the DEFAULT backend for a new run (`pi`, `codex`,
   `opencode`). It does not filter discovery: every installed CLI is still
   reported. A cloud runtime is refused because the daemon has no cloud execution
