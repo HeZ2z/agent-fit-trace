@@ -637,7 +637,11 @@ async function coachingCreds(daemon: DaemonServer): Promise<Record<string, strin
     method: "POST",
     headers: { authorization: GUEST_AUTH },
   });
-  const capability = ((await bootstrap.json()) as { data: { capability: string } }).data.capability;
+  const raw = (await bootstrap.json()) as { data?: { capability?: string } };
+  if (raw.data?.capability === undefined) {
+    throw new Error(`bootstrap failed (${bootstrap.status}): ${JSON.stringify(raw).slice(0, 300)}`);
+  }
+  const capability = raw.data.capability;
   return { authorization: GUEST_AUTH, [CAPABILITY_HEADER]: capability };
 }
 
@@ -1212,6 +1216,59 @@ test("no default is published when the operator named none", async () => {
       `unexpected default: ${String(discovery.defaultBackendId)}`,
     );
   } finally {
+    await daemon.close();
+  }
+});
+
+test("a settled alternative does not mark an unprobed pi as absent", async () => {
+  // Regression: publishing from OpenCode's settle also evaluated the pi slot,
+  // which was still `null`. That flipped an INSTALLED pi to `cli-not-installed`
+  // for the length of its own probe — and the app caches a successful discovery
+  // per identity, so a Coach screen opened in that window kept pi disabled.
+  let resolvePi: ((value: boolean) => void) | undefined;
+  const piProbe = new Promise<boolean>((resolve) => {
+    resolvePi = resolve;
+  });
+  const { daemon } = await bootDaemon({
+    piAvailable: piProbe,
+    localCliProbes: {
+      // Settles immediately, which is what used to trigger the bad publish.
+      codex: async () => ({
+        support: { supported: false, builtinIsolationVerified: false, gap: "no codex (test)" },
+      }),
+      openCode: async () => ({
+        support: { supported: false, isolationVerified: false, gap: "no opencode (test)" },
+      }),
+    },
+  });
+  try {
+    // Bootstrap ONCE: every call mints a capability and they are capacity
+    // limited, so polling through `discoverBackends` exhausts them (503).
+    const creds = await coachingCreds(daemon);
+    const discoverOnce = async (): Promise<CoachingCapabilityDiscovery> => {
+      const response = await fetch(`${daemon.url}/coaching/capabilities`, { headers: creds });
+      return parseCoachingCapabilityDiscovery(((await response.json()) as { data: unknown }).data);
+    };
+    // Let both alternatives settle while pi is still pending.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const discovery = await discoverOnce();
+      const pi = discovery.backends.find((entry) => entry.backendId === "local-pi");
+      assert.notEqual(
+        pi?.unavailableReason?.code,
+        "cli-not-installed",
+        "an unprobed pi must not be reported as absent",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    // Now let pi settle and confirm the real answer does take effect.
+    resolvePi?.(false);
+    await daemon.localCliRefreshSettled();
+    const settled = await discoverOnce();
+    const pi = settled.backends.find((entry) => entry.backendId === "local-pi");
+    assert.equal(pi?.available, false);
+    assert.equal(pi?.unavailableReason?.code, "cli-not-installed");
+  } finally {
+    resolvePi?.(false);
     await daemon.close();
   }
 });

@@ -967,20 +967,26 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
 
   /** Publish whatever is currently known. Safe to call repeatedly. */
   function publishKnownLocalBackends(): void {
-    const settledPiAvailable =
-      options.runtimeFactory !== undefined || probed.pi?.available === true;
     const registrations = [
-      localPiRegistration({
-        available: settledPiAvailable,
-        factory:
-          options.runtimeFactory ??
-          (probed.pi?.available === true && probed.pi.path !== undefined
-            ? defaultRuntimeFactory(probed.pi.path, process.cwd())
-            : unavailablePiRuntimeFactory()),
-        ...(settledPiAvailable
-          ? {}
-          : { reason: probed.pi?.reason as never }),
-      }),
+      // `probed.pi === null` means its probe has NOT settled yet. Do not read
+      // that as "absent": publishing from an alternative's settle would then
+      // flip an installed pi to `cli-not-installed` for the length of its
+      // probe, and `app/src/coaching/useCoach.ts` caches a successful
+      // discovery per identity — opening Coach in that window would leave pi
+      // disabled until discovery was retried. Keep the initial registration
+      // until pi's own probe reports.
+      probed.pi === null
+        ? piRegistration
+        : localPiRegistration({
+            available:
+              options.runtimeFactory !== undefined || probed.pi.available === true,
+            factory:
+              options.runtimeFactory ??
+              (probed.pi.available && probed.pi.path !== undefined
+                ? defaultRuntimeFactory(probed.pi.path, process.cwd())
+                : unavailablePiRuntimeFactory()),
+            ...(probed.pi.available ? {} : { reason: probed.pi.reason as never }),
+          }),
       resolveLocalCodexRegistration(probed.codex.support, {
         ...(probed.codex.executablePath !== undefined
           ? { executablePath: probed.codex.executablePath }
