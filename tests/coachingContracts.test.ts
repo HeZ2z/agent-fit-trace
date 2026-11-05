@@ -404,6 +404,31 @@ test("capability discovery is versioned, strict, and keeps planned backends unav
   assert.throws(() =>
     parseCoachingBackendDescriptor(backend({ capabilities: capabilities({ tools: ["bash"] }) })),
   );
+  // `executablePath` is ADDITIVE (issue #68): a settings page needs to show
+  // which binary will run, but a client that ignores the field must keep
+  // parsing byte-identically — hence `discoveryVersion` stays 1.
+  const withPath = parseCoachingBackendDescriptor(
+    backend({ executablePath: "/usr/local/bin/codex" }),
+  );
+  assert.equal(withPath.executablePath, "/usr/local/bin/codex");
+  // Absent stays absent: an old server payload parses to no extra field.
+  const withoutPath = parseCoachingBackendDescriptor(backend());
+  assert.equal(withoutPath.executablePath, undefined);
+  assert.deepEqual(Object.keys(withoutPath).sort(), [
+    "available",
+    "backendId",
+    "capabilities",
+    "displayName",
+    "executionLocation",
+    "runtimeId",
+  ]);
+  // A blank or non-string path is not a path.
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(backend({ executablePath: "  " })),
+  );
+  assert.throws(() =>
+    parseCoachingBackendDescriptor(backend({ executablePath: 42 })),
+  );
   // Cloud descriptors must require account qualification + quota.
   assert.throws(() =>
     parseCoachingBackendDescriptor(

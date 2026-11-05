@@ -92,6 +92,11 @@ export interface CoachingRuntimeRegistration {
   /** Required when unavailable; forbidden when available. */
   unavailableReason?: CoachingAvailabilityReason;
   version?: string;
+  /**
+   * Absolute path of the executable that was detected AND will be spawned.
+   * Optional: only a backend whose CLI was actually resolved has one.
+   */
+  executablePath?: string;
   /** Absent for discovery-only planned backends. */
   factory?: RuntimeFactory;
   /**
@@ -154,6 +159,66 @@ export function createCoachingRuntimeRegistry(
     },
     list(): readonly CoachingRuntimeRegistration[] {
       return list;
+    },
+  };
+}
+
+/**
+ * A registry whose contents can be swapped after construction.
+ *
+ * Why this exists: some capabilities are only knowable by running a child
+ * process (does this machine have Codex? what version? does its app-server
+ * expose the dynamic-tool surface?). Blocking server startup on those probes
+ * would make the local data plane unavailable for seconds, and a machine with
+ * several CLIs installed could wait far longer. So the server starts with
+ * whatever is known immediately and swaps in the probed result later.
+ *
+ * The service captures whatever registry object it is handed, so the object
+ * itself must be STABLE while its contents change: `get`/`list` delegate to the
+ * current snapshot on every call. Returning a new registry instead would leave
+ * the service reading the stale one.
+ *
+ * Concurrency contract, because this is read on request paths:
+ * - each update is validated first (the same checks as `createCoachingRuntimeRegistry`),
+ *   so an invalid registration list throws and leaves the previous snapshot
+ *   intact rather than half-applying;
+ * - the snapshot is replaced atomically (single reference assignment), so a
+ *   reader sees either the whole old set or the whole new set, never a mix;
+ * - `get`/`list` never throw on a missing backend — they return `undefined` /
+ *   the current list, exactly like the immutable registry.
+ *
+ * It deliberately does NOT decide policy: callers pass a complete, validated
+ * registration list. Deciding which backends to advertise stays in the caller.
+ */
+export interface ReplaceableCoachingRuntimeRegistry extends CoachingRuntimeRegistry {
+  /**
+   * Replace every registration atomically. Throws (leaving the previous
+   * snapshot in place) if the new list is invalid.
+   */
+  replace(registrations: readonly CoachingRuntimeRegistration[]): void;
+  /** The snapshot currently being served. Never mutated in place. */
+  current(): CoachingRuntimeRegistry;
+}
+
+export function createReplaceableCoachingRuntimeRegistry(
+  initial: readonly CoachingRuntimeRegistration[] = [],
+): ReplaceableCoachingRuntimeRegistry {
+  let snapshot = createCoachingRuntimeRegistry(initial);
+  return {
+    get(backendId: CoachingBackendId): CoachingRuntimeRegistration | undefined {
+      return snapshot.get(backendId);
+    },
+    list(): readonly CoachingRuntimeRegistration[] {
+      return snapshot.list();
+    },
+    replace(registrations: readonly CoachingRuntimeRegistration[]): void {
+      // Build (and therefore validate) FIRST: a duplicate or mismatched entry
+      // must not destroy the registry that is currently serving requests.
+      const next = createCoachingRuntimeRegistry(registrations);
+      snapshot = next;
+    },
+    current(): CoachingRuntimeRegistry {
+      return snapshot;
     },
   };
 }
@@ -245,6 +310,9 @@ function registrationDescriptor(registration: CoachingRuntimeRegistration): Coac
     descriptor.unavailableReason = { ...registration.unavailableReason };
   }
   if (registration.version !== undefined) descriptor.version = registration.version;
+  if (registration.executablePath !== undefined) {
+    descriptor.executablePath = registration.executablePath;
+  }
   return descriptor;
 }
 
@@ -285,6 +353,11 @@ export interface CoachingDiscoveryOptions {
   identity?: CoachingTrustedIdentity | null;
   cloudQuota?: CoachingCloudQuota | null;
   cloudProviderConfigured?: boolean;
+  /**
+   * Backend a run should use when it names none. Server-configured (the
+   * daemon's `--runtime`), never inferred from a request.
+   */
+  defaultBackendId?: CoachingBackendId;
 }
 
 /**
@@ -357,5 +430,6 @@ export function buildCoachingDiscovery(options: CoachingDiscoveryOptions): Coach
     protocolVersion: COACHING_PROTOCOL_VERSION,
     tools: [...COACHED_TOOL_NAMES],
     backends,
+    ...(options.defaultBackendId === undefined ? {} : { defaultBackendId: options.defaultBackendId }),
   };
 }

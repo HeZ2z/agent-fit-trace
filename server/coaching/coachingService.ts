@@ -183,6 +183,17 @@ export interface CoachingServiceOptions {
   cloudQuota?: CoachingCloudQuota | null;
   /** True only when a real cloud provider adapter is configured. */
   cloudProviderConfigured?: boolean;
+  /**
+   * Backend a run should use when it names none, published in discovery so a
+   * client can preselect it.
+   *
+   * Server-configured only (the daemon's `--runtime`); never read from a
+   * request. It does NOT change how an unnamed run resolves — the shared
+   * contract still maps that to `local-pi` — so the client must send the id
+   * explicitly. Storing the choice without publishing it is what let an
+   * operator's `--runtime codex` be silently ignored.
+   */
+  defaultBackendId?: CoachingBackendId;
   /** Max stored events per run (tripping the cap fails the run explicitly). */
   maxEventsPerRun?: number;
   /** Max stored event bytes per run (UTF-8 frame bytes; tripping the cap fails the run explicitly). */
@@ -1692,6 +1703,9 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         identity: options.trustedIdentity?.(principal) ?? null,
         cloudQuota: options.cloudQuota ?? null,
         cloudProviderConfigured: options.cloudProviderConfigured === true,
+        ...(options.defaultBackendId === undefined
+          ? {}
+          : { defaultBackendId: options.defaultBackendId }),
       });
     },
 

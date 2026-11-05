@@ -9,12 +9,7 @@ import { createSupabaseVerifier } from "../../../server/auth/supabaseVerifier.ts
 import type { TokenVerifier } from "../../../server/auth/verifier.ts";
 import type { ServerPublicConfig } from "../../../server/publicConfig.ts";
 import { isRejectedSupabaseKey, isSafeSupabaseUrl } from "../../../server/db/env.ts";
-import { CoachedPiProcess } from "../../../server/coaching/piProcessAdapter.ts";
-import { CoachedCodexAppServer } from "../../../server/coaching/codexAppServerAdapter.ts";
-import { probeCodexAppServer } from "../../../server/coaching/codexAppServerCapability.ts";
 import type { CodexAppServerSupport } from "../../../server/coaching/codexAppServerCapability.ts";
-import { CoachedOpenCodeRun } from "../../../server/coaching/opencodeServerAdapter.ts";
-import { probeOpenCodeRun } from "../../../server/coaching/opencodeCapability.ts";
 import type { OpenCodeIsolationEvidence, OpenCodeRunSupport } from "../../../server/coaching/opencodeCapability.ts";
 import type {
   CoachingService,
@@ -22,6 +17,15 @@ import type {
 } from "../../../server/coaching/coachingService.ts";
 import { createCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
 import type { CoachingRuntimeRegistration } from "../../../server/coaching/runtimeRegistry.ts";
+import {
+  localPiRegistration,
+  piRuntimeFactory,
+  probeLocalCodex,
+  probeLocalOpenCode,
+  resolveLocalCodexRegistration,
+  resolveLocalOpenCodeRegistration,
+  unavailablePiRuntimeFactory,
+} from "../../../server/coaching/localRuntimeRegistrations.ts";
 import {
   acquireCoachingJournalLock,
 } from "../../../server/coaching/coachingJournal.ts";
@@ -310,80 +314,6 @@ function defaultExtensionPath(): string {
 }
 
 /**
- * Default runtime factory: the launch's own immutable snapshot file,
- * per-run snapshot dir, fixed per-session native dir, and resume handle
- * flow straight into the coached pi process — the factory invents no paths.
- */
-function defaultRuntimeFactory(extensionPath: string, cwd: string): RuntimeFactory {
-  return (launch) =>
-    new CoachedPiProcess({
-      sessionId: launch.sessionId,
-      runId: launch.runId,
-      prompt: launch.prompt,
-      snapshotFile: launch.snapshotFile,
-      snapshotDir: launch.snapshotDir,
-      sessionDir: launch.sessionDir,
-      ...(launch.resumeSessionFile !== undefined ? { resumeSessionFile: launch.resumeSessionFile } : {}),
-      extensionPath,
-      cwd,
-      onEvent: launch.onEvent,
-      onDone: launch.onDone,
-    });
-}
-
-/**
- * Codex runtime factory: the child gets a controlled empty working directory,
- * the launch's immutable snapshot stays in this process, and a stored native
- * handle is resumed only when the service already matched it to this backend.
- */
-function defaultCodexRuntimeFactory(options: { binary?: string }): RuntimeFactory {
-  return (launch) =>
-    new CoachedCodexAppServer({
-      sessionId: launch.sessionId,
-      runId: launch.runId,
-      prompt: launch.prompt,
-      snapshotFile: launch.snapshotFile,
-      sessionDir: launch.sessionDir,
-      // Controlled per-product-session directory; never the snapshot dir.
-      cwd: launch.sessionDir,
-      ...(options.binary !== undefined ? { codexBinary: options.binary } : {}),
-      ...(launch.resumeNativeSessionHandle !== undefined
-        ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
-        : {}),
-      onEvent: launch.onEvent,
-      onDone: launch.onDone,
-    });
-}
-
-/**
- * OpenCode runtime factory: one private `opencode run --standalone` per run,
- * isolated roots under the launch's session dir, generated wildcard-deny
- * config, and a generated plugin that calls the in-process domain bridge.
- */
-function defaultOpenCodeRuntimeFactory(options: {
-  binary?: string;
-  model: string;
-}): RuntimeFactory {
-  return (launch) =>
-    new CoachedOpenCodeRun({
-      sessionId: launch.sessionId,
-      runId: launch.runId,
-      prompt: launch.prompt,
-      snapshotFile: launch.snapshotFile,
-      sessionDir: launch.sessionDir,
-      cwd: launch.sessionDir,
-      model: options.model,
-      ...(options.binary !== undefined ? { opencodeBinary: options.binary } : {}),
-      ...(launch.resumeNativeSessionHandle !== undefined
-        ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
-        : {}),
-      isolationVerified: true,
-      onEvent: launch.onEvent,
-      onDone: launch.onDone,
-    });
-}
-
-/**
  * Shared-guard validation for any public config (upstream bootstrap or
  * injected): secret/service-role keys and unsafe URLs are rejected so a
  * misconfigured key can never reach the browser or the verifier.
@@ -502,32 +432,6 @@ async function fetchUpstreamPublicConfig(upstreamBase: string): Promise<ServerPu
   return validatePublicConfig((payload as { data?: unknown } | null)?.data);
 }
 
-/**
- * Fail-clear runtime factory used when the pi CLI is missing and no test
- * factory was injected: runs report a clear "pi unavailable" failure
- * instead of a generic spawn error.
- */
-function unavailablePiRuntimeFactory(): RuntimeFactory {
-  return (launch) => ({
-    start(): void {
-      setImmediate(() => {
-        launch.onEvent({
-          type: "run_error",
-          code: "PI_UNAVAILABLE",
-          message: "pi CLI is not available on PATH — workout tracking works; install pi to run coaching.",
-        });
-        launch.onDone("failed", "pi CLI is not available on PATH — install pi to run coaching.", {
-          processExitConfirmed: true,
-        });
-      });
-    },
-    cancel(_reason?: string): void {
-      void _reason;
-    },
-    async close(): Promise<void> {},
-  });
-}
-
 export async function startLauncherServer(options: LauncherServerOptions): Promise<LauncherServer> {
   const host = options.host ?? BIND_HOST;
   assertLoopbackHost(host);
@@ -577,110 +481,49 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
     options.runtimeFactory ??
     (options.piAvailable === false
       ? unavailablePiRuntimeFactory()
-      : defaultRuntimeFactory(options.extensionPath ?? defaultExtensionPath(), options.piCwd ?? process.cwd()));
+      : piRuntimeFactory(options.extensionPath ?? defaultExtensionPath(), options.piCwd ?? process.cwd()));
   // local-pi remains the legacy v1 path even when another runtime is
   // configured: an omitted backend always maps to local-pi, never cloud.
   const localPiAvailable = options.piAvailable !== false || options.runtimeFactory !== undefined;
   const registrations: CoachingRuntimeRegistration[] = [
-    {
-      backendId: "local-pi",
-      runtimeId: "pi",
-      executionLocation: "local",
-      displayName: "pi CLI (local)",
-      available: localPiAvailable,
-      ...(localPiAvailable
-        ? {}
-        : {
-            unavailableReason: {
-              code: "cli-not-installed" as const,
-              message: "pi CLI is not available on PATH.",
-            },
-          }),
-      factory: runtimeFactory,
-    },
+    localPiRegistration({ available: localPiAvailable, factory: runtimeFactory }),
   ];
   if (configuredSelection.backendId === "local-codex") {
-    // Availability is derived from the INSTALLED app-server schema. The
+    // Availability is derived from the INSTALLED app-server schema, gated in
+    // the shared module so `start` and the daemon cannot drift apart. The
     // adapter declares only the two coached dynamic tools; without that
     // protocol surface a read-only sandbox still leaves built-in file/shell
     // tools usable, so the backend must stay unavailable.
-    const support =
-      options.codexSupport ??
-      (await probeCodexAppServer(
+    const support = await probeLocalCodex({
+      ...(options.codexBinary !== undefined ? { binary: options.codexBinary } : {}),
+      ...(options.codexSupport !== undefined ? { support: options.codexSupport } : {}),
+    });
+    registrations.push(
+      resolveLocalCodexRegistration(
+        support,
         options.codexBinary !== undefined ? { binary: options.codexBinary } : {},
-      ));
-    if (support.supported && support.builtinIsolationVerified === true) {
-      registrations.push({
-        backendId: "local-codex",
-        runtimeId: "codex",
-        executionLocation: "local",
-        displayName: "Codex CLI (local)",
-        available: true,
-        ...(support.version !== undefined ? { version: support.version } : {}),
-        capabilities: { nativeContinuation: true, cancelConfirmation: "process-exit" },
-        factory: defaultCodexRuntimeFactory(
-          options.codexBinary !== undefined ? { binary: options.codexBinary } : {},
-        ),
-      });
-    } else {
-      registrations.push({
-        backendId: "local-codex",
-        runtimeId: "codex",
-        executionLocation: "local",
-        displayName: "Codex CLI (local)",
-        available: false,
-        unavailableReason: {
-          code: support.unavailable === true ? "cli-not-installed" : "cli-version-unsupported",
-          message:
-            support.gap ??
-            "the installed Codex app-server cannot guarantee an isolated read-only tool surface",
-        },
-      });
-    }
+      ),
+    );
   } else if (configuredSelection.backendId === "local-opencode") {
     // Availability comes from the INSTALLED v2 CLI plus positive isolation
-    // evidence. Without that evidence the adapter remains gated: a wildcard
-    // deny is only trustworthy if the complete built-in inventory, plugin
-    // tool list, and agent set were observed to be excluded.
-    const support =
-      options.openCodeSupport ??
-      (await probeOpenCodeRun({
+    // evidence, gated in the shared module. Without that evidence the adapter
+    // remains gated: a wildcard deny is only trustworthy if the complete
+    // built-in inventory, plugin tool list, and agent set were observed to be
+    // excluded.
+    const support = await probeLocalOpenCode({
+      ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
+      ...(options.openCodeModel !== undefined ? { model: options.openCodeModel } : {}),
+      ...(options.openCodeSupport !== undefined ? { support: options.openCodeSupport } : {}),
+      ...(options.openCodeIsolationVerifier !== undefined
+        ? { verifyIsolation: options.openCodeIsolationVerifier }
+        : {}),
+    });
+    registrations.push(
+      resolveLocalOpenCodeRegistration(support, {
         ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
         ...(options.openCodeModel !== undefined ? { model: options.openCodeModel } : {}),
-        ...(options.openCodeIsolationVerifier !== undefined
-          ? { verifyIsolation: options.openCodeIsolationVerifier }
-          : {}),
-      }));
-    const model = support.model ?? options.openCodeModel ?? "";
-    if (support.supported && support.isolationVerified === true && model !== "") {
-      registrations.push({
-        backendId: "local-opencode",
-        runtimeId: "opencode",
-        executionLocation: "local",
-        displayName: "OpenCode CLI (local)",
-        available: true,
-        ...(support.version !== undefined ? { version: support.version } : {}),
-        capabilities: { nativeContinuation: true, cancelConfirmation: "process-exit" },
-        factory: defaultOpenCodeRuntimeFactory({
-          ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
-          model,
-        }),
-      });
-    } else {
-      registrations.push({
-        backendId: "local-opencode",
-        runtimeId: "opencode",
-        executionLocation: "local",
-        displayName: "OpenCode CLI (local)",
-        available: false,
-        unavailableReason: {
-          code: support.unavailable === true ? "cli-not-installed" : "cli-version-unsupported",
-          message:
-            support.gap ??
-            "the installed OpenCode CLI cannot prove an isolated plugin-only tool surface",
-        },
-      });
-    }
+      }),
+    );
   } else if (configuredSelection.backendId !== "local-pi") {
     // Configured but unimplemented: record the selection, never advertise it
     // as available and never fall back to pi under that backend id.

@@ -3,17 +3,21 @@ import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateWorkoutRecord } from "@agent-fit-trace/core";
 import type { WorkoutRecord } from "@agent-fit-trace/core";
 import { parseCoachingCapabilityDiscovery } from "@agent-fit-trace/api-contracts";
+import type { CoachingCapabilityDiscovery } from "@agent-fit-trace/api-contracts";
 import {
+  defaultBackendIdFor,
   piExtensionCandidates,
   resolvePiAvailability,
   startDaemonServer,
 } from "../packages/fit-trace-cli/src/daemonServer.ts";
 import type { DaemonServer, DaemonServerOptions } from "../packages/fit-trace-cli/src/daemonServer.ts";
+import type { DetectedLocalCli } from "../server/coaching/localRuntimeRegistrations.ts";
 import { LOCAL_DAEMON_BEARER } from "../server/auth/localVerifier.ts";
 import { CAPABILITY_HEADER } from "../server/coaching/coachingServer.ts";
 
@@ -623,4 +627,648 @@ test("daemon CLI refuses valueless and unknown flags", async () => {
   const unknown = await runCli(["daemon", "--bogus"]);
   assert.equal(unknown.code, 2);
   assert.match(unknown.stderr, /unknown argument: --bogus/);
+});
+
+// --- #68: three local backends, probed after startup ---
+
+/** Bootstrap a guest capability and return everything needed to call /coaching. */
+async function coachingCreds(daemon: DaemonServer): Promise<Record<string, string>> {
+  const bootstrap = await fetch(`${daemon.url}/coaching/bootstrap`, {
+    method: "POST",
+    headers: { authorization: GUEST_AUTH },
+  });
+  const raw = (await bootstrap.json()) as { data?: { capability?: string } };
+  if (raw.data?.capability === undefined) {
+    throw new Error(`bootstrap failed (${bootstrap.status}): ${JSON.stringify(raw).slice(0, 300)}`);
+  }
+  const capability = raw.data.capability;
+  return { authorization: GUEST_AUTH, [CAPABILITY_HEADER]: capability };
+}
+
+async function discoverBackends(daemon: DaemonServer): Promise<CoachingCapabilityDiscovery> {
+  const creds = await coachingCreds(daemon);
+  const response = await fetch(`${daemon.url}/coaching/capabilities`, { headers: creds });
+  return parseCoachingCapabilityDiscovery(((await response.json()) as { data: unknown }).data);
+}
+
+/**
+ * A probe double: `support` is the capability answer, `executablePath` the
+ * binary that was "detected". Both travel together because production detection
+ * resolves the path BEFORE probing, and the registration must report the same
+ * file the run will spawn.
+ */
+function detected<T>(support: T, executablePath?: string) {
+  return async (): Promise<DetectedLocalCli<T>> =>
+    executablePath === undefined ? { support } : { support, executablePath };
+}
+
+/** A promise that never settles: models a hung child process. */
+function never<T>(): Promise<T> {
+  return new Promise<T>(() => {});
+}
+
+test("all three local backends are registered and unprobed CLIs are not claimed absent", async () => {
+  // Neither probe ever settles, so this observes the STARTUP state: what a
+  // user sees before any child process has answered.
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    localCliProbeTimeoutMs: 30_000,
+    localCliProbes: { codex: () => never(), openCode: () => never() },
+  });
+  try {
+    const discovery = await discoverBackends(daemon);
+    const ids = discovery.backends.map((entry) => entry.backendId);
+    assert.deepEqual(ids.sort(), ["cloud-default", "local-codex", "local-opencode", "local-pi"]);
+
+    for (const backendId of ["local-codex", "local-opencode"] as const) {
+      const entry = discovery.backends.find((candidate) => candidate.backendId === backendId);
+      assert.equal(entry?.available, false, `${backendId} must not be advertised before it is probed`);
+      // The reason must say "not probed", NOT "not installed": we have not
+      // asked, and claiming absence sends the user to install what they have.
+      assert.match(
+        entry?.unavailableReason?.message ?? "",
+        /not been probed/i,
+        `${backendId} must report that it is unprobed rather than absent`,
+      );
+    }
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("the port accepts connections while the pi probe and CLI probes are all unresolved", async () => {
+  // The startup blocker this replaces: `runDaemon` awaited `checkPiCli()` BEFORE
+  // binding. Here the pi probe is an explicit promise the test controls plus two
+  // probes that never settle, so nothing can have answered before the listener.
+  let piResolved = false;
+  let resolvePi: ((value: boolean) => void) | undefined;
+  const piProbe = new Promise<boolean>((resolve) => {
+    resolvePi = (value: boolean) => {
+      piResolved = true;
+      resolve(value);
+    };
+  });
+  const { daemon } = await bootDaemon({
+    piAvailable: piProbe,
+    localCliProbeTimeoutMs: 30_000,
+    localCliProbes: { codex: () => never(), openCode: () => never() },
+  });
+  try {
+    // startDaemonServer RESOLVED, i.e. the listener is bound, while the probe
+    // that used to gate it is provably still pending.
+    assert.equal(piResolved, false, "the listener must not wait for the pi probe");
+    const response = await fetch(`${daemon.url}/api/v1/public-config`);
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    assert.equal(piResolved, false, "serving requests must not resolve the probe either");
+  } finally {
+    void resolvePi;
+    await daemon.close();
+  }
+});
+
+test("a shell is served while probes are unresolved", async () => {
+  assert.ok(shellDist !== null);
+  const { daemon } = await bootDaemon({
+    distDir: shellDist,
+    piAvailable: false,
+    localCliProbeTimeoutMs: 30_000,
+    localCliProbes: { codex: () => never(), openCode: () => never() },
+  });
+  try {
+    const shell = await fetch(`${daemon.url}/`);
+    assert.equal(shell.status, 200);
+    assert.match(await shell.text(), /daemon-shell-root/);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a late probe updates BOTH discovery and submission with no restart", async () => {
+  // Codex becomes available after the listener is up. Submission must follow,
+  // not just the discovery payload: a settings page could otherwise enable a
+  // backend the server still refuses to run.
+  let finishCodex: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    finishCodex = resolve;
+  });
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    // No local runtime factory: the test drives the pi backend through the
+    // injected registry path below instead of spawning a real CLI.
+    localCliProbeTimeoutMs: 30_000,
+    localCliProbes: {
+      // Latches on `gate`: resolving it produces a VERIFIED Codex.
+      codex: async () => {
+        await gate;
+        return {
+          support: { supported: true, builtinIsolationVerified: true, version: "9.9.9-late" },
+          executablePath: "/opt/late/codex",
+        };
+      },
+      openCode: async () => ({
+        support: { supported: false, isolationVerified: false, gap: "not installed (test)" },
+      }),
+    },
+  });
+  try {
+    // Before the probe settles: unavailable, with the "not probed" reason.
+    const before = await discoverBackends(daemon);
+    const codexBefore = before.backends.find((entry) => entry.backendId === "local-codex");
+    assert.equal(codexBefore?.available, false);
+    assert.match(codexBefore?.unavailableReason?.message ?? "", /not been probed/i);
+
+    finishCodex?.();
+    await daemon.localCliRefreshSettled();
+
+    const after = await discoverBackends(daemon);
+    const codexAfter = after.backends.find((entry) => entry.backendId === "local-codex");
+    assert.equal(codexAfter?.available, true, "discovery must reflect the late probe");
+    assert.equal(codexAfter?.version, "9.9.9-late");
+    assert.equal(codexAfter?.executablePath, "/opt/late/codex");
+    assert.equal(codexAfter?.unavailableReason, undefined);
+
+    // Submission now dispatches to the CODEX factory instead of being refused.
+    // A real run would spawn the CLI, so assert the routing decision only: the
+    // refusal disappears, which is exactly what "submission reflects it" means.
+    const creds = await coachingCreds(daemon);
+    const created = await fetch(`${daemon.url}/coaching/sessions`, { method: "POST", headers: creds });
+    assert.equal(created.status, 201);
+    const sessionId = ((await created.json()) as { data: { id: string } }).data.id;
+    const snapshot = await fetch(`${daemon.url}/coaching/snapshots`, {
+      method: "POST",
+      headers: { ...creds, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(snapshot.status, 201);
+    const handle = ((await snapshot.json()) as {
+      data: { snapshotId: string; source: string; accountId: string };
+    }).data;
+    const run = await fetch(`${daemon.url}/coaching/runs`, {
+      method: "POST",
+      headers: { ...creds, "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        snapshot: { snapshotId: handle.snapshotId, source: handle.source, accountId: handle.accountId },
+        prompt: "analyze",
+        idempotencyKey: "late-probe",
+        backendId: "local-codex",
+      }),
+    });
+    // No longer refused as unavailable. It may still fail later at spawn time
+    // (there is no /opt/late/codex), which is the truthful outcome here.
+    assert.notEqual(run.status, 400, await run.text());
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a hanging probe never delays startup, and another backend still works", async () => {
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    // Short bound so the test does not sit through the production timeout.
+    localCliProbeTimeoutMs: 150,
+    localCliProbes: {
+      codex: () => never(),
+      // OpenCode answers immediately; a hung Codex must not affect it.
+      openCode: detected({ supported: false, isolationVerified: false, gap: "not installed (test)" }),
+    },
+  });
+  try {
+    const response = await fetch(`${daemon.url}/api/v1/public-config`);
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+
+    await daemon.localCliRefreshSettled();
+    const discovery = await discoverBackends(daemon);
+    const openCode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
+    // OpenCode published its real answer…
+    assert.equal(openCode?.available, false);
+    assert.match(openCode?.unavailableReason?.message ?? "", /not installed \(test\)/);
+    // …while the hung Codex kept the truthful "not probed yet" state instead of
+    // inheriting OpenCode's outcome or being claimed absent.
+    assert.equal(codex?.available, false);
+    assert.match(codex?.unavailableReason?.message ?? "", /not been probed/i);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("an installed CLI whose isolation gate fails stays unavailable (gate not bypassed)", async () => {
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    localCliProbes: {
+      // Installed and version-reporting, but the probe could NOT prove
+      // built-in isolation. This is the exact shape a real Codex probe returns
+      // today (`builtin-isolation-unproven`), so it must stay unavailable.
+      codex: detected({
+        supported: true,
+        builtinIsolationVerified: false,
+        version: "0.9.0-test",
+        gap: "builtin-isolation-unproven: dynamicTools does not disable built-ins",
+      }),
+      // Same for OpenCode: supported, version known, isolation NOT verified.
+      openCode: detected({
+        supported: true,
+        isolationVerified: false,
+        version: "2.0.30",
+        model: "fixture/model",
+        gap: "plugin-isolation-unproven: built-in inventory was not excluded",
+      }),
+    },
+  });
+  try {
+    await daemon.localCliRefreshSettled();
+    const discovery = await discoverBackends(daemon);
+    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
+    const openCode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+
+    assert.equal(codex?.available, false, "an unproven Codex must never be selectable");
+    assert.equal(codex?.unavailableReason?.code, "cli-version-unsupported");
+    assert.match(codex?.unavailableReason?.message ?? "", /builtin-isolation-unproven/);
+
+    assert.equal(openCode?.available, false, "an unproven OpenCode must never be selectable");
+    assert.equal(openCode?.unavailableReason?.code, "cli-version-unsupported");
+    assert.match(openCode?.unavailableReason?.message ?? "", /plugin-isolation-unproven/);
+    // The version is reported even though unavailable: installing the CLI is
+    // not the fix, and a settings page must be able to say which one it saw.
+    assert.equal(codex?.version, "0.9.0-test");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("an unavailable backend rejects submit with its own reason rather than dispatching", async () => {
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    localCliProbes: {
+      codex: detected({
+        supported: true,
+        builtinIsolationVerified: false,
+        gap: "builtin-isolation-unproven: test double",
+      }),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "not installed (test)" }),
+    },
+  });
+  try {
+    await daemon.localCliRefreshSettled();
+    const creds = await coachingCreds(daemon);
+    const created = await fetch(`${daemon.url}/coaching/sessions`, { method: "POST", headers: creds });
+    assert.equal(created.status, 201);
+    const sessionId = ((await created.json()) as { data: { id: string } }).data.id;
+    const snapshot = await fetch(`${daemon.url}/coaching/snapshots`, {
+      method: "POST",
+      headers: { ...creds, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(snapshot.status, 201);
+    // A submit accepts a snapshot HANDLE only (id/source/account); the server
+    // resolves records itself.
+    const snapshotBody = ((await snapshot.json()) as {
+      data: { snapshotId: string; source: string; accountId: string };
+    }).data;
+    const snapshotHandle = {
+      snapshotId: snapshotBody.snapshotId,
+      source: snapshotBody.source,
+      accountId: snapshotBody.accountId,
+    };
+
+    // Discovery says unavailable, so a submit naming it must be REFUSED with
+    // that reason — never silently routed to another backend.
+    const run = await fetch(`${daemon.url}/coaching/runs`, {
+      method: "POST",
+      headers: { ...creds, "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        snapshot: snapshotHandle,
+        prompt: "analyze",
+        idempotencyKey: "test-unavailable-backend",
+        backendId: "local-codex",
+      }),
+    });
+    assert.equal(run.status, 400);
+    const error = ((await run.json()) as { error?: { message?: string } }).error;
+    assert.match(error?.message ?? "", /isolation-unproven/);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("discovery reports path, version, availability and reason as distinct fields", async () => {
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    localCliProbes: {
+      // Installed at a known path, isolation failed: the settings-page case.
+      codex: detected(
+        {
+          supported: true,
+          builtinIsolationVerified: false,
+          version: "0.9.0-test",
+          gap: "builtin-isolation-unproven: test double",
+        },
+        "/usr/local/bin/codex-shadowed",
+      ),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "not installed (test)" }),
+    },
+  });
+  try {
+    await daemon.localCliRefreshSettled();
+    const discovery = await discoverBackends(daemon);
+    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
+    assert.ok(codex !== undefined);
+    // Field by field, not "present": a settings page renders all four.
+    assert.equal(codex.executablePath, "/usr/local/bin/codex-shadowed");
+    assert.equal(codex.version, "0.9.0-test");
+    assert.equal(codex.available, false);
+    assert.equal(codex.unavailableReason?.code, "cli-version-unsupported");
+    assert.equal(typeof codex.unavailableReason?.message, "string");
+    assert.notEqual(codex.unavailableReason?.message, "");
+    // The unavailable OpenCode resolved no executable at all, so no path is
+    // invented for it.
+    const openCode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
+    assert.equal(openCode?.executablePath, undefined);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("an explicit piAvailable:false is honoured immediately, not overwritten by the refresh", async () => {
+  // A known "no" is an answer. The optimistic startup registration only exists
+  // for a still-pending probe; a boolean must not be treated as "probably fine".
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    localCliProbes: {
+      codex: detected({ supported: false, builtinIsolationVerified: false, gap: "x" }),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "y" }),
+    },
+  });
+  try {
+    const before = await discoverBackends(daemon);
+    const piBefore = before.backends.find((entry) => entry.backendId === "local-pi");
+    assert.equal(piBefore?.available, false);
+    await daemon.localCliRefreshSettled();
+    const after = await discoverBackends(daemon);
+    const piAfter = after.backends.find((entry) => entry.backendId === "local-pi");
+    assert.equal(piAfter?.available, false, "an explicit false must survive the refresh");
+  } finally {
+    await daemon.close();
+  }
+});
+
+// --- `--runtime`: a default selection, never a discovery filter ---
+
+test("--runtime selects the default backend without filtering discovery", async () => {
+  // The semantics chosen for the daemon: `--runtime` preselects what a NEW run
+  // uses. It must NOT hide other backends — a settings page (#69) has to offer
+  // every installed CLI, and filtering here would make an installed CLI
+  // unreachable.
+  const { daemon } = await bootDaemon({
+    defaultRuntime: "codex",
+    piAvailable: false,
+    localCliProbes: {
+      codex: detected({ supported: false, builtinIsolationVerified: false, gap: "unproven (test)" }),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "absent (test)" }),
+    },
+  });
+  try {
+    assert.equal(daemon.defaultBackendId, "local-codex", "the named runtime is the default");
+    await daemon.localCliRefreshSettled();
+    const discovery = await discoverBackends(daemon);
+    // All four backends are still reported: selection ≠ filtering.
+    assert.deepEqual(
+      discovery.backends.map((entry) => entry.backendId).sort(),
+      ["cloud-default", "local-codex", "local-opencode", "local-pi"],
+    );
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("--runtime defaults to pi for backwards compatibility", async () => {
+  // An operator who passes nothing must get exactly today's behavior: pi.
+  assert.equal(defaultBackendIdFor(undefined), "local-pi");
+
+  const { daemon } = await bootDaemon({
+    piAvailable: false,
+    localCliProbes: {
+      codex: detected({ supported: false, builtinIsolationVerified: false, gap: "x" }),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "y" }),
+    },
+  });
+  try {
+    assert.equal(daemon.defaultBackendId, "local-pi");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("--runtime maps each local runtime to its backend, and refuses cloud", () => {
+  assert.equal(defaultBackendIdFor("pi"), "local-pi");
+  assert.equal(defaultBackendIdFor("codex"), "local-codex");
+  assert.equal(defaultBackendIdFor("opencode"), "local-opencode");
+  // The daemon has no cloud execution path; naming it as the local default
+  // would promise a backend this server cannot run.
+  assert.throws(() => defaultBackendIdFor("hosted-sdk"), /cannot default to the hosted-sdk cloud runtime/);
+});
+
+// --- shutdown signal safety: no orphaned journal lock ---
+
+test("SIGTERM during startup still releases the journal lock", async () => {
+  // The regression this pins: the SIGTERM/SIGINT handlers used to be installed
+  // only AFTER `startDaemonServer` returned. Between the journal lock being
+  // acquired and the handlers existing, a signal hit Node's default action, the
+  // process died without `close()`, and `<dataDir>/coaching-journal.json.lock`
+  // survived. The NEXT daemon then refused to start with the fail-closed stale
+  // lock error (exit code 3) — so a supervisor restarting the daemon could be
+  // wedged by a signal it sent microseconds too early.
+  //
+  // The window is real but narrow, so this asserts the INVARIANT rather than a
+  // specific timing: kill as soon as startup is visibly in progress (the
+  // identity file exists), then require that (a) the process exits cleanly and
+  // (b) a fresh daemon on the same data dir can start.
+  const dataDir = await makeDataDir();
+  tempDirs.push(dataDir);
+  const child = spawn(
+    process.execPath,
+    [
+      "packages/fit-trace-cli/src/cli.ts",
+      "daemon",
+      "--port",
+      "0",
+      "--data",
+      dataDir,
+      "--dist",
+      join(dataDir, "no-dist-here"),
+    ],
+    {
+      env: {
+        ...process.env,
+        SUPABASE_URL: "",
+        SUPABASE_PUBLISHABLE_KEY: "",
+        SUPABASE_ANON_KEY: "",
+      },
+      timeout: 30_000,
+    },
+  );
+  const exit = new Promise<number | null>((resolve) => child.on("close", resolve));
+
+  // `identity.json` is written before the listener binds, so this lands inside
+  // the window the old code left uncovered.
+  await new Promise<void>((resolve, reject) => {
+    const deadline = Date.now() + 15_000;
+    const poll = (): void => {
+      if (existsSync(join(dataDir, "identity.json"))) {
+        child.kill("SIGTERM");
+        resolve();
+        return;
+      }
+      if (Date.now() > deadline) {
+        reject(new Error("daemon never began startup"));
+        return;
+      }
+      setTimeout(poll, 5);
+    };
+    poll();
+  });
+
+  assert.equal(await exit, 0, "a signal during startup must still shut down cleanly");
+  // The lock is released, so a second daemon on the same data dir starts.
+  assert.equal(
+    existsSync(join(dataDir, "coaching-journal.json.lock")),
+    false,
+    "shutdown must release the coaching journal lock",
+  );
+  const restarted = await startDaemonServer({
+    port: 0,
+    dataDir,
+    distDir: null,
+    env: NO_SUPABASE_ENV,
+    piAvailable: false,
+    localCliProbeTimeoutMs: 50,
+    localCliProbes: {
+      codex: detected({ supported: false, builtinIsolationVerified: false, gap: "x" }),
+      openCode: detected({ supported: false, isolationVerified: false, gap: "y" }),
+    },
+  });
+  try {
+    assert.equal((await fetch(`${restarted.url}/api/v1/public-config`)).status, 200);
+  } finally {
+    await restarted.close();
+  }
+});
+
+// --- #68 review follow-ups: independent publishing and an honoured default ---
+
+test("a settled pi probe publishes even while an unrelated CLI probe hangs", async () => {
+  // Regression: the earlier `Promise.all` held a KNOWN pi result hostage behind
+  // an unrelated slow probe, so discovery kept advertising an optimistic pi
+  // that was not there, for up to the full probe bound.
+  //
+  // `piAvailable` must be a PROBE (not the immediate boolean) for this test to
+  // mean anything: a boolean is known before the refresh starts, so both the
+  // old and new implementations agree instantly and the ordering is invisible.
+  const { daemon } = await bootDaemon({
+    piAvailable: Promise.resolve(false),
+    localCliProbes: {
+      codex: () => new Promise(() => {}),
+      openCode: () => new Promise(() => {}),
+    },
+  });
+  try {
+    // Wait only for pi to settle; the other two never will.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const discovery = await discoverBackends(daemon);
+      const pi = discovery.backends.find((entry) => entry.backendId === "local-pi");
+      if (pi?.available === false) {
+        assert.equal(pi.unavailableReason?.code, "cli-not-installed");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.fail("a known pi result never published while unrelated probes were pending");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("discovery publishes the operator's default backend", async () => {
+  // `--runtime` used to be logged and then forgotten, so a run silently used pi
+  // despite the operator choosing another backend.
+  const { daemon } = await bootDaemon({ piAvailable: false, defaultRuntime: "codex" });
+  try {
+    const discovery = await discoverBackends(daemon);
+    assert.equal(discovery.defaultBackendId, "local-codex");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("no default is published when the operator named none", async () => {
+  // Absent means "no server preference": the client applies its own default.
+  const { daemon } = await bootDaemon({ piAvailable: false });
+  try {
+    const discovery = await discoverBackends(daemon);
+    // "pi" is the legacy default, so the effective choice is local-pi whether
+    // or not the field is present; assert the field matches it or is absent.
+    assert.ok(
+      discovery.defaultBackendId === undefined || discovery.defaultBackendId === "local-pi",
+      `unexpected default: ${String(discovery.defaultBackendId)}`,
+    );
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a settled alternative does not mark an unprobed pi as absent", async () => {
+  // Regression: publishing from OpenCode's settle also evaluated the pi slot,
+  // which was still `null`. That flipped an INSTALLED pi to `cli-not-installed`
+  // for the length of its own probe — and the app caches a successful discovery
+  // per identity, so a Coach screen opened in that window kept pi disabled.
+  let resolvePi: ((value: boolean) => void) | undefined;
+  const piProbe = new Promise<boolean>((resolve) => {
+    resolvePi = resolve;
+  });
+  const { daemon } = await bootDaemon({
+    piAvailable: piProbe,
+    localCliProbes: {
+      // Settles immediately, which is what used to trigger the bad publish.
+      codex: async () => ({
+        support: { supported: false, builtinIsolationVerified: false, gap: "no codex (test)" },
+      }),
+      openCode: async () => ({
+        support: { supported: false, isolationVerified: false, gap: "no opencode (test)" },
+      }),
+    },
+  });
+  try {
+    // Bootstrap ONCE: every call mints a capability and they are capacity
+    // limited, so polling through `discoverBackends` exhausts them (503).
+    const creds = await coachingCreds(daemon);
+    const discoverOnce = async (): Promise<CoachingCapabilityDiscovery> => {
+      const response = await fetch(`${daemon.url}/coaching/capabilities`, { headers: creds });
+      return parseCoachingCapabilityDiscovery(((await response.json()) as { data: unknown }).data);
+    };
+    // Let both alternatives settle while pi is still pending.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const discovery = await discoverOnce();
+      const pi = discovery.backends.find((entry) => entry.backendId === "local-pi");
+      assert.notEqual(
+        pi?.unavailableReason?.code,
+        "cli-not-installed",
+        "an unprobed pi must not be reported as absent",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    // Now let pi settle and confirm the real answer does take effect.
+    resolvePi?.(false);
+    await daemon.localCliRefreshSettled();
+    const settled = await discoverOnce();
+    const pi = settled.backends.find((entry) => entry.backendId === "local-pi");
+    assert.equal(pi?.available, false);
+    assert.equal(pi?.unavailableReason?.code, "cli-not-installed");
+  } finally {
+    resolvePi?.(false);
+    await daemon.close();
+  }
 });

@@ -22,8 +22,17 @@ import type { AuthenticatedResponse } from "../../../server/authenticatedHandler
 import { createSqlitePrincipalStores } from "../../../server/sqlitePrincipalStores.ts";
 import { CoachedPiProcess } from "../../../server/coaching/piProcessAdapter.ts";
 import type { RuntimeFactory } from "../../../server/coaching/coachingService.ts";
-import { createCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
-import type { CoachingRuntimeRegistration } from "../../../server/coaching/runtimeRegistry.ts";
+import { createReplaceableCoachingRuntimeRegistry } from "../../../server/coaching/runtimeRegistry.ts";
+import {
+  detectLocalCodex,
+  detectLocalOpenCode,
+  localPiRegistration,
+  resolveLocalCodexRegistration,
+  resolveLocalOpenCodeRegistration,
+} from "../../../server/coaching/localRuntimeRegistrations.ts";
+import type { DetectedLocalCli } from "../../../server/coaching/localRuntimeRegistrations.ts";
+import type { CodexAppServerSupport } from "../../../server/coaching/codexAppServerCapability.ts";
+import type { OpenCodeRunSupport } from "../../../server/coaching/opencodeCapability.ts";
 import {
   acquireCoachingJournalLock,
 } from "../../../server/coaching/coachingJournal.ts";
@@ -34,8 +43,8 @@ import {
   resolveDataDir,
   writeIdentity,
 } from "@agent-fit-trace/store";
-import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
-import { API_ENDPOINTS } from "@agent-fit-trace/api-contracts";
+import type { AuthPrincipal, CoachingBackendId, CoachingRuntimeId } from "@agent-fit-trace/api-contracts";
+import { API_ENDPOINTS, resolveCoachingBackendSelection } from "@agent-fit-trace/api-contracts";
 
 /**
  * Standalone local daemon server (`agent-fit-trace daemon`): ONE loopback
@@ -72,6 +81,72 @@ import { API_ENDPOINTS } from "@agent-fit-trace/api-contracts";
  * bounded bodies. Nothing credential-bearing is logged.
  */
 
+/**
+ * Placeholders used BEFORE the real probes run.
+ *
+ * They are not "unavailable because the user lacks the CLI" — that would be a
+ * lie we cannot yet support, and it would make a machine WITH Codex look
+ * broken for as long as the probe takes. `supported: false` plus this gap
+ * says exactly what is true: we have not asked yet. The registration helper
+ * keeps them unavailable, so a submit before the probe lands is rejected with
+ * a reason that will change, rather than dispatched to a factory that does not
+ * exist.
+ */
+const UNPROBED_CODEX: DetectedLocalCli<CodexAppServerSupport> = {
+  support: {
+    supported: false,
+    builtinIsolationVerified: false,
+    gap: "the Codex CLI has not been probed yet; availability is still being determined",
+  },
+};
+
+const UNPROBED_OPENCODE: DetectedLocalCli<OpenCodeRunSupport> = {
+  support: {
+    supported: false,
+    isolationVerified: false,
+    gap: "the OpenCode CLI has not been probed yet; availability is still being determined",
+  },
+};
+
+/**
+ * How long any single CLI probe may take before the refresh gives up on it.
+ *
+ * Bounded on purpose: these probes spawn child processes, and an installed-but-
+ * broken CLI must not keep a refresh (and therefore a rescan) pending forever.
+ * The daemon serves normally regardless — this only decides when to stop
+ * waiting and publish what is known.
+ */
+const LOCAL_CLI_PROBE_TIMEOUT_MS = 20_000;
+
+/**
+ * How long `close()` waits for an in-flight probe refresh after aborting it.
+ *
+ * Small on purpose: the desktop shell allows the daemon only a few seconds
+ * before SIGKILL, and a probe child is reaped by its own kill timer regardless.
+ * This is a teardown bound, not a probe bound.
+ */
+const LOCAL_CLI_SHUTDOWN_GRACE_MS = 250;
+
+/**
+ * Map an operator's `--runtime` to the backend id it names.
+ *
+ * `--runtime` is a SELECTION, not a filter. The known default (`pi`) is used
+ * when nothing is named, and an unknown/cloud runtime is refused earlier by
+ * config parsing, so this only has to translate the local ids.
+ */
+export function defaultBackendIdFor(runtimeId: CoachingRuntimeId | undefined): CoachingBackendId {
+  if (runtimeId === undefined) return "local-pi";
+  const selection = resolveCoachingBackendSelection({ runtimeId });
+  // The daemon serves local coaching only. A cloud runtime named as the local
+  // default would preselect a backend this server cannot run, so it is refused
+  // here rather than advertised and failing at submit time. `cli.ts` validates
+  // the flag first; this is the belt-and-braces check for the embedding seam.
+  if (selection.executionLocation !== "local") {
+    throw new Error(`the daemon cannot default to the ${runtimeId} cloud runtime`);
+  }
+  return selection.backendId;
+}
+
 const DEFAULT_DAEMON_PORT = 5199;
 const PORT_SCAN_LIMIT = 20;
 export const RUNTIME_SCRIPT_PATH = "/fit-trace-runtime.js";
@@ -94,8 +169,15 @@ export interface DaemonServerOptions {
   verifier?: TokenVerifier;
   /** Injected runtime factory (tests). Undefined uses CoachedPiProcess. */
   runtimeFactory?: RuntimeFactory;
-  /** Pi CLI presence (default: coaching advertises available). */
-  piAvailable?: boolean;
+  /**
+   * Pi CLI presence (default: coaching advertises available).
+   *
+   * A promise is accepted so a caller can start the probe WITHOUT awaiting it
+   * before binding the listener (#68): startup must not depend on a child
+   * process, but availability still needs the real answer. The daemon awaits it
+   * once, when it builds the initial registrations.
+   */
+  piAvailable?: boolean | Promise<boolean>;
   /**
    * Path to the pi extension that coached runs load (`pi -e <path>`).
    *
@@ -114,17 +196,58 @@ export interface DaemonServerOptions {
   /** Injectable `fs.existsSync`-style probe (tests). */
   pathExists?: (path: string) => boolean;
   /**
+   * Test/embedding seam: replace the installed-CLI probes.
+   *
+   * Production never sets this. It exists so the availability matrix and the
+   * late-probe behaviour can be tested without a real Codex or OpenCode on the
+   * build machine — the gates stay closed in every normal run, which is
+   * correct but would otherwise make the "becomes available" path untestable.
+   */
+  localCliProbes?: {
+    codex?: () => Promise<DetectedLocalCli<CodexAppServerSupport>>;
+    openCode?: () => Promise<DetectedLocalCli<OpenCodeRunSupport>>;
+  };
+  /**
+   * How long one probe may take before the refresh publishes what it has.
+   * Production leaves this at the default; tests shorten it so a deliberately
+   * hanging probe does not force every run to sit through the real bound.
+   */
+  localCliProbeTimeoutMs?: number;
+  /**
    * Durable coaching journal path (default `<dataDir>/coaching-journal.json`,
    * held under the same process lock as the launcher's). `null` keeps the
    * daemon in-process only (tests).
    */
   journalPath?: string | null;
+  /**
+   * Operator-selected DEFAULT local coaching backend (`--runtime`).
+   *
+   * It selects which backend a NEW coached run should preselect. It does NOT
+   * filter what is discovered: the daemon reports every local CLI it can see,
+   * because a settings page (#69) has to offer all of them, and hiding an
+   * installed CLI would make it unreachable. Defaulting to `pi` preserves
+   * today's behavior exactly for an operator who passes nothing.
+   *
+   * Unavailable values are accepted and reported, never silently coerced: a
+   * caller that asked for Codex must be able to see that Codex is the default
+   * AND that it is unavailable, rather than quietly getting pi.
+   *
+   * Documented in `docs/local-daemon.md`.
+   */
+  defaultRuntime?: CoachingRuntimeId;
 }
 
 export interface DaemonServer {
   url: string;
   port: number;
   dataDir: string;
+  /**
+   * The backend a NEW run should preselect, derived from `--runtime`.
+   * `local-pi` when the operator named none.
+   */
+  defaultBackendId: CoachingBackendId;
+  /** Resolves once the in-flight local CLI probe refresh has published. */
+  localCliRefreshSettled(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -549,8 +672,24 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // fallback candidate rather than the requested path, so the RUN must use
   // `piAvailability.path` — using `extensionPath` here would re-break exactly
   // the mismatch the fallback exists to absorb.
+  // The pi probe may still be running: the caller is allowed to start it and
+  // hand over the promise so the LISTENER does not wait (#68). We therefore
+  // resolve availability twice: once optimistically for the listener (see
+  // below), and once for real once the probe settles, publishing the result
+  // through the replaceable registry.
+  const piProbe: Promise<boolean> =
+    options.piAvailable === undefined
+      ? Promise.resolve(true)
+      : typeof options.piAvailable === "boolean"
+        ? Promise.resolve(options.piAvailable)
+        : options.piAvailable;
+  // Optimism is ONLY justified when the caller handed us a not-yet-settled
+  // probe: then we genuinely do not know. An explicit `boolean` IS the answer,
+  // so it must be honoured immediately — treating a known `false` as "probably
+  // fine" would advertise a coach that cannot run until the refresh lands.
+  const piKnownUpFront = typeof options.piAvailable === "boolean" ? options.piAvailable : true;
   const piAvailability = resolvePiAvailability({
-    cliAvailable: options.piAvailable !== false,
+    cliAvailable: piKnownUpFront,
     ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
     daemonDir: dirname(fileURLToPath(import.meta.url)),
     ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
@@ -564,29 +703,27 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // extension resolution and must not be gated by this path check.
   const localPiAvailable = piAvailability.available || options.runtimeFactory !== undefined;
   const enablePiSignal = localPiAvailable ? piAvailability.available : false;
-  const registrations: CoachingRuntimeRegistration[] = [
-    {
-      backendId: "local-pi",
-      runtimeId: "pi",
-      executionLocation: "local",
-      displayName: "pi CLI (local)",
-      available: localPiAvailable,
-      ...(localPiAvailable
-        ? {}
-        : {
-            unavailableReason: piAvailability.reason ?? {
-              code: "cli-not-installed" as const,
-              message: "pi CLI is not available on PATH.",
-            },
-          }),
-      factory: runtimeFactory,
-    },
-  ];
-  const runtimeRegistry = createCoachingRuntimeRegistry(registrations);
+  const piRegistration = localPiRegistration({
+    available: localPiAvailable,
+    factory: runtimeFactory,
+    ...(localPiAvailable ? {} : { reason: piAvailability.reason }),
+  });
+  // Codex and OpenCode are registered from their probe results, which may not
+  // be known yet. Start with them UNAVAILABLE and a truthful "not probed" gap,
+  // then swap the snapshot in once the probes settle (see `refreshLocalClis`).
+  // This ordering is the point: the data plane and the shell must never wait
+  // for a child process that may be slow, hung, or absent.
+  const rawCodexRegistration = resolveLocalCodexRegistration(UNPROBED_CODEX.support);
+  const rawOpenCodeRegistration = resolveLocalOpenCodeRegistration(UNPROBED_OPENCODE.support);
+  const runtimeRegistry = createReplaceableCoachingRuntimeRegistry([
+    piRegistration,
+    rawCodexRegistration,
+    rawOpenCodeRegistration,
+  ]);
   // The injected flag must reflect whether a run can actually start, not the
   // raw CLI probe: an installed pi whose extension is missing must report
   // `false` here, otherwise the Coach UI offers a backend that fails on use.
-  const runtimeScript = buildRuntimeScriptBody({ piAvailable: enablePiSignal });
+  let runtimeScript = buildRuntimeScriptBody({ piAvailable: enablePiSignal });
 
   async function servePublicConfig(response: ServerResponse): Promise<void> {
     // The standard Supabase fields are carried ONLY when a project is
@@ -757,6 +894,10 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
           port: candidate,
           journalPath,
           trustedHandler,
+          // Publish the operator's `--runtime` choice so a client can
+          // preselect it. Without this the flag is stored but never told to
+          // anyone, and a run silently uses pi despite the selection.
+          serviceOptions: { defaultBackendId: defaultBackendIdFor(options.defaultRuntime) },
         });
         lastError = null;
         break;
@@ -781,17 +922,225 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     throw lastError instanceof Error ? lastError : new Error("daemon could not bind an available port");
   }
 
+  /**
+   * Probe Codex and OpenCode AFTER the listener is up, then publish the result
+   * by swapping the registry snapshot.
+   *
+   * Sequencing matters. `createCoachingService` captured the registry OBJECT,
+   * so replacing its contents is enough — no restart, no re-wiring, and the
+   * already-served listener keeps answering throughout. A probe that hangs is
+   * bounded by `LOCAL_CLI_PROBE_TIMEOUT_MS` and leaves the backend reported as
+   * "not probed yet" rather than blocking anything.
+   *
+   * Overlapping rescans coalesce: `refreshInFlight` holds the current attempt,
+   * and a completion from a superseded attempt is discarded by comparing the
+   * generation counter. Otherwise two quick rescans could publish an older
+   * result over a newer one.
+   */
+  let refreshInFlight: Promise<void> | null = null;
+  let refreshGeneration = 0;
+  /**
+   * Aborted on `close()`. A probe that is still running when the daemon shuts
+   * down must not keep the process alive waiting for its own timeout — the
+   * desktop shell gives the daemon only a few seconds before SIGKILL. Aborting
+   * makes the refresh settle immediately; each probe's own kill timer still
+   * reaps its child process, so nothing is left running either way.
+   */
+  const shutdownProbes = new AbortController();
+
+  /**
+   * Settled results, one slot per backend, plus the current published set.
+   *
+   * Each probe publishes on its OWN settle rather than waiting for the others.
+   * The earlier `Promise.all` was wrong in two ways: a slow Codex probe held
+   * back a pi result that had already said "absent" (discovery kept advertising
+   * a coach that could not run, for up to the full probe bound), and an
+   * injected pi promise that never resolves would suppress the Codex/OpenCode
+   * results forever. Backends are independent facts and are published
+   * independently.
+   */
+  const probed = {
+    pi: null as { available: boolean; path?: string; reason?: unknown } | null,
+    codex: UNPROBED_CODEX,
+    openCode: UNPROBED_OPENCODE,
+  };
+
+  /** Publish whatever is currently known. Safe to call repeatedly. */
+  function publishKnownLocalBackends(): void {
+    const registrations = [
+      // `probed.pi === null` means its probe has NOT settled yet. Do not read
+      // that as "absent": publishing from an alternative's settle would then
+      // flip an installed pi to `cli-not-installed` for the length of its
+      // probe, and `app/src/coaching/useCoach.ts` caches a successful
+      // discovery per identity — opening Coach in that window would leave pi
+      // disabled until discovery was retried. Keep the initial registration
+      // until pi's own probe reports.
+      probed.pi === null
+        ? piRegistration
+        : localPiRegistration({
+            available:
+              options.runtimeFactory !== undefined || probed.pi.available === true,
+            factory:
+              options.runtimeFactory ??
+              (probed.pi.available && probed.pi.path !== undefined
+                ? defaultRuntimeFactory(probed.pi.path, process.cwd())
+                : unavailablePiRuntimeFactory()),
+            ...(probed.pi.available ? {} : { reason: probed.pi.reason as never }),
+          }),
+      resolveLocalCodexRegistration(probed.codex.support, {
+        ...(probed.codex.executablePath !== undefined
+          ? { executablePath: probed.codex.executablePath }
+          : {}),
+      }),
+      resolveLocalOpenCodeRegistration(probed.openCode.support, {
+        ...(probed.openCode.executablePath !== undefined
+          ? { executablePath: probed.openCode.executablePath }
+          : {}),
+      }),
+    ];
+    runtimeRegistry.replace(registrations);
+  }
+
+  async function runLocalCliRefresh(generation: number): Promise<void> {
+    const codexProbe = options.localCliProbes?.codex ?? (() => detectLocalCodex({}));
+    const openCodeProbe = options.localCliProbes?.openCode ?? (() => detectLocalOpenCode({}));
+    const probeTimeoutMs = options.localCliProbeTimeoutMs ?? LOCAL_CLI_PROBE_TIMEOUT_MS;
+    // `generation` guards against an older refresh publishing over a newer one.
+    const stillCurrent = (): boolean => generation === refreshGeneration;
+
+    const settlePi = (async (): Promise<void> => {
+      const piCliAvailable = await piProbe.catch(() => false);
+      if (!stillCurrent()) return;
+      probed.pi = resolvePiAvailability({
+        cliAvailable: piCliAvailable,
+        ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
+        daemonDir: dirname(fileURLToPath(import.meta.url)),
+        ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
+      });
+      publishKnownLocalBackends();
+    })();
+
+    const settleCodex = (async (): Promise<void> => {
+      const detected = await settleWithin(
+        codexProbe(),
+        probeTimeoutMs,
+        UNPROBED_CODEX,
+        shutdownProbes.signal,
+      );
+      if (!stillCurrent()) return;
+      probed.codex = detected;
+      publishKnownLocalBackends();
+    })();
+
+    const settleOpenCode = (async (): Promise<void> => {
+      const detected = await settleWithin(
+        openCodeProbe(),
+        probeTimeoutMs,
+        UNPROBED_OPENCODE,
+        shutdownProbes.signal,
+      );
+      if (!stillCurrent()) return;
+      probed.openCode = detected;
+      publishKnownLocalBackends();
+    })();
+
+    await Promise.all([settlePi, settleCodex, settleOpenCode]);
+  }
+
+  function refreshLocalClis(): Promise<void> {
+    if (refreshInFlight !== null) return refreshInFlight;
+    refreshGeneration += 1;
+    const generation = refreshGeneration;
+    const attempt = runLocalCliRefresh(generation)
+      .catch((error: unknown) => {
+        // A probe failure is never fatal: the backends simply stay as they are
+        // (unavailable, with the "not probed yet" gap) and the data plane is
+        // unaffected. Log once so a persistent failure is diagnosable.
+        console.error(
+          `[daemon] local CLI probe failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        if (refreshInFlight === attempt) refreshInFlight = null;
+      });
+    refreshInFlight = attempt;
+    return attempt;
+  }
+
+  // Kick off the first refresh without awaiting it: startup must not depend on
+  // any child process. The promise is RETAINED (not discarded with `void`) so a
+  // caller can await the startup result even after it settles — reading
+  // `refreshInFlight` alone returns an empty promise once it has finished,
+  // which would let a caller observe the pre-probe snapshot and conclude the
+  // probe never landed.
+  const firstRefresh = refreshLocalClis();
+
   return {
     url: bound.url,
     port: bound.port,
     dataDir,
+    defaultBackendId: defaultBackendIdFor(options.defaultRuntime),
+    /**
+     * Resolve once the current probe refresh has published its result.
+     *
+     * Tests need this to observe the post-probe state without sleeping; it is
+     * harmless in production and callers may ignore it. It never starts a new
+     * probe.
+     */
+    localCliRefreshSettled: (): Promise<void> => firstRefresh,
     close: async () => {
       try {
         await bound.close();
       } finally {
+        // Stop waiting on any in-flight probe: shutdown must be prompt, and a
+        // probe that is still running is bounded by its own kill timer. Bounded
+        // again here so even a half-implemented probe cannot hold teardown open.
+        shutdownProbes.abort();
+        await settleWithin(
+          refreshInFlight ?? Promise.resolve(),
+          LOCAL_CLI_SHUTDOWN_GRACE_MS,
+          undefined,
+        );
         journalLock?.release();
         stores.closeAll();
       }
     },
   };
+}
+
+/**
+ * Await `promise`, but never longer than `timeoutMs`; on timeout or rejection
+ * return `fallback` so a refresh always publishes something rather than
+ * becoming unobservable.
+ */
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+      new Promise<T>((resolve) => {
+        if (signal === undefined) return;
+        if (signal.aborted) {
+          resolve(fallback);
+          return;
+        }
+        onAbort = () => resolve(fallback);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
+  }
 }
