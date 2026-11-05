@@ -894,6 +894,10 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
           port: candidate,
           journalPath,
           trustedHandler,
+          // Publish the operator's `--runtime` choice so a client can
+          // preselect it. Without this the flag is stored but never told to
+          // anyone, and a run silently uses pi despite the selection.
+          serviceOptions: { defaultBackendId: defaultBackendIdFor(options.defaultRuntime) },
         });
         lastError = null;
         break;
@@ -944,58 +948,97 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
    */
   const shutdownProbes = new AbortController();
 
-  async function runLocalCliRefresh(generation: number): Promise<void> {
-    // The pi probe was started by the caller and is awaited HERE, not before
-    // the listener bound. A rejected probe is treated as "absent" rather than
-    // propagating: the refresh must always be able to publish.
-    // DETECTION, not just capability: each helper resolves the executable first
-    // and probes that exact file, so the path reported by discovery is the path
-    // the factory will spawn. Resolving inside the registration instead would
-    // resolve a SECOND time — a shadowed PATH entry between the two calls is
-    // then enough to verify one binary and run another.
-    const codexProbe = options.localCliProbes?.codex ?? (() => detectLocalCodex({}));
-    const openCodeProbe = options.localCliProbes?.openCode ?? (() => detectLocalOpenCode({}));
-    const probeTimeoutMs = options.localCliProbeTimeoutMs ?? LOCAL_CLI_PROBE_TIMEOUT_MS;
-    const [piCliAvailable, codexDetected, openCodeDetected] = await Promise.all([
-      piProbe.catch(() => false),
-      settleWithin(codexProbe(), probeTimeoutMs, UNPROBED_CODEX, shutdownProbes.signal),
-      settleWithin(openCodeProbe(), probeTimeoutMs, UNPROBED_OPENCODE, shutdownProbes.signal),
-    ]);
-    // The optimistic registration above assumed pi was fine. Now that the real
-    // answer is in, recompute so discovery stops advertising a pi that is not
-    // there — or starts advertising one that is.
-    const settledPi = resolvePiAvailability({
-      cliAvailable: piCliAvailable,
-      ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
-      daemonDir: dirname(fileURLToPath(import.meta.url)),
-      ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
-    });
-    // A newer refresh started while we were probing: publish nothing, or the
-    // stale result would overwrite fresher evidence.
-    if (generation !== refreshGeneration) return;
+  /**
+   * Settled results, one slot per backend, plus the current published set.
+   *
+   * Each probe publishes on its OWN settle rather than waiting for the others.
+   * The earlier `Promise.all` was wrong in two ways: a slow Codex probe held
+   * back a pi result that had already said "absent" (discovery kept advertising
+   * a coach that could not run, for up to the full probe bound), and an
+   * injected pi promise that never resolves would suppress the Codex/OpenCode
+   * results forever. Backends are independent facts and are published
+   * independently.
+   */
+  const probed = {
+    pi: null as { available: boolean; path?: string; reason?: unknown } | null,
+    codex: UNPROBED_CODEX,
+    openCode: UNPROBED_OPENCODE,
+  };
+
+  /** Publish whatever is currently known. Safe to call repeatedly. */
+  function publishKnownLocalBackends(): void {
     const settledPiAvailable =
-      options.runtimeFactory !== undefined || settledPi.available;
-    runtimeRegistry.replace([
+      options.runtimeFactory !== undefined || probed.pi?.available === true;
+    const registrations = [
       localPiRegistration({
         available: settledPiAvailable,
         factory:
           options.runtimeFactory ??
-          (settledPi.available && settledPi.path !== undefined
-            ? defaultRuntimeFactory(settledPi.path, process.cwd())
+          (probed.pi?.available === true && probed.pi.path !== undefined
+            ? defaultRuntimeFactory(probed.pi.path, process.cwd())
             : unavailablePiRuntimeFactory()),
-        ...(settledPiAvailable ? {} : { reason: settledPi.reason }),
+        ...(settledPiAvailable
+          ? {}
+          : { reason: probed.pi?.reason as never }),
       }),
-      resolveLocalCodexRegistration(codexDetected.support, {
-        ...(codexDetected.executablePath !== undefined
-          ? { executablePath: codexDetected.executablePath }
+      resolveLocalCodexRegistration(probed.codex.support, {
+        ...(probed.codex.executablePath !== undefined
+          ? { executablePath: probed.codex.executablePath }
           : {}),
       }),
-      resolveLocalOpenCodeRegistration(openCodeDetected.support, {
-        ...(openCodeDetected.executablePath !== undefined
-          ? { executablePath: openCodeDetected.executablePath }
+      resolveLocalOpenCodeRegistration(probed.openCode.support, {
+        ...(probed.openCode.executablePath !== undefined
+          ? { executablePath: probed.openCode.executablePath }
           : {}),
       }),
-    ]);
+    ];
+    runtimeRegistry.replace(registrations);
+  }
+
+  async function runLocalCliRefresh(generation: number): Promise<void> {
+    const codexProbe = options.localCliProbes?.codex ?? (() => detectLocalCodex({}));
+    const openCodeProbe = options.localCliProbes?.openCode ?? (() => detectLocalOpenCode({}));
+    const probeTimeoutMs = options.localCliProbeTimeoutMs ?? LOCAL_CLI_PROBE_TIMEOUT_MS;
+    // `generation` guards against an older refresh publishing over a newer one.
+    const stillCurrent = (): boolean => generation === refreshGeneration;
+
+    const settlePi = (async (): Promise<void> => {
+      const piCliAvailable = await piProbe.catch(() => false);
+      if (!stillCurrent()) return;
+      probed.pi = resolvePiAvailability({
+        cliAvailable: piCliAvailable,
+        ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
+        daemonDir: dirname(fileURLToPath(import.meta.url)),
+        ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
+      });
+      publishKnownLocalBackends();
+    })();
+
+    const settleCodex = (async (): Promise<void> => {
+      const detected = await settleWithin(
+        codexProbe(),
+        probeTimeoutMs,
+        UNPROBED_CODEX,
+        shutdownProbes.signal,
+      );
+      if (!stillCurrent()) return;
+      probed.codex = detected;
+      publishKnownLocalBackends();
+    })();
+
+    const settleOpenCode = (async (): Promise<void> => {
+      const detected = await settleWithin(
+        openCodeProbe(),
+        probeTimeoutMs,
+        UNPROBED_OPENCODE,
+        shutdownProbes.signal,
+      );
+      if (!stillCurrent()) return;
+      probed.openCode = detected;
+      publishKnownLocalBackends();
+    })();
+
+    await Promise.all([settlePi, settleCodex, settleOpenCode]);
   }
 
   function refreshLocalClis(): Promise<void> {
