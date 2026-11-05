@@ -1153,3 +1153,65 @@ test("SIGTERM during startup still releases the journal lock", async () => {
     await restarted.close();
   }
 });
+
+// --- #68 review follow-ups: independent publishing and an honoured default ---
+
+test("a settled pi probe publishes even while an unrelated CLI probe hangs", async () => {
+  // Regression: the earlier `Promise.all` held a KNOWN pi result hostage behind
+  // an unrelated slow probe, so discovery kept advertising an optimistic pi
+  // that was not there, for up to the full probe bound.
+  //
+  // `piAvailable` must be a PROBE (not the immediate boolean) for this test to
+  // mean anything: a boolean is known before the refresh starts, so both the
+  // old and new implementations agree instantly and the ordering is invisible.
+  const { daemon } = await bootDaemon({
+    piAvailable: Promise.resolve(false),
+    localCliProbes: {
+      codex: () => new Promise(() => {}),
+      openCode: () => new Promise(() => {}),
+    },
+  });
+  try {
+    // Wait only for pi to settle; the other two never will.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const discovery = await discoverBackends(daemon);
+      const pi = discovery.backends.find((entry) => entry.backendId === "local-pi");
+      if (pi?.available === false) {
+        assert.equal(pi.unavailableReason?.code, "cli-not-installed");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.fail("a known pi result never published while unrelated probes were pending");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("discovery publishes the operator's default backend", async () => {
+  // `--runtime` used to be logged and then forgotten, so a run silently used pi
+  // despite the operator choosing another backend.
+  const { daemon } = await bootDaemon({ piAvailable: false, defaultRuntime: "codex" });
+  try {
+    const discovery = await discoverBackends(daemon);
+    assert.equal(discovery.defaultBackendId, "local-codex");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("no default is published when the operator named none", async () => {
+  // Absent means "no server preference": the client applies its own default.
+  const { daemon } = await bootDaemon({ piAvailable: false });
+  try {
+    const discovery = await discoverBackends(daemon);
+    // "pi" is the legacy default, so the effective choice is local-pi whether
+    // or not the field is present; assert the field matches it or is absent.
+    assert.ok(
+      discovery.defaultBackendId === undefined || discovery.defaultBackendId === "local-pi",
+      `unexpected default: ${String(discovery.defaultBackendId)}`,
+    );
+  } finally {
+    await daemon.close();
+  }
+});

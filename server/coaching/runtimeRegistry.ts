@@ -353,6 +353,11 @@ export interface CoachingDiscoveryOptions {
   identity?: CoachingTrustedIdentity | null;
   cloudQuota?: CoachingCloudQuota | null;
   cloudProviderConfigured?: boolean;
+  /**
+   * Backend a run should use when it names none. Server-configured (the
+   * daemon's `--runtime`), never inferred from a request.
+   */
+  defaultBackendId?: CoachingBackendId;
 }
 
 /**
@@ -425,5 +430,6 @@ export function buildCoachingDiscovery(options: CoachingDiscoveryOptions): Coach
     protocolVersion: COACHING_PROTOCOL_VERSION,
     tools: [...COACHED_TOOL_NAMES],
     backends,
+    ...(options.defaultBackendId === undefined ? {} : { defaultBackendId: options.defaultBackendId }),
   };
 }

@@ -259,6 +259,24 @@ export interface CoachingCapabilityDiscovery {
   /** Read-only tool names shared by this deployment (never write tools). */
   tools: CoachingToolName[];
   backends: CoachingBackendDescriptor[];
+  /**
+   * Server-chosen backend for a run that does NOT name one.
+   *
+   * Additive and optional; `discoveryVersion` stays 1 because a client that
+   * ignores it behaves exactly as before.
+   *
+   * It exists because the alternative went wrong once already. An operator
+   * selecting a default (`--runtime codex`) had that choice stored on the
+   * server and never told the client, so the client kept preselecting pi and a
+   * run silently used a backend the operator had not chosen. Discovery is the
+   * right place to say it: the client then submits an explicit `backendId`,
+   * which also makes the choice visible in the request instead of implied.
+   *
+   * Absent means "no server preference" — the client applies its own default
+   * (legacy `local-pi`). It is never a demand: a client MAY ignore it, and the
+   * server still resolves an unnamed run through the shared contract.
+   */
+  defaultBackendId?: CoachingBackendId;
 }
 
 /**
@@ -1338,6 +1356,16 @@ export function parseCoachingCapabilityDiscovery(value: unknown): CoachingCapabi
     protocolVersion,
     tools: parseToolNames(value.tools, "tools"),
     backends,
+    ...(value.defaultBackendId === undefined
+      ? {}
+      : {
+          defaultBackendId: ((): CoachingBackendId => {
+            if (!isCoachingBackendId(value.defaultBackendId)) {
+              fail("defaultBackendId", `must be one of ${COACHING_BACKEND_IDS.join(", ")}`);
+            }
+            return value.defaultBackendId;
+          })(),
+        }),
   };
 }
 
