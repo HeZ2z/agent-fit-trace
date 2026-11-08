@@ -8,20 +8,26 @@
  * not from documentation alone.
  *
  * Required facts:
- * - `thread/start` accepts `dynamicTools` (the only documented client-side
- *   tool declaration), and
  * - `DynamicToolCallParams` / `DynamicToolCallResponse` exist (the
- *   `item/tool/call` request/response flow).
+ *   `item/tool/call` request/response flow) — that flow is how the two
+ *   read-only domain tools are served from the immutable snapshot.
  *
- * When either is missing, the adapter cannot guarantee that a coached run
- * exposes only the two read-only domain tools and must stay unavailable.
+ * ## What this probe no longer demands, and what that concedes
  *
- * More importantly, BOTH can be present and still be insufficient: dynamic
- * tools are additive, so built-in file/shell/network/MCP/hook/plugin tools
- * remain unless the installed version offers a verified inventory exclusion.
- * This probe therefore reports `supported: false` with
- * `builtin-isolation-unproven` until such evidence exists. That is the exact
- * missing protocol condition; documentation alone is not evidence.
+ * See ADR 0007. Availability does NOT require the built-in tool inventory to be
+ * absent, and does not require `thread/start.dynamicTools` (no released Codex
+ * exposes that input; requiring it made the backend permanently unavailable).
+ *
+ * The weakening is deliberate and its cost is specific: a `read-only` sandbox
+ * bounds the filesystem but does not stop an absolute-path read, so a coached
+ * run can read any file the OS account can read and can echo what it finds into
+ * the transcript. Prompt injection inside a workout note is a realistic trigger.
+ * What IS guaranteed is that nothing is written and no network is reached
+ * (`sandboxPolicy.networkAccess: false`, `approvalPolicy: "never"`).
+ *
+ * ADR 0007 records the trade and the review that accepted it. Do not soften this
+ * comment without updating that record — the sentence "read-only is not
+ * isolation" is exactly the claim a future reader will try to restore.
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -56,14 +62,6 @@ function definitionsOf(document: unknown): Record<string, unknown> {
   return doc.definitions ?? doc.$defs ?? {};
 }
 
-function propertiesOf(definition: unknown): Record<string, unknown> {
-  if (typeof definition !== "object" || definition === null) return {};
-  const properties = (definition as { properties?: unknown }).properties;
-  return typeof properties === "object" && properties !== null
-    ? (properties as Record<string, unknown>)
-    : {};
-}
-
 /**
  * Pure check over the generated v2 schema bundle. Exported so tests can use a
  * fixture without spawning a CLI; the result is evidence tied to that exact
@@ -71,37 +69,32 @@ function propertiesOf(definition: unknown): Record<string, unknown> {
  */
 export function inspectCodexAppServerSchema(document: unknown): CodexAppServerSupport {
   const definitions = definitionsOf(document);
-  const threadStart = definitions.ThreadStartParams;
-  const hasDynamicTools = Object.prototype.hasOwnProperty.call(
-    propertiesOf(threadStart),
-    "dynamicTools",
-  );
-  if (!hasDynamicTools) {
-    return {
-      supported: false,
-      builtinIsolationVerified: false,
-      gap: "installed codex app-server schema does not expose thread/start.dynamicTools",
-    };
-  }
+  // The `item/tool/call` flow is the hard requirement: without it the client
+  // cannot serve the two read-only domain tools at all, so the adapter could do
+  // nothing useful. `thread/start.dynamicTools` is NOT required — no released
+  // Codex exposes that input (ADR 0007), and gating on it made the backend
+  // permanently unavailable on every version we tested.
   for (const name of ["DynamicToolCallParams", "DynamicToolCallResponse"]) {
     if (definitions[name] === undefined) {
       return {
         supported: false,
         builtinIsolationVerified: false,
-        gap: `installed codex app-server schema is missing ${name}`,
+        gap: `installed codex app-server schema is missing ${name} (the item/tool/call flow)`,
       };
     }
   }
-  // dynamicTools is ADDITIVE. It tells the client about extra tools but does
-  // not remove shell/file/network/apply_patch/MCP/hook/plugin tools, and the
-  // installed schema exposes no inventory-exclusion or "no built-ins" proof.
-  // A read-only sandbox still allows arbitrary file reads and exfiltration,
-  // so the backend must stay unavailable until such proof exists.
+  // The flow exists, so the run can be driven. What is NOT established is that
+  // the built-in tool inventory is excluded: `dynamicTools` is additive, and a
+  // read-only sandbox still allows arbitrary reads (ADR 0007). The adapter
+  // therefore pins `approvalPolicy: "never"` and
+  // `sandboxPolicy.networkAccess: false`, and this probe reports support with
+  // `builtinIsolationVerified: false` so callers can tell the two apart.
   return {
-    supported: false,
+    supported: true,
     builtinIsolationVerified: false,
     gap:
-      "builtin-isolation-unproven: dynamicTools adds client tools but does not disable built-in shell/file/network/MCP/hook/plugin tools",
+      "read-only sandbox: built-in file reads remain possible and can be echoed " +
+      "into the transcript; writes and network are denied (ADR 0007)",
   };
 }
 
@@ -145,7 +138,32 @@ async function runGenerateJsonSchema(binary: string, timeoutMs: number): Promise
       }, timeoutMs);
       timer.unref?.();
     });
-    return await readFile(join(dir, "codex_app_server_protocol.v2.schemas.json"), "utf8");
+    // Merge BOTH generated bundles. The `item/tool/call` request/response
+    // types live in the v1 bundle (`codex_app_server_protocol.schemas.json`)
+    // while `ThreadStartParams` and friends live in the v2 bundle on codex
+    // 0.164.0. Reading only one of them reports the flow as missing and
+    // permanently disables the backend for a reason that is not true.
+    const readOptional = async (name: string): Promise<Record<string, unknown> | null> => {
+      try {
+        return JSON.parse(await readFile(join(dir, name), "utf8")) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    };
+    const v1 = await readOptional("codex_app_server_protocol.schemas.json");
+    const v2 = await readOptional("codex_app_server_protocol.v2.schemas.json");
+    if (v2 === null && v1 === null) {
+      throw new Error("generate-json-schema produced no schema bundle");
+    }
+    const definitionsOfBundle = (doc: Record<string, unknown> | null): Record<string, unknown> => {
+      if (doc === null) return {};
+      const { definitions, $defs } = doc as { definitions?: unknown; $defs?: unknown };
+      const picked = definitions ?? $defs;
+      return typeof picked === "object" && picked !== null ? (picked as Record<string, unknown>) : {};
+    };
+    return JSON.stringify({
+      definitions: { ...definitionsOfBundle(v1), ...definitionsOfBundle(v2) },
+    });
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

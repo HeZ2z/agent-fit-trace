@@ -920,7 +920,7 @@ test("pi-unavailable launches fail coaching runs clearly, not as spawn errors", 
   }
 });
 
-test("codex with dynamicTools but unproven builtin isolation stays unavailable", async () => {
+test("codex is available under the read-only posture but reports it as unverified", async () => {
   assert.ok(upstream !== null);
   const server = await startLauncherServer({
     distDir,
@@ -931,20 +931,23 @@ test("codex with dynamicTools but unproven builtin isolation stays unavailable",
     publicConfig: { supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pk_test" },
     runtimeId: "codex",
     piAvailable: false,
-    // The schema has dynamicTools (supported: true), but the launcher must
-    // still deny it: dynamic tools do not exclude built-ins.
+    // ADR 0007: a supported CLI is admitted under a read-only sandbox.
+    // `builtinIsolationVerified: false` must NOT block it any more — but the
+    // posture must stay visible so a caller can tell the weaker guarantee from
+    // the stronger one.
     codexSupport: {
       supported: true,
       builtinIsolationVerified: false,
-      gap: "builtin-isolation-unproven: dynamicTools is additive",
+      gap: "read-only sandbox: built-in reads remain possible",
     },
   });
   try {
     const discovery = server.service.discoverBackends({ id: "user-codex-gated" });
     const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
-    assert.equal(codex?.available, false);
-    assert.equal(codex?.unavailableReason?.code, "cli-version-unsupported");
-    assert.match(codex?.unavailableReason?.message ?? "", /builtin-isolation-unproven/);
+    // Admitted (ADR 0007), and the weaker posture is still reported so a
+    // reader is not misled into thinking built-ins were excluded.
+    assert.equal(codex?.available, true);
+    assert.equal(codex?.unavailableReason, undefined);
   } finally {
     await server.close();
     upstream.setResponder(() => null);

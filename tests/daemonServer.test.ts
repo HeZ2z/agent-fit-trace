@@ -859,14 +859,14 @@ test("an installed CLI whose isolation gate fails stays unavailable (gate not by
   const { daemon } = await bootDaemon({
     piAvailable: false,
     localCliProbes: {
-      // Installed and version-reporting, but the probe could NOT prove
-      // built-in isolation. This is the exact shape a real Codex probe returns
-      // today (`builtin-isolation-unproven`), so it must stay unavailable.
+      // ADR 0007: a supported Codex is admitted under a read-only sandbox even
+      // though built-in isolation is NOT proven. `builtinIsolationVerified`
+      // stays false and the gap says what remains possible.
       codex: detected({
         supported: true,
         builtinIsolationVerified: false,
         version: "0.9.0-test",
-        gap: "builtin-isolation-unproven: dynamicTools does not disable built-ins",
+        gap: "read-only sandbox: built-in reads remain possible",
       }),
       // Same for OpenCode: supported, version known, isolation NOT verified.
       openCode: detected({
@@ -884,10 +884,13 @@ test("an installed CLI whose isolation gate fails stays unavailable (gate not by
     const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
     const openCode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
 
-    assert.equal(codex?.available, false, "an unproven Codex must never be selectable");
-    assert.equal(codex?.unavailableReason?.code, "cli-version-unsupported");
-    assert.match(codex?.unavailableReason?.message ?? "", /builtin-isolation-unproven/);
+    // Codex: admitted under the weaker posture (ADR 0007).
+    assert.equal(codex?.available, true, "a supported Codex is admitted read-only");
+    assert.equal(codex?.unavailableReason, undefined);
 
+    // OpenCode: unchanged. It needs positive inventory evidence that nothing
+    // supplies, so it stays unavailable — the two gates are NOT the same and
+    // relaxing one must not silently relax the other.
     assert.equal(openCode?.available, false, "an unproven OpenCode must never be selectable");
     assert.equal(openCode?.unavailableReason?.code, "cli-version-unsupported");
     assert.match(openCode?.unavailableReason?.message ?? "", /plugin-isolation-unproven/);
@@ -903,12 +906,15 @@ test("an unavailable backend rejects submit with its own reason rather than disp
   const { daemon } = await bootDaemon({
     piAvailable: false,
     localCliProbes: {
-      codex: detected({
+      // Codex is admitted under ADR 0007, so OpenCode is the unavailable
+      // backend this test needs: its gate is unchanged and still refuses.
+      codex: detected({ supported: true, builtinIsolationVerified: false, gap: "read-only sandbox (test)" }),
+      openCode: detected({
         supported: true,
-        builtinIsolationVerified: false,
-        gap: "builtin-isolation-unproven: test double",
+        isolationVerified: false,
+        model: "fixture/model",
+        gap: "plugin-isolation-unproven: test double",
       }),
-      openCode: detected({ supported: false, isolationVerified: false, gap: "not installed (test)" }),
     },
   });
   try {
@@ -944,12 +950,12 @@ test("an unavailable backend rejects submit with its own reason rather than disp
         snapshot: snapshotHandle,
         prompt: "analyze",
         idempotencyKey: "test-unavailable-backend",
-        backendId: "local-codex",
+        backendId: "local-opencode",
       }),
     });
     assert.equal(run.status, 400);
     const error = ((await run.json()) as { error?: { message?: string } }).error;
-    assert.match(error?.message ?? "", /isolation-unproven/);
+    assert.match(error?.message ?? "", /plugin-isolation-unproven/);
   } finally {
     await daemon.close();
   }
@@ -959,35 +965,37 @@ test("discovery reports path, version, availability and reason as distinct field
   const { daemon } = await bootDaemon({
     piAvailable: false,
     localCliProbes: {
-      // Installed at a known path, isolation failed: the settings-page case.
-      codex: detected(
+      // OpenCode is the backend that stays gated after ADR 0007, so it is the
+      // "installed at a known path but not usable" case a settings page must
+      // render: path, version, availability and a reason, all distinct.
+      codex: detected({ supported: false, builtinIsolationVerified: false, gap: "x" }),
+      openCode: detected(
         {
           supported: true,
-          builtinIsolationVerified: false,
-          version: "0.9.0-test",
-          gap: "builtin-isolation-unproven: test double",
+          isolationVerified: false,
+          version: "2.0.30",
+          model: "fixture/model",
+          gap: "plugin-isolation-unproven: test double",
         },
-        "/usr/local/bin/codex-shadowed",
+        "/usr/local/bin/opencode-shadowed",
       ),
-      openCode: detected({ supported: false, isolationVerified: false, gap: "not installed (test)" }),
     },
   });
   try {
     await daemon.localCliRefreshSettled();
     const discovery = await discoverBackends(daemon);
-    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
-    assert.ok(codex !== undefined);
-    // Field by field, not "present": a settings page renders all four.
-    assert.equal(codex.executablePath, "/usr/local/bin/codex-shadowed");
-    assert.equal(codex.version, "0.9.0-test");
-    assert.equal(codex.available, false);
-    assert.equal(codex.unavailableReason?.code, "cli-version-unsupported");
-    assert.equal(typeof codex.unavailableReason?.message, "string");
-    assert.notEqual(codex.unavailableReason?.message, "");
-    // The unavailable OpenCode resolved no executable at all, so no path is
-    // invented for it.
     const openCode = discovery.backends.find((entry) => entry.backendId === "local-opencode");
-    assert.equal(openCode?.executablePath, undefined);
+    assert.ok(openCode !== undefined);
+    // Field by field, not "present": a settings page renders all four.
+    assert.equal(openCode.executablePath, "/usr/local/bin/opencode-shadowed");
+    assert.equal(openCode.version, "2.0.30");
+    assert.equal(openCode.available, false);
+    assert.equal(openCode.unavailableReason?.code, "cli-version-unsupported");
+    assert.equal(typeof openCode.unavailableReason?.message, "string");
+    assert.notEqual(openCode.unavailableReason?.message, "");
+    // Codex was not installed here, so no path is invented for it.
+    const codex = discovery.backends.find((entry) => entry.backendId === "local-codex");
+    assert.equal(codex?.executablePath, undefined);
   } finally {
     await daemon.close();
   }

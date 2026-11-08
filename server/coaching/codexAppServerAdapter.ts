@@ -47,11 +47,34 @@ export const CODEX_APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"] as c
  * this list. The capability gate must still prove the full inventory is
  * excluded before this adapter can run.
  */
+/**
+ * How long a coached run may take before it is killed.
+ *
+ * Measured on a real codex 0.164.0 / ChatGPT-account run on 2026-11-08: a
+ * TWO-TOOL turn over a ONE-RECORD snapshot took **128.5s** wall, with ~120s
+ * spent before the first tool call. The previous 120000ms default would have
+ * SIGKILLed that run mid-flight, so the default was lower than a verified
+ * successful run needs.
+ *
+ * 240000ms leaves roughly 2x headroom over that measurement. It is a timeout,
+ * not a promise: a larger snapshot or a slower provider needs more, which is
+ * exactly why the option is overridable per launch.
+ *
+ * Fixture tests use single-digit-second timeouts and can never surface this —
+ * only a real end-to-end run did.
+ */
+export const DEFAULT_COACHED_RUN_TIMEOUT_MS = 240_000;
+
 export const CODEX_TOOL_DISABLE_CONFIG = [
   "features.shell_tool=false",
   "features.unified_exec=false",
   "tools.web_search=false",
-  "tools.view_image=false",
+  // `tools.view_image` was dropped: codex 0.164.0 answers
+  // "Codex is ignoring 1 unrecognized configuration setting: `tools.view_image`
+  // is ignored." on EVERY run. An override the CLI does not recognise is not
+  // defense in depth — it is log noise that trains readers to ignore stderr,
+  // where a real warning would appear. `sandbox: "read-only"` plus the
+  // `--tools`-equivalent surface already bounds image access.
 ] as const;
 
 export const COACHED_SYSTEM_PROMPT = [
@@ -219,12 +242,21 @@ export interface CoachedCodexOptions extends CoachedCodexCallbacks {
   spawn?: CodexSpawnFn;
   env?: NodeJS.ProcessEnv;
   /**
-   * Positive proof that this installed app-server can exclude its ENTIRE
-   * built-in tool inventory. dynamicTools alone is additive and is not proof.
-   * Production registration never sets this (the capability probe denies);
-   * fixture tests set it to exercise the protocol handling behind the gate.
+   * The containment posture this run was admitted under (ADR 0007).
+   *
+   * - `"strict"`: positive proof that the built-in tool inventory is excluded.
+   *   No released Codex provides this; kept so the stronger posture remains
+   *   expressible and testable.
+   * - `"read-only"`: the admitted posture. Built-in reads remain possible and
+   *   can be echoed into the transcript; writes and network are denied by the
+   *   pinned `approvalPolicy`/`sandboxPolicy`. See ADR 0007 for the accepted
+   *   trade.
+   *
+   * Absent means "not admitted": the run fails closed. Production sets
+   * `"read-only"` only when the capability probe reported `supported`, so the
+   * fail-closed default still covers a caller that constructs this directly.
    */
-  builtinIsolationVerified?: boolean;
+  isolation?: "strict" | "read-only";
   runTimeoutMs?: number;
   graceMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -285,10 +317,11 @@ export class CoachedCodexAppServer {
   start(): void {
     if (this.settled || this.closed || this.started) return;
     this.started = true;
-    if (this.opts.builtinIsolationVerified !== true) {
+    if (this.opts.isolation === undefined) {
       // Fail closed even if a caller constructs the adapter directly. The
-      // launcher's schema probe is the only production gate.
-      void this.finish("failed", "builtin-isolation-unproven");
+      // launcher's schema probe is the only production gate; this check only
+      // guarantees that an un-admitted construction cannot run.
+      void this.finish("failed", "isolation-posture-unspecified");
       return;
     }
     if (
@@ -348,7 +381,7 @@ export class CoachedCodexAppServer {
       this.failMessage = "coached run timed out";
       this.killChild("SIGKILL");
       void this.finish("failed", "coached run timed out");
-    }, this.opts.runTimeoutMs ?? 120000);
+    }, this.opts.runTimeoutMs ?? DEFAULT_COACHED_RUN_TIMEOUT_MS);
 
     this.phase = "initializing";
     if (

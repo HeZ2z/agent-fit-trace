@@ -152,6 +152,11 @@ export function codexRuntimeFactory(options: { binary?: string }): RuntimeFactor
       ...(launch.resumeNativeSessionHandle !== undefined
         ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
         : {}),
+      // ADR 0007: admitted under a read-only sandbox. Built-in reads remain
+      // possible; writes and network are denied by the pinned policies below.
+      // This is set here, at the one production construction site, and only
+      // because the caller reached this factory through the capability probe.
+      isolation: "read-only",
       onEvent: launch.onEvent,
       onDone: launch.onDone,
     });
@@ -257,7 +262,10 @@ export function resolveLocalCodexRegistration(
   // Spawn the exact file detection verified; a caller that named a binary
   // explicitly (the launcher's `--runtime` path) keeps that name unchanged.
   const spawnBinary = options.binary ?? executablePath;
-  if (support.supported && support.builtinIsolationVerified === true) {
+  // ADR 0007: `supported` is the gate now. `builtinIsolationVerified` is still
+  // reported (false) so a caller CAN distinguish the stronger posture, but
+  // requiring it here would restore the permanently-unavailable backend.
+  if (support.supported) {
     return {
       backendId: "local-codex",
       runtimeId: "codex",

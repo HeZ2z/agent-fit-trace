@@ -10,6 +10,7 @@ import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-tr
 import {
   CoachedCodexAppServer,
   buildCoachedCodexArgv,
+  DEFAULT_COACHED_RUN_TIMEOUT_MS,
   buildCoachedCodexEnv,
   COACHED_SYSTEM_PROMPT,
   isSafeCodexThreadId,
@@ -135,34 +136,46 @@ async function snapshotFileForFixture(): Promise<{ dir: string; file: string }> 
   return { dir, file };
 }
 
-test("codex schema probe requires dynamicTools and the item/tool/call flow", () => {
-  const unsupported = inspectCodexAppServerSchema({
+test("codex schema probe requires the item/tool/call flow, not dynamicTools", () => {
+  // ADR 0007 relaxed this gate. The load-bearing requirement is the
+  // `item/tool/call` flow: without it the client cannot serve the two domain
+  // tools at all. `thread/start.dynamicTools` is NOT required — no released
+  // Codex 0.164.0 exposes that input, and gating on it made the backend
+  // permanently unavailable.
+  const noFlow = inspectCodexAppServerSchema({
     definitions: { ThreadStartParams: { properties: { cwd: {}, sandbox: {} } } },
   });
-  assert.equal(unsupported.supported, false);
-  assert.match(unsupported.gap ?? "", /dynamicTools/);
+  assert.equal(noFlow.supported, false);
+  assert.match(noFlow.gap ?? "", /DynamicToolCall/);
 
-  const missingFlow = inspectCodexAppServerSchema({
-    definitions: { ThreadStartParams: { properties: { dynamicTools: {} } } },
+  // Half the flow is still not the flow.
+  const partialFlow = inspectCodexAppServerSchema({
+    definitions: { DynamicToolCallParams: { properties: {} } },
   });
-  assert.equal(missingFlow.supported, false);
-  assert.match(missingFlow.gap ?? "", /DynamicToolCall/);
+  assert.equal(partialFlow.supported, false);
+  assert.match(partialFlow.gap ?? "", /DynamicToolCallResponse/);
 
-  // A modern schema WITH dynamicTools is still denied: dynamic tools are
-  // additive and do not establish that built-in tools are excluded.
-  const modernButUnproven = inspectCodexAppServerSchema({
+  // With the flow present the run can be driven. `builtinIsolationVerified`
+  // stays FALSE and the gap says exactly what remains: reads are possible and
+  // can be echoed into the transcript. Callers must be able to tell "supported
+  // under a read-only sandbox" from "built-ins excluded".
+  const readOnlyBudget = inspectCodexAppServerSchema({
     definitions: {
-      ThreadStartParams: { properties: { dynamicTools: {} } },
       DynamicToolCallParams: { properties: {} },
       DynamicToolCallResponse: { properties: {} },
     },
   });
-  assert.equal(modernButUnproven.supported, false);
-  assert.equal(modernButUnproven.builtinIsolationVerified, false);
-  assert.match(modernButUnproven.gap ?? "", /builtin-isolation-unproven/);
+  assert.equal(readOnlyBudget.supported, true);
+  assert.equal(readOnlyBudget.builtinIsolationVerified, false);
+  assert.match(readOnlyBudget.gap ?? "", /read-only sandbox/);
+  assert.match(readOnlyBudget.gap ?? "", /ADR 0007/);
 });
 
-test("codex adapter refuses to start without verified builtin isolation", async () => {
+test("codex adapter fails closed when no isolation posture is declared", async () => {
+  // ADR 0007 replaced the boolean proof with an explicit posture. The default
+  // must stay "not admitted": constructing the adapter directly, without a
+  // posture, may never spawn the CLI. Production sets "read-only" only after
+  // the capability probe reported `supported`.
   const c = collect();
   const proc = new CoachedCodexAppServer({
     sessionId: "s1",
@@ -180,7 +193,7 @@ test("codex adapter refuses to start without verified builtin isolation", async 
   proc.start();
   await waitForDone(c);
   assert.equal(c.done?.status, "failed");
-  assert.match(c.done?.reason ?? "", /builtin-isolation-unproven/);
+  assert.match(c.done?.reason ?? "", /isolation-posture-unspecified/);
 });
 
 test("codex argv disables built-in tools and never composes a shell command", () => {
@@ -190,7 +203,6 @@ test("codex argv disables built-in tools and never composes a shell command", ()
     "features.shell_tool=false",
     "features.unified_exec=false",
     "tools.web_search=false",
-    "tools.view_image=false",
   ]) {
     const index = argv.indexOf(override);
     assert.ok(index > 0);
@@ -198,6 +210,14 @@ test("codex argv disables built-in tools and never composes a shell command", ()
   }
   assert.ok(!argv.includes("--dangerously-bypass-approvals-and-sandbox"));
   assert.ok(!argv.some((entry) => entry.includes(COACHED_SYSTEM_PROMPT)));
+  // `tools.view_image` is deliberately ABSENT: codex 0.164.0 rejects it as an
+  // unrecognized setting on every run (measured 2026-11-08). Keeping an override
+  // the CLI ignores is worse than dropping it — the stderr warning both hides
+  // real warnings and implies a protection that does not exist.
+  assert.ok(
+    !argv.includes("tools.view_image=false"),
+    "an unrecognized override must not be passed",
+  );
 });
 
 test("codex env drops service credentials and the snapshot path", () => {
@@ -282,7 +302,7 @@ test("codex adapter: initialize, thread, domain tool calls, completion, confirme
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     env: { PATH: process.env.PATH, HOME: process.env.HOME, SUPABASE_URL: "secret" },
     spawn: (binary, argv, opts) => {
@@ -344,7 +364,7 @@ test("codex adapter: unknown tool is refused and completion is withheld", async 
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -379,7 +399,7 @@ test("codex adapter: process exit before turn/completed is a failure", async () 
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -423,7 +443,7 @@ test("codex adapter: cancel interrupts, kills after grace, and reports cancelled
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     graceMs: 20,
     spawn: () => child,
@@ -472,7 +492,7 @@ test("codex adapter: same-backend native handle resumes the same thread", async 
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
     resumeNativeSessionHandle: THREAD_ID,
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -517,7 +537,7 @@ test("codex adapter: approval requests are declined and fail the run closed", as
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -528,4 +548,19 @@ test("codex adapter: approval requests are declined and fail the run closed", as
   assert.equal(c.done?.status, "failed");
   assert.match(c.done?.reason ?? "", /never approve/);
   await rm(dir, { recursive: true, force: true });
+});
+
+test("the default run timeout leaves headroom over a real measured run", () => {
+  // Measured 2026-11-08 on real codex 0.164.0, ChatGPT account: a two-tool turn
+  // over a one-record snapshot took 128.5s wall, with ~120s before the first
+  // tool call. The previous 120000ms default would have SIGKILLed that run at
+  // the boundary. Fixture tests use single-digit-second timeouts, so nothing
+  // else in this suite could catch a default that is too tight.
+  const MEASURED_REAL_RUN_MS = 128_500;
+  assert.ok(
+    DEFAULT_COACHED_RUN_TIMEOUT_MS > MEASURED_REAL_RUN_MS,
+    `default ${DEFAULT_COACHED_RUN_TIMEOUT_MS}ms must exceed a real ${MEASURED_REAL_RUN_MS}ms run`,
+  );
+  // And the old value must NOT satisfy that, or this test proves nothing.
+  assert.ok(120_000 < MEASURED_REAL_RUN_MS, "the previous default was below the measurement");
 });
