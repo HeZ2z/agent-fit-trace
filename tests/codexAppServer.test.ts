@@ -10,6 +10,7 @@ import type { CoachingEventPayload, CoachingTerminalStatus } from "@agent-fit-tr
 import {
   CoachedCodexAppServer,
   buildCoachedCodexArgv,
+  DEFAULT_COACHED_RUN_TIMEOUT_MS,
   buildCoachedCodexEnv,
   COACHED_SYSTEM_PROMPT,
   isSafeCodexThreadId,
@@ -202,7 +203,6 @@ test("codex argv disables built-in tools and never composes a shell command", ()
     "features.shell_tool=false",
     "features.unified_exec=false",
     "tools.web_search=false",
-    "tools.view_image=false",
   ]) {
     const index = argv.indexOf(override);
     assert.ok(index > 0);
@@ -210,6 +210,14 @@ test("codex argv disables built-in tools and never composes a shell command", ()
   }
   assert.ok(!argv.includes("--dangerously-bypass-approvals-and-sandbox"));
   assert.ok(!argv.some((entry) => entry.includes(COACHED_SYSTEM_PROMPT)));
+  // `tools.view_image` is deliberately ABSENT: codex 0.164.0 rejects it as an
+  // unrecognized setting on every run (measured 2026-11-08). Keeping an override
+  // the CLI ignores is worse than dropping it — the stderr warning both hides
+  // real warnings and implies a protection that does not exist.
+  assert.ok(
+    !argv.includes("tools.view_image=false"),
+    "an unrecognized override must not be passed",
+  );
 });
 
 test("codex env drops service credentials and the snapshot path", () => {
@@ -540,4 +548,19 @@ test("codex adapter: approval requests are declined and fail the run closed", as
   assert.equal(c.done?.status, "failed");
   assert.match(c.done?.reason ?? "", /never approve/);
   await rm(dir, { recursive: true, force: true });
+});
+
+test("the default run timeout leaves headroom over a real measured run", () => {
+  // Measured 2026-11-08 on real codex 0.164.0, ChatGPT account: a two-tool turn
+  // over a one-record snapshot took 128.5s wall, with ~120s before the first
+  // tool call. The previous 120000ms default would have SIGKILLed that run at
+  // the boundary. Fixture tests use single-digit-second timeouts, so nothing
+  // else in this suite could catch a default that is too tight.
+  const MEASURED_REAL_RUN_MS = 128_500;
+  assert.ok(
+    DEFAULT_COACHED_RUN_TIMEOUT_MS > MEASURED_REAL_RUN_MS,
+    `default ${DEFAULT_COACHED_RUN_TIMEOUT_MS}ms must exceed a real ${MEASURED_REAL_RUN_MS}ms run`,
+  );
+  // And the old value must NOT satisfy that, or this test proves nothing.
+  assert.ok(120_000 < MEASURED_REAL_RUN_MS, "the previous default was below the measurement");
 });
