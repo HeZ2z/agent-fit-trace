@@ -135,34 +135,46 @@ async function snapshotFileForFixture(): Promise<{ dir: string; file: string }> 
   return { dir, file };
 }
 
-test("codex schema probe requires dynamicTools and the item/tool/call flow", () => {
-  const unsupported = inspectCodexAppServerSchema({
+test("codex schema probe requires the item/tool/call flow, not dynamicTools", () => {
+  // ADR 0007 relaxed this gate. The load-bearing requirement is the
+  // `item/tool/call` flow: without it the client cannot serve the two domain
+  // tools at all. `thread/start.dynamicTools` is NOT required — no released
+  // Codex 0.164.0 exposes that input, and gating on it made the backend
+  // permanently unavailable.
+  const noFlow = inspectCodexAppServerSchema({
     definitions: { ThreadStartParams: { properties: { cwd: {}, sandbox: {} } } },
   });
-  assert.equal(unsupported.supported, false);
-  assert.match(unsupported.gap ?? "", /dynamicTools/);
+  assert.equal(noFlow.supported, false);
+  assert.match(noFlow.gap ?? "", /DynamicToolCall/);
 
-  const missingFlow = inspectCodexAppServerSchema({
-    definitions: { ThreadStartParams: { properties: { dynamicTools: {} } } },
+  // Half the flow is still not the flow.
+  const partialFlow = inspectCodexAppServerSchema({
+    definitions: { DynamicToolCallParams: { properties: {} } },
   });
-  assert.equal(missingFlow.supported, false);
-  assert.match(missingFlow.gap ?? "", /DynamicToolCall/);
+  assert.equal(partialFlow.supported, false);
+  assert.match(partialFlow.gap ?? "", /DynamicToolCallResponse/);
 
-  // A modern schema WITH dynamicTools is still denied: dynamic tools are
-  // additive and do not establish that built-in tools are excluded.
-  const modernButUnproven = inspectCodexAppServerSchema({
+  // With the flow present the run can be driven. `builtinIsolationVerified`
+  // stays FALSE and the gap says exactly what remains: reads are possible and
+  // can be echoed into the transcript. Callers must be able to tell "supported
+  // under a read-only sandbox" from "built-ins excluded".
+  const readOnlyBudget = inspectCodexAppServerSchema({
     definitions: {
-      ThreadStartParams: { properties: { dynamicTools: {} } },
       DynamicToolCallParams: { properties: {} },
       DynamicToolCallResponse: { properties: {} },
     },
   });
-  assert.equal(modernButUnproven.supported, false);
-  assert.equal(modernButUnproven.builtinIsolationVerified, false);
-  assert.match(modernButUnproven.gap ?? "", /builtin-isolation-unproven/);
+  assert.equal(readOnlyBudget.supported, true);
+  assert.equal(readOnlyBudget.builtinIsolationVerified, false);
+  assert.match(readOnlyBudget.gap ?? "", /read-only sandbox/);
+  assert.match(readOnlyBudget.gap ?? "", /ADR 0007/);
 });
 
-test("codex adapter refuses to start without verified builtin isolation", async () => {
+test("codex adapter fails closed when no isolation posture is declared", async () => {
+  // ADR 0007 replaced the boolean proof with an explicit posture. The default
+  // must stay "not admitted": constructing the adapter directly, without a
+  // posture, may never spawn the CLI. Production sets "read-only" only after
+  // the capability probe reported `supported`.
   const c = collect();
   const proc = new CoachedCodexAppServer({
     sessionId: "s1",
@@ -180,7 +192,7 @@ test("codex adapter refuses to start without verified builtin isolation", async 
   proc.start();
   await waitForDone(c);
   assert.equal(c.done?.status, "failed");
-  assert.match(c.done?.reason ?? "", /builtin-isolation-unproven/);
+  assert.match(c.done?.reason ?? "", /isolation-posture-unspecified/);
 });
 
 test("codex argv disables built-in tools and never composes a shell command", () => {
@@ -282,7 +294,7 @@ test("codex adapter: initialize, thread, domain tool calls, completion, confirme
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     env: { PATH: process.env.PATH, HOME: process.env.HOME, SUPABASE_URL: "secret" },
     spawn: (binary, argv, opts) => {
@@ -344,7 +356,7 @@ test("codex adapter: unknown tool is refused and completion is withheld", async 
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -379,7 +391,7 @@ test("codex adapter: process exit before turn/completed is a failure", async () 
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -423,7 +435,7 @@ test("codex adapter: cancel interrupts, kills after grace, and reports cancelled
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     graceMs: 20,
     spawn: () => child,
@@ -472,7 +484,7 @@ test("codex adapter: same-backend native handle resumes the same thread", async 
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
     resumeNativeSessionHandle: THREAD_ID,
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
@@ -517,7 +529,7 @@ test("codex adapter: approval requests are declined and fail the run closed", as
     snapshotFile: file,
     sessionDir: join(dir, "work"),
     cwd: join(dir, "work"),
-    builtinIsolationVerified: true,
+    isolation: "strict",
     runTimeoutMs: 5000,
     spawn: () => child,
     onEvent: c.onEvent,
