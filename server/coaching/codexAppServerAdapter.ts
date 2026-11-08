@@ -219,12 +219,21 @@ export interface CoachedCodexOptions extends CoachedCodexCallbacks {
   spawn?: CodexSpawnFn;
   env?: NodeJS.ProcessEnv;
   /**
-   * Positive proof that this installed app-server can exclude its ENTIRE
-   * built-in tool inventory. dynamicTools alone is additive and is not proof.
-   * Production registration never sets this (the capability probe denies);
-   * fixture tests set it to exercise the protocol handling behind the gate.
+   * The containment posture this run was admitted under (ADR 0007).
+   *
+   * - `"strict"`: positive proof that the built-in tool inventory is excluded.
+   *   No released Codex provides this; kept so the stronger posture remains
+   *   expressible and testable.
+   * - `"read-only"`: the admitted posture. Built-in reads remain possible and
+   *   can be echoed into the transcript; writes and network are denied by the
+   *   pinned `approvalPolicy`/`sandboxPolicy`. See ADR 0007 for the accepted
+   *   trade.
+   *
+   * Absent means "not admitted": the run fails closed. Production sets
+   * `"read-only"` only when the capability probe reported `supported`, so the
+   * fail-closed default still covers a caller that constructs this directly.
    */
-  builtinIsolationVerified?: boolean;
+  isolation?: "strict" | "read-only";
   runTimeoutMs?: number;
   graceMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -285,10 +294,11 @@ export class CoachedCodexAppServer {
   start(): void {
     if (this.settled || this.closed || this.started) return;
     this.started = true;
-    if (this.opts.builtinIsolationVerified !== true) {
+    if (this.opts.isolation === undefined) {
       // Fail closed even if a caller constructs the adapter directly. The
-      // launcher's schema probe is the only production gate.
-      void this.finish("failed", "builtin-isolation-unproven");
+      // launcher's schema probe is the only production gate; this check only
+      // guarantees that an un-admitted construction cannot run.
+      void this.finish("failed", "isolation-posture-unspecified");
       return;
     }
     if (
