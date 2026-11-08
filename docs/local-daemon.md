@@ -300,14 +300,19 @@ Two packaging facts that will bite the next person:
 - Guest login upgrading, per-principal switching through the daemon, and
   cross-process principal negotiation are not implemented; #40 delivered the
   follower side only (MCP/pi read `identity.json`), not a switch writer.
-- **All three local backends are registered, but installed is not available.**
-  The daemon reports `local-pi`, `local-codex` and `local-opencode`, each with
-  its own reason when unusable. Codex needs positive evidence that the installed
-  app-server excludes its built-in tool inventory; OpenCode needs positive
-  isolation evidence that production wiring does not supply. Both therefore stay
-  unavailable on a normal machine even when the CLI is installed. That is the
-  gate working, not a bug — a CLI that cannot prove isolation would hand the
-  model a shell.
+- **All three local backends are registered, and "installed" is not the same as
+  "usable".** The daemon reports `local-pi`, `local-codex` and `local-opencode`,
+  each with its own reason when unusable.
+  - **Codex** is admitted when the installed app-server exposes the
+    `item/tool/call` flow, which is how the two domain tools are served. Per
+    ADR 0007 this runs under a **read-only sandbox**: writes and network are
+    denied, but the model can still read files the OS account can read and can
+    echo what it finds into the transcript. Discovery reports
+    `builtinIsolationVerified: false` so this weaker guarantee stays visible.
+  - **OpenCode** stays unavailable. It demands positive evidence that the
+    generated wildcard-deny config excludes the built-in inventory, and that
+    evidence comes from a verifier production has not implemented — missing
+    work, not an impossible requirement.
 - **Probing never blocks startup.** The listener binds first; Codex/OpenCode are
   probed afterwards and the result is published by swapping the runtime
   registry, so discovery updates without a restart. Until a probe lands, those
