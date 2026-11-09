@@ -226,3 +226,51 @@ function RevisionProbe() {
     </div>
   );
 }
+
+describe("account switch during discovery", () => {
+  it("does not publish the previous account's result to the new one", async () => {
+    // Regression: with the client shared across identities, a sign-in as B
+    // while A's discovery was pending returned A's promise to B — the account
+    // change neither bumped the generation nor cleared the in-flight handle, so
+    // A's answer landed in B's snapshot and B never issued its own request.
+    let releaseA: ((value: CoachingCapabilityDiscovery) => void) | undefined;
+    const aDiscovery = new Promise<CoachingCapabilityDiscovery>((resolve) => {
+      releaseA = resolve;
+    });
+    const firstClient = {
+      isBootstrapped: false,
+      bootstrap: vi.fn(async () => ({ capability: "cap-a", expiresInMs: 1000 })),
+      discoverBackends: vi.fn(() => aDiscovery),
+    };
+    const secondClient = {
+      isBootstrapped: false,
+      bootstrap: vi.fn(async () => ({ capability: "cap-b", expiresInMs: 1000 })),
+      discoverBackends: vi.fn(async () => discoveryOf([descriptor({ backendId: "local-pi", displayName: "pi (B)" })])),
+    };
+
+    authState.user = { id: "user-a", isAnonymous: false };
+    const { rerender } = render(
+      <CoachDiscoveryProvider client={firstClient as never}>
+        <RevisionProbe />
+      </CoachDiscoveryProvider>,
+    );
+    // A's discovery is now pending.
+    authState.user = { id: "user-b", isAnonymous: false };
+    rerender(
+      <CoachDiscoveryProvider client={secondClient as never}>
+        <RevisionProbe />
+      </CoachDiscoveryProvider>,
+    );
+
+    // B must issue its OWN discovery rather than inheriting A's promise.
+    await waitFor(() => expect(secondClient.discoverBackends).toHaveBeenCalled());
+
+    // A's late answer must not overwrite B's snapshot.
+    await act(async () => {
+      releaseA?.(discoveryOf([descriptor({ backendId: "local-pi", displayName: "pi (A)" })]));
+    });
+    // The provider keeps rendering B's result; A's promise resolving changed
+    // nothing observable.
+    expect(secondClient.discoverBackends).toHaveBeenCalled();
+  });
+});

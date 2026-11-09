@@ -239,6 +239,23 @@ export function CoachDiscoveryProvider({
     return attempt;
   }, [load]);
 
+  // Scope everything in flight to the CURRENT client (i.e. the current account).
+  //
+  // Without this, a sign-in as B while A's discovery is pending would have B's
+  // automatic refresh return A's promise: the account change neither bumped
+  // `generation` nor cleared `inFlight`, so A's eventual result — or A's
+  // failure — would be accepted into B's snapshot, and no request would follow
+  // when that promise settled. B would sit on stale availability or an
+  // old-account error until the user rescanned by hand.
+  //
+  // Bumping the generation discards any late response from the previous client
+  // (the `load` body compares it after every await), and clearing `inFlight`
+  // lets B start its own attempt immediately.
+  useEffect(() => {
+    generation.current += 1;
+    inFlight.current = null;
+  }, [client]);
+
   useEffect(() => {
     if (!autoLoad) return;
     // Wait for a VERIFIED signed-in session. Bootstrapping while auth is still
