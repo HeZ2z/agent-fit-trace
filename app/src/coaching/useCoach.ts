@@ -615,7 +615,10 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
    * current backend, and changing selection mid-run must not rebind it.
    */
   useEffect(() => {
-    if (sharedPreferenceRevision === 0) return;
+    // No `sharedPreferenceRevision === 0` short-circuit: zero is the INITIAL
+    // value, so skipping it would mean a saved preference is never adopted on
+    // first load — the user picks Codex, reloads, and Coach silently uses pi
+    // again. The revision only matters as a change signal, not as a gate.
     if (accountId === null) return;
     if (backendPinnedNow()) return;
     const stored = readBackendPreference(accountId);
