@@ -115,12 +115,21 @@ export function CoachDiscoveryProvider({
   const mode = useMemo(resolveMode, []);
   // The token must be live: `useCoach` runs its capability-bound calls through
   // this same client, so a null provider here would make every run unauthenticated.
-  const { getAccessToken, status: authStatus } = useAuth();
+  const { getAccessToken, status: authStatus, user } = useAuth();
+  const accountId = user?.id ?? null;
   const client = useMemo(() => {
     if (clientProp !== undefined) return clientProp;
     if (mode === "inactive") return null;
+    // Bound to the ACCOUNT, not just the token accessor. `getAccessToken` is a
+    // stable function across identities, so keying only on it would hand account
+    // B the client that still holds A's capability — and `logout()` discards
+    // credentials in a `finally` block with no account check
+    // (`coachingClient.ts:567`), so A's in-flight logout would erase B's
+    // freshly acquired capability and every later B call would fail as
+    // "missing capability", possibly mid-run.
     return new CoachingClient({ getAccessToken });
-  }, [clientProp, mode, getAccessToken]);
+    // `accountId` is the discriminator: a new identity gets a new client.
+  }, [clientProp, mode, getAccessToken, accountId]);
 
   const [state, setState] = useState<CoachDiscoveryState>({
     // Seed with whatever is knowable without the network, so the first paint has
@@ -300,4 +309,18 @@ export function useCoachDiscoveryRevision(): number {
 /** Preference-write revision, or 0 without a provider. */
 export function useCoachPreferenceRevision(): number {
   return useContext(CoachDiscoveryContext)?.preferenceRevision ?? 0;
+}
+
+/**
+ * The shared backend option list, or `null` without a provider.
+ *
+ * `useCoach` uses this INSTEAD of running its own discovery when a provider is
+ * present. Re-running discovery there produced a second, independently cached
+ * list: a rescan in settings updated the provider's snapshot while Coach kept
+ * rendering the old one with a newly available backend still disabled.
+ */
+export function useSharedBackendOptions(): readonly CoachBackendOption[] | null {
+  const value = useContext(CoachDiscoveryContext);
+  if (value === null) return null;
+  return value.status === "ready" ? value.backends : null;
 }

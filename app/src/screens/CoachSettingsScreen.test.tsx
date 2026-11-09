@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CoachingCapabilityDiscovery } from "@agent-fit-trace/api-contracts";
-import { CoachDiscoveryProvider } from "../coaching/CoachDiscoveryContext.tsx";
+import { CoachDiscoveryProvider, useCoachDiscovery } from "../coaching/CoachDiscoveryContext.tsx";
 import { CoachSettingsScreen } from "./CoachSettingsScreen.tsx";
 
 // Both are hook-only modules with no injectable provider, so they are mocked at
@@ -192,3 +192,37 @@ describe("coach settings: cloud section", () => {
     expect(await screen.findByTestId("cloud-not-wired")).toBeInTheDocument();
   });
 });
+
+describe("cross-screen propagation (review follow-up)", () => {
+  it("a rescan publishes a revision that consumers can key on", async () => {
+    // `useCoach` folds this into its discovery key. Without a change the Coach
+    // screen kept its cached option list after a backend became available.
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    const { rerender } = render(
+      <CoachDiscoveryProvider client={client as never}>
+        <RevisionProbe />
+      </CoachDiscoveryProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("revision").textContent).not.toBe("0"));
+    const before = screen.getByTestId("revision").textContent;
+    // Force a refresh through the same path the page's button uses.
+    await act(async () => {
+      await screen.getByTestId("refresh").click();
+    });
+    await waitFor(() => expect(screen.getByTestId("revision").textContent).not.toBe(before));
+    rerender(<span />);
+  });
+});
+
+/** Minimal consumer that surfaces the provider's signals. */
+function RevisionProbe() {
+  const { revision, refresh } = useCoachDiscovery();
+  return (
+    <div>
+      <span data-testid="revision">{String(revision)}</span>
+      <button data-testid="refresh" type="button" onClick={() => void refresh()}>
+        refresh
+      </button>
+    </div>
+  );
+}

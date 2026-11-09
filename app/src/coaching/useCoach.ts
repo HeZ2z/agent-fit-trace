@@ -28,6 +28,7 @@ import {
   useCoachDiscoveryClient,
   useCoachDiscoveryRevision,
   useCoachPreferenceRevision,
+  useSharedBackendOptions,
 } from "./CoachDiscoveryContext.tsx";
 import type { CoachBackendOption, CoachMode, CoachRunClient } from "./coachBackend.ts";
 import { CoachClientRouter } from "./coachClientRouter.ts";
@@ -387,6 +388,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const sharedClient = useCoachDiscoveryClient();
   const sharedDiscoveryRevision = useCoachDiscoveryRevision();
   const sharedPreferenceRevision = useCoachPreferenceRevision();
+  const sharedBackends = useSharedBackendOptions();
   const localClient = useMemo(
     () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
     [sharedClient, boundTokenProvider],
@@ -1874,8 +1876,24 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const discoveryKey = `${coachMode}:${accountId ?? "none"}:${
     isGuest ? "guest" : identityUnverified ? "unverified" : "formal"
   }:${sharedDiscoveryRevision}`;
+  // A provider-owned list is authoritative when present: it is the result of
+  // the ONE bootstrap in the app, and re-running discovery here would cache a
+  // second, independently stale list (a rescan in settings then updated the
+  // provider while Coach kept rendering the old entries).
+  useEffect(() => {
+    if (sharedBackends === null) return;
+    if (coachMode === "browser") return;
+    setBackends([...sharedBackends]);
+    setDiscoveryNotice(null);
+    setDiscoveryFailed(false);
+    // Nothing else to do: the provider already ran the probe sequence.
+    discoveryKeyRef.current = discoveryKey;
+  }, [sharedBackends, coachMode, discoveryKey]);
+
   useEffect(() => {
     if (!canOperate) return;
+    // The provider owns discovery when mounted; the block above mirrors it.
+    if (sharedBackends !== null && coachMode !== "browser") return;
     if (accountRef.current !== accountId) return;
     if (coachMode === "explicit") return;
     if (discoveryKeyRef.current === discoveryKey) return;
