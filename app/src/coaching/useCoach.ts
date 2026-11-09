@@ -23,6 +23,7 @@ import {
   unavailableCloudOption,
   writeBackendPreference,
 } from "./coachBackend.ts";
+import { useCoachDiscoveryClient } from "./CoachDiscoveryContext.tsx";
 import type { CoachBackendOption, CoachMode, CoachRunClient } from "./coachBackend.ts";
 import { CoachClientRouter } from "./coachClientRouter.ts";
 
@@ -370,9 +371,18 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       return getAccessToken();
     };
   }, [accountId, getAccessToken]);
+  // Reuse the app-level client when a discovery provider is mounted, so the
+  // capability minted for discovery is the SAME one runs use. Two clients would
+  // each bootstrap and each burn a slot against the daemon's per-account cap
+  // (`MAX_CAPABILITIES_PER_ACCOUNT = 5`); `App.coachNavigation.test.tsx` pins
+  // that six Coach↔History navigations issue exactly one capability.
+  //
+  // The explicit `client` prop still wins (tests/embedding), and a mount with no
+  // provider falls back to a private client so nothing changes for it.
+  const sharedClient = useCoachDiscoveryClient();
   const localClient = useMemo(
-    () => new CoachingClient({ getAccessToken: boundTokenProvider }),
-    [boundTokenProvider],
+    () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
+    [sharedClient, boundTokenProvider],
   );
   const cloudClient = useMemo(
     () => new CloudCoachingClient({ getAccessToken: boundTokenProvider }),
