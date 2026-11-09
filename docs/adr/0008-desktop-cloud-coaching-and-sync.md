@@ -55,12 +55,20 @@ Constraints the proxy must satisfy:
   an absent `Origin` and runs **before** the trusted handler, so it is **not**
   authentication (`coachingServer.ts:200`, `:679`).
 
-**Use streaming passthrough, but do not mistake it for timely delivery.**
+**Sequence the SSE work: fix the hosted side first, then decide the proxy.**
 The existing launcher proxy buffers the whole response into `text`
-(`launcherServer.ts:659`) because it was written for JSON. The cloud proxy
-should instead pipe: `Readable.fromWeb(upstream.body)` into the response, with
-disconnect cancellation, backpressure and error handling. That removes a
+(`launcherServer.ts:659`) because it was written for JSON. A cloud proxy could
+instead pipe — `Readable.fromWeb(upstream.body)` into the response, with
+disconnect cancellation, backpressure and error handling — which removes a
 second full-body buffer.
+
+But that is a transport optimisation, and today it buys nothing visible. If the
+hosted endpoint only ever does paged long-polling, passthrough merely turns
+"receive everything at once" into "receive everything at once through a pipe".
+It earns its complexity only once the hosted side genuinely flushes frames
+progressively — and then the proxy owes backpressure, client-disconnect
+cancellation and upstream timeout handling. **So change the hosted side first;
+the proxy decision follows from whether it actually streams.**
 
 It does **not** make events arrive promptly. The hosted endpoint still
 accumulates frames into a `body` string and returns once the deadline is
@@ -212,8 +220,25 @@ flow, not a silent copy:
   import semantics already distinguish an identical duplicate from a conflict
   (`packages/fit-trace-store/src/sqlite.ts:148`) and should be reused;
 - guest originals are preserved, not moved;
-- upload consent stays separate, explicit, and destination-bound;
 - the operation lives in the daemon, because that is where both databases are.
+
+**Consent is whole-account, and it is this same moment.** The owner chose
+account-level consent over per-record enrolment, so there is exactly one
+deliberate prompt: the import dialog also asks the user to consent to uploading
+this account's records to the chosen destination. Splitting that into two
+sequential prompts would ask the same question twice and invite the user to
+answer them inconsistently.
+
+What the coarser granularity costs: a user cannot sync a subset of their
+workouts. That is acceptable *here* because the product's unit of analysis is
+history, not records — a coach reasoning about one session has nothing to
+compare against, which is what `analyze_progress` and the trend logic exist to
+provide. There is consequently no per-record enrolment affordance on desktop,
+and none is planned.
+
+Upload consent remains explicit and destination-bound: consenting to the
+official server is not consenting to a user-entered one, and changing the
+destination invalidates the consent.
 
 Identity lifecycle also needs an answer: startup rewrites `identity.json` to
 guest (`daemonServer.ts:622`), and account store selection alone does not update
@@ -231,20 +256,57 @@ that did not exist. SSE remains non-streaming until the hosted side changes.
 A custom destination's identity provider still needs its own answer — the
 official default is the only one whose auth bootstrap is defined here.
 
-## Open questions
+## Decisions taken after review (2026-11-09)
 
-1. **Sync granularity.** Per-record enrolment (as mobile does) or whole-account
-   consent? The desktop has no "enrol a workout" affordance yet, and the guest
-   import flow above could reasonably double as the consent moment.
-2. **Guest state in the settings page.** Sync cannot run without an account, so
-   is cloud shown as "sign in first" or hidden entirely?
-3. **Hosted SSE.** If the hosted endpoint is changed to flush frames
-   progressively, does the proxy need its own streaming implementation, or can
-   the client poll the endpoint directly? The passthrough above makes the
-   transport efficient either way.
-4. **Unattended sync.** Out of scope here, but if it is ever wanted, where do
-   the account credentials live and who refreshes them? The daemon has no
-   secure store today; the renderer has the session.
+Four questions were open when this ADR was first reviewed. The product owner
+resolved them on 2026-11-09; recorded here so a later reader can tell which parts
+were reviewed by the two models and which were decided by the owner.
+
+### 1. Sync granularity: whole-account consent
+
+Not per-record enrolment. Rationale and consequences are in §5 — the guest
+import dialog is the single consent moment, and the coarser granularity is
+acceptable because the product analyses history rather than single sessions.
+
+### 2. Guest state in the settings page: a placeholder, not a blank
+
+The Local CLI section renders normally for a guest — probing local CLIs needs no
+account, and hiding a working feature would be wrong. The **Cloud** section
+renders as a placeholder stating that signing in enables cloud coaching.
+
+A blank space was the alternative. A placeholder is chosen because absence is
+ambiguous: a user cannot tell whether cloud coaching is unavailable, broken, or
+merely hidden, and the cheapest assumption to reach is "broken". One sentence
+removes that ambiguity.
+
+### 3. SSE and the proxy: sequence, do not guess
+
+Change the hosted side first; decide the proxy afterwards. Reasoning in §1: with
+paged long-polling on the hosted side, a passthrough proxy changes nothing the
+user can observe. Live streaming is a hosted-side property, and the proxy only
+owes real work once that property exists.
+
+### 4. Unattended sync: out of scope, its own issue
+
+`#69` ships **foreground sync only**: the user triggers it, the renderer supplies
+a current token, the daemon holds it in memory for the run and pauses on expiry
+(§2a). No credential is persisted.
+
+The options if it were attempted now, and why each is a decision rather than a
+chore:
+
+| Storage | Cost |
+| --- | --- |
+| OS keychain (macOS Keychain / Windows Credential Manager / libsecret) | three separate implementations; Linux frequently lacks libsecret |
+| encrypted file + user-derived key | a passphrase on every start |
+| `0600` plaintext file | token on disk — comparable to a browser cookie |
+| none | foreground only (chosen) |
+
+Whole-account consent already makes sync a deliberate, user-initiated action, so
+foreground is sufficient for this issue. Unattended sync is a separate product
+feature ("sync automatically"), and it must solve credential storage in the same
+change that introduces it. Folding it in here would spread one security decision
+across two features, which is how it gets made twice and inconsistently.
 
 ## Review history
 
@@ -259,3 +321,7 @@ this document:
   that the daemon has no credential lifecycle, that its schema cannot support
   the sync tables, and that guest-to-account migration is an unstated product
   gap. All four were verified against the code and are now recorded above.
+- The product owner then resolved the four open questions (2026-11-09):
+  whole-account consent, a placeholder for the guest cloud section, hosted-side
+  SSE before any proxy streaming work, and unattended sync deferred to its own
+  issue. Those are decisions, not review findings.
