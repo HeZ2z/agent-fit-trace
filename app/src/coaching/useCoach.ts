@@ -21,8 +21,15 @@ import {
   localBackendSelection,
   localPiOption,
   unavailableCloudOption,
+  readBackendPreference,
   writeBackendPreference,
 } from "./coachBackend.ts";
+import {
+  useCoachDiscoveryClient,
+  useCoachDiscoveryRevision,
+  useCoachPreferenceRevision,
+  useSharedBackendOptions,
+} from "./CoachDiscoveryContext.tsx";
 import type { CoachBackendOption, CoachMode, CoachRunClient } from "./coachBackend.ts";
 import { CoachClientRouter } from "./coachClientRouter.ts";
 
@@ -370,9 +377,21 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       return getAccessToken();
     };
   }, [accountId, getAccessToken]);
+  // Reuse the app-level client when a discovery provider is mounted, so the
+  // capability minted for discovery is the SAME one runs use. Two clients would
+  // each bootstrap and each burn a slot against the daemon's per-account cap
+  // (`MAX_CAPABILITIES_PER_ACCOUNT = 5`); `App.coachNavigation.test.tsx` pins
+  // that six Coach↔History navigations issue exactly one capability.
+  //
+  // The explicit `client` prop still wins (tests/embedding), and a mount with no
+  // provider falls back to a private client so nothing changes for it.
+  const sharedClient = useCoachDiscoveryClient();
+  const sharedDiscoveryRevision = useCoachDiscoveryRevision();
+  const sharedPreferenceRevision = useCoachPreferenceRevision();
+  const sharedBackends = useSharedBackendOptions();
   const localClient = useMemo(
-    () => new CoachingClient({ getAccessToken: boundTokenProvider }),
-    [boundTokenProvider],
+    () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
+    [sharedClient, boundTokenProvider],
   );
   const cloudClient = useMemo(
     () => new CloudCoachingClient({ getAccessToken: boundTokenProvider }),
@@ -585,6 +604,29 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
    * switching mid-run would misroute reconnect/cancel, so it is ignored. The
    * preference is account-scoped, never global.
    */
+  /**
+   * Adopt a preference written elsewhere (the settings page).
+   *
+   * `selectedBackend` is state read at mount, so without this the settings page
+   * and the Coach screen disagree: the user picks Codex in settings, returns to
+   * Coach, and the next run still goes through pi while the radio said Codex.
+   *
+   * Pinned runs are honoured: `backendPinnedNow()` means a run is using the
+   * current backend, and changing selection mid-run must not rebind it.
+   */
+  useEffect(() => {
+    // No `sharedPreferenceRevision === 0` short-circuit: zero is the INITIAL
+    // value, so skipping it would mean a saved preference is never adopted on
+    // first load — the user picks Codex, reloads, and Coach silently uses pi
+    // again. The revision only matters as a change signal, not as a gate.
+    if (accountId === null) return;
+    if (backendPinnedNow()) return;
+    const stored = readBackendPreference(accountId);
+    if (stored === null || stored === selectedBackendRef.current) return;
+    selectedBackendRef.current = stored;
+    setSelectedBackend(stored);
+  }, [sharedPreferenceRevision, accountId, backendPinnedNow]);
+
   const selectBackend = useCallback(
     (backendId: CoachingBackendId): void => {
       if (backendPinnedNow()) return;
@@ -1830,11 +1872,31 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
    * browser mode asks the shared cloud capability route for FORMAL accounts
    * only. Guests and unverified identities never issue a cloud request.
    */
+  // `revision` is part of the key on purpose: it is bumped whenever the shared
+  // discovery provider publishes a new snapshot (including a rescan from the
+  // settings page). Without it this key would not change on a rescan, and Coach
+  // would keep offering a backend that settings had just found available.
   const discoveryKey = `${coachMode}:${accountId ?? "none"}:${
     isGuest ? "guest" : identityUnverified ? "unverified" : "formal"
-  }`;
+  }:${sharedDiscoveryRevision}`;
+  // A provider-owned list is authoritative when present: it is the result of
+  // the ONE bootstrap in the app, and re-running discovery here would cache a
+  // second, independently stale list (a rescan in settings then updated the
+  // provider while Coach kept rendering the old entries).
+  useEffect(() => {
+    if (sharedBackends === null) return;
+    if (coachMode === "browser") return;
+    setBackends([...sharedBackends]);
+    setDiscoveryNotice(null);
+    setDiscoveryFailed(false);
+    // Nothing else to do: the provider already ran the probe sequence.
+    discoveryKeyRef.current = discoveryKey;
+  }, [sharedBackends, coachMode, discoveryKey]);
+
   useEffect(() => {
     if (!canOperate) return;
+    // The provider owns discovery when mounted; the block above mirrors it.
+    if (sharedBackends !== null && coachMode !== "browser") return;
     if (accountRef.current !== accountId) return;
     if (coachMode === "explicit") return;
     if (discoveryKeyRef.current === discoveryKey) return;

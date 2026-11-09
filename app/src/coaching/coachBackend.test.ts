@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { CloudCapabilities } from "@agent-fit-trace/api-contracts";
 import {
   cloudOptionFromCapabilities,
+  defaultCoachBackend,
+  writeBackendPreference,
   descriptorToOption,
   isBackendSupportedInMode,
   localPiOption,
@@ -122,5 +124,26 @@ describe("local pi availability messaging", () => {
     // The fallback text is still what a genuinely absent CLI gets, so the two
     // states remain distinguishable rather than collapsing into one.
     expect(localPiOption(false).unavailableReason?.code).toBe("cli-not-installed");
+  });
+});
+
+describe("a saved local preference survives a reload", () => {
+  it("launcher mode adopts a stored non-pi backend", () => {
+    // Regression: `defaultCoachBackend` returned `local-pi` unconditionally in
+    // launcher mode, so choosing Codex in settings survived only until the next
+    // reload — the radio said Codex while the run used pi.
+    writeBackendPreference("user-a", "local-codex");
+    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-a", guest: false })).toBe("local-codex");
+  });
+
+  it("falls back to pi with no stored preference, and never picks cloud", () => {
+    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-b", guest: false })).toBe("local-pi");
+    writeBackendPreference("user-c", "cloud-default");
+    // Launcher serves local coaching; a cloud preference belongs to browser mode.
+    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-c", guest: false })).toBe("local-pi");
+  });
+
+  it("a guest with no account still gets pi", () => {
+    expect(defaultCoachBackend({ mode: "launcher", accountId: null, guest: true })).toBe("local-pi");
   });
 });

@@ -14,6 +14,8 @@ import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
 import { CoachScreen } from "./screens/CoachScreen.tsx";
 import { MeScreen } from "./screens/MeScreen.tsx";
+import { CoachSettingsScreen } from "./screens/CoachSettingsScreen.tsx";
+import { CoachDiscoveryProvider } from "./coaching/CoachDiscoveryContext.tsx";
 import { OAuthConsentScreen } from "./screens/OAuthConsentScreen.tsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.tsx";
 import {
@@ -231,8 +233,13 @@ function RootRoute({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
 function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; client?: FitTraceClient }) {
   const bypass = isLegacyLoopbackAllowed(legacyLoopback);
   return (
-    <BrowserRouter>
-      <Routes>
+    // ONE discovery provider for the whole app: `bootstrap` mints a capability
+    // and the daemon caps them per account (5) and in total, so a per-screen
+    // second bootstrap would both waste a slot and risk showing two different
+    // answers for the same machine.
+    <CoachDiscoveryProvider>
+      <BrowserRouter>
+        <Routes>
         <Route element={<Layout legacyLoopback={bypass} />}>
           <Route path="/" element={<RootRoute legacyLoopback={legacyLoopback} client={client} />} />
           <Route
@@ -287,6 +294,18 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
               )
             }
           />
+          <Route
+            path="/coach/settings"
+            element={
+              isCoachVisible() ? (
+                <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+                  <CoachSettingsScreen />
+                </RequireAuth>
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
           <Route path="/login" element={<SignInScreen />} />
           <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
           <Route path="/reset-password" element={<ResetPasswordScreen />} />
@@ -303,8 +322,9 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
           */}
           <Route path="/oauth/consent" element={<OAuthConsentScreen />} />
         </Route>
-      </Routes>
-    </BrowserRouter>
+        </Routes>
+      </BrowserRouter>
+    </CoachDiscoveryProvider>
   );
 }
 

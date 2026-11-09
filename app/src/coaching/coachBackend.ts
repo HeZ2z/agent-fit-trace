@@ -214,8 +214,17 @@ export function defaultCoachBackend(input: {
   accountId: string | null;
   guest: boolean;
 }): CoachingBackendId | null {
-  if (input.mode === "explicit" || input.mode === "launcher" || input.mode === "inactive") {
+  if (input.mode === "explicit" || input.mode === "inactive") {
     return "local-pi";
+  }
+  // Launcher mode now honours a stored local preference. It previously returned
+  // `local-pi` unconditionally, so choosing another local backend in settings
+  // survived until the next reload and then silently reverted — the radio said
+  // Codex while the run used pi.
+  if (input.mode === "launcher") {
+    if (input.accountId === null) return "local-pi";
+    const storedLocal = readBackendPreference(input.accountId);
+    return storedLocal !== null && storedLocal !== "cloud-default" ? storedLocal : "local-pi";
   }
   if (input.mode !== "browser" || input.guest || input.accountId === null) return null;
   const stored = readBackendPreference(input.accountId);
