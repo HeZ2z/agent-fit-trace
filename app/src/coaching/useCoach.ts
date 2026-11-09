@@ -21,9 +21,14 @@ import {
   localBackendSelection,
   localPiOption,
   unavailableCloudOption,
+  readBackendPreference,
   writeBackendPreference,
 } from "./coachBackend.ts";
-import { useCoachDiscoveryClient } from "./CoachDiscoveryContext.tsx";
+import {
+  useCoachDiscoveryClient,
+  useCoachDiscoveryRevision,
+  useCoachPreferenceRevision,
+} from "./CoachDiscoveryContext.tsx";
 import type { CoachBackendOption, CoachMode, CoachRunClient } from "./coachBackend.ts";
 import { CoachClientRouter } from "./coachClientRouter.ts";
 
@@ -380,6 +385,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   // The explicit `client` prop still wins (tests/embedding), and a mount with no
   // provider falls back to a private client so nothing changes for it.
   const sharedClient = useCoachDiscoveryClient();
+  const sharedDiscoveryRevision = useCoachDiscoveryRevision();
+  const sharedPreferenceRevision = useCoachPreferenceRevision();
   const localClient = useMemo(
     () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
     [sharedClient, boundTokenProvider],
@@ -595,6 +602,26 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
    * switching mid-run would misroute reconnect/cancel, so it is ignored. The
    * preference is account-scoped, never global.
    */
+  /**
+   * Adopt a preference written elsewhere (the settings page).
+   *
+   * `selectedBackend` is state read at mount, so without this the settings page
+   * and the Coach screen disagree: the user picks Codex in settings, returns to
+   * Coach, and the next run still goes through pi while the radio said Codex.
+   *
+   * Pinned runs are honoured: `backendPinnedNow()` means a run is using the
+   * current backend, and changing selection mid-run must not rebind it.
+   */
+  useEffect(() => {
+    if (sharedPreferenceRevision === 0) return;
+    if (accountId === null) return;
+    if (backendPinnedNow()) return;
+    const stored = readBackendPreference(accountId);
+    if (stored === null || stored === selectedBackendRef.current) return;
+    selectedBackendRef.current = stored;
+    setSelectedBackend(stored);
+  }, [sharedPreferenceRevision, accountId, backendPinnedNow]);
+
   const selectBackend = useCallback(
     (backendId: CoachingBackendId): void => {
       if (backendPinnedNow()) return;
@@ -1840,9 +1867,13 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
    * browser mode asks the shared cloud capability route for FORMAL accounts
    * only. Guests and unverified identities never issue a cloud request.
    */
+  // `revision` is part of the key on purpose: it is bumped whenever the shared
+  // discovery provider publishes a new snapshot (including a rescan from the
+  // settings page). Without it this key would not change on a rescan, and Coach
+  // would keep offering a backend that settings had just found available.
   const discoveryKey = `${coachMode}:${accountId ?? "none"}:${
     isGuest ? "guest" : identityUnverified ? "unverified" : "formal"
-  }`;
+  }:${sharedDiscoveryRevision}`;
   useEffect(() => {
     if (!canOperate) return;
     if (accountRef.current !== accountId) return;

@@ -51,6 +51,26 @@ export interface CoachDiscoveryContextValue extends CoachDiscoveryState {
   /** The mode discovery resolved to, so consumers agree on launcher vs browser. */
   mode: CoachMode;
   /**
+   * Monotonic counter, bumped on every published snapshot.
+   *
+   * `useCoach` keys its own discovery on `mode:account:guest`, which a rescan
+   * does not change — so without a signal it would keep rendering a stale
+   * option list after the user pressed "Check again" and a backend became
+   * available. Consumers watch this instead.
+   */
+  revision: number;
+  /**
+   * Bumped when a backend PREFERENCE is written.
+   *
+   * The preference lives in localStorage and `useCoach` reads it into its own
+   * state at mount, so a write here would otherwise leave the Coach screen
+   * submitting through the previous backend while this page showed the new one.
+   * Consumers fold this into their selection state.
+   */
+  preferenceRevision: number;
+  /** Announce that a backend preference was written. */
+  notifyPreferenceChanged: () => void;
+  /**
    * The ONE local coaching client for this app instance.
    *
    * Exposed so `useCoach` can run its capability-bound calls through the same
@@ -68,7 +88,7 @@ const CoachDiscoveryContext = createContext<CoachDiscoveryContextValue | null>(n
 
 export interface CoachDiscoveryProviderProps {
   /** Test/embedding seam; production builds its own client. */
-  client?: Pick<CoachingClient, "bootstrap" | "discoverBackends">;
+  client?: Pick<CoachingClient, "bootstrap" | "discoverBackends" | "isBootstrapped">;
   /** Test seam: skips the automatic first load. */
   autoLoad?: boolean;
   children: ReactNode;
@@ -112,6 +132,11 @@ export function CoachDiscoveryProvider({
     refreshing: false,
   });
 
+  const [revision, setRevision] = useState(0);
+  const [preferenceRevision, setPreferenceRevision] = useState(0);
+  const notifyPreferenceChanged = useCallback((): void => {
+    setPreferenceRevision((current) => current + 1);
+  }, []);
   const inFlight = useRef<Promise<void> | null>(null);
   /** Guards a late response from a superseded request (account switch, rescan). */
   const generation = useRef(0);
@@ -150,7 +175,14 @@ export function CoachDiscoveryProvider({
           return;
         }
         const discovery: CoachingCapabilityDiscovery = await (async () => {
-          await client.bootstrap();
+          // Reuse a live capability. `bootstrap()` coalesces CONCURRENT calls
+          // but does not reuse an existing credential, so calling it on every
+          // rescan mints another 10-minute capability — and the daemon caps them
+          // at `MAX_CAPABILITIES_PER_ACCOUNT = 5` per account, answering 503 at
+          // the cap. Four rescans after the first load would therefore wedge
+          // discovery until expiry. `isBootstrapped` is the lifecycle's own
+          // guard; mirror it.
+          if (!client.isBootstrapped) await client.bootstrap();
           return client.discoverBackends();
         })();
         if (!mounted.current || requestGeneration !== generation.current) return;
@@ -174,6 +206,7 @@ export function CoachDiscoveryProvider({
           error: null,
           refreshing: false,
         });
+        setRevision((current) => current + 1);
       } catch (caught) {
         if (!mounted.current || requestGeneration !== generation.current) return;
         setState((previous) => ({
@@ -210,8 +243,16 @@ export function CoachDiscoveryProvider({
   }, [autoLoad, authStatus, refresh]);
 
   const value = useMemo<CoachDiscoveryContextValue>(
-    () => ({ ...state, refresh, mode, client: client as CoachingClient | null }),
-    [state, refresh, mode, client],
+    () => ({
+      ...state,
+      refresh,
+      mode,
+      revision,
+      preferenceRevision,
+      notifyPreferenceChanged,
+      client: client as CoachingClient | null,
+    }),
+    [state, refresh, mode, revision, preferenceRevision, notifyPreferenceChanged, client],
   );
 
   return <CoachDiscoveryContext.Provider value={value}>{children}</CoachDiscoveryContext.Provider>;
@@ -243,4 +284,20 @@ export function useCoachDiscovery(): CoachDiscoveryContextValue {
  */
 export function useCoachDiscoveryClient(): CoachingClient | null {
   return useContext(CoachDiscoveryContext)?.client ?? null;
+}
+
+/**
+ * Snapshot revision, or 0 without a provider.
+ *
+ * `useCoach` folds this into its discovery key so a rescan started from the
+ * settings page invalidates the Coach screen's cached option list. Without a
+ * provider it stays 0, which preserves the previous behaviour exactly.
+ */
+export function useCoachDiscoveryRevision(): number {
+  return useContext(CoachDiscoveryContext)?.revision ?? 0;
+}
+
+/** Preference-write revision, or 0 without a provider. */
+export function useCoachPreferenceRevision(): number {
+  return useContext(CoachDiscoveryContext)?.preferenceRevision ?? 0;
 }

@@ -73,7 +73,17 @@ function BackendRow({
 export function CoachSettingsScreen() {
   const { user } = useAuth();
   const { t } = useI18n();
-  const { backends, status, error, refreshing, refresh, defaultBackendId, mode } = useCoachDiscovery();
+  const {
+    backends,
+    status,
+    error,
+    refreshing,
+    refresh,
+    defaultBackendId,
+    mode,
+    preferenceRevision,
+    notifyPreferenceChanged,
+  } = useCoachDiscovery();
   const accountId = user?.id ?? null;
   const isGuest = user?.isAnonymous !== false;
 
@@ -99,7 +109,9 @@ export function CoachSettingsScreen() {
         : null;
     }
     return localOptions.find((option) => option.available)?.id ?? null;
-  }, [accountId, defaultBackendId, localOptions]);
+    // `preferenceRevision` is not read directly; it is the invalidation signal
+    // that makes this recompute after `writeBackendPreference`.
+  }, [accountId, defaultBackendId, localOptions, preferenceRevision]);
 
   function select(id: CoachBackendOption["id"]): void {
     const option = localOptions.find((candidate) => candidate.id === id);
@@ -108,6 +120,10 @@ export function CoachSettingsScreen() {
     if (option === undefined || !option.available) return;
     if (accountId === null) return;
     writeBackendPreference(accountId, id);
+    // Announce it: `useCoach` holds its own selection state read at mount, so
+    // without this the radio would show the new backend while the next run
+    // still used the old one.
+    notifyPreferenceChanged();
   }
 
   return (

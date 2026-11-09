@@ -65,10 +65,21 @@ function discoveryOf(backends: CoachingCapabilityDiscovery["backends"]): Coachin
 
 /** A client stub; `bootstrap` is a no-op because the provider owns the sequence. */
 function stubClient(discovery: CoachingCapabilityDiscovery) {
-  return {
-    bootstrap: vi.fn(async () => ({ capability: "cap", expiresInMs: 1000 })),
+  // `isBootstrapped` is modelled honestly: it flips after the first bootstrap,
+  // which is what lets the page reuse a live capability instead of minting a
+  // new one on every rescan.
+  let bootstrapped = false;
+  const client = {
+    get isBootstrapped(): boolean {
+      return bootstrapped;
+    },
+    bootstrap: vi.fn(async () => {
+      bootstrapped = true;
+      return { capability: "cap", expiresInMs: 1000 };
+    }),
     discoverBackends: vi.fn(async () => discovery),
   };
+  return client;
 }
 
 function renderPage({
@@ -146,9 +157,24 @@ describe("coach settings: local CLI section", () => {
     await user.click(button);
     await user.click(button);
     await waitFor(() => expect(client.discoverBackends.mock.calls.length).toBeGreaterThan(1));
-    // Coalescing is the provider's job; the page must never drive it into a
-    // stampede that would exhaust the daemon's per-account capability cap.
-    expect(client.bootstrap.mock.calls.length).toBeLessThanOrEqual(3);
+    // THE regression this guards: `bootstrap()` coalesces concurrent calls but
+    // does not reuse a live capability, so a naive rescan would mint a new
+    // 10-minute capability each time. The daemon caps them at 5 per account and
+    // then answers 503, wedging discovery until expiry. Four rescans must still
+    // cost exactly one bootstrap.
+    expect(client.bootstrap.mock.calls.length).toBe(1);
+  });
+
+  it("a repeated rescan never mints a second capability", async () => {
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-a", isAnonymous: false }, client });
+    await screen.findByRole("radio", { name: /pi cli/i });
+    const user = userEvent.setup();
+    for (let i = 0; i < 4; i += 1) {
+      await user.click(screen.getByRole("button", { name: /check again|checking/i }));
+      await waitFor(() => expect(client.discoverBackends.mock.calls.length).toBeGreaterThan(i + 1));
+    }
+    expect(client.bootstrap.mock.calls.length).toBe(1);
   });
 });
 
