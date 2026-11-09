@@ -110,6 +110,13 @@ export function CoachScreen() {
         <div className="screen-head-main">
           <h1>{t("Coach")}</h1>
         </div>
+        {/* The backend choice lives in settings, not here: it is a
+            configuration decision, and the page that shows which CLIs are
+            installed belongs beside it. This link is the discovery path for it —
+            without one the settings route would be unreachable. */}
+        <Link to="/coach/settings" data-testid="coach-settings-link">
+          {t("Coach settings")}
+        </Link>
       </div>
 
       {coach.mode === "browser" && coach.isGuest && (
