@@ -52,7 +52,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
   // (not this browser), and no account sign-in exists to switch or upgrade
   // to. Show that truthfully instead of the destructive Supabase guest
   // controls — sign-out and upgrade would be lies here.
-  if (authSurface === "guest-local") {
+  if (authSurface === "guest-local" || (authSurface === "daemon-optional" && user.id === "guest")) {
     if (compact) {
       return (
         <div className="account-area account-guest-compact" aria-label={t("Guest account")}>
@@ -71,9 +71,10 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
         </p>
         <p>
           {t(
-            "Your workouts are stored by the local daemon on this machine under this guest identity. No account sign-in is configured for this daemon, so there is nothing to sign out of and no account to upgrade to.",
+            "Your workouts are stored by the local daemon on this machine under this guest identity. These workouts stay in the local guest store. Signing in uses a separate account store; guest workouts are not transferred or uploaded.",
           )}
         </p>
+        {authSurface === "daemon-optional" ? <Link className="account-link" to="/login">{t("Sign in")}</Link> : null}
       </div>
     );
   }

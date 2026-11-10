@@ -239,7 +239,7 @@ export function AuthProvider({
 
   const effectiveConfig = publicConfigProp ?? publicConfig;
   const authSurface = resolveAuthSurface(effectiveConfig);
-  const guestLocal = authSurface === "guest-local";
+  const guestLocal = authSurface === "guest-local" || (authSurface === "daemon-optional" && session === null);
   // Ref mirror so same-tick credential reads (per-request token providers)
   // see the surface without waiting for a re-render.
   const guestLocalRef = useRef(guestLocal);
@@ -270,8 +270,9 @@ export function AuthProvider({
   /** Keep the ref synchronous with state so same-tick token reads never go stale. */
   const setSessionSync = useCallback((next: SupabaseSession | null): void => {
     sessionRef.current = next;
+    guestLocalRef.current = authSurface === "guest-local" || (authSurface === "daemon-optional" && next === null);
     setSession(next);
-  }, []);
+  }, [authSurface]);
 
   const clearGuestCandidate = useCallback((): void => {
     guestCandidateRef.current = null;
@@ -498,7 +499,7 @@ export function AuthProvider({
     async (email: string, password: string): Promise<void> => {
       // Guest-local has no identity provider: every sign-in path fails
       // cleanly here instead of touching the empty Supabase config fields.
-      if (guestLocalRef.current) {
+      if (authSurface === "guest-local") {
         const unconfigured = new AuthError(
           "SIGN_IN_UNCONFIGURED",
           "Sign-in is not configured on this deployment.",
@@ -547,7 +548,7 @@ export function AuthProvider({
         throw err;
       }
     },
-    [clearGuestCandidate, clearGuestUpgrade, fetchImpl, resolveConfig, resetRefreshRetry, setSessionSync],
+    [authSurface, clearGuestCandidate, clearGuestUpgrade, fetchImpl, resolveConfig, resetRefreshRetry, setSessionSync],
   );
 
   /**
@@ -559,6 +560,7 @@ export function AuthProvider({
   const signInAsGuest = useCallback(async (): Promise<void> => {
     // Guest-local already IS the guest: the fixed local guest identity is
     // active and there is no anonymous sign-up endpoint to call.
+    if (authSurface === "daemon-optional" && guestLocalRef.current) return;
     if (guestLocalRef.current) {
       const unconfigured = new AuthError(
         "SIGN_IN_UNCONFIGURED",

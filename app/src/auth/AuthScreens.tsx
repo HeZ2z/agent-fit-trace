@@ -184,7 +184,12 @@ export function SignInScreen() {
       <p>
         <Link to="/forgot-password">{t("Forgot your password?")}</Link>
       </p>
-      <section className="signin-guest" aria-labelledby="guest-signin-heading">
+      {authSurface === "daemon-optional" ? (
+        <section className="signin-guest">
+          <p>{t("Your local guest workouts remain on this machine and are not transferred or uploaded when you sign in.")}</p>
+          <Link to="/">{t("Return to local guest")}</Link>
+        </section>
+      ) : <section className="signin-guest" aria-labelledby="guest-signin-heading">
         <h2 id="guest-signin-heading">{t("Guest access")}</h2>
         <p>
           {t("Guest data is tied to this browser and cannot be merged into an account later.")}
@@ -212,7 +217,7 @@ export function SignInScreen() {
         <button type="button" onClick={onGuest} disabled={guestDisabled}>
           {t("Continue as guest")}
         </button>
-      </section>
+      </section>}
     </section>
   );
 }

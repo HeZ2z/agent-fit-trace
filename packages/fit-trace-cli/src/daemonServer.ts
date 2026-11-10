@@ -157,6 +157,8 @@ export const RUNTIME_SCRIPT_PATH = "/fit-trace-runtime.js";
 export interface DaemonServerOptions {
   /** Preferred loopback port (default 5199, falls forward when busy). */
   port?: number;
+  /** Fail on an occupied port instead of scanning forward. */
+  strictPort?: boolean;
   /** Data directory (default `resolveDataDir(env)`). */
   dataDir?: string;
   /**
@@ -875,7 +877,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   }
 
   const preferred = portRaw;
-  const attempts = preferred === 0 ? 1 : PORT_SCAN_LIMIT + 1;
+  const attempts = preferred === 0 || options.strictPort ? 1 : PORT_SCAN_LIMIT + 1;
   // Process ownership of the journal for the listener lifetime, like the
   // launcher: two writers over one journal would corrupt the generation
   // counters. Released on close or a failed startup.

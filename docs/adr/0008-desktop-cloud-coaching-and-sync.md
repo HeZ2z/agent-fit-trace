@@ -325,3 +325,17 @@ this document:
   whole-account consent, a placeholder for the guest cloud section, hosted-side
   SSE before any proxy streaming work, and unattended sync deferred to its own
   issue. Those are decisions, not review findings.
+
+### Desktop public auth bootstrap
+
+A packaged desktop release carries a generated, versioned public configuration:
+channel, public Supabase URL, and publishable key. Release inputs are explicit;
+no environment snapshot or provider credential is packaged. A guest-only channel
+has no auth pair. Runtime environment overrides replace the whole URL/key pair or
+fail; the legacy anonymous-key alias never fills a partial pair. The shell saves
+its loopback origin in per-user Electron data and fails when its port is occupied,
+so renderer session storage has a stable origin. Account and guest databases
+remain separate; sign-in performs no guest import or sync. MCP/pi active-store
+selection is not changed by desktop sign-in. Live login, restoration after a
+restart, and sign-out were checked in a macOS arm64 package; live token refresh
+and two-account switching remain unverified.

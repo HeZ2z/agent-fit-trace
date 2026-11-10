@@ -339,3 +339,45 @@ test("spawnDaemon forwards --extension only when a path is supplied", async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("desktop child fails on an occupied saved port without connecting to the occupant", async () => {
+  let requests = 0;
+  const occupant = createServer((_request, response) => { requests += 1; response.end("occupant"); });
+  await new Promise<void>((resolve) => occupant.listen(0, "127.0.0.1", resolve));
+  const address = occupant.address();
+  assert.ok(address && typeof address !== "string");
+  const dataDir = await trackDir();
+  const { child, url } = daemonChild.spawnDaemon({ nodePath: process.execPath, cliPath: CLI_PATH, dataDir, port: address.port, env: childEnv() });
+  try { await assert.rejects(url); assert.equal(requests, 0); }
+  finally { await daemonChild.stopDaemonChild(child); await new Promise<void>((resolve, reject) => occupant.close((error) => error ? reject(error) : resolve())); }
+});
+
+test("desktop daemon restarts on the same saved port", async () => {
+  const dataDir = await trackDir();
+  const first = daemonChild.spawnDaemon({ nodePath: process.execPath, cliPath: CLI_PATH, dataDir, port: 0, env: childEnv() });
+  const origin = await first.url;
+  await daemonChild.stopDaemonChild(first.child);
+  const second = daemonChild.spawnDaemon({ nodePath: process.execPath, cliPath: CLI_PATH, dataDir, port: Number(new URL(origin).port), env: childEnv() });
+  try { assert.equal(await second.url, origin); assert.equal(await daemonChild.healthCheck(origin), true); }
+  finally { await daemonChild.stopDaemonChild(second.child); }
+});
+
+test("spawnDaemon waits for a complete listening line when the port is split across chunks", async () => {
+  const dir = await trackDir();
+  const fakeCli = join(dir, "split-port.cjs");
+  await writeFile(fakeCli, "process.stdout.write('fit-trace daemon listening at http://127.0.0.1:42'); setTimeout(() => process.stdout.write('123\\n'), 100); setInterval(() => {}, 1000);\n");
+  for (const port of [0, 42123]) {
+    const { child, url } = daemonChild.spawnDaemon({ nodePath: process.execPath, cliPath: fakeCli, port, env: childEnv(), urlTimeoutMs: 2000 });
+    try { assert.equal(await url, "http://127.0.0.1:42123"); }
+    finally { await daemonChild.stopDaemonChild(child); }
+  }
+});
+
+test("spawnDaemon rejects an unterminated listening announcement", async () => {
+  const dir = await trackDir();
+  const fakeCli = join(dir, "incomplete-listen.cjs");
+  await writeFile(fakeCli, "process.stdout.write('fit-trace daemon listening at http://127.0.0.1:42'); setInterval(() => {}, 1000);\n");
+  const { child, url } = daemonChild.spawnDaemon({ nodePath: process.execPath, cliPath: fakeCli, port: 0, env: childEnv(), urlTimeoutMs: 300 });
+  try { await assert.rejects(url, /did not report a listen URL/); }
+  finally { await daemonChild.stopDaemonChild(child); }
+});

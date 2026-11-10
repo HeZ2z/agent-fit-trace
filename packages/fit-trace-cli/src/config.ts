@@ -16,6 +16,7 @@ export const DEFAULT_PORT = 5198;
 export const DEFAULT_UPSTREAM_ENV = "FIT_TRACE_API_BASE_URL";
 
 export interface LauncherFlags {
+  strictPort?: boolean;
   port?: number;
   noOpen?: boolean;
   upstream?: string;

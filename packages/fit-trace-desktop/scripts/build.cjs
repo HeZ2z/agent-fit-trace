@@ -56,6 +56,7 @@ function stage(label, scriptPath) {
   }
 }
 
+stage("build:public-config", path.join(__dirname, "buildPublicConfig.cjs"));
 stage("build:daemon", path.join(__dirname, "buildDaemon.cjs"));
 stage("build:extension", path.join(__dirname, "buildExtension.cjs"));
 stage("prepare:runtime", path.join(__dirname, "prepareRuntime.cjs"));

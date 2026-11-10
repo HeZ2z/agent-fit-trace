@@ -356,3 +356,23 @@ the selection empty. Discovery reports the server choice's `defaultBackendSource
 as `runtime` or `automatic`; the app records a saved or manually chosen backend
 as `preference`. The optional source field is absent for older servers and is
 ignored by older clients.
+
+### Desktop account and origin
+
+The desktop shell stores its loopback origin in `desktop-origin.json` under
+Electron's per-user `userData` directory. It selects a port on first launch and
+uses that same port after restart and on later launches. If the port is occupied,
+close the process using it and relaunch; the shell does not select a different
+origin or connect to the occupant. Removing this file resets the origin, but
+sessions stored by the renderer at the previous origin will no longer be visible.
+Back up user data before taking that recovery step.
+
+When desktop sign-in is configured, the local guest and each signed-in account
+use separate local databases. Signing in does not move guest records, upload them,
+or enable sync or cloud coaching. Guest import remains a separate future action.
+The daemon's `identity.json` currently identifies guest to newly launched MCP/pi
+followers; signing in through the desktop does not switch their active store.
+Desktop session restoration depends on Electron preserving renderer storage as
+well as the saved origin. Live sign-in, restart restoration, and sign-out were
+checked against the intended project in a macOS arm64 package. Live token
+refresh, two-account switching, and Windows/Linux packaged runs remain untested.

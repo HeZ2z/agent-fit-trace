@@ -137,6 +137,7 @@ function spawnDaemon({
       "daemon",
       "--port",
       String(port),
+      "--strict-port",
       ...(dataDir ? ["--data", dataDir] : []),
       ...(distDir ? ["--dist", distDir] : []),
       // Mirrors the distDir handling exactly: only passed when set, so dev
@@ -152,18 +153,9 @@ function spawnDaemon({
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        // Timeout: try whatever the daemon logged so far before giving up.
-        const parsed = parseDaemonUrl(stdout);
-        if (parsed) {
-          resolve(parsed);
-        } else {
-          // Never leave a possibly-live child behind: stop it (SIGTERM →
-          // SIGKILL) before rejecting. Fire-and-forget on purpose — the url
-          // promise must reject immediately, not wait out the 3s grace
-          // period; a later stopDaemonChild() call remains safe (idempotent).
-          void stopDaemonChild(child);
-          reject(new Error(`daemon did not report a listen URL within ${urlTimeoutMs}ms`));
-        }
+        // Only a validated listening announcement from this child permits navigation.
+        void stopDaemonChild(child);
+        reject(new Error(`daemon did not report a listen URL within ${urlTimeoutMs}ms`));
       }
     }, urlTimeoutMs);
     const settle = (value) => {
@@ -174,10 +166,30 @@ function spawnDaemon({
       }
     };
     child.stdout.on("data", (chunk) => {
+      if (settled) return;
       stdout += String(chunk);
-      const parsed = parseDaemonUrl(stdout);
-      if (parsed) {
+      // A stdout chunk can end halfway through the port. Only complete lines
+      // can establish the origin; an unterminated prefix is never actionable.
+      let newline;
+      while ((newline = stdout.indexOf("\n")) !== -1) {
+        const line = stdout.slice(0, newline).replace(/\r$/, "");
+        stdout = stdout.slice(newline + 1);
+        const announcement = /^fit-trace daemon listening at (\S+)$/.exec(line);
+        if (!announcement) continue;
+        const parsed = announcement[1];
+        const expected = /^http:\/\/127\.0\.0\.1:([1-9]\d*)$/.exec(parsed);
+        const reportedPort = expected ? Number(expected[1]) : 0;
+        if (!expected || reportedPort > 65535 || (port !== 0 && reportedPort !== port)) {
+          void stopDaemonChild(child);
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error("Daemon reported an unexpected origin."));
+          }
+          return;
+        }
         settle(parsed);
+        return;
       }
     });
     child.once("error", (error) => {
