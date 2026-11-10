@@ -11,7 +11,11 @@
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { executableIdentity, resolveExecutable } from "../../../server/coaching/executableResolution.ts";
+import { toolchainPath } from "../../../server/coaching/toolchainPaths.ts";
+import { buildCoachedEnv } from "../../../server/coaching/piProcessAdapter.ts";
 import { BIND_HOST, checkNodeRuntime, checkPiCli, isSafeOpenUrl, resolveLauncherConfig } from "./config.ts";
 import type { CoachingRuntimeId } from "@agent-fit-trace/api-contracts";
 import { isCoachingRuntimeId, resolveCoachingBackendSelection } from "@agent-fit-trace/api-contracts";
@@ -143,13 +147,6 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
   checkNodeRuntime();
   const dataDir = flags.data ?? resolveDataDir(process.env);
 
-  // Probe pi CONCURRENTLY with startup rather than before it. `checkPiCli`
-  // spawns a child process; awaiting it here delayed the listener on every
-  // launch, which is the wrong trade for a local data plane that works without
-  // coaching (see #68). The promise is handed to the server, which awaits it
-  // only when it needs the answer.
-  const piProbe = checkPiCli();
-
   /**
    * Install the shutdown handlers BEFORE binding, not after.
    *
@@ -200,12 +197,11 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
     dataDir,
     ...(flags.dist !== undefined ? { distDir: flags.dist } : {}),
     ...(flags.extension !== undefined ? { extensionPath: resolve(flags.extension) } : {}),
-    piAvailable: piProbe.then((probe) => probe.available),
   });
   server = started;
   console.log(`fit-trace daemon listening at ${server.url}`);
   console.log(`data directory: ${server.dataDir}`);
-  console.log(`default coaching backend: ${server.defaultBackendId}`);
+  console.log(`default coaching backend: ${server.defaultBackendId ?? "none (probe pending or unavailable)"}`);
 
   // A signal arrived while startup was in flight and deliberately did not
   // interrupt it (interrupting would have orphaned the journal lock). The
@@ -232,8 +228,16 @@ async function main(): Promise<void> {
   const repoRoot = resolve(here, "..", "..", "..");
   const config = resolveLauncherConfig(process.env, flags, repoRoot);
 
-  const pi = await checkPiCli();
-  if (pi.available) {
+  const piEnv = { ...process.env };
+  piEnv.PATH = toolchainPath({ platform: process.platform, home: homedir(), env: piEnv });
+  const piExecutable = resolveExecutable("pi", { pathEnv: piEnv.PATH, pathExtEnv: piEnv.PATHEXT }) ?? undefined;
+  const piIdentity = piExecutable === undefined ? undefined : executableIdentity(piExecutable);
+  if (piExecutable !== undefined) piEnv.PATH = [dirname(piExecutable), piEnv.PATH].join(delimiter);
+  const pi = piExecutable === undefined || piIdentity === undefined
+    ? { available: false, version: null }
+    : await checkPiCli(5000, piExecutable, buildCoachedEnv(piEnv, ""));
+  const piValid = piExecutable !== undefined && piIdentity !== undefined && executableIdentity(piExecutable) === piIdentity;
+  if (pi.available && piValid) {
     console.log(`pi CLI detected${pi.version === null ? "" : `: ${pi.version}`}`);
   } else {
     console.log(
@@ -251,7 +255,11 @@ async function main(): Promise<void> {
     upstreamBaseUrl: config.upstreamBaseUrl,
     host: BIND_HOST,
     port: config.port,
-    piAvailable: pi.available,
+    piAvailable: pi.available && piValid,
+    ...(piExecutable !== undefined && piIdentity !== undefined ? {
+      piExecutable, piEnv, piVersion: pi.version ?? undefined,
+      validatePiExecutable: () => executableIdentity(piExecutable) === piIdentity,
+    } : {}),
     runtimeId: config.runtimeId,
   });
   console.log(`fit-trace coach listening at ${server.url}`);

@@ -204,7 +204,9 @@ export function inspectOpenCodeIsolation(evidence: OpenCodeIsolationEvidence): O
 }
 
 interface ProbeOptions {
+  signal?: AbortSignal;
   binary?: string;
+  env?: NodeJS.ProcessEnv;
   model?: string;
   timeoutMs?: number;
   /**
@@ -214,29 +216,35 @@ interface ProbeOptions {
   verifyIsolation?: (context: { binary: string; version: string; model: string }) => Promise<OpenCodeIsolationEvidence | null>;
 }
 
-function runBounded(binary: string, argv: string[], timeoutMs: number): Promise<{ code: number; stdout: string }> {
+function runBounded(binary: string, argv: string[], timeoutMs: number, env?: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<{ code: number; stdout: string }> {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(binary, argv, { stdio: ["ignore", "pipe", "ignore"], timeout: timeoutMs });
+      if (signal?.aborted) { reject(new Error("probe-aborted")); return; }
+      child = spawn(binary, argv, { stdio: ["ignore", "pipe", "ignore"], timeout: timeoutMs, env });
     } catch {
       reject(new Error("spawn-failed"));
       return;
     }
     let stdout = "";
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abort = (): void => { try { child.kill("SIGKILL"); } catch { /* already exited */ } done(new Error("probe-aborted")); };
     const done = (error?: Error, code = -1): void => {
       if (settled) return;
       settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       if (error !== undefined) reject(error);
       else resolve({ code, stdout });
     };
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout?.on("data", (chunk: Buffer) => {
       if (stdout.length < 64 * 1024) stdout += chunk.toString("utf8");
     });
     child.on("error", () => done(new Error("spawn-failed")));
     child.on("close", (code) => done(undefined, code ?? -1));
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       try {
         child.kill("SIGKILL");
       } catch {
@@ -255,7 +263,7 @@ export async function probeOpenCodeRun(options: ProbeOptions = {}): Promise<Open
   const timeoutMs = options.timeoutMs ?? 10000;
   let version: string;
   try {
-    const result = await runBounded(binary, ["--version"], timeoutMs);
+    const result = await runBounded(binary, ["--version"], timeoutMs, options.env, options.signal);
     if (result.code !== 0) throw new Error("version-failed");
     version = result.stdout.trim().replace(/^opencode\s+/i, "").replace(/^v/i, "");
   } catch {
@@ -267,7 +275,7 @@ export async function probeOpenCodeRun(options: ProbeOptions = {}): Promise<Open
   }
   let runFlags: string[];
   try {
-    const result = await runBounded(binary, [...OPENCODE_RUN_ARGS.slice(0, 1), "--help"], timeoutMs);
+    const result = await runBounded(binary, [...OPENCODE_RUN_ARGS.slice(0, 1), "--help"], timeoutMs, options.env, options.signal);
     if (result.code !== 0) throw new Error("help-failed");
     runFlags = result.stdout
       .split(/\s+/)

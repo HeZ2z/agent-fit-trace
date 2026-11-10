@@ -389,6 +389,12 @@ test("capability discovery is versioned, strict, and keeps planned backends unav
     ],
   };
   assert.deepEqual(parseCoachingCapabilityDiscovery(JSON.parse(JSON.stringify(discovery))), discovery);
+  for (const source of ["runtime", "automatic"] as const) {
+    const withSource = { ...discovery, defaultBackendId: "local-pi", defaultBackendSource: source };
+    assert.deepEqual(parseCoachingCapabilityDiscovery(withSource), withSource);
+  }
+  assert.throws(() => parseCoachingCapabilityDiscovery({ ...discovery, defaultBackendSource: "runtime" }));
+  assert.throws(() => parseCoachingCapabilityDiscovery({ ...discovery, defaultBackendId: "local-pi", defaultBackendSource: "unknown" }));
 
   // Unavailable requires a reason; available forbids one.
   assert.throws(() => parseCoachingBackendDescriptor(backend({ available: false })));

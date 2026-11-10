@@ -121,6 +121,9 @@ const PI_BINARY = "pi";
 /** Env keys passed through verbatim (exact match). */
 const ENV_PASSTHROUGH_EXACT = new Set([
   "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "WINDIR",
   // HOME is passed through UNCHANGED (never rewritten): the pi child keeps
   // its normal global auth/settings lookup (~/.pi/agent auth.json, settings,
   // model catalogs). That is the only retained global auth surface, and it
@@ -280,6 +283,7 @@ export interface CoachedPiOptions extends CoachedRunCallbacks {
   extensionPath: string;
   cwd: string;
   piBinary?: string;
+  validateExecutable?: () => boolean;
   spawn?: SpawnFn;
   env?: NodeJS.ProcessEnv;
   /** Overall run bound. Defaults to 120000ms. */
@@ -509,6 +513,10 @@ export class CoachedPiProcess {
     if (this.settled || this.closed) return;
     if (this.started) return;
     this.started = true;
+    if (this.opts.validateExecutable !== undefined && !this.opts.validateExecutable()) {
+      void this.finish("failed", "pi executable changed since detection; rescan before running");
+      return;
+    }
     let sessionDir: string;
     try {
       sessionDir = this.sessionDir();

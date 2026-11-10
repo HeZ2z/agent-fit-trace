@@ -31,17 +31,20 @@
  * allowed to claim.
  */
 import type { CoachingAvailabilityReason } from "@agent-fit-trace/api-contracts";
-import { CoachedCodexAppServer } from "./codexAppServerAdapter.ts";
+import { buildCoachedCodexEnv, CoachedCodexAppServer } from "./codexAppServerAdapter.ts";
 import {
   probeCodexAppServer,
 } from "./codexAppServerCapability.ts";
 import type { CodexAppServerSupport } from "./codexAppServerCapability.ts";
-import { CoachedOpenCodeRun } from "./opencodeServerAdapter.ts";
+import { buildOpenCodeBaseEnv, CoachedOpenCodeRun } from "./opencodeServerAdapter.ts";
 import { probeOpenCodeRun } from "./opencodeCapability.ts";
 import type { OpenCodeIsolationEvidence, OpenCodeRunSupport } from "./opencodeCapability.ts";
 import { CoachedPiProcess } from "./piProcessAdapter.ts";
 import type { CoachingRuntimeRegistration, RuntimeFactory } from "./runtimeRegistry.ts";
-import { resolveExecutable } from "./executableResolution.ts";
+import { executableIdentity, resolveExecutable } from "./executableResolution.ts";
+import { toolchainPath } from "./toolchainPaths.ts";
+import { homedir } from "node:os";
+import { dirname, delimiter } from "node:path";
 
 /** Display names are part of the wire payload; keep one spelling. */
 export const LOCAL_PI_DISPLAY_NAME = "pi CLI (local)";
@@ -90,7 +93,7 @@ function gateReason(
  * snapshot dir, fixed per-session native dir, and resume handle flow straight
  * into the coached pi process — the factory invents no paths.
  */
-export function piRuntimeFactory(extensionPath: string, cwd: string): RuntimeFactory {
+export function piRuntimeFactory(extensionPath: string, cwd: string, options: { binary?: string; env?: NodeJS.ProcessEnv; validateExecutable?: () => boolean } = {}): RuntimeFactory {
   return (launch) =>
     new CoachedPiProcess({
       sessionId: launch.sessionId,
@@ -102,6 +105,9 @@ export function piRuntimeFactory(extensionPath: string, cwd: string): RuntimeFac
       ...(launch.resumeSessionFile !== undefined ? { resumeSessionFile: launch.resumeSessionFile } : {}),
       extensionPath,
       cwd,
+      ...(options.binary !== undefined ? { piBinary: options.binary } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.validateExecutable !== undefined ? { validateExecutable: options.validateExecutable } : {}),
       onEvent: launch.onEvent,
       onDone: launch.onDone,
     });
@@ -138,7 +144,7 @@ export function unavailablePiRuntimeFactory(): RuntimeFactory {
  * the launch's immutable snapshot stays in this process, and a stored native
  * handle is resumed only when the service already matched it to this backend.
  */
-export function codexRuntimeFactory(options: { binary?: string }): RuntimeFactory {
+export function codexRuntimeFactory(options: { binary?: string; env?: NodeJS.ProcessEnv; validateExecutable?: () => boolean }): RuntimeFactory {
   return (launch) =>
     new CoachedCodexAppServer({
       sessionId: launch.sessionId,
@@ -149,6 +155,8 @@ export function codexRuntimeFactory(options: { binary?: string }): RuntimeFactor
       // Controlled per-product-session directory; never the snapshot dir.
       cwd: launch.sessionDir,
       ...(options.binary !== undefined ? { codexBinary: options.binary } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.validateExecutable !== undefined ? { validateExecutable: options.validateExecutable } : {}),
       ...(launch.resumeNativeSessionHandle !== undefined
         ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
         : {}),
@@ -170,6 +178,8 @@ export function codexRuntimeFactory(options: { binary?: string }): RuntimeFactor
 export function openCodeRuntimeFactory(options: {
   binary?: string;
   model: string;
+  env?: NodeJS.ProcessEnv;
+  validateExecutable?: () => boolean;
 }): RuntimeFactory {
   return (launch) =>
     new CoachedOpenCodeRun({
@@ -181,6 +191,8 @@ export function openCodeRuntimeFactory(options: {
       cwd: launch.sessionDir,
       model: options.model,
       ...(options.binary !== undefined ? { opencodeBinary: options.binary } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.validateExecutable !== undefined ? { validateExecutable: options.validateExecutable } : {}),
       ...(launch.resumeNativeSessionHandle !== undefined
         ? { resumeNativeSessionHandle: launch.resumeNativeSessionHandle }
         : {}),
@@ -198,6 +210,7 @@ export interface LocalPiRegistrationInput {
   reason?: CoachingAvailabilityReason;
   /** Version reported by the presence probe, when one ran. */
   version?: string;
+  executablePath?: string;
   factory: RuntimeFactory;
 }
 
@@ -223,6 +236,7 @@ export function localPiRegistration(input: LocalPiRegistrationInput): CoachingRu
           },
         }),
     ...(input.version !== undefined ? { version: input.version } : {}),
+    ...(input.executablePath !== undefined ? { executablePath: input.executablePath } : {}),
     factory: input.factory,
   };
 }
@@ -236,6 +250,8 @@ export interface LocalCodexRegistrationOptions {
    * instead of resolving twice and risking a different answer.
    */
   executablePath?: string;
+  env?: NodeJS.ProcessEnv;
+  validateExecutable?: () => boolean;
 }
 
 /**
@@ -275,7 +291,7 @@ export function resolveLocalCodexRegistration(
       ...(support.version !== undefined ? { version: support.version } : {}),
       ...(executablePath !== undefined ? { executablePath } : {}),
       capabilities: { ...GATED_CLI_CAPABILITIES },
-      factory: codexRuntimeFactory(spawnBinary !== undefined ? { binary: spawnBinary } : {}),
+      factory: codexRuntimeFactory({ ...(spawnBinary !== undefined ? { binary: spawnBinary } : {}), ...(options.env !== undefined ? { env: options.env } : {}), ...(options.validateExecutable !== undefined ? { validateExecutable: options.validateExecutable } : {}) }),
     };
   }
   return {
@@ -298,10 +314,10 @@ export function resolveLocalCodexRegistration(
 }
 
 export interface LocalOpenCodeRegistrationOptions {
-  /** `opencode` binary name or already-resolved path (default `opencode`). */
   binary?: string;
-  /** Pre-resolved executable path (see `LocalCodexRegistrationOptions`). */
   executablePath?: string;
+  env?: NodeJS.ProcessEnv;
+  validateExecutable?: () => boolean;
 }
 
 /**
@@ -333,6 +349,8 @@ export function resolveLocalOpenCodeRegistration(
       capabilities: { ...GATED_CLI_CAPABILITIES },
       factory: openCodeRuntimeFactory({
         ...(spawnBinary !== undefined ? { binary: spawnBinary } : {}),
+        ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.validateExecutable !== undefined ? { validateExecutable: options.validateExecutable } : {}),
         model,
       }),
     };
@@ -353,7 +371,9 @@ export function resolveLocalOpenCodeRegistration(
 // --- probes ----------------------------------------------------------------
 
 export interface LocalCodexProbeOptions {
+  signal?: AbortSignal;
   binary?: string;
+  env?: NodeJS.ProcessEnv;
   /** Injected capability (tests / callers that already probed). */
   support?: CodexAppServerSupport;
   /** Test seam: replaces the installed-CLI probe. */
@@ -369,7 +389,7 @@ export async function probeLocalCodex(
 ): Promise<CodexAppServerSupport> {
   if (options.support !== undefined) return options.support;
   if (options.probe !== undefined) return options.probe(options.binary);
-  return probeCodexAppServer(options.binary !== undefined ? { binary: options.binary } : {});
+  return probeCodexAppServer({ ...(options.binary !== undefined ? { binary: options.binary } : {}), ...(options.env !== undefined ? { env: options.env } : {}), ...(options.signal !== undefined ? { signal: options.signal } : {}) });
 }
 
 /** A probe result bound to the exact executable it was produced from. */
@@ -377,6 +397,8 @@ export interface DetectedLocalCli<T> {
   support: T;
   /** Resolved absolute path, or undefined when no executable was found. */
   executablePath?: string;
+  env?: NodeJS.ProcessEnv;
+  validateExecutable?: () => boolean;
 }
 
 /**
@@ -391,16 +413,24 @@ export interface DetectedLocalCli<T> {
 export async function detectLocalCodex(
   options: LocalCodexProbeOptions = {},
 ): Promise<DetectedLocalCli<CodexAppServerSupport>> {
-  const executablePath = resolveExecutable(options.binary ?? DEFAULT_CODEX_BINARY) ?? undefined;
-  const support = await probeLocalCodex({
-    ...options,
-    ...(executablePath !== undefined ? { binary: executablePath } : {}),
-  });
-  return { support, ...(executablePath !== undefined ? { executablePath } : {}) };
+  const env = { ...(options.env ?? process.env) };
+  env.PATH = toolchainPath({ platform: process.platform, home: homedir(), env });
+  const executablePath = resolveExecutable(options.binary ?? DEFAULT_CODEX_BINARY, { pathEnv: env.PATH, pathExtEnv: env.PATHEXT }) ?? undefined;
+  const before = executablePath === undefined ? undefined : executableIdentity(executablePath);
+  if (executablePath !== undefined) env.PATH = [dirname(executablePath), env.PATH].join(delimiter);
+  const safeEnv = buildCoachedCodexEnv(env);
+  const support = executablePath === undefined && options.probe === undefined && options.support === undefined
+    ? { supported: false, builtinIsolationVerified: false, unavailable: true, gap: "Codex CLI is not available in the configured search paths" }
+    : await probeLocalCodex({ ...options, env: safeEnv, ...(executablePath !== undefined ? { binary: executablePath } : {}) });
+  if (executablePath === undefined || before === undefined) return { support };
+  const validateExecutable = (): boolean => executableIdentity(executablePath) === before;
+  return { support: validateExecutable() ? support : { supported: false, builtinIsolationVerified: false, gap: "Codex executable changed during detection; rescan" }, executablePath, env: safeEnv, validateExecutable };
 }
 
 export interface LocalOpenCodeProbeOptions {
+  signal?: AbortSignal;
   binary?: string;
+  env?: NodeJS.ProcessEnv;
   model?: string;
   /** Injected capability (tests / callers that already probed). */
   support?: OpenCodeRunSupport;
@@ -434,6 +464,8 @@ export async function probeLocalOpenCode(
     });
   }
   return probeOpenCodeRun({
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
     ...(options.binary !== undefined ? { binary: options.binary } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.verifyIsolation !== undefined ? { verifyIsolation: options.verifyIsolation } : {}),
@@ -444,10 +476,16 @@ export async function probeLocalOpenCode(
 export async function detectLocalOpenCode(
   options: LocalOpenCodeProbeOptions = {},
 ): Promise<DetectedLocalCli<OpenCodeRunSupport>> {
-  const executablePath = resolveExecutable(options.binary ?? DEFAULT_OPENCODE_BINARY) ?? undefined;
-  const support = await probeLocalOpenCode({
-    ...options,
-    ...(executablePath !== undefined ? { binary: executablePath } : {}),
-  });
-  return { support, ...(executablePath !== undefined ? { executablePath } : {}) };
+  const env = { ...(options.env ?? process.env) };
+  env.PATH = toolchainPath({ platform: process.platform, home: homedir(), env });
+  const executablePath = resolveExecutable(options.binary ?? DEFAULT_OPENCODE_BINARY, { pathEnv: env.PATH, pathExtEnv: env.PATHEXT }) ?? undefined;
+  const before = executablePath === undefined ? undefined : executableIdentity(executablePath);
+  if (executablePath !== undefined) env.PATH = [dirname(executablePath), env.PATH].join(delimiter);
+  const safeEnv = buildOpenCodeBaseEnv(env);
+  const support = executablePath === undefined && options.probe === undefined && options.support === undefined
+    ? { supported: false, isolationVerified: false, unavailable: true, gap: "OpenCode CLI is not available in the configured search paths" }
+    : await probeLocalOpenCode({ ...options, env: safeEnv, ...(executablePath !== undefined ? { binary: executablePath } : {}) });
+  if (executablePath === undefined || before === undefined) return { support };
+  const validateExecutable = (): boolean => executableIdentity(executablePath) === before;
+  return { support: validateExecutable() ? support : { supported: false, isolationVerified: false, gap: "OpenCode executable changed during detection; rescan" }, executablePath, env: safeEnv, validateExecutable };
 }

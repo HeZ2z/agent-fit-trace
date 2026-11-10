@@ -323,7 +323,7 @@ export class CoachingClient {
   private credentialGeneration = 0;
   private inflightBootstrap: Promise<CoachingBootstrapResult> | null = null;
 
-  constructor({ baseUrl = "", fetchImpl = fetch, getAccessToken }: CoachingClientOptions = {}) {
+  constructor({ baseUrl = "", fetchImpl = (input, init) => globalThis.fetch(input, init), getAccessToken }: CoachingClientOptions = {}) {
     assertSameOriginBase(baseUrl);
     this.baseUrl = baseUrl;
     this.fetchImpl = fetchImpl;
@@ -456,10 +456,10 @@ export class CoachingClient {
    * local-pi plus other local adapters; cloud eligibility is informational
    * here (the shared cloud routes are reached by their own client).
    */
-  async discoverBackends(): Promise<CoachingCapabilityDiscovery> {
+  async discoverBackends(refresh = false): Promise<CoachingCapabilityDiscovery> {
     return this.request(
       "/coaching/capabilities",
-      { capability: this.requireCapability() },
+      { ...(refresh ? { method: "POST" as const } : {}), capability: this.requireCapability() },
       parseCoachingCapabilityDiscovery,
     );
   }

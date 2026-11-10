@@ -222,9 +222,9 @@ export function defaultCoachBackend(input: {
   // survived until the next reload and then silently reverted — the radio said
   // Codex while the run used pi.
   if (input.mode === "launcher") {
-    if (input.accountId === null) return "local-pi";
+    if (input.accountId === null) return null;
     const storedLocal = readBackendPreference(input.accountId);
-    return storedLocal !== null && storedLocal !== "cloud-default" ? storedLocal : "local-pi";
+    return storedLocal !== null && storedLocal !== "cloud-default" ? storedLocal : null;
   }
   if (input.mode !== "browser" || input.guest || input.accountId === null) return null;
   const stored = readBackendPreference(input.accountId);
@@ -232,6 +232,30 @@ export function defaultCoachBackend(input: {
   // local-pi preference belongs to a launcher session and must not become a
   // browser selection.
   return stored === "cloud-default" ? stored : null;
+}
+
+/** Preserve an explicit server selection; otherwise use only verified local options. */
+export type LocalSelectionSource = "preference" | "runtime" | "automatic" | "server" | "none";
+
+/** A user preference outranks the server's explicit runtime and automatic choice. */
+export function resolveLocalBackendChoice(input: {
+  preference: CoachingBackendId | null;
+  defaultId: string | null;
+  defaultSource?: "runtime" | "automatic" | null;
+  options: readonly CoachBackendOption[];
+}): { backendId: CoachingBackendId | null; source: LocalSelectionSource } {
+  if (input.preference !== null && input.preference !== "cloud-default") return { backendId: input.preference, source: "preference" };
+  if (input.defaultId !== null && isCoachingBackendId(input.defaultId) && input.defaultId !== "cloud-default") {
+    return { backendId: input.defaultId, source: input.defaultSource ?? "server" };
+  }
+  for (const id of ["local-pi", "local-codex", "local-opencode"] as const) {
+    if (input.options.some((option) => option.id === id && option.available)) return { backendId: id, source: "automatic" };
+  }
+  return { backendId: null, source: "none" };
+}
+
+export function selectLocalBackend(defaultId: string | null, options: readonly CoachBackendOption[]): CoachingBackendId | null {
+  return resolveLocalBackendChoice({ preference: null, defaultId, options }).backendId;
 }
 
 /** Backend selection sent to the LOCAL submit route; legacy pi omits it. */

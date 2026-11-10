@@ -20,8 +20,8 @@ import type { CoachingRuntimeRegistration } from "../../../server/coaching/runti
 import {
   localPiRegistration,
   piRuntimeFactory,
-  probeLocalCodex,
-  probeLocalOpenCode,
+  detectLocalCodex,
+  detectLocalOpenCode,
   resolveLocalCodexRegistration,
   resolveLocalOpenCodeRegistration,
   unavailablePiRuntimeFactory,
@@ -101,6 +101,10 @@ export interface LauncherServerOptions {
   piCwd?: string;
   /** Pi CLI presence for the runtime bootstrap (default: omitted). */
   piAvailable?: boolean;
+  piExecutable?: string;
+  piEnv?: NodeJS.ProcessEnv;
+  piVersion?: string;
+  validatePiExecutable?: () => boolean;
   /**
    * Installed Codex app-server capability (tests inject it). Undefined probes
    * the installed CLI only when `runtimeId` is `codex`.
@@ -481,12 +485,12 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
     options.runtimeFactory ??
     (options.piAvailable === false
       ? unavailablePiRuntimeFactory()
-      : piRuntimeFactory(options.extensionPath ?? defaultExtensionPath(), options.piCwd ?? process.cwd()));
+      : piRuntimeFactory(options.extensionPath ?? defaultExtensionPath(), options.piCwd ?? process.cwd(), { ...(options.piExecutable !== undefined ? { binary: options.piExecutable } : {}), ...(options.piEnv !== undefined ? { env: options.piEnv } : {}), ...(options.validatePiExecutable !== undefined ? { validateExecutable: options.validatePiExecutable } : {}) }));
   // local-pi remains the legacy v1 path even when another runtime is
   // configured: an omitted backend always maps to local-pi, never cloud.
   const localPiAvailable = options.piAvailable !== false || options.runtimeFactory !== undefined;
   const registrations: CoachingRuntimeRegistration[] = [
-    localPiRegistration({ available: localPiAvailable, factory: runtimeFactory }),
+    localPiRegistration({ available: localPiAvailable, factory: runtimeFactory, ...(options.piExecutable !== undefined ? { executablePath: options.piExecutable } : {}), ...(options.piVersion !== undefined ? { version: options.piVersion } : {}) }),
   ];
   if (configuredSelection.backendId === "local-codex") {
     // Availability is derived from the INSTALLED app-server schema, gated in
@@ -494,14 +498,14 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
     // adapter declares only the two coached dynamic tools; without that
     // protocol surface a read-only sandbox still leaves built-in file/shell
     // tools usable, so the backend must stay unavailable.
-    const support = await probeLocalCodex({
+    const detected = await detectLocalCodex({
       ...(options.codexBinary !== undefined ? { binary: options.codexBinary } : {}),
       ...(options.codexSupport !== undefined ? { support: options.codexSupport } : {}),
     });
     registrations.push(
       resolveLocalCodexRegistration(
-        support,
-        options.codexBinary !== undefined ? { binary: options.codexBinary } : {},
+        detected.support,
+        { ...(detected.executablePath !== undefined ? { executablePath: detected.executablePath } : {}), ...(detected.env !== undefined ? { env: detected.env } : {}), ...(detected.validateExecutable !== undefined ? { validateExecutable: detected.validateExecutable } : {}), ...(detected.executablePath === undefined && options.codexBinary !== undefined ? { binary: options.codexBinary } : {}) },
       ),
     );
   } else if (configuredSelection.backendId === "local-opencode") {
@@ -510,7 +514,7 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
     // remains gated: a wildcard deny is only trustworthy if the complete
     // built-in inventory, plugin tool list, and agent set were observed to be
     // excluded.
-    const support = await probeLocalOpenCode({
+    const detected = await detectLocalOpenCode({
       ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
       ...(options.openCodeModel !== undefined ? { model: options.openCodeModel } : {}),
       ...(options.openCodeSupport !== undefined ? { support: options.openCodeSupport } : {}),
@@ -519,8 +523,11 @@ export async function startLauncherServer(options: LauncherServerOptions): Promi
         : {}),
     });
     registrations.push(
-      resolveLocalOpenCodeRegistration(support, {
-        ...(options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
+      resolveLocalOpenCodeRegistration(detected.support, {
+        ...(detected.executablePath !== undefined ? { executablePath: detected.executablePath } : {}),
+        ...(detected.env !== undefined ? { env: detected.env } : {}),
+        ...(detected.validateExecutable !== undefined ? { validateExecutable: detected.validateExecutable } : {}),
+        ...(detected.executablePath === undefined && options.openCodeBinary !== undefined ? { binary: options.openCodeBinary } : {}),
         ...(options.openCodeModel !== undefined ? { model: options.openCodeModel } : {}),
       }),
     );

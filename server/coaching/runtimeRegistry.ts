@@ -358,6 +358,7 @@ export interface CoachingDiscoveryOptions {
    * daemon's `--runtime`), never inferred from a request.
    */
   defaultBackendId?: CoachingBackendId;
+  automaticLocalDefault?: boolean;
 }
 
 /**
@@ -425,11 +426,17 @@ export function buildCoachingDiscovery(options: CoachingDiscoveryOptions): Coach
       ),
     );
   }
+  const defaultBackendId = options.defaultBackendId ?? (options.automaticLocalDefault
+    ? (["local-pi", "local-codex", "local-opencode"] as const).find((id) => backends.some((backend) => backend.backendId === id && backend.available))
+    : undefined);
   return {
     discoveryVersion: COACHING_DISCOVERY_VERSION,
     protocolVersion: COACHING_PROTOCOL_VERSION,
     tools: [...COACHED_TOOL_NAMES],
     backends,
-    ...(options.defaultBackendId === undefined ? {} : { defaultBackendId: options.defaultBackendId }),
+    ...(defaultBackendId === undefined ? {} : {
+      defaultBackendId,
+      defaultBackendSource: options.defaultBackendId !== undefined ? "runtime" as const : "automatic" as const,
+    }),
   };
 }

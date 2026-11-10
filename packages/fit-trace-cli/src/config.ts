@@ -138,17 +138,19 @@ export interface PiPresence {
  */
 const MAX_PI_PROBE_BYTES = 4 * 1024;
 
-export function checkPiCli(timeoutMs = 5000): Promise<PiPresence> {
+export function checkPiCli(timeoutMs = 5000, binary = "pi", env: NodeJS.ProcessEnv = process.env, signal?: AbortSignal): Promise<PiPresence> {
   return new Promise((resolve) => {
     let settled = false;
     let stdoutBytes = 0;
     let stdoutCapped = false;
     let output = "";
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
     const done = (value: PiPresence): void => {
       if (settled) return;
       settled = true;
       if (killTimer !== undefined) clearTimeout(killTimer);
+      if (abort !== undefined) signal?.removeEventListener("abort", abort);
       resolve(value);
     };
     const onData = (chunk: Buffer): void => {
@@ -161,7 +163,10 @@ export function checkPiCli(timeoutMs = 5000): Promise<PiPresence> {
       output += chunk.toString("utf8");
     };
     try {
-      const child = spawn("pi", ["--version"], { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
+      if (signal?.aborted) { done({ available: false, version: null }); return; }
+      const child = spawn(binary, ["--version"], { env, stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
+      abort = () => { try { child.kill("SIGKILL"); } catch { /* already exited */ } done({ available: false, version: null }); };
+      signal?.addEventListener("abort", abort, { once: true });
       child.stdout?.on("data", onData);
       // Drain stderr boundedly so a verbose pi cannot hold the pipe open.
       child.stderr?.on("data", () => undefined);

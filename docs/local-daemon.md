@@ -324,6 +324,14 @@ Two packaging facts that will bite the next person:
   resolved to an absolute path once, and that path is what both the capability
   probe and the coached run use. A probe that verified one binary while the run
   spawned another would advertise a capability the run does not have.
+- **GUI-launched pi discovery** also searches known user toolchain directories
+  after absolute inherited PATH entries, including versioned nvm installations
+  in descending numeric order and Homebrew. Rescanning probes pi again. The
+  reported invocation path is retained even when it is a symlink, and the
+  selected executable's target and file metadata are checked again before
+  launch; a change fails the run and requires a rescan. This check cannot close
+  the race between the final check and process creation. Finding a Windows
+  `.cmd` shim does not prove it can be spawned without a shell.
 - **Discovery carries what a settings page needs** (issue #69 consumes this):
   per backend, `available`, `version`, `unavailableReason` and the additive
   optional `executablePath` — distinct fields, not a bare boolean. The path is
@@ -340,3 +348,11 @@ Two packaging facts that will bite the next person:
 - `start` still owns the documented same-origin proxy contract; the two
   commands do not share a journal or a port, and running both at once is
   supported only on different ports (each scans forward independently).
+
+A saved local backend preference takes precedence over `--runtime`; an explicit
+`--runtime` takes precedence over automatic selection. Without either, discovery
+chooses the first available backend in the order pi, Codex, OpenCode, or leaves
+the selection empty. Discovery reports the server choice's `defaultBackendSource`
+as `runtime` or `automatic`; the app records a saved or manually chosen backend
+as `preference`. The optional source field is absent for older servers and is
+ignored by older clients.

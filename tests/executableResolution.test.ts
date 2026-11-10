@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -183,24 +183,112 @@ test("OpenCode detection follows the same single-resolution rule", async () => {
   const clis = await makeShadowedClis();
   const originalPath = process.env.PATH;
   try {
-    // `opencode` does not exist in the fixture, so detection must report no path
-    // AND still probe: a missing executable is a probe answer, not a crash.
+    // An explicit missing executable never falls back to a user installation.
     process.env.PATH = `${clis.shadowDir}:${clis.realDir}`;
     let probedBinary: string | undefined = "not-called";
     const detected = await detectLocalOpenCode({
+      binary: join(clis.realDir, "missing-opencode"),
       probe: async (options) => {
         probedBinary = options.binary;
         return { supported: false, isolationVerified: false, gap: "not installed" };
       },
     });
     assert.equal(detected.executablePath, undefined, "no opencode exists in the fixture");
-    // With nothing resolved the probe is asked about the bare name, preserving
-    // the pre-existing behavior rather than inventing a path.
-    assert.equal(probedBinary, undefined);
+    // The injected probe sees the requested path, never a different install.
+    assert.equal(probedBinary, join(clis.realDir, "missing-opencode"));
     assert.equal(detected.support.supported, false);
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
     await clis.cleanup();
   }
+});
+
+test("executable identity changes on replacement and symlink retargeting", async () => {
+  const { executableIdentity } = await import("../server/coaching/executableResolution.ts");
+  const { mkdtemp, writeFile, symlink, unlink, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-identity-"));
+  try {
+    const first = join(dir, "first");
+    const second = join(dir, "second");
+    const link = join(dir, "tool");
+    await writeFile(first, "first");
+    await writeFile(second, "second");
+    await symlink(first, link);
+    const before = executableIdentity(link);
+    await unlink(link);
+    await symlink(second, link);
+    assert.notEqual(executableIdentity(link), before);
+    const beforeReplacement = executableIdentity(link);
+    await unlink(second);
+    await writeFile(second, "new replacement");
+    assert.notEqual(executableIdentity(link), beforeReplacement);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("relative PATH entries never resolve through the working directory", () => {
+  const seen: string[] = [];
+  const found = resolveExecutable("codex", {
+    pathEnv: "relative:/absolute", isExecutableFile: (candidate) => { seen.push(candidate); return false; },
+  });
+  assert.equal(found, null);
+  assert.deepEqual(seen, ["/absolute/codex"]);
+});
+
+
+test("shadowed executable runs with the environment captured during detection", async () => {
+  if (process.platform === "win32") return;
+  const clis = await makeShadowedClis();
+  const marker = join(clis.dir, "observed-path");
+  const originalPath = process.env.PATH;
+  const originalNodeOptions = process.env.NODE_OPTIONS;
+  try {
+    const selected = join(clis.shadowDir, "codex");
+    await writeFile(selected, `#!/bin/sh\nprintf '%s' "$PATH" > '${marker}'\nexit 1\n`);
+    await chmod(selected, 0o755);
+    process.env.PATH = `${clis.shadowDir}:${clis.realDir}`;
+    process.env.NODE_OPTIONS = "--inspect";
+    const detected = await detectLocalCodex({ probe: async () => ({ supported: true, builtinIsolationVerified: true }) });
+    assert.equal(detected.executablePath, selected);
+    assert.equal(detected.env?.NODE_OPTIONS, undefined);
+    const capturedPath = detected.env?.PATH;
+    process.env.PATH = clis.realDir;
+    const registration = resolveLocalCodexRegistration(detected.support, {
+      executablePath: selected, env: detected.env, validateExecutable: detected.validateExecutable,
+    });
+    assert.ok(registration.factory);
+    const done = new Promise<void>((resolve) => {
+      const handle = registration.factory!({ sessionId: "s", runId: "r", prompt: "p", snapshotFile: join(clis.dir, "snapshot"), snapshotDir: clis.dir, sessionDir: join(clis.dir, "session"), onEvent: () => {}, onDone: () => resolve() });
+      handle.start();
+    });
+    await done;
+    assert.equal(await readFile(marker, "utf8"), capturedPath);
+    assert.ok(capturedPath?.startsWith(`${clis.shadowDir}:`));
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
+    if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = originalNodeOptions;
+    await clis.cleanup();
+  }
+});
+
+
+test("a replaced executable is rejected before a coached process starts", async () => {
+  if (process.platform === "win32") return;
+  const clis = await makeShadowedClis();
+  try {
+    const selected = join(clis.shadowDir, "codex");
+    const detected = await detectLocalCodex({ binary: selected, probe: async () => ({ supported: true, builtinIsolationVerified: true }) });
+    await rm(selected);
+    await writeFile(selected, "#!/bin/sh\nexit 0\n");
+    await chmod(selected, 0o755);
+    const registration = resolveLocalCodexRegistration(detected.support, { executablePath: selected, env: detected.env, validateExecutable: detected.validateExecutable });
+    assert.ok(registration.factory);
+    const reason = await new Promise<string | undefined>((resolve) => {
+      const handle = registration.factory!({ sessionId: "s", runId: "r", prompt: "p", snapshotFile: join(clis.dir, "snapshot"), snapshotDir: clis.dir, sessionDir: join(clis.dir, "session"), onEvent: () => {}, onDone: (_status, why) => resolve(why) });
+      handle.start();
+    });
+    assert.match(reason ?? "", /changed since detection; rescan/);
+  } finally { await clis.cleanup(); }
 });

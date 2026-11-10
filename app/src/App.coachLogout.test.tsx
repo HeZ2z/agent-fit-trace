@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
+import { COACHING_CAPABILITY_VERSION, COACHING_PROTOCOL_VERSION, type CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
 import App from "./App.tsx";
 import { resetRecoveryTokenMemoryForTests } from "./auth/supabaseAuth.ts";
 
@@ -131,6 +131,12 @@ function installRouter(seen: SeenRequest[]): void {
       if (url.endsWith("/coaching/bootstrap")) {
         return jsonData({ capability: "cap-app", expiresInMs: 600_000 });
       }
+      if (url.endsWith("/coaching/capabilities")) return jsonData({
+        discoveryVersion: 1, protocolVersion: COACHING_PROTOCOL_VERSION,
+        tools: ["get_training_history", "analyze_progress"], defaultBackendId: "local-pi",
+        backends: [{ backendId: "local-pi", runtimeId: "pi", executionLocation: "local", displayName: "pi CLI (local)", available: true,
+          capabilities: { capabilityVersion: COACHING_CAPABILITY_VERSION, protocolVersion: COACHING_PROTOCOL_VERSION, tools: ["get_training_history", "analyze_progress"], productReplay: true, nativeContinuation: true, cancelConfirmation: "process-exit", maxInputBytes: 65536, maxEvents: 1000, maxEventBytes: 4194304, accountEligibility: "not-required", quotaReservation: "not-required", dataDestination: "cli-provider" } }],
+      });
       if (url.endsWith("/coaching/sessions")) return jsonData({ id: SESSION });
       if (url.endsWith("/coaching/snapshots")) return jsonData(snapshot);
       if (url === "/coaching/runs" && method === "POST") {
