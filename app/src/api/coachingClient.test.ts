@@ -129,6 +129,21 @@ function waitFor(check: () => boolean, timeoutMs = 1000): Promise<void> {
 }
 
 describe("CoachingClient guards", () => {
+  it("calls the browser fetch with its global receiver", async () => {
+    const originalFetch = globalThis.fetch;
+    const receiverSensitiveFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(jsonResponse({ capability: "cap-1", expiresInMs: 600_000 }));
+    });
+    vi.stubGlobal("fetch", receiverSensitiveFetch);
+    try {
+      await new CoachingClient().bootstrap();
+      expect(receiverSensitiveFetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
+  });
+
   it("rejects absolute base URLs so credentials stay same-origin", () => {
     expect(() => new CoachingClient({ baseUrl: "http://evil.example/coaching" })).toThrow(ApiError);
     expect(() => new CoachingClient({ baseUrl: "//evil.example" })).toThrow(ApiError);

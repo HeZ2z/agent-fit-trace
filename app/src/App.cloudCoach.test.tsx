@@ -890,19 +890,18 @@ describe("browser coach backend selection", () => {
       expect(seen.some((entry) => entry.url.endsWith("/coaching/bootstrap"))).toBe(true),
     );
 
-    // The unavailable DEFAULT (pi) explains itself; that must not disable the
-    // available OpenCode option or replace its disclosure with a pi label.
-    await waitFor(() => expect(select).toHaveValue("local-pi"));
+    // Discovery selects the verified available local backend.
+    await waitFor(() => expect(select).toHaveValue("local-opencode"));
     expect(await screen.findByRole("option", { name: /OpenCode CLI \(local\)/i })).toBeInTheDocument();
-    expect(screen.getByTestId("coach-pi-unavailable")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /ask coach/i })).toBeDisabled();
-
-    await user.selectOptions(select, "local-opencode");
     expect(screen.queryByTestId("coach-pi-unavailable")).not.toBeInTheDocument();
     expect(screen.getByTestId("coach-local-disclosure")).toHaveTextContent(/OpenCode CLI \(local\)/);
     expect(screen.getByTestId("coach-local-disclosure")).toHaveTextContent(/cli-provider|model provider/i);
     await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
     expect(screen.getByRole("button", { name: /ask coach/i })).toBeEnabled();
+    expect(document.querySelector('[data-screen="coach"]')).toHaveAttribute("data-selection-source", "automatic");
+    await user.click(screen.getByTestId("coach-settings-link"));
+    expect(await screen.findByRole("radio", { name: /OpenCode CLI/i })).toBeChecked();
+    expect(document.querySelector('[data-screen="coach-settings"]')).toHaveAttribute("data-selection-source", "automatic");
 
     // Launcher discovery stays local; no cloud capability traffic.
     expect(seen.filter((entry) => entry.url.includes("/coaching/cloud"))).toHaveLength(0);

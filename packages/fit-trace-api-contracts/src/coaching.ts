@@ -177,6 +177,7 @@ export const COACHING_AVAILABILITY_REASON_CODES = [
   "cli-not-installed",
   "cli-auth-required",
   "cli-version-unsupported",
+  "probe-pending",
   "adapter-not-implemented",
   "provider-unconfigured",
   "identity-unverified",
@@ -277,6 +278,8 @@ export interface CoachingCapabilityDiscovery {
    * server still resolves an unnamed run through the shared contract.
    */
   defaultBackendId?: CoachingBackendId;
+  /** Origin of the server default; omitted by older servers. */
+  defaultBackendSource?: "runtime" | "automatic";
 }
 
 /**
@@ -1356,6 +1359,13 @@ export function parseCoachingCapabilityDiscovery(value: unknown): CoachingCapabi
     protocolVersion,
     tools: parseToolNames(value.tools, "tools"),
     backends,
+    ...(value.defaultBackendSource === undefined ? {} : {
+      defaultBackendSource: (() => {
+        if (value.defaultBackendSource !== "runtime" && value.defaultBackendSource !== "automatic") fail("defaultBackendSource", "must be runtime or automatic");
+        if (value.defaultBackendId === undefined) fail("defaultBackendSource", "requires defaultBackendId");
+        return value.defaultBackendSource;
+      })(),
+    }),
     ...(value.defaultBackendId === undefined
       ? {}
       : {

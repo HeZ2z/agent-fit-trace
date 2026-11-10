@@ -105,7 +105,7 @@ export function CoachScreen() {
   }
 
   return (
-    <section data-screen="coach">
+    <section data-screen="coach" data-selection-source={coach.selectionSource}>
       <div className="screen-head">
         <div className="screen-head-main">
           <h1>{t("Coach")}</h1>

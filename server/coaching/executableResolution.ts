@@ -27,7 +27,7 @@
  * receive the resolved path; whether the installed distribution provides a
  * spawnable entry point is a property of that CLI, not of this resolver.
  */
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
 export interface ResolveExecutableOptions {
@@ -104,6 +104,10 @@ export function resolveExecutable(
 
   if (command === "") return null;
 
+  // Relative paths are never explicit executable identities and must not be
+  // interpreted relative to a PATH directory or the daemon's working dir.
+  if (!isAbsolute(command) && (command.includes("/") || command.includes("\\"))) return null;
+
   if (isAbsolute(command)) {
     for (const candidate of candidatesFor(command)) {
       if (isExecutableFile(candidate)) return resolve(candidate);
@@ -118,7 +122,7 @@ export function resolveExecutable(
     // the installed CLI — the exact confusion this resolver removes — so it is
     // skipped. There is also no legitimate reason for a daemon to exec from cwd.
     const directory = stripQuotes(entry);
-    if (directory === "") continue;
+    if (directory === "" || !isAbsolute(directory)) continue;
     for (const candidate of candidatesFor(join(directory, command))) {
       if (isExecutableFile(candidate)) return resolve(candidate);
     }
@@ -140,4 +144,15 @@ export function resolveExecutableOrName(
   options: ResolveExecutableOptions = {},
 ): string {
   return resolveExecutable(command, options) ?? command;
+}
+
+/** Capture the invocation path and target identity without resolving the shim for execution. */
+export function executableIdentity(path: string): string | undefined {
+  try {
+    const target = realpathSync(path);
+    const info = statSync(target, { bigint: true });
+    return `${target}:${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+  } catch {
+    return undefined;
+  }
 }

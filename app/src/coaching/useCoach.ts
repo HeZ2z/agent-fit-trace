@@ -14,6 +14,7 @@ import { useAuth } from "../auth/AuthContext.tsx";
 import {
   cloudOptionFromCapabilities,
   defaultCoachBackend,
+  resolveLocalBackendChoice,
   descriptorToOption,
   initialBackendOptions,
   isBackendSupportedInMode,
@@ -26,11 +27,12 @@ import {
 } from "./coachBackend.ts";
 import {
   useCoachDiscoveryClient,
+  useSharedDefaultBackend,
   useCoachDiscoveryRevision,
   useCoachPreferenceRevision,
   useSharedBackendOptions,
 } from "./CoachDiscoveryContext.tsx";
-import type { CoachBackendOption, CoachMode, CoachRunClient } from "./coachBackend.ts";
+import type { CoachBackendOption, CoachMode, CoachRunClient, LocalSelectionSource } from "./coachBackend.ts";
 import { CoachClientRouter } from "./coachClientRouter.ts";
 
 /**
@@ -389,6 +391,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const sharedDiscoveryRevision = useCoachDiscoveryRevision();
   const sharedPreferenceRevision = useCoachPreferenceRevision();
   const sharedBackends = useSharedBackendOptions();
+  const { id: sharedDefaultBackend, source: sharedDefaultSource } = useSharedDefaultBackend();
+  const explicitlySelected = useRef(false);
   const localClient = useMemo(
     () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
     [sharedClient, boundTokenProvider],
@@ -421,6 +425,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   // Backend selection (next run) is separate from the run's pinned backend.
   const [selectedBackend, setSelectedBackend] = useState<CoachingBackendId | null>(() =>
     defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest }),
+  );
+  const [selectionSource, setSelectionSource] = useState<LocalSelectionSource>(() =>
+    accountId !== null && defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest }) !== null ? "preference" : "none",
   );
   const [activeBackend, setActiveBackend] = useState<CoachingBackendId | null>(null);
   const [runConversationId, setRunConversationId] = useState<string | null>(null);
@@ -622,16 +629,20 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     if (accountId === null) return;
     if (backendPinnedNow()) return;
     const stored = readBackendPreference(accountId);
-    if (stored === null || stored === selectedBackendRef.current) return;
+    if (stored === null || (coachMode === "launcher" && stored === "cloud-default")) return;
+    setSelectionSource("preference");
+    if (stored === selectedBackendRef.current) return;
     selectedBackendRef.current = stored;
     setSelectedBackend(stored);
-  }, [sharedPreferenceRevision, accountId, backendPinnedNow]);
+  }, [sharedPreferenceRevision, accountId, coachMode, backendPinnedNow]);
 
   const selectBackend = useCallback(
     (backendId: CoachingBackendId): void => {
       if (backendPinnedNow()) return;
       const option = backendsRef.current.find((candidate) => candidate.id === backendId);
       if (option === undefined || !option.available) return;
+      explicitlySelected.current = true;
+      setSelectionSource("preference");
       selectedBackendRef.current = backendId;
       setSelectedBackend(backendId);
       if (accountId !== null) writeBackendPreference(accountId, backendId);
@@ -1561,9 +1572,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     // The next account starts from ITS OWN preference (never A's selection),
     // with no pin and no inherited discovery result.
     unpinBackend();
+    explicitlySelected.current = false;
     const nextDefault = defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest });
     selectedBackendRef.current = nextDefault;
     setSelectedBackend(nextDefault);
+    setSelectionSource(nextDefault === null ? "none" : "preference");
     setBackends(initialBackendOptions({ mode: coachMode, piAvailable: runtimePiAvailable() }));
     discoveryKeyRef.current = null;
     setDiscoveryNotice(null);
@@ -1887,11 +1900,17 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     if (sharedBackends === null) return;
     if (coachMode === "browser") return;
     setBackends([...sharedBackends]);
+    if (coachMode === "launcher" && !backendPinnedNow() && !explicitlySelected.current && (accountId === null || readBackendPreference(accountId) === null || readBackendPreference(accountId) === "cloud-default")) {
+      const choice = resolveLocalBackendChoice({ preference: null, defaultId: sharedDefaultBackend, defaultSource: sharedDefaultSource, options: sharedBackends });
+      selectedBackendRef.current = choice.backendId;
+      setSelectedBackend(choice.backendId);
+      setSelectionSource(choice.source);
+    }
     setDiscoveryNotice(null);
     setDiscoveryFailed(false);
     // Nothing else to do: the provider already ran the probe sequence.
     discoveryKeyRef.current = discoveryKey;
-  }, [sharedBackends, coachMode, discoveryKey]);
+  }, [sharedBackends, sharedDefaultBackend, sharedDefaultSource, coachMode, accountId, backendPinnedNow, discoveryKey]);
 
   useEffect(() => {
     if (!canOperate) return;
@@ -1922,8 +1941,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
           const discovery = await localClient.discoverBackends();
           if (cancelled) return;
           const piAvailable = runtimePiAvailable();
-          setBackends(
-            discovery.backends.map((descriptor) => {
+          const discoveredOptions = discovery.backends.map((descriptor) => {
               if (descriptor.backendId !== "local-pi" || piAvailable !== false) {
                 return descriptorToOption(descriptor);
               }
@@ -1938,8 +1956,14 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
                 return option;
               }
               return localPiOption(false);
-            }),
-          );
+            });
+          if (coachMode === "launcher" && !backendPinnedNow() && !explicitlySelected.current && (accountId === null || readBackendPreference(accountId) === null || readBackendPreference(accountId) === "cloud-default")) {
+            const choice = resolveLocalBackendChoice({ preference: null, defaultId: discovery.defaultBackendId ?? null, defaultSource: discovery.defaultBackendSource, options: discoveredOptions });
+            selectedBackendRef.current = choice.backendId;
+            setSelectedBackend(choice.backendId);
+            setSelectionSource(choice.source);
+          }
+          setBackends(discoveredOptions);
         }
         if (cancelled) return;
         setDiscoveryNotice(null);
@@ -2059,6 +2083,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     identityUnverified,
     backends,
     selectedBackend,
+    selectionSource,
     runConversationId,
     // The run's own backend, exposed only while it is pinned (active,
     // unresolved, restoring, cancelling, or awaiting a same-key retry).

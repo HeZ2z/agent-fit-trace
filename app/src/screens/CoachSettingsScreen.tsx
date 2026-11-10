@@ -31,7 +31,7 @@ import { useMemo } from "react";
 import { useAuth } from "../auth/AuthContext.tsx";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useCoachDiscovery } from "../coaching/CoachDiscoveryContext.tsx";
-import { readBackendPreference, writeBackendPreference } from "../coaching/coachBackend.ts";
+import { readBackendPreference, writeBackendPreference, resolveLocalBackendChoice } from "../coaching/coachBackend.ts";
 import type { CoachBackendOption } from "../coaching/coachBackend.ts";
 
 /** One selectable backend, with its evidence and its refusal reason. */
@@ -80,6 +80,7 @@ export function CoachSettingsScreen() {
     refreshing,
     refresh,
     defaultBackendId,
+    defaultBackendSource,
     mode,
     preferenceRevision,
     notifyPreferenceChanged,
@@ -98,20 +99,12 @@ export function CoachSettingsScreen() {
 
   // The preference is per account; a guest has none, so the server's suggestion
   // (or the eventual default) is what the radio shows.
-  const selected = useMemo(() => {
-    if (accountId !== null) {
-      const stored = readBackendPreference(accountId);
-      if (stored !== null) return stored;
-    }
-    if (defaultBackendId !== null) {
-      return localOptions.some((option) => option.id === defaultBackendId)
-        ? defaultBackendId
-        : null;
-    }
-    return localOptions.find((option) => option.available)?.id ?? null;
+  const selection = useMemo(() => {
+    return resolveLocalBackendChoice({ preference: accountId === null ? null : readBackendPreference(accountId), defaultId: defaultBackendId, defaultSource: defaultBackendSource, options: localOptions });
     // `preferenceRevision` is not read directly; it is the invalidation signal
     // that makes this recompute after `writeBackendPreference`.
-  }, [accountId, defaultBackendId, localOptions, preferenceRevision]);
+  }, [accountId, defaultBackendId, defaultBackendSource, localOptions, preferenceRevision]);
+  const selected = selection.backendId;
 
   function select(id: CoachBackendOption["id"]): void {
     const option = localOptions.find((candidate) => candidate.id === id);
@@ -127,7 +120,7 @@ export function CoachSettingsScreen() {
   }
 
   return (
-    <section data-screen="coach-settings">
+    <section data-screen="coach-settings" data-selection-source={selection.source}>
       <section className="me-section" aria-labelledby="coach-settings-cli">
         <h2 id="coach-settings-cli">{t("Local coaching")}</h2>
         <p>

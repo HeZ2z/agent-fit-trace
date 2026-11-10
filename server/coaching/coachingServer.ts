@@ -107,6 +107,7 @@ export interface CoachingServerOptions {
    * headers / service-role option: the product always acts as the user. */
   upstream?: { baseUrl: string } | null;
   runtimeFactory: RuntimeFactory;
+  refreshLocalBackends?: () => Promise<void>;
   /** Optional backend registry; `runtimeFactory` remains the legacy local-pi path. */
   runtimeRegistry?: CoachingRuntimeRegistry | readonly CoachingRuntimeRegistration[];
   serviceOptions?: Omit<CoachingServiceOptions, "source" | "runtimeFactory" | "runtimeRegistry">;
@@ -765,7 +766,8 @@ export async function startCoachingServer(options: CoachingServerOptions): Promi
           return;
         }
 
-        if (pathname === "/coaching/capabilities" && method === "GET") {
+        if (pathname === "/coaching/capabilities" && (method === "GET" || method === "POST")) {
+          if (method === "POST") await options.refreshLocalBackends?.();
           // Versioned, server-derived backend/capability discovery. The
           // browser cannot assert availability, entitlement, or guest state.
           json(response, 200, { data: service.discoverBackends(principal) }, corsHeaders);

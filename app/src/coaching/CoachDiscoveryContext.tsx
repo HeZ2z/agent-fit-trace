@@ -38,6 +38,7 @@ export interface CoachDiscoveryState {
   backends: readonly CoachBackendOption[];
   /** Backend the server suggests for a run that names none (ADR 0008 §discovery). */
   defaultBackendId: string | null;
+  defaultBackendSource: "runtime" | "automatic" | null;
   status: "idle" | "loading" | "ready" | "failed";
   /** Present when `status === "failed"`; safe to render. */
   error: string | null;
@@ -136,6 +137,7 @@ export function CoachDiscoveryProvider({
     // a truthful value instead of an empty list that renders as "nothing".
     backends: initialBackendOptions({ mode, piAvailable: runtimePiAvailable() }),
     defaultBackendId: null,
+    defaultBackendSource: null,
     status: mode === "inactive" ? "idle" : "loading",
     error: null,
     refreshing: false,
@@ -192,7 +194,7 @@ export function CoachDiscoveryProvider({
           // discovery until expiry. `isBootstrapped` is the lifecycle's own
           // guard; mirror it.
           if (!client.isBootstrapped) await client.bootstrap();
-          return client.discoverBackends();
+          return client.discoverBackends(isRefresh);
         })();
         if (!mounted.current || requestGeneration !== generation.current) return;
         const piAvailable = runtimePiAvailable();
@@ -211,6 +213,7 @@ export function CoachDiscoveryProvider({
             return localPiOption(false);
           }),
           defaultBackendId: discovery.defaultBackendId ?? null,
+          defaultBackendSource: discovery.defaultBackendSource ?? null,
           status: "ready",
           error: null,
           refreshing: false,
@@ -340,4 +343,10 @@ export function useSharedBackendOptions(): readonly CoachBackendOption[] | null 
   const value = useContext(CoachDiscoveryContext);
   if (value === null) return null;
   return value.status === "ready" ? value.backends : null;
+}
+
+/** The server's current automatic or operator-selected local backend. */
+export function useSharedDefaultBackend(): { id: string | null; source: "runtime" | "automatic" | null } {
+  const value = useContext(CoachDiscoveryContext);
+  return { id: value?.defaultBackendId ?? null, source: value?.defaultBackendSource ?? null };
 }

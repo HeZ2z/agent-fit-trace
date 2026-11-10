@@ -1,9 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BIND_HOST } from "./config.ts";
+import { BIND_HOST, checkPiCli } from "./config.ts";
+import { executableIdentity, resolveExecutable } from "../../../server/coaching/executableResolution.ts";
+import { toolchainPath } from "../../../server/coaching/toolchainPaths.ts";
+import { buildCoachedEnv } from "../../../server/coaching/piProcessAdapter.ts";
 import { startCoachingServer } from "../../../server/coaching/coachingServer.ts";
 import type { CoachingServer } from "../../../server/coaching/coachingServer.ts";
 import { createSupabaseVerifier } from "../../../server/auth/supabaseVerifier.ts";
@@ -130,12 +134,11 @@ const LOCAL_CLI_SHUTDOWN_GRACE_MS = 250;
 /**
  * Map an operator's `--runtime` to the backend id it names.
  *
- * `--runtime` is a SELECTION, not a filter. The known default (`pi`) is used
- * when nothing is named, and an unknown/cloud runtime is refused earlier by
- * config parsing, so this only has to translate the local ids.
+ * `--runtime` is a SELECTION, not a filter. With no explicit selection,
+ * the current verified registry decides the automatic default.
  */
-export function defaultBackendIdFor(runtimeId: CoachingRuntimeId | undefined): CoachingBackendId {
-  if (runtimeId === undefined) return "local-pi";
+export function defaultBackendIdFor(runtimeId: CoachingRuntimeId | undefined): CoachingBackendId | null {
+  if (runtimeId === undefined) return null;
   const selection = resolveCoachingBackendSelection({ runtimeId });
   // The daemon serves local coaching only. A cloud runtime named as the local
   // default would preselect a backend this server cannot run, so it is refused
@@ -242,10 +245,10 @@ export interface DaemonServer {
   port: number;
   dataDir: string;
   /**
-   * The backend a NEW run should preselect, derived from `--runtime`.
-   * `local-pi` when the operator named none.
+   * Current default: the explicit runtime or the first available local backend.
+   * Null means no backend has been verified available.
    */
-  defaultBackendId: CoachingBackendId;
+  defaultBackendId: CoachingBackendId | null;
   /** Resolves once the in-flight local CLI probe refresh has published. */
   localCliRefreshSettled(): Promise<void>;
   close(): Promise<void>;
@@ -536,7 +539,7 @@ function defaultDistDir(): string {
  * The child's `PI_FIT_TRACE_STORE` stays the per-run snapshot file (set by
  * the adapter), never the principal database.
  */
-function defaultRuntimeFactory(extensionPath: string, cwd: string): RuntimeFactory {
+function defaultRuntimeFactory(extensionPath: string, cwd: string, binary?: string, env?: NodeJS.ProcessEnv, validateExecutable?: () => boolean): RuntimeFactory {
   return (launch) =>
     new CoachedPiProcess({
       sessionId: launch.sessionId,
@@ -548,6 +551,9 @@ function defaultRuntimeFactory(extensionPath: string, cwd: string): RuntimeFacto
       ...(launch.resumeSessionFile !== undefined ? { resumeSessionFile: launch.resumeSessionFile } : {}),
       extensionPath,
       cwd,
+      ...(binary !== undefined ? { piBinary: binary } : {}),
+      ...(env !== undefined ? { env } : {}),
+      ...(validateExecutable !== undefined ? { validateExecutable } : {}),
       onEvent: launch.onEvent,
       onDone: launch.onDone,
     });
@@ -687,7 +693,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // probe: then we genuinely do not know. An explicit `boolean` IS the answer,
   // so it must be honoured immediately — treating a known `false` as "probably
   // fine" would advertise a coach that cannot run until the refresh lands.
-  const piKnownUpFront = typeof options.piAvailable === "boolean" ? options.piAvailable : true;
+  const piKnownUpFront = typeof options.piAvailable === "boolean" ? options.piAvailable : options.runtimeFactory !== undefined;
   const piAvailability = resolvePiAvailability({
     cliAvailable: piKnownUpFront,
     ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
@@ -702,19 +708,21 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // An injected factory is an explicit test/embedding opt-in: it owns its own
   // extension resolution and must not be gated by this path check.
   const localPiAvailable = piAvailability.available || options.runtimeFactory !== undefined;
-  const enablePiSignal = localPiAvailable ? piAvailability.available : false;
+  const enablePiSignal = options.piAvailable === undefined && options.runtimeFactory === undefined
+    ? undefined
+    : localPiAvailable ? piAvailability.available : false;
   const piRegistration = localPiRegistration({
     available: localPiAvailable,
     factory: runtimeFactory,
-    ...(localPiAvailable ? {} : { reason: piAvailability.reason }),
+    ...(localPiAvailable ? {} : { reason: options.piAvailable === false ? piAvailability.reason : { code: "probe-pending" as const, message: "pi CLI probe is pending" } }),
   });
   // Codex and OpenCode are registered from their probe results, which may not
   // be known yet. Start with them UNAVAILABLE and a truthful "not probed" gap,
   // then swap the snapshot in once the probes settle (see `refreshLocalClis`).
   // This ordering is the point: the data plane and the shell must never wait
   // for a child process that may be slow, hung, or absent.
-  const rawCodexRegistration = resolveLocalCodexRegistration(UNPROBED_CODEX.support);
-  const rawOpenCodeRegistration = resolveLocalOpenCodeRegistration(UNPROBED_OPENCODE.support);
+  const rawCodexRegistration = { ...resolveLocalCodexRegistration(UNPROBED_CODEX.support), unavailableReason: { code: "probe-pending" as const, message: "Codex CLI probe is pending" } };
+  const rawOpenCodeRegistration = { ...resolveLocalOpenCodeRegistration(UNPROBED_OPENCODE.support), unavailableReason: { code: "probe-pending" as const, message: "OpenCode CLI probe is pending" } };
   const runtimeRegistry = createReplaceableCoachingRuntimeRegistry([
     piRegistration,
     rawCodexRegistration,
@@ -723,7 +731,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // The injected flag must reflect whether a run can actually start, not the
   // raw CLI probe: an installed pi whose extension is missing must report
   // `false` here, otherwise the Coach UI offers a backend that fails on use.
-  let runtimeScript = buildRuntimeScriptBody({ piAvailable: enablePiSignal });
+  let runtimeScript = buildRuntimeScriptBody(enablePiSignal === undefined ? {} : { piAvailable: enablePiSignal });
 
   async function servePublicConfig(response: ServerResponse): Promise<void> {
     // The standard Supabase fields are carried ONLY when a project is
@@ -875,6 +883,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     options.journalPath === undefined ? join(dataDir, "coaching-journal.json") : options.journalPath;
   const journalLock: CoachingJournalLock | null =
     journalPath === null ? null : acquireCoachingJournalLock(journalPath);
+  let refreshHandler: () => Promise<void> = async () => {};
   let server: CoachingServer | null = null;
   let lastError: unknown = null;
   try {
@@ -889,6 +898,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
           stores,
           runtimeFactory,
           runtimeRegistry,
+          refreshLocalBackends: () => refreshHandler(),
           publicConfig: daemonPublicConfig,
           host,
           port: candidate,
@@ -897,7 +907,9 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
           // Publish the operator's `--runtime` choice so a client can
           // preselect it. Without this the flag is stored but never told to
           // anyone, and a run silently uses pi despite the selection.
-          serviceOptions: { defaultBackendId: defaultBackendIdFor(options.defaultRuntime) },
+          serviceOptions: options.defaultRuntime === undefined
+            ? { automaticLocalDefault: true }
+            : { defaultBackendId: defaultBackendIdFor(options.defaultRuntime)! },
         });
         lastError = null;
         break;
@@ -960,7 +972,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
    * independently.
    */
   const probed = {
-    pi: null as { available: boolean; path?: string; reason?: unknown } | null,
+    pi: null as { available: boolean; path?: string; reason?: unknown; executablePath?: string; version?: string; env?: NodeJS.ProcessEnv; validateExecutable?: () => boolean } | null,
     codex: UNPROBED_CODEX,
     openCode: UNPROBED_OPENCODE,
   };
@@ -983,40 +995,63 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
             factory:
               options.runtimeFactory ??
               (probed.pi.available && probed.pi.path !== undefined
-                ? defaultRuntimeFactory(probed.pi.path, process.cwd())
+                ? defaultRuntimeFactory(probed.pi.path, process.cwd(), probed.pi.executablePath, probed.pi.env, probed.pi.validateExecutable)
                 : unavailablePiRuntimeFactory()),
             ...(probed.pi.available ? {} : { reason: probed.pi.reason as never }),
+            ...(probed.pi.executablePath !== undefined ? { executablePath: probed.pi.executablePath } : {}),
+            ...(probed.pi.version !== undefined ? { version: probed.pi.version } : {}),
           }),
-      resolveLocalCodexRegistration(probed.codex.support, {
+      probed.codex === UNPROBED_CODEX ? rawCodexRegistration : resolveLocalCodexRegistration(probed.codex.support, {
         ...(probed.codex.executablePath !== undefined
           ? { executablePath: probed.codex.executablePath }
           : {}),
+        ...(probed.codex.env !== undefined ? { env: probed.codex.env } : {}),
+        ...(probed.codex.validateExecutable !== undefined ? { validateExecutable: probed.codex.validateExecutable } : {}),
       }),
-      resolveLocalOpenCodeRegistration(probed.openCode.support, {
+      probed.openCode === UNPROBED_OPENCODE ? rawOpenCodeRegistration : resolveLocalOpenCodeRegistration(probed.openCode.support, {
         ...(probed.openCode.executablePath !== undefined
           ? { executablePath: probed.openCode.executablePath }
           : {}),
+        ...(probed.openCode.env !== undefined ? { env: probed.openCode.env } : {}),
+        ...(probed.openCode.validateExecutable !== undefined ? { validateExecutable: probed.openCode.validateExecutable } : {}),
       }),
     ];
     runtimeRegistry.replace(registrations);
   }
 
   async function runLocalCliRefresh(generation: number): Promise<void> {
-    const codexProbe = options.localCliProbes?.codex ?? (() => detectLocalCodex({}));
-    const openCodeProbe = options.localCliProbes?.openCode ?? (() => detectLocalOpenCode({}));
+    // A new generation is unknown until its own probes settle. Existing run
+    // handles retain their original factories independently of this snapshot.
+    probed.pi = null;
+    probed.codex = UNPROBED_CODEX;
+    probed.openCode = UNPROBED_OPENCODE;
+    publishKnownLocalBackends();
+    const codexProbe = options.localCliProbes?.codex ?? (() => detectLocalCodex({ signal: shutdownProbes.signal }));
+    const openCodeProbe = options.localCliProbes?.openCode ?? (() => detectLocalOpenCode({ signal: shutdownProbes.signal }));
     const probeTimeoutMs = options.localCliProbeTimeoutMs ?? LOCAL_CLI_PROBE_TIMEOUT_MS;
     // `generation` guards against an older refresh publishing over a newer one.
     const stillCurrent = (): boolean => generation === refreshGeneration;
 
     const settlePi = (async (): Promise<void> => {
-      const piCliAvailable = await piProbe.catch(() => false);
+      const env = { ...process.env };
+      env.PATH = toolchainPath({ platform: process.platform, home: homedir(), env });
+      const executablePath = options.piAvailable === undefined ? resolveExecutable("pi", { pathEnv: env.PATH, pathExtEnv: env.PATHEXT }) ?? undefined : undefined;
+      // Keep the invocation path (which may be a shim); capture its target and
+      // metadata so replacements and retargeted links invalidate this generation.
+      const before = executablePath === undefined ? undefined : executableIdentity(executablePath);
+      if (executablePath !== undefined) env.PATH = [dirname(executablePath), env.PATH].join(process.platform === "win32" ? ";" : ":");
+      const result = options.piAvailable === undefined
+        ? executablePath === undefined || before === undefined
+          ? { available: false, version: null }
+          : await checkPiCli(probeTimeoutMs, executablePath, buildCoachedEnv(env, ""), shutdownProbes.signal)
+        : { available: await piProbe.catch(() => false), version: null };
       if (!stillCurrent()) return;
-      probed.pi = resolvePiAvailability({
-        cliAvailable: piCliAvailable,
+      probed.pi = { ...resolvePiAvailability({
+        cliAvailable: result.available && (executablePath === undefined || executableIdentity(executablePath) === before),
         ...(options.extensionPath !== undefined ? { extensionPath: options.extensionPath } : {}),
         daemonDir: dirname(fileURLToPath(import.meta.url)),
         ...(options.pathExists !== undefined ? { pathExists: options.pathExists } : {}),
-      });
+      }), ...(executablePath !== undefined ? { executablePath, env, validateExecutable: () => executableIdentity(executablePath) === before } : {}), ...(result.version !== null ? { version: result.version } : {}) };
       publishKnownLocalBackends();
     })();
 
@@ -1073,13 +1108,17 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // `refreshInFlight` alone returns an empty promise once it has finished,
   // which would let a caller observe the pre-probe snapshot and conclude the
   // probe never landed.
+  refreshHandler = refreshLocalClis;
   const firstRefresh = refreshLocalClis();
 
   return {
     url: bound.url,
     port: bound.port,
     dataDir,
-    defaultBackendId: defaultBackendIdFor(options.defaultRuntime),
+    get defaultBackendId() {
+      return defaultBackendIdFor(options.defaultRuntime) ??
+        (["local-pi", "local-codex", "local-opencode"] as const).find((id) => runtimeRegistry.get(id)?.available === true) ?? null;
+    },
     /**
      * Resolve once the current probe refresh has published its result.
      *

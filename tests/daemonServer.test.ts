@@ -683,11 +683,12 @@ test("all three local backends are registered and unprobed CLIs are not claimed 
     for (const backendId of ["local-codex", "local-opencode"] as const) {
       const entry = discovery.backends.find((candidate) => candidate.backendId === backendId);
       assert.equal(entry?.available, false, `${backendId} must not be advertised before it is probed`);
+      assert.equal(entry?.unavailableReason?.code, "probe-pending");
       // The reason must say "not probed", NOT "not installed": we have not
       // asked, and claiming absence sends the user to install what they have.
       assert.match(
         entry?.unavailableReason?.message ?? "",
-        /not been probed/i,
+        /pending/i,
         `${backendId} must report that it is unprobed rather than absent`,
       );
     }
@@ -776,7 +777,7 @@ test("a late probe updates BOTH discovery and submission with no restart", async
     const before = await discoverBackends(daemon);
     const codexBefore = before.backends.find((entry) => entry.backendId === "local-codex");
     assert.equal(codexBefore?.available, false);
-    assert.match(codexBefore?.unavailableReason?.message ?? "", /not been probed/i);
+    assert.match(codexBefore?.unavailableReason?.message ?? "", /pending/i);
 
     finishCodex?.();
     await daemon.localCliRefreshSettled();
@@ -849,7 +850,7 @@ test("a hanging probe never delays startup, and another backend still works", as
     // …while the hung Codex kept the truthful "not probed yet" state instead of
     // inheriting OpenCode's outcome or being claimed absent.
     assert.equal(codex?.available, false);
-    assert.match(codex?.unavailableReason?.message ?? "", /not been probed/i);
+    assert.match(codex?.unavailableReason?.message ?? "", /pending/i);
   } finally {
     await daemon.close();
   }
@@ -1053,9 +1054,8 @@ test("--runtime selects the default backend without filtering discovery", async 
   }
 });
 
-test("--runtime defaults to pi for backwards compatibility", async () => {
-  // An operator who passes nothing must get exactly today's behavior: pi.
-  assert.equal(defaultBackendIdFor(undefined), "local-pi");
+test("without --runtime no unavailable backend is selected", async () => {
+  assert.equal(defaultBackendIdFor(undefined), null);
 
   const { daemon } = await bootDaemon({
     piAvailable: false,
@@ -1065,7 +1065,8 @@ test("--runtime defaults to pi for backwards compatibility", async () => {
     },
   });
   try {
-    assert.equal(daemon.defaultBackendId, "local-pi");
+    await daemon.localCliRefreshSettled();
+    assert.equal(daemon.defaultBackendId, null);
   } finally {
     await daemon.close();
   }
@@ -1207,6 +1208,7 @@ test("discovery publishes the operator's default backend", async () => {
   try {
     const discovery = await discoverBackends(daemon);
     assert.equal(discovery.defaultBackendId, "local-codex");
+    assert.equal(discovery.defaultBackendSource, "runtime");
   } finally {
     await daemon.close();
   }
@@ -1278,5 +1280,51 @@ test("a settled alternative does not mark an unprobed pi as absent", async () =>
   } finally {
     resolvePi?.(false);
     await daemon.close();
+  }
+});
+
+test("manual rescan reruns pi detection and publishes the new executable version", async () => {
+  if (process.platform === "win32") return;
+  const { chmod } = await import("node:fs/promises");
+  const bin = await mkdtemp(join(tmpdir(), "fit-trace-pi-bin-"));
+  const binary = join(bin, "pi");
+  const oldPath = process.env.PATH;
+  const install = async (version: string): Promise<void> => {
+    await writeFile(binary, `#!/bin/sh\nprintf '${version}\\n'\n`);
+    await chmod(binary, 0o755);
+  };
+  process.env.PATH = `${bin}:${oldPath ?? ""}`;
+  await install("1.0.0");
+  const { daemon, dataDir } = await bootDaemon({ localCliProbes: {
+    codex: async () => ({ support: { supported: false, builtinIsolationVerified: false } }),
+    openCode: async () => ({ support: { supported: false, isolationVerified: false } }),
+  } });
+  try {
+    await daemon.localCliRefreshSettled();
+    const headers = await coachingCreds(daemon);
+    const first = await fetch(`${daemon.url}/coaching/capabilities`, { headers });
+    const firstDiscovery = parseCoachingCapabilityDiscovery(((await first.json()) as { data: unknown }).data);
+    assert.equal(firstDiscovery.backends.find((backend) => backend.backendId === "local-pi")?.version, "1.0.0");
+    assert.equal(firstDiscovery.defaultBackendSource, "automatic");
+    await install("2.0.0");
+    const second = await fetch(`${daemon.url}/coaching/capabilities`, { method: "POST", headers });
+    assert.equal(second.status, 200);
+    const secondDiscovery = parseCoachingCapabilityDiscovery(((await second.json()) as { data: unknown }).data);
+    const pi = secondDiscovery.backends.find((backend) => backend.backendId === "local-pi");
+    assert.equal(pi?.version, "2.0.0");
+    assert.equal(pi?.executablePath, binary);
+    await rm(binary);
+    const removed = await fetch(`${daemon.url}/coaching/capabilities`, { method: "POST", headers });
+    const removedDiscovery = parseCoachingCapabilityDiscovery(((await removed.json()) as { data: unknown }).data);
+    assert.notEqual(removedDiscovery.backends.find((backend) => backend.backendId === "local-pi")?.executablePath, binary);
+    await install("3.0.0");
+    const reinstalled = await fetch(`${daemon.url}/coaching/capabilities`, { method: "POST", headers });
+    const reinstalledDiscovery = parseCoachingCapabilityDiscovery(((await reinstalled.json()) as { data: unknown }).data);
+    assert.equal(reinstalledDiscovery.backends.find((backend) => backend.backendId === "local-pi")?.version, "3.0.0");
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    await daemon.close();
+    await rm(dataDir, { recursive: true, force: true });
+    await rm(bin, { recursive: true, force: true });
   }
 });

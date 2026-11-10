@@ -97,6 +97,9 @@ export function defaultOpenCodeSpawn(
 /** Provider credentials are copied explicitly; everything else is filtered. */
 const ENV_PASSTHROUGH_EXACT = new Set([
   "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "WINDIR",
   "TMPDIR",
   "TEMP",
   "TMP",
@@ -121,6 +124,16 @@ const ENV_PASSTHROUGH_PREFIXES = [
 
 /** Never inherited: product/service credentials and the snapshot path. */
 const ENV_BLOCKED = /SUPABASE|SERVICE_ROLE|SERVICE_KEY|FIT_TRACE_|PI_FIT_TRACE_|OPENCODE_SERVER_PASSWORD/i;
+
+/** Inherited base shared by capability probes and isolated runs. */
+export function buildOpenCodeBaseEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined || ENV_BLOCKED.test(key)) continue;
+    if (ENV_PASSTHROUGH_EXACT.has(key) || ENV_PASSTHROUGH_PREFIXES.some((prefix) => key.startsWith(prefix))) env[key] = value;
+  }
+  return env;
+}
 
 export interface OpenCodeIsolatedPaths {
   runRoot: string;
@@ -298,6 +311,7 @@ export interface CoachedOpenCodeOptions extends CoachedOpenCodeCallbacks {
   /** `provider/model` for the generated config (operator configured). */
   model: string;
   opencodeBinary?: string;
+  validateExecutable?: () => boolean;
   resumeNativeSessionHandle?: string;
   /**
    * Positive proof from the installed-version probe that the generated
@@ -553,6 +567,10 @@ export class CoachedOpenCodeRun {
   start(): void {
     if (this.started || this.settled || this.closed) return;
     this.started = true;
+    if (this.opts.validateExecutable !== undefined && !this.opts.validateExecutable()) {
+      void this.finish("failed", "OpenCode executable changed since detection; rescan before running");
+      return;
+    }
     void this.startAsync();
   }
 
@@ -733,14 +751,7 @@ export class CoachedOpenCodeRun {
   private buildEnv(): NodeJS.ProcessEnv {
     const base = this.opts.env ?? process.env;
     const paths = buildOpenCodeIsolatedPaths(this.opts.sessionDir, this.opts.runId);
-    const env: NodeJS.ProcessEnv = {};
-    for (const [key, value] of Object.entries(base)) {
-      if (value === undefined) continue;
-      if (ENV_BLOCKED.test(key)) continue;
-      if (ENV_PASSTHROUGH_EXACT.has(key) || ENV_PASSTHROUGH_PREFIXES.some((prefix) => key.startsWith(prefix))) {
-        env[key] = value;
-      }
-    }
+    const env = buildOpenCodeBaseEnv(base);
     env.HOME = paths.home;
     env.XDG_CONFIG_HOME = paths.config;
     env.XDG_DATA_HOME = paths.data;

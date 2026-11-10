@@ -7,6 +7,8 @@ import {
   descriptorToOption,
   isBackendSupportedInMode,
   localPiOption,
+  selectLocalBackend,
+  resolveLocalBackendChoice,
 } from "./coachBackend.ts";
 
 function capabilities(overrides: Partial<CloudCapabilities> = {}): CloudCapabilities {
@@ -136,14 +138,41 @@ describe("a saved local preference survives a reload", () => {
     expect(defaultCoachBackend({ mode: "launcher", accountId: "user-a", guest: false })).toBe("local-codex");
   });
 
-  it("falls back to pi with no stored preference, and never picks cloud", () => {
-    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-b", guest: false })).toBe("local-pi");
+  it("waits for discovery with no local preference", () => {
+    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-b", guest: false })).toBeNull();
     writeBackendPreference("user-c", "cloud-default");
     // Launcher serves local coaching; a cloud preference belongs to browser mode.
-    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-c", guest: false })).toBe("local-pi");
+    expect(defaultCoachBackend({ mode: "launcher", accountId: "user-c", guest: false })).toBeNull();
   });
 
-  it("a guest with no account still gets pi", () => {
-    expect(defaultCoachBackend({ mode: "launcher", accountId: null, guest: true })).toBe("local-pi");
+  it("a guest waits for discovery", () => {
+    expect(defaultCoachBackend({ mode: "launcher", accountId: null, guest: true })).toBeNull();
   });
+});
+
+
+describe("local automatic selection", () => {
+  const pi = localPiOption(true);
+  const codex = { ...pi, id: "local-codex" as const, available: true };
+  const openCode = { ...pi, id: "local-opencode" as const, available: true };
+  it("uses stable priority among verified available options", () => {
+    expect(selectLocalBackend(null, [openCode, codex, pi])).toBe("local-pi");
+    expect(selectLocalBackend(null, [{ ...pi, available: false }, openCode, codex])).toBe("local-codex");
+    expect(selectLocalBackend(null, [{ ...pi, available: false }, { ...codex, available: false }])).toBeNull();
+  });
+  it("keeps an explicit unavailable default visible", () => {
+    expect(selectLocalBackend("local-pi", [{ ...pi, available: false }, codex])).toBe("local-pi");
+  });
+});
+
+
+it("selection records preference, runtime, automatic and empty provenance", () => {
+  const pi = localPiOption(false);
+  const codex = { ...pi, id: "local-codex" as const, available: true };
+  const options = [pi, codex];
+  expect(resolveLocalBackendChoice({ preference: "local-pi", defaultId: "local-codex", defaultSource: "runtime", options })).toEqual({ backendId: "local-pi", source: "preference" });
+  expect(resolveLocalBackendChoice({ preference: null, defaultId: "local-pi", defaultSource: "runtime", options })).toEqual({ backendId: "local-pi", source: "runtime" });
+  expect(resolveLocalBackendChoice({ preference: null, defaultId: "local-codex", defaultSource: "automatic", options })).toEqual({ backendId: "local-codex", source: "automatic" });
+  expect(resolveLocalBackendChoice({ preference: null, defaultId: null, options: [pi] })).toEqual({ backendId: null, source: "none" });
+  expect(resolveLocalBackendChoice({ preference: null, defaultId: "local-pi", options })).toEqual({ backendId: "local-pi", source: "server" });
 });

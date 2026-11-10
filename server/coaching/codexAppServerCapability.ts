@@ -99,36 +99,46 @@ export function inspectCodexAppServerSchema(document: unknown): CodexAppServerSu
 }
 
 interface ProbeOptions {
+  signal?: AbortSignal;
   binary?: string;
+  env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   /** Test seam: returns the generated v2 schema JSON text. */
   generateSchema?: (binary: string) => Promise<string>;
 }
 
-async function runGenerateJsonSchema(binary: string, timeoutMs: number): Promise<string> {
+async function runGenerateJsonSchema(binary: string, timeoutMs: number, env?: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "fit-trace-codex-schema-"));
   try {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let abort: (() => void) | undefined;
       const done = (error?: Error): void => {
         if (settled) return;
         settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        if (abort !== undefined) signal?.removeEventListener("abort", abort);
         if (error !== undefined) reject(error);
         else resolve();
       };
       let child;
       try {
+        if (signal?.aborted) { done(new Error("probe-aborted")); return; }
         child = spawn(binary, ["app-server", "generate-json-schema", "--out", dir], {
           stdio: ["ignore", "ignore", "ignore"],
           timeout: timeoutMs,
+          env,
         });
       } catch {
         done(new Error("spawn-failed"));
         return;
       }
+      abort = () => { try { child.kill("SIGKILL"); } catch { /* already exited */ } done(new Error("probe-aborted")); };
+      signal?.addEventListener("abort", abort, { once: true });
       child.on("error", () => done(new Error("spawn-failed")));
       child.on("close", (code) => done(code === 0 ? undefined : new Error("probe-failed")));
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         try {
           child.kill("SIGKILL");
         } catch {
@@ -173,7 +183,7 @@ async function runGenerateJsonSchema(binary: string, timeoutMs: number): Promise
 export async function probeCodexAppServer(options: ProbeOptions = {}): Promise<CodexAppServerSupport> {
   const binary = options.binary ?? "codex";
   try {
-    const text = await (options.generateSchema ?? ((name) => runGenerateJsonSchema(name, options.timeoutMs ?? 10000)))(binary);
+    const text = await (options.generateSchema ?? ((name) => runGenerateJsonSchema(name, options.timeoutMs ?? 10000, options.env, options.signal)))(binary);
     const document = JSON.parse(text) as unknown;
     return inspectCodexAppServerSchema(document);
   } catch {

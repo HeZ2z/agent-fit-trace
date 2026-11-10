@@ -194,6 +194,7 @@ export interface CoachingServiceOptions {
    * operator's `--runtime codex` be silently ignored.
    */
   defaultBackendId?: CoachingBackendId;
+  automaticLocalDefault?: boolean;
   /** Max stored events per run (tripping the cap fails the run explicitly). */
   maxEventsPerRun?: number;
   /** Max stored event bytes per run (UTF-8 frame bytes; tripping the cap fails the run explicitly). */
@@ -1706,6 +1707,7 @@ export function createCoachingService(options: CoachingServiceOptions): Coaching
         ...(options.defaultBackendId === undefined
           ? {}
           : { defaultBackendId: options.defaultBackendId }),
+        ...(options.automaticLocalDefault === true ? { automaticLocalDefault: true } : {}),
       });
     },
 

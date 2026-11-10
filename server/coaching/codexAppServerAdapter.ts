@@ -130,6 +130,9 @@ export function buildCoachedCodexArgv(): string[] {
 
 const ENV_PASSTHROUGH_EXACT = new Set([
   "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "WINDIR",
   "HOME",
   "TMPDIR",
   "TEMP",
@@ -239,6 +242,7 @@ export interface CoachedCodexOptions extends CoachedCodexCallbacks {
   resumeNativeSessionHandle?: string;
   cwd: string;
   codexBinary?: string;
+  validateExecutable?: () => boolean;
   spawn?: CodexSpawnFn;
   env?: NodeJS.ProcessEnv;
   /**
@@ -317,6 +321,10 @@ export class CoachedCodexAppServer {
   start(): void {
     if (this.settled || this.closed || this.started) return;
     this.started = true;
+    if (this.opts.validateExecutable !== undefined && !this.opts.validateExecutable()) {
+      void this.finish("failed", "Codex executable changed since detection; rescan before running");
+      return;
+    }
     if (this.opts.isolation === undefined) {
       // Fail closed even if a caller constructs the adapter directly. The
       // launcher's schema probe is the only production gate; this check only
