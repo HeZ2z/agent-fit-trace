@@ -363,7 +363,7 @@ describe("app guest-local daemon mode", () => {
     const { unmount } = render(<App />);
     const loginRegion = await screen.findByRole("region", { name: /sign in/i });
     expect(
-      within(loginRegion).getByText(/sign-in is not configured on this deployment/i),
+      await within(loginRegion).findByText(/sign-in is not configured on this deployment/i),
     ).toBeInTheDocument();
     expect(within(loginRegion).queryByRole("button")).toBeNull();
     expect(within(loginRegion).queryByLabelText(/email/i)).toBeNull();
@@ -378,11 +378,29 @@ describe("app guest-local daemon mode", () => {
       name: /choose a new password/i,
     });
     expect(
-      within(resetRegion).getByText(/password reset is not configured on this deployment/i),
+      await within(resetRegion).findByText(/password reset is not configured on this deployment/i),
     ).toBeInTheDocument();
     expect(within(resetRegion).queryByRole("button")).toBeNull();
     expect(within(resetRegion).queryByLabelText(/new password/i)).toBeNull();
     unmount();
+  });
+
+  it("does not show a login form while daemon configuration is loading", async () => {
+    const state: DaemonFetchState = { seenUrls: [], bearersSeen: [], publicConfigFetches: 0 };
+    installDaemonFetch(state);
+    const daemonFetch = globalThis.fetch;
+    let releaseConfig!: () => void;
+    const configReady = new Promise<void>((resolve) => { releaseConfig = resolve; });
+    vi.stubGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/v1/public-config")) await configReady;
+      return daemonFetch(input, init);
+    }) as typeof fetch);
+    window.history.pushState({}, "", "/login");
+    render(<App />);
+    expect(screen.queryByLabelText(/email|password/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /sign in|update password/i })).toBeNull();
+    await act(async () => { releaseConfig(); });
+    expect(await screen.findByText(/sign-in is not configured on this deployment/i)).toBeInTheDocument();
   });
 
   it("keeps the login and reset-password forms on a daemon with auth configured", async () => {

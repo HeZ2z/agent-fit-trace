@@ -108,6 +108,10 @@ export function SignInScreen() {
     publicConfig === null ||
     guestSignInEnabled !== true;
 
+  if (status === "loading") {
+    return <section aria-label={t("Loading")}><p>{t("Loading…")}</p></section>;
+  }
+
   // Guest-local has no identity provider at all: the sign-in form, the reset
   // link, and the guest entry button would all submit against the empty
   // Supabase config fields. Render the truthful unconfigured state instead of
