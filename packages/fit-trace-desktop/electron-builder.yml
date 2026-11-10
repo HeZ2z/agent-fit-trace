@@ -70,6 +70,8 @@ files:
 
 # Extra resources land in <resources>/ next to app.asar.
 extraResources:
+  - from: staging/desktop-public-config.json
+    to: desktop-public-config.json
   # The daemon bundle, executed by the app's own binary as node.
   - from: staging/daemon.mjs
     to: daemon.mjs

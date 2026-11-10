@@ -261,3 +261,31 @@ worth knowing:
 - The version guard is the only thing tying them together: the same root
   `package.json` version drives the release tag and the desktop/mobile
   artifacts, while Vercel does not stamp a version at all.
+
+### Desktop public authentication configuration
+
+Desktop packaging requires `FIT_TRACE_DESKTOP_CHANNEL` to be `release` or
+`guest-only`. Release builds also require the explicit public variables
+`FIT_TRACE_DESKTOP_SUPABASE_URL` and
+`FIT_TRACE_DESKTOP_SUPABASE_PUBLISHABLE_KEY`. The release workflow reads these
+from GitHub Actions repository variables. It fails if either value is absent or
+invalid. Only the public URL and `sb_publishable_` key belong there: never use a
+service-role key, token, provider credential, or `.env` file. For a deliberately
+local-only build set `FIT_TRACE_DESKTOP_CHANNEL=guest-only` and leave both public
+values unset. The generated `desktop-public-config.json` contains exactly
+`schemaVersion`, `channel`, `supabaseUrl`, and `supabasePublishableKey`; guest-only
+uses empty strings for the two auth fields. Each build replaces any prior file.
+
+At packaged startup `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` may override
+this file only as a complete pair. A partial pair fails startup and the legacy
+`SUPABASE_ANON_KEY` cannot fill or change it. Direct `agent-fit-trace daemon`
+retains its existing environment configuration.
+
+Verification in this change included an unsigned macOS arm64 guest-only
+package, launched twice with temporary HOME, data, and Electron userData
+directories; both launches served guest-local public configuration at the same
+origin. A release-configured unsigned macOS arm64 package was also checked
+against the intended Supabase project: an existing account signed in, remained
+signed in after quitting and reopening at the same origin, and returned to the
+local guest after sign-out. Live token refresh and switching between two accounts
+were not exercised; Windows and Linux packaged launches also remain untested.

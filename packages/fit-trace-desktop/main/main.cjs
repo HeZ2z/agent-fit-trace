@@ -39,6 +39,9 @@
  */
 
 const path = require("node:path");
+const fs = require("node:fs");
+const { childEnvironment } = require("./publicConfig.cjs");
+const { loadOrigin, saveOrigin } = require("./origin.cjs");
 const { app, BrowserWindow, dialog } = require("electron");
 const {
   STALE_JOURNAL_LOCK_EXIT_CODE,
@@ -64,6 +67,8 @@ let mainWindow = null;
 let daemon = null;
 /** @type {string | null} */
 let daemonUrl = null;
+let desktopPort = 0;
+let childEnv = null;
 /** @type {NodeJS.Timeout | null} */
 let healthTimer = null;
 let consecutiveFailures = 0;
@@ -111,8 +116,8 @@ function startDaemon() {
     // lands outside the app bundle. Undefined in dev, where the repo layout is
     // correct and the daemon's default must stay in charge.
     extensionPath: LAUNCH_PLAN.extensionPath,
-    port: 0,
-    env: LAUNCH_PLAN.env,
+    port: desktopPort,
+    env: childEnv ?? LAUNCH_PLAN.env,
   });
   daemon.child.stdout.on("data", (chunk) => process.stdout.write(`[daemon] ${chunk}`));
   daemon.child.stderr.on("data", (chunk) => process.stderr.write(`[daemon] ${chunk}`));
@@ -122,6 +127,10 @@ function startDaemon() {
     }
   });
   return daemon.url.then((url) => {
+    if (desktopPort === 0) {
+      saveOrigin(app.getPath("userData"), url);
+      desktopPort = new URL(url).port * 1;
+    }
     daemonUrl = url;
     console.log(`[desktop] daemon at ${url}`);
   });
@@ -226,7 +235,7 @@ async function givingUp() {
   dialog.showErrorBox(
     "fit-trace daemon",
     "The local fit-trace daemon failed to start after 3 restart attempts.\n\n" +
-      "Check the terminal output for details, then " +
+      "The saved local port may be in use. Close the other application using it, then " +
       (app.isPackaged ? "relaunch the app." : "relaunch: pnpm desktop:dev"),
   );
   // Last exit path: the final child must not survive the shell. stop is
@@ -328,6 +337,17 @@ if (!gotLock) {
         `This build needs Node >= ${MIN_NODE_MAJOR} (Electron's bundled runtime reports ` +
           `${process.versions.node}).\n\nReinstall the app from an official internal build.`,
       );
+      app.exit(1);
+      return;
+    }
+    try {
+      desktopPort = loadOrigin(app.getPath("userData"));
+      if (app.isPackaged) {
+        const config = JSON.parse(fs.readFileSync(path.join(process.resourcesPath, "desktop-public-config.json"), "utf8"));
+        childEnv = childEnvironment(config, LAUNCH_PLAN.env);
+      }
+    } catch (error) {
+      dialog.showErrorBox("fit-trace configuration", "Desktop configuration or saved origin is invalid. Reinstall the app or contact support. No account details were displayed.");
       app.exit(1);
       return;
     }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import type { HandlerInit } from "@agent-fit-trace/api-contracts/testing";
@@ -23,9 +23,8 @@ import { MemoryStorageAdapter } from "./storage/adapter.ts";
  *    `App.modes.test.tsx`).
  * 3. The cloud-coach entry renders an explicit unavailable state for the
  *    local guest (and never probes cloud capabilities for a guest).
- * 4. A daemon with a configured Supabase project keeps the login gate and a
- *    working "Continue as guest" path; the guest session then talks to
- *    `/api/v1` with its own Supabase bearer, not the daemon guest bearer.
+ * 4. A configured daemon starts with its local guest and can switch to
+ *    a verified account without merging the guest store.
  */
 
 interface DaemonFetchState {
@@ -93,16 +92,19 @@ interface ConfiguredState {
   seenUrls: string[];
   bearersSeen: string[];
   guestSignupCalls: number;
+  holdAccountA?: boolean;
+  resolveAccountA?: (response: Response) => void;
 }
 
 /**
  * Mock a daemon with a configured Supabase project (`auth_configured: true`):
- * the login gate applies and the deployment advertises guest entry, so
- * "Continue as guest" performs the ordinary Supabase anonymous sign-in.
+ * local guest access remains available alongside account sign-in.
  */
 function installConfiguredDaemonFetch(state: ConfiguredState): void {
   const tokens = new Map<string, { id: string; email?: string; isAnonymous?: boolean }>([
     ["access-guest-1", { id: "guest-1", isAnonymous: true }],
+    ["access-account", { id: "account-1", email: "user@example.com", isAnonymous: false }],
+    ["access-account-b", { id: "account-2", email: "other@example.com", isAnonymous: false }],
   ]);
   vi.stubGlobal(
     "fetch",
@@ -131,6 +133,11 @@ function installConfiguredDaemonFetch(state: ConfiguredState): void {
         );
       }
 
+      if (url === `${AUTH_BASE}/auth/v1/token?grant_type=password`) {
+        const other = JSON.parse(String(init?.body)).email === "other@example.com";
+        return new Response(JSON.stringify({ access_token: other ? "access-account-b" : "access-account", refresh_token: other ? "refresh-account-b" : "refresh-account", expires_in: 3600, user: { id: other ? "account-2" : "account-1" } }), { status: 200 });
+      }
+      if (url === `${AUTH_BASE}/auth/v1/logout`) return new Response(null, { status: 204 });
       if (url === `${AUTH_BASE}/auth/v1/signup`) {
         state.guestSignupCalls += 1;
         return new Response(
@@ -168,7 +175,13 @@ function installConfiguredDaemonFetch(state: ConfiguredState): void {
         }
         state.bearersSeen.push(token);
         if (url === "/api/v1/workouts") {
-          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+          if (token === "access-account" && state.holdAccountA) {
+            return await new Promise<Response>((resolve) => { state.resolveAccountA = resolve; });
+          }
+          const records = token === "access-account-b" && state.holdAccountA
+            ? [{ schema_version: 1, id: "b-only", date: "2026-08-02", session_type: "strength", exercises: [{ name: "bench_press", sets: [{ weight: 80, reps: 5, rpe: 7 }] }] }]
+            : [];
+          return new Response(JSON.stringify({ data: records }), { status: 200 });
         }
         return new Response(
           JSON.stringify({ error: { code: "API_ERROR", message: "No route." } }),
@@ -284,32 +297,60 @@ describe("app guest-local daemon mode", () => {
     expect(state.seenUrls.some((url) => url.includes("/coaching/"))).toBe(false);
   });
 
-  it("keeps the login gate on a configured daemon with a working guest path", async () => {
-    const state: ConfiguredState = {
-      seenUrls: [],
-      bearersSeen: [],
-      guestSignupCalls: 0,
-    };
+  it("uses the local guest on a configured daemon and switches to an account", async () => {
+    const state: ConfiguredState = { seenUrls: [], bearersSeen: [], guestSignupCalls: 0 };
     installConfiguredDaemonFetch(state);
-    window.history.pushState({}, "", "/");
+    window.history.pushState({}, "", "/me");
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+    expect(await screen.findByText(/these workouts stay in the local guest store/i)).toBeInTheDocument();
+    expect(state.bearersSeen).toContain(LOCAL_GUEST_BEARER);
+    await user.click(screen.getByRole("link", { name: /^sign in$/i }));
+    await user.type(screen.getByLabelText(/email/i), "user@example.com");
+    await user.type(screen.getByLabelText(/password/i), "password");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await vi.waitFor(() => expect(state.bearersSeen).toContain("access-account"));
+    expect(state.guestSignupCalls).toBe(0);
+    // A renderer remount validates and restores the stored account session.
+    await vi.waitFor(() => expect(window.localStorage.length).toBeGreaterThan(0));
+    unmount();
+    const userChecks = state.seenUrls.filter((url) => url === `${AUTH_BASE}/auth/v1/user`).length;
+    render(<App />);
+    await vi.waitFor(() => expect(state.seenUrls.filter((url) => url === `${AUTH_BASE}/auth/v1/user`).length).toBeGreaterThan(userChecks));
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
+    await vi.waitFor(() => expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument());
+    await user.clear(screen.getByLabelText(/email/i));
+    await user.type(screen.getByLabelText(/email/i), "other@example.com");
+    await user.type(screen.getByLabelText(/password/i), "password");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await vi.waitFor(() => expect(state.bearersSeen).toContain("access-account-b"));
+  });
+
+  it("does not show a late account A history response after switching to B", async () => {
+    const state: ConfiguredState = { seenUrls: [], bearersSeen: [], guestSignupCalls: 0, holdAccountA: true };
+    installConfiguredDaemonFetch(state);
+    window.history.pushState({}, "", "/me");
     const user = userEvent.setup();
     render(<App />);
-
-    // The strict login gate still applies when the daemon has Supabase.
-    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
-
-    // The advertised "Continue as guest" path is enabled and performs the
-    // ordinary Supabase anonymous sign-in (exactly once).
-    const guestButton = screen.getByRole("button", { name: /continue as guest/i });
-    expect(guestButton).toBeEnabled();
-    await user.click(guestButton);
-    expect(await screen.findByText(/no workouts yet/i)).toBeInTheDocument();
-    expect(state.guestSignupCalls).toBe(1);
-
-    // The signed-in Supabase guest — not the daemon guest bearer — now backs
-    // the data plane: the active principal switched with the identity.
-    expect(state.bearersSeen.length).toBeGreaterThan(0);
-    expect(new Set(state.bearersSeen)).toEqual(new Set(["access-guest-1"]));
+    await screen.findByText(/these workouts stay in the local guest store/i);
+    await user.click(screen.getByRole("link", { name: /^sign in$/i }));
+    await user.type(screen.getByLabelText(/email/i), "user@example.com");
+    await user.type(screen.getByLabelText(/password/i), "password");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await vi.waitFor(() => expect(state.resolveAccountA).toBeDefined());
+    await user.click(screen.getByRole("link", { name: /^me$/i }));
+    await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
+    await user.type(screen.getByLabelText(/email/i), "other@example.com");
+    await user.type(screen.getByLabelText(/password/i), "password");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await user.click(screen.getByRole("link", { name: /^history$/i }));
+    expect(await screen.findByRole("link", { name: /workout on 2026-08-02/i })).toBeInTheDocument();
+    await act(async () => {
+      state.resolveAccountA?.(new Response(JSON.stringify({ data: [{ schema_version: 1, id: "a-only", date: "2026-08-01", session_type: "strength", exercises: [{ name: "squat", sets: [{ weight: 100, reps: 5, rpe: 8 }] }] }] }), { status: 200 }));
+    });
+    expect(screen.queryByRole("link", { name: /workout on 2026-08-01/i })).toBeNull();
+    expect(screen.getByRole("link", { name: /workout on 2026-08-02/i })).toBeInTheDocument();
   });
 
   it("gates the login and reset-password screens with an unconfigured notice in guest-local mode", async () => {
@@ -322,7 +363,7 @@ describe("app guest-local daemon mode", () => {
     const { unmount } = render(<App />);
     const loginRegion = await screen.findByRole("region", { name: /sign in/i });
     expect(
-      within(loginRegion).getByText(/sign-in is not configured on this deployment/i),
+      await within(loginRegion).findByText(/sign-in is not configured on this deployment/i),
     ).toBeInTheDocument();
     expect(within(loginRegion).queryByRole("button")).toBeNull();
     expect(within(loginRegion).queryByLabelText(/email/i)).toBeNull();
@@ -337,11 +378,29 @@ describe("app guest-local daemon mode", () => {
       name: /choose a new password/i,
     });
     expect(
-      within(resetRegion).getByText(/password reset is not configured on this deployment/i),
+      await within(resetRegion).findByText(/password reset is not configured on this deployment/i),
     ).toBeInTheDocument();
     expect(within(resetRegion).queryByRole("button")).toBeNull();
     expect(within(resetRegion).queryByLabelText(/new password/i)).toBeNull();
     unmount();
+  });
+
+  it("does not show a login form while daemon configuration is loading", async () => {
+    const state: DaemonFetchState = { seenUrls: [], bearersSeen: [], publicConfigFetches: 0 };
+    installDaemonFetch(state);
+    const daemonFetch = globalThis.fetch;
+    let releaseConfig!: () => void;
+    const configReady = new Promise<void>((resolve) => { releaseConfig = resolve; });
+    vi.stubGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/v1/public-config")) await configReady;
+      return daemonFetch(input, init);
+    }) as typeof fetch);
+    window.history.pushState({}, "", "/login");
+    render(<App />);
+    expect(screen.queryByLabelText(/email|password/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /sign in|update password/i })).toBeNull();
+    await act(async () => { releaseConfig(); });
+    expect(await screen.findByText(/sign-in is not configured on this deployment/i)).toBeInTheDocument();
   });
 
   it("keeps the login and reset-password forms on a daemon with auth configured", async () => {
@@ -354,17 +413,18 @@ describe("app guest-local daemon mode", () => {
     const resetRegion = await screen.findByRole("region", {
       name: /choose a new password/i,
     });
-    expect(
+    // The form mounts before the asynchronous public-config request settles.
+    await vi.waitFor(() => expect(
       within(resetRegion).getByRole("button", { name: /update password/i }),
-    ).toBeEnabled();
+    ).toBeEnabled());
     unmount();
 
-    // daemon-optional: the ordinary sign-in gate with the guest entry path.
+    // daemon-optional: the login form links back to the local guest.
     window.history.pushState({}, "", "/login");
     render(<App />);
     const loginRegion = await screen.findByRole("region", { name: /sign in/i });
     expect(
-      within(loginRegion).getByRole("button", { name: /continue as guest/i }),
+      within(loginRegion).getByRole("link", { name: /return to local guest/i }),
     ).toBeInTheDocument();
   });
 });

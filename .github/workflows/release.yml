@@ -261,6 +261,10 @@ jobs:
         #                     spawned with ELECTRON_RUN_AS_NODE=1 from the app's
         #                     own Electron binary (process.execPath)
         #   build:runtime   → stages daemon + app shell for packaging
+        env:
+          FIT_TRACE_DESKTOP_CHANNEL: release
+          FIT_TRACE_DESKTOP_SUPABASE_URL: ${{ vars.FIT_TRACE_DESKTOP_SUPABASE_URL }}
+          FIT_TRACE_DESKTOP_SUPABASE_PUBLISHABLE_KEY: ${{ vars.FIT_TRACE_DESKTOP_SUPABASE_PUBLISHABLE_KEY }}
         run: pnpm desktop:build
 
       - name: Package unsigned

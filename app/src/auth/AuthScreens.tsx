@@ -108,6 +108,10 @@ export function SignInScreen() {
     publicConfig === null ||
     guestSignInEnabled !== true;
 
+  if (status === "loading") {
+    return <section aria-label={t("Loading")}><p>{t("Loading…")}</p></section>;
+  }
+
   // Guest-local has no identity provider at all: the sign-in form, the reset
   // link, and the guest entry button would all submit against the empty
   // Supabase config fields. Render the truthful unconfigured state instead of
@@ -184,7 +188,12 @@ export function SignInScreen() {
       <p>
         <Link to="/forgot-password">{t("Forgot your password?")}</Link>
       </p>
-      <section className="signin-guest" aria-labelledby="guest-signin-heading">
+      {authSurface === "daemon-optional" ? (
+        <section className="signin-guest">
+          <p>{t("Your local guest workouts remain on this machine and are not transferred or uploaded when you sign in.")}</p>
+          <Link to="/">{t("Return to local guest")}</Link>
+        </section>
+      ) : <section className="signin-guest" aria-labelledby="guest-signin-heading">
         <h2 id="guest-signin-heading">{t("Guest access")}</h2>
         <p>
           {t("Guest data is tied to this browser and cannot be merged into an account later.")}
@@ -212,7 +221,7 @@ export function SignInScreen() {
         <button type="button" onClick={onGuest} disabled={guestDisabled}>
           {t("Continue as guest")}
         </button>
-      </section>
+      </section>}
     </section>
   );
 }

@@ -74,6 +74,8 @@ function parseArgs(argv: string[]): { command: string; flags: LauncherFlags } {
     if (token === "--port") {
       flags.port = Number(takeValue(argv, index + 1, "--port"));
       index += 1;
+    } else if (token === "--strict-port") {
+      flags.strictPort = true;
     } else if (token === "--no-open") {
       flags.noOpen = true;
     } else if (token === "--upstream") {
@@ -193,6 +195,7 @@ async function runDaemon(flags: LauncherFlags): Promise<void> {
     flags.runtime === undefined ? undefined : parseDaemonRuntime(flags.runtime);
   const started = await startDaemonServer({
     ...(flags.port !== undefined ? { port: flags.port } : {}),
+    ...(flags.strictPort ? { strictPort: true } : {}),
     ...(defaultRuntime !== undefined ? { defaultRuntime } : {}),
     dataDir,
     ...(flags.dist !== undefined ? { distDir: flags.dist } : {}),
