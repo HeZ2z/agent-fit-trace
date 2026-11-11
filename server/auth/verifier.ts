@@ -9,7 +9,7 @@ import type { AuthPrincipal, FitTraceClient } from "@agent-fit-trace/api-contrac
  * they receive only the resolved {@link AuthPrincipal}.
  */
 export interface TokenVerifier {
-  verify(bearerToken: string): Promise<AuthPrincipal>;
+  verify(bearerToken: string, options?: { signal?: AbortSignal }): Promise<AuthPrincipal>;
 }
 
 /** Per-principal store lookup: each verified principal gets an isolated store. */
