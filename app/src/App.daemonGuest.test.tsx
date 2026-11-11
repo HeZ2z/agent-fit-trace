@@ -341,7 +341,7 @@ describe("app guest-local daemon mode", () => {
     await vi.waitFor(() => expect(state.resolveAccountA).toBeDefined());
     await user.click(screen.getByRole("link", { name: /^me$/i }));
     await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
-    await user.type(screen.getByLabelText(/email/i), "other@example.com");
+    await user.type(await screen.findByLabelText(/email/i), "other@example.com");
     await user.type(screen.getByLabelText(/password/i), "password");
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
     await user.click(screen.getByRole("link", { name: /^history$/i }));

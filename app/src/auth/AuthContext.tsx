@@ -1,3 +1,4 @@
+import { revokeWorkoutSync, transitionWorkoutSyncIfConnected } from "../api/workoutSync.ts";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { PublicApiConfig } from "@agent-fit-trace/api-contracts";
@@ -59,6 +60,7 @@ export interface AuthContextValue {
    */
   signInAsGuest: () => Promise<void>;
   signOutSession: () => Promise<void>;
+  retrySyncTransition: (() => Promise<void>) | null;
   /** Refresh the session once (used after a 401 on reads; writes never auto-retry). */
   refresh: () => Promise<boolean>;
   /** Re-read `/auth/v1/user` for the current session (classification + email). */
@@ -191,6 +193,8 @@ export function AuthProvider({
       : () => readStoredSession() ?? readStoredGuestCandidate(),
   );
   const [authError, setAuthError] = useState<AuthError | null>(null);
+  const [syncTransitionPending, setSyncTransitionPending] = useState(false);
+  const retrySyncTransitionRef = useRef<(() => Promise<void>) | null>(null);
   const [pendingGuestUpgrade, setPendingGuestUpgrade] = useState<PendingGuestUpgrade | null>(
     () => loadPendingGuestUpgrade(),
   );
@@ -390,13 +394,24 @@ export function AuthProvider({
     function onStorage(event: StorageEvent): void {
       if (event.key !== AUTH_STORAGE_KEY) return;
       if (event.newValue === null) {
+        const current = sessionRef.current;
+        retrySyncTransitionRef.current = null;
         generationRef.current += 1;
+        const changeGeneration = generationRef.current;
         refreshInflightRef.current = null;
         resetRefreshRetry();
         clearGuestCandidate();
         clearGuestUpgrade();
         setSessionSync(null);
         setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
+        if (authSurface === "daemon-optional") {
+          setSyncTransitionPending(true);
+          void revokeWorkoutSync(current?.accessToken).then(() => {
+            if (generationRef.current === changeGeneration) setSyncTransitionPending(false);
+          }, () => {
+            if (generationRef.current === changeGeneration) setAuthError(new AuthError("SYNC_TRANSITION_UNCONFIRMED", "Sync sign-out could not be confirmed. Reconnect and try again."));
+          });
+        }
         return;
       }
       const next = loadStoredSession(event.newValue);
@@ -412,14 +427,32 @@ export function AuthProvider({
       // Same UID with a new token is a credential refresh, not an identity
       // replacement: revalidate the token but keep this tab's pending upgrade.
       const sameUser = current !== null && current.user.id === next.user.id;
+      retrySyncTransitionRef.current = null;
       generationRef.current += 1;
       refreshInflightRef.current = null;
       resetRefreshRetry();
       clearGuestCandidate();
       if (!sameUser) clearGuestUpgrade();
-      setSessionSync(next);
-      setAuthError(null);
-      setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
+      if (authSurface === "daemon-optional") {
+        const changeGeneration = generationRef.current;
+        // Hide the previous identity while the daemon orders the transition.
+        // Do not persist a transient null: that would sign out other tabs.
+        setSyncTransitionPending(true);
+        setValidatedIdentity(null);
+        void transitionWorkoutSyncIfConnected(next.accessToken, current?.accessToken).then(() => {
+          if (generationRef.current !== changeGeneration) return;
+          setSessionSync(next);
+          setSyncTransitionPending(false);
+          setAuthError(null);
+          setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
+        }, () => {
+          if (generationRef.current === changeGeneration) setAuthError(new AuthError("SYNC_TRANSITION_UNCONFIRMED", "Sync identity change could not be confirmed. Try signing in again."));
+        });
+      } else {
+        setSessionSync(next);
+        setAuthError(null);
+        setValidatedIdentity((prev) => (skipAsyncValidation ? prev : null));
+      }
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -429,6 +462,7 @@ export function AuthProvider({
     resetRefreshRetry,
     setSessionSync,
     skipAsyncValidation,
+    authSurface,
   ]);
 
   // A pending upgrade belongs to exactly one guest identity. Any logout,
@@ -448,6 +482,7 @@ export function AuthProvider({
   // generation for its own retries.
   useEffect(
     () => () => {
+      retrySyncTransitionRef.current = null;
       generationRef.current += 1;
       refreshInflightRef.current = null;
       clearRefreshRetry();
@@ -531,12 +566,15 @@ export function AuthProvider({
           fetchImpl,
         );
         if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        const reconciled: SupabaseSession = { ...tokenSession, user: verified };
+        if (authSurface === "daemon-optional") await transitionWorkoutSyncIfConnected(reconciled.accessToken, sessionRef.current?.accessToken);
+        if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        retrySyncTransitionRef.current = null;
         generationRef.current += 1;
         refreshInflightRef.current = null;
         resetRefreshRetry();
         clearGuestCandidate();
         clearGuestUpgrade();
-        const reconciled: SupabaseSession = { ...tokenSession, user: verified };
         setSessionSync(reconciled);
         setValidatedIdentity(sessionIdentity(reconciled) ?? "validated");
         setAuthError(null);
@@ -638,6 +676,7 @@ export function AuthProvider({
         // Re-check guards before replacing identity. Success ends the
         // candidate state: the verified session is now authoritative.
         if (attempt !== authAttemptRef.current || generationRef.current !== generation) return;
+        retrySyncTransitionRef.current = null;
         generationRef.current += 1;
         refreshInflightRef.current = null;
         resetRefreshRetry();
@@ -903,6 +942,7 @@ export function AuthProvider({
       };
       // Same user id throughout: this is an in-place account upgrade, never a
       // login switch and never an owner/data migration.
+      retrySyncTransitionRef.current = null;
       generationRef.current += 1;
       authAttemptRef.current += 1;
       upgradeAttemptRef.current += 1;
@@ -1004,18 +1044,22 @@ export function AuthProvider({
     // stray call from clearing the local guest or marking an explicit logout.
     if (guestLocalRef.current) return;
     const current = sessionRef.current;
+    const signOutAttempt = ++authAttemptRef.current;
+    retrySyncTransitionRef.current = null;
+    const signOutGeneration = ++generationRef.current;
     const config = publicConfigProp ?? publicConfig;
+    refreshInflightRef.current = null;
+    resetRefreshRetry();
+    // Sync revocation is confirmed before reporting the identity switch.
+    if (authSurface === "daemon-optional") await revokeWorkoutSync(current?.accessToken);
+    if (generationRef.current !== signOutGeneration || authAttemptRef.current !== signOutAttempt) return;
     // Bump the epoch first so every pending restore/refresh/sign-in/guest
     // attempt is ignored, then clear local state so the previous user's data
     // can never flash, even if the network sign-out fails.
-    generationRef.current += 1;
-    authAttemptRef.current += 1;
     guestInflightRef.current = null;
     guestCandidateRef.current = null;
     writeStoredGuestCandidate(null);
     clearGuestUpgrade();
-    refreshInflightRef.current = null;
-    resetRefreshRetry();
     markExplicitSignOut(window.location.pathname);
     setSessionSync(null);
     setAuthError(null);
@@ -1034,6 +1078,7 @@ export function AuthProvider({
     }
   }, [
     clearGuestUpgrade,
+    authSurface,
     fetchImpl,
     publicConfig,
     publicConfigProp,
@@ -1045,7 +1090,7 @@ export function AuthProvider({
     // Guest-local has no refreshable credential: the fixed daemon bearer never
     // expires, and a stored Supabase session must never be refreshed against
     // the empty config fields.
-    if (guestLocalRef.current) return false;
+    if (guestLocalRef.current || syncTransitionPending) return false;
     const current = sessionRef.current;
     const config = publicConfigProp ?? publicConfig;
     if (current === null || config === null) return false;
@@ -1135,6 +1180,35 @@ export function AuthProvider({
             ? error
             : new AuthError("SESSION_EXPIRED", "Your session expired. Please sign in again.");
         resetRefreshRetry();
+        if (authSurface === "daemon-optional") {
+          retrySyncTransitionRef.current = null;
+          const revocationGeneration = ++generationRef.current;
+          const revocationAttempt = authAttemptRef.current;
+          setSyncTransitionPending(true);
+          setValidatedIdentity(null);
+          let inflight = false;
+          const isCurrent = () => generationRef.current === revocationGeneration && authAttemptRef.current === revocationAttempt && sessionRef.current === current;
+          const retry = async (): Promise<void> => {
+            if (inflight || !isCurrent()) return;
+            inflight = true;
+            setAuthError(null);
+            try {
+              await revokeWorkoutSync(current.accessToken);
+              if (!isCurrent()) return;
+              retrySyncTransitionRef.current = null;
+              clearGuestCandidate();
+              setAuthError(err);
+              setSessionSync(null);
+              setValidatedIdentity(null);
+              setSyncTransitionPending(false);
+            } catch {
+              if (isCurrent()) setAuthError(new AuthError("SYNC_TRANSITION_UNCONFIRMED", "Sync sign-out could not be confirmed. Reconnect and try again."));
+            } finally { inflight = false; }
+          };
+          retrySyncTransitionRef.current = retry;
+          await retry();
+          return false;
+        }
         clearGuestCandidate();
         setAuthError(err);
         setSessionSync(null);
@@ -1150,6 +1224,7 @@ export function AuthProvider({
     return task;
   }, [
     applySessionIfCurrent,
+    authSurface,
     clearGuestCandidate,
     fetchImpl,
     publicConfig,
@@ -1157,6 +1232,7 @@ export function AuthProvider({
     resetRefreshRetry,
     scheduleRefreshRetry,
     setSessionSync,
+    syncTransitionPending,
   ]);
 
   // The retry timer always calls the latest refresh (stable single-flight).
@@ -1170,7 +1246,7 @@ export function AuthProvider({
   // Transient Auth outages preserve the session with a recoverable
   // `AUTH_UNAVAILABLE` error (retry via `refresh()`) instead of signing out.
   useEffect(() => {
-    if (skipAsyncValidation || guestLocalRef.current) return;
+    if (skipAsyncValidation || guestLocalRef.current || syncTransitionPending) return;
     const config = publicConfigProp ?? publicConfig;
     const current = session;
     if (!bootstrapped || config === null || current === null) return;
@@ -1234,7 +1310,7 @@ export function AuthProvider({
     };
     // Run once per session/config identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootstrapped, effectiveConfig, session, validatedIdentity, skipAsyncValidation]);
+  }, [bootstrapped, effectiveConfig, session, validatedIdentity, skipAsyncValidation, syncTransitionPending]);
 
   // Proactively refresh the access token before it expires so requests never
   // use a stale token. The timer is keyed by the session identity; any
@@ -1265,16 +1341,16 @@ export function AuthProvider({
     !guestLocal &&
     (publicConfigProp ?? publicConfig) === null;
 
-  const validatingSession =
+  const validatingSession = syncTransitionPending || (
     !skipAsyncValidation &&
     !guestLocal &&
     !configUnavailable &&
     session !== null &&
-    validatedIdentity !== sessionIdentity(session);
+    validatedIdentity !== sessionIdentity(session));
 
   // Guest-local is a signed-in surface by construction: the local guest is
   // the stable identity, so no validation gate can ever hold it in loading.
-  const status: AuthContextValue["status"] = !bootstrapped
+  const status: AuthContextValue["status"] = !bootstrapped || syncTransitionPending
     ? "loading"
     : guestLocal
       ? "signed-in"
@@ -1306,6 +1382,7 @@ export function AuthProvider({
       signIn,
       signInAsGuest,
       signOutSession,
+      retrySyncTransition: retrySyncTransitionRef.current,
       refresh,
       refreshVerifiedUser,
       guestSignInEnabled,

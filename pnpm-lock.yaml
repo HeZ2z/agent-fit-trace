@@ -302,6 +302,15 @@ importers:
         specifier: workspace:*
         version: link:../fit-trace-core
 
+  packages/fit-trace-sync:
+    dependencies:
+      '@agent-fit-trace/api-contracts':
+        specifier: workspace:*
+        version: link:../fit-trace-api-contracts
+      '@agent-fit-trace/core':
+        specifier: workspace:*
+        version: link:../fit-trace-core
+
   packages/fit-trace-ui-tokens: {}
 
   packages/fit-trace-workout-session:

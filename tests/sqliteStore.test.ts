@@ -176,3 +176,31 @@ test("an invalid date filter fails before a corrupt store is read", async () => 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("sync migration enrolls existing and future local writes without authorizing upload", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const dir = await mkdtemp(join(tmpdir(), "fit-trace-sync-migration-"));
+  const path = join(dir, "workouts.db");
+  try {
+    const records = await historyRecords();
+    const db = new DatabaseSync(path);
+    db.exec("CREATE TABLE workouts (id TEXT PRIMARY KEY, date TEXT NOT NULL, canonical TEXT NOT NULL, record TEXT NOT NULL)");
+    db.prepare("INSERT INTO workouts VALUES (?, ?, ?, ?)").run(records[0].id, records[0].date, JSON.stringify(records[0]), JSON.stringify(records[0]));
+    db.close();
+    const store = new SqliteWorkoutStore(path);
+    try {
+      await store.import(records[1]);
+      await store.import(records[1]);
+      const rows = store.db.prepare("SELECT workout_id, account_id, endpoint, state FROM sync_outbox ORDER BY workout_id").all();
+      assert.deepEqual(rows.map((row) => ({ ...row })), records.slice(0, 2).map((record) => ({
+        workout_id: record.id, account_id: null, endpoint: null, state: "unassigned",
+      })).sort((a, b) => a.workout_id.localeCompare(b.workout_id)));
+    } finally {
+      store.close();
+    }
+    const reopened = new SqliteWorkoutStore(path);
+    reopened.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -1,3 +1,4 @@
+import { signedSyncToken, syncAuthFixture } from "./syncAuthFixture.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
@@ -1326,5 +1327,79 @@ test("manual rescan reruns pi detection and publishes the new executable version
     await daemon.close();
     await rm(dataDir, { recursive: true, force: true });
     await rm(bin, { recursive: true, force: true });
+  }
+});
+
+test("sync routes default closed and fence a revoked verified session", async () => {
+  const disabled = await bootDaemon();
+  try {
+    assert.equal((await fetch(`${disabled.daemon.url}/api/v1/sync/bootstrap`, { method: "POST" })).status, 503);
+    const unavailable = await fetch(`${disabled.daemon.url}/api/v1/sync/revoke-session`, { method: "POST", headers: { authorization: "Bearer unknown" } });
+    assert.equal(unavailable.status, 200);
+    assert.deepEqual(await unavailable.json(), { data: { revoked: false, configured: false } });
+    // A previous sync state means this daemon cannot confirm revocation while
+    // sync is disabled; it must not report the same never-configured result.
+    await writeFile(join(disabled.dataDir, "workout-sync-session.db"), "");
+    assert.equal((await fetch(`${disabled.daemon.url}/api/v1/sync/revoke-session`, { method: "POST", headers: { authorization: "Bearer unknown" } })).status, 503);
+  } finally { await disabled.daemon.close(); await rm(disabled.dataDir, { recursive: true, force: true }); }
+  const claims = { iss: "https://auth.example.test/auth/v1", sub: "alice", role: "authenticated", aud: "authenticated", session_id: "00000000-0000-0000-0000-000000000001" };
+  const token = signedSyncToken(JSON.stringify(claims));
+  const bobClaims = { ...claims, sub: "bob", session_id: "00000000-0000-0000-0000-000000000002" };
+  const bobToken = signedSyncToken(JSON.stringify(bobClaims));
+  const enabled = await bootDaemon({
+    env: { SUPABASE_URL: "https://auth.example.test", SUPABASE_PUBLISHABLE_KEY: "public", FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH: "1", FIT_TRACE_SYNC_PUBLIC_KEYS: JSON.stringify(syncAuthFixture.publicKeys), FIT_TRACE_API_BASE_URL: "https://api.example.test/api/v1" },
+    syncAuthFetch: syncAuthFixture.fetchImpl,
+    verifier: { async verify(value) { if (value === token) return { id: "alice", isAnonymous: false }; if (value === bobToken) return { id: "bob", isAnonymous: false }; throw new Error("bad token"); } },
+  });
+  try {
+    const headers = { authorization: `Bearer ${token}` };
+    const bootstrap = await fetch(`${enabled.daemon.url}/api/v1/sync/bootstrap`, { method: "POST", headers });
+    assert.equal(bootstrap.status, 200);
+    const { data: { capability } } = await bootstrap.json() as { data: { capability: string } };
+    const withCapability = { ...headers, "x-fit-trace-sync-capability": capability };
+    assert.equal((await fetch(`${enabled.daemon.url}/api/v1/sync/consent`, { method: "POST", headers: { ...withCapability, "content-type": "application/json" }, body: JSON.stringify({ endpoint: "https://api.example.test/api/v1" }) })).status, 200);
+    const transition = await fetch(`${enabled.daemon.url}/api/v1/sync/transition`, { method: "POST", headers: { authorization: `Bearer ${bobToken}`, "x-fit-trace-sync-capability": capability } });
+    assert.equal(transition.status, 200);
+    const { data: { capability: bobCapability } } = await transition.json() as { data: { capability: string } };
+    assert.equal((await fetch(`${enabled.daemon.url}/api/v1/sync/bootstrap`, { method: "POST", headers })).status, 403);
+    assert.equal((await fetch(`${enabled.daemon.url}/api/v1/sync/status`, { headers: withCapability })).status, 403);
+    assert.equal((await fetch(`${enabled.daemon.url}/api/v1/sync/logout`, { method: "POST", headers: { "x-fit-trace-sync-capability": capability } })).status, 403);
+    const revoke = `${enabled.daemon.url}/api/v1/sync/revoke-session`;
+    const aliceRevoke = await fetch(revoke, { method: "POST", headers });
+    assert.equal(aliceRevoke.status, 200);
+    assert.deepEqual(await aliceRevoke.json(), { data: { revoked: true, configured: true } });
+    assert.equal((await fetch(`${enabled.daemon.url}/api/v1/sync/status`, { headers: { authorization: `Bearer ${bobToken}`, "x-fit-trace-sync-capability": bobCapability } })).status, 200);
+    assert.equal((await fetch(revoke, { method: "POST", headers: { authorization: "Bearer forged" } })).status, 403);
+    assert.equal((await fetch(revoke, { method: "POST", headers: { authorization: `Bearer ${bobToken}` } })).status, 200);
+    assert.equal((await fetch(revoke, { method: "POST", headers: { authorization: `Bearer ${bobToken}` } })).status, 200);
+    assert.equal((await fetch(`${enabled.daemon.url}/api/v1/sync/status`, { headers: { authorization: `Bearer ${bobToken}`, "x-fit-trace-sync-capability": bobCapability } })).status, 403);
+  } finally { await enabled.daemon.close(); await rm(enabled.dataDir, { recursive: true, force: true }); }
+});
+
+test("disabled sync confirms no active session even when its database already exists", async () => {
+  const { WorkoutSyncSessionState } = await import("../server/workoutSyncSessionState.ts");
+  const { daemon, dataDir } = await bootDaemon();
+  try {
+    const endpoint = `${daemon.url}/api/v1/sync/revoke-session`;
+    const request = () => fetch(endpoint, { method: "POST", headers: { authorization: "Bearer test" } });
+    // Model a daemon that used sync before and cleanly revoked its session.
+    const state = new WorkoutSyncSessionState(dataDir);
+    const identity = { issuer: "https://auth.example.test/auth/v1", accountId: "account", sessionId: "00000000-0000-0000-0000-000000000001", endpoint: "https://api.example.test/api/v1" };
+    const cap = state.bootstrap(identity, state.version());
+    state.logout(cap, () => {});
+    state.close();
+    const inactive = await request();
+    assert.equal(inactive.status, 200);
+    assert.deepEqual(await inactive.json(), { data: { revoked: false, configured: false } });
+    // A separate sync daemon holding the ownership lock is not safe to inspect.
+    const owner = new WorkoutSyncSessionState(dataDir);
+    assert.equal((await request()).status, 503);
+    const active = { ...identity, sessionId: "00000000-0000-0000-0000-000000000002" };
+    owner.bootstrap(active, owner.version());
+    owner.close();
+    assert.equal((await request()).status, 503);
+  } finally {
+    await daemon.close();
+    await rm(dataDir, { recursive: true, force: true });
   }
 });

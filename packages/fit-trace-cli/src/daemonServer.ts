@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createPublicKey as createSyncPublicKey } from "node:crypto";
+import type { JsonWebKey } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { readFile, realpath, stat } from "node:fs/promises";
@@ -15,7 +17,10 @@ import {
   createLocalDaemonVerifier,
   LOCAL_DAEMON_BEARER,
 } from "../../../server/auth/localVerifier.ts";
+import { extractBearerToken } from "../../../server/auth/verifier.ts";
 import type { TokenVerifier } from "../../../server/auth/verifier.ts";
+import { WorkoutSyncService } from "../../../server/workoutSyncService.ts";
+import { hasNoActiveSyncSession } from "../../../server/workoutSyncSessionState.ts";
 import { getPublicConfig } from "../../../server/publicConfig.ts";
 import type { ServerPublicConfig } from "../../../server/publicConfig.ts";
 import {
@@ -172,6 +177,8 @@ export interface DaemonServerOptions {
   env?: Record<string, string | undefined>;
   /** Injected verifier (tests). Undefined resolves the composite daemon verifier. */
   verifier?: TokenVerifier;
+  /** Injected session ownership transport (tests). */
+  syncAuthFetch?: typeof fetch;
   /** Injected runtime factory (tests). Undefined uses CoachedPiProcess. */
   runtimeFactory?: RuntimeFactory;
   /**
@@ -604,9 +611,9 @@ export function createDaemonVerifier(env: Record<string, string | undefined>): T
       publishableKey: supabaseConfig.supabasePublishableKey,
     });
   return {
-    verify(bearerToken: string): Promise<AuthPrincipal> {
+    verify(bearerToken: string, requestOptions?: { signal?: AbortSignal }): Promise<AuthPrincipal> {
       if (bearerToken === LOCAL_DAEMON_BEARER) return local.verify(bearerToken);
-      if (supabase !== null) return supabase.verify(bearerToken);
+      if (supabase !== null) return supabase.verify(bearerToken, requestOptions);
       const error = new Error("Invalid bearer token.");
       (error as { code?: string }).code = "UNAUTHENTICATED";
       return Promise.reject(error);
@@ -668,6 +675,18 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     supabaseConfig === null
       ? null
       : { ...supabaseConfig, daemon: true, auth_configured: true };
+  // This opt-in is an operator attestation: only Supabase Auth may issue
+  // session_id, and hooks or imported/third-party signing keys may not alter it.
+  let workoutSync: WorkoutSyncService | null = null;
+  let syncPublicKeys: JsonWebKey[] = [];
+  try {
+    const keys: unknown = JSON.parse(env.FIT_TRACE_SYNC_PUBLIC_KEYS ?? "null");
+    if (Array.isArray(keys) && keys.length >= 1 && keys.length <= 2 && keys.every(key => key && typeof key === "object" && Object.keys(key).sort().join(",") === "crv,kid,kty,x,y" && key.kty === "EC" && key.crv === "P-256" && typeof key.kid === "string" && key.kid.length > 0 && typeof key.x === "string" && typeof key.y === "string") && new Set(keys.map(key => key.kid)).size === keys.length) {
+      for (const key of keys) createSyncPublicKey({ key, format: "jwk" });
+      syncPublicKeys = keys;
+    }
+  } catch { /* Invalid trust configuration keeps sync disabled. */ }
+  const syncConfigured = env.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH === "1" && supabaseConfig !== null && !!env.FIT_TRACE_API_BASE_URL && syncPublicKeys.length > 0;
   const handler = createAuthenticatedHandler({
     verifier,
     stores,
@@ -772,6 +791,60 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     // route; additive fields the handler itself does not serialize).
     if (bare === API_ENDPOINTS.publicConfig && method === "GET") {
       await servePublicConfig(response);
+      return;
+    }
+
+    if (bare.startsWith("/sync/")) {
+      if (!syncConfigured || supabaseConfig === null || !env.FIT_TRACE_API_BASE_URL) {
+        let inactive = false;
+        if (bare === "/sync/revoke-session" && method === "POST") {
+          try { inactive = hasNoActiveSyncSession(dataDir); } catch { /* State could not be verified. */ }
+        }
+        if (inactive) {
+          // No active sync is confirmed; this does not mean the bearer was
+          // verified or its session durably revoked.
+          sendJson(response, 200, JSON.stringify({ data: { revoked: false, configured: false } }));
+        } else {
+          sendJson(response, 503, errorEnvelope("STORAGE_UNAVAILABLE", "Workout sync is not configured on this daemon."));
+        }
+        return;
+      }
+      const token = extractBearerToken(typeof request.headers.authorization === "string" ? request.headers.authorization : undefined);
+      const cap = typeof request.headers["x-fit-trace-sync-capability"] === "string" ? request.headers["x-fit-trace-sync-capability"] : "";
+      try {
+        workoutSync ??= new WorkoutSyncService({ dataDir, supabaseUrl: supabaseConfig.supabaseUrl, verifier, endpoint: env.FIT_TRACE_API_BASE_URL, syncAuth: { publicKeys: syncPublicKeys, publishableKey: supabaseConfig.supabasePublishableKey, fetchImpl: options.syncAuthFetch } });
+        const syncVersion = workoutSync.sessionVersion();
+        const syncBody = method === "POST" ? await collectBody(request, 1024) : undefined;
+        let data: unknown;
+        if (bare === "/sync/logout" && method === "POST") {
+          workoutSync.logoutCapability(cap);
+          data = { revoked: true };
+        } else {
+          if (!token) { sendJson(response, 401, errorEnvelope("UNAUTHENTICATED", "Sign in to use workout sync.")); return; }
+          if (bare === "/sync/revoke-session" && method === "POST") { await workoutSync.revokeVerifiedSession(token); data = { revoked: true, configured: true }; }
+          else if (bare === "/sync/bootstrap" && method === "POST") data = { capability: await workoutSync.bootstrap(token, syncVersion) };
+          else if (bare === "/sync/transition" && method === "POST") data = { capability: await workoutSync.transition(token, cap) };
+          else if (bare === "/sync/status" && method === "GET") data = await workoutSync.status(token, cap);
+          else if (bare === "/sync/consent" && method === "POST") {
+            const input: unknown = JSON.parse(syncBody ?? "null");
+            if (typeof input !== "object" || input === null || !("endpoint" in input) || typeof input.endpoint !== "string") throw new Error("Destination required.");
+            await workoutSync.consent(token, cap, input.endpoint); data = { enabled: true };
+          }
+          else if (bare === "/sync/revoke-consent" && method === "POST") { await workoutSync.revokeConsent(token, cap); data = { enabled: false }; }
+          else if (bare === "/sync/run" && method === "POST") data = await workoutSync.run(token, cap);
+          else if (bare === "/sync/guest-preview" && method === "GET") data = await workoutSync.previewGuest(token, cap);
+          else if (bare === "/sync/guest-import" && method === "POST") {
+            const input: unknown = JSON.parse(syncBody ?? "null");
+            if (typeof input !== "object" || input === null || !("fingerprint" in input) ||
+                typeof input.fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(input.fingerprint)) throw new Error("Invalid preview.");
+            data = await workoutSync.importGuest(token, cap, input.fingerprint);
+          }
+          else { sendJson(response, 404, errorEnvelope("NOT_FOUND", "Unknown sync route.")); return; }
+        }
+        sendJson(response, 200, JSON.stringify({ data }));
+      } catch {
+        sendJson(response, 403, errorEnvelope("FORBIDDEN", "Sync could not be confirmed. Retry, or sign in again; recovery may require administrator help."));
+      }
       return;
     }
 
@@ -1143,6 +1216,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
           undefined,
         );
         journalLock?.release();
+        workoutSync?.close();
         stores.closeAll();
       }
     },

@@ -243,7 +243,7 @@ describe("App auth integration (HTTP mode)", () => {
 
     await user.click(screen.getByRole("link", { name: /^me$/i }));
     await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
-    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument());
     // No protected content and no stored token linger after logout.
     expect(screen.queryByText(/2026-09-01/)).not.toBeInTheDocument();
     expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
