@@ -307,8 +307,8 @@ the daemon also mounts the public cloud surface at the SAME loopback origin:
   not visible. The app states this in the Coach disclosure and the coaching
   settings page.
 - There is no user-entered destination yet. A custom hosted server needs its
-  own consent, issuer-compatibility and persisted-destination design; until
-  then only the approved destination is reachable.
+  own consent, issuer-compatibility and persisted-destination design; that is
+  tracked in #87. Until then only the approved destination is reachable.
 
 The daemon's LOCAL `/coaching/capabilities` discovery still reports
 `cloud-default` as unavailable (the daemon has no trusted hosted identity
