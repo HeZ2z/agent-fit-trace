@@ -25,6 +25,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
 import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
 import { extractBearerToken } from "../../../server/auth/verifier.ts";
 import type { TokenVerifier } from "../../../server/auth/verifier.ts";
@@ -376,8 +377,21 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
     let principal: AuthPrincipal;
     try {
       principal = await options.verifier.verify(token);
-    } catch {
-      sendJson(response, 401, "UNAUTHENTICATED", "Invalid or expired bearer token.");
+    } catch (error) {
+      // A rejected credential is 401; an unreachable/overloaded Auth service
+      // is 503. Flattening the latter into 401 would tell a valid user to sign
+      // in again during a transient outage.
+      const status = error instanceof ApiError ? error.status : undefined;
+      if (status !== undefined && status >= 500) {
+        sendJson(
+          response,
+          status,
+          error instanceof ApiError ? error.code : API_ERROR_CODES.STORAGE_UNAVAILABLE,
+          "Authentication service is unavailable.",
+        );
+      } else {
+        sendJson(response, 401, API_ERROR_CODES.UNAUTHENTICATED, "Invalid or expired bearer token.");
+      }
       return;
     }
     if (principal.isAnonymous !== false) {
@@ -465,7 +479,10 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
       const status = upstreamResponse.statusCode ?? 502;
       if (status >= 300 && status < 400) {
         settled = true;
-        upstreamResponse.resume();
+        // Do not drain an unbounded redirect body: a destination that sends
+        // headers and never finishes would keep this socket open forever.
+        upstreamResponse.destroy();
+        upstream.destroy();
         sendJson(response, 502, "UPSTREAM_UNAVAILABLE", "The cloud service redirected the request; refusing to follow it.");
         return;
       }

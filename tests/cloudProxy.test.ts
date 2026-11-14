@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
+import { API_ERROR_CODES, ApiError } from "@agent-fit-trace/api-contracts";
 import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
 import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import {
@@ -46,7 +47,7 @@ async function startUpstream(handler: UpstreamHandler): Promise<{ server: Server
 async function startProxy(
   upstreamPort: number,
   options: {
-    verifier?: ReturnType<typeof createTestVerifier>;
+    verifier?: { verify: (token: string) => Promise<AuthPrincipal> };
     maxSseBytes?: number;
     destinationHost?: string;
     resolveHost?: (hostname: string) => Promise<readonly { address: string; family: number }[]>;
@@ -289,6 +290,66 @@ test("proxy never follows an upstream redirect", async () => {
     });
     assert.equal(response.status, 502);
     assert.match(await response.text(), /redirected/);
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("proxy destroys an unfinished redirect upstream instead of keeping the socket open", async () => {
+  let upstreamClosed = false;
+  const upstream = await startUpstream((request, response) => {
+    response.writeHead(302, { location: "https://elsewhere.example.test/api/v1/coaching/cloud/capabilities" });
+    response.write("partial body that never ends");
+    request.on("close", () => {
+      upstreamClosed = true;
+    });
+    response.on("close", () => {
+      upstreamClosed = true;
+    });
+  });
+  const proxy = await startProxy(upstream.port);
+  try {
+    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(response.status, 502);
+    assert.match(await response.text(), /redirected/);
+    for (let index = 0; index < 100 && !upstreamClosed; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(upstreamClosed, true, "the rejected redirect socket must be destroyed");
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("proxy preserves a transient authentication-service outage as 503", async () => {
+  let upstreamCalls = 0;
+  const upstream = await startUpstream((_request, response) => {
+    upstreamCalls += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const proxy = await startProxy(upstream.port, {
+    verifier: {
+      async verify() {
+        throw new ApiError({
+          code: API_ERROR_CODES.STORAGE_UNAVAILABLE,
+          message: "Authentication service is unavailable.",
+          status: 503,
+        });
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(response.status, 503);
+    assert.equal(((await response.json()) as { error: { code: string } }).error.code, "STORAGE_UNAVAILABLE");
+    assert.equal(upstreamCalls, 0, "an Auth outage must not forward the bearer upstream");
   } finally {
     await close(proxy.server);
     await close(upstream.server);
