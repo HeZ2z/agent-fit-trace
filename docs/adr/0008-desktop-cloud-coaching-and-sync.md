@@ -335,7 +335,8 @@ Still open, and why this ADR is not marked Accepted for the whole issue:
 
 - **No user-entered destination.** The address is a build/operator decision.
   The consent UI, canonical-destination binding, issuer compatibility check and
-  persisted-destination/run-identity rules are not implemented.
+  persisted-destination/run-identity rules are split into follow-up #87, so the
+  official-destination transport can be reviewed on its own.
 - **No live packaged verification.** A signed-in packaged build running against
   a deployed hosted service (including real provider/quota and platform-level
   SSE streaming) has not been exercised here; local tests cover the seams, not
