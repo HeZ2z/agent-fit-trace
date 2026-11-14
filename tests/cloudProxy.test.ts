@@ -502,6 +502,7 @@ async function startDecisionProxy(
   decision: (principal: AuthPrincipal) => {
     status: "ready" | "unconfigured" | "unconfirmed" | "invalid";
     url?: URL;
+    binding?: string;
     code?: string;
     message?: string;
   },
@@ -590,6 +591,63 @@ test("a dynamic destination forwards the caller's bearer to the approved upstrea
     assert.equal(response.status, 200);
     assert.equal(seen.authorization, "Bearer token-formal");
     assert.equal(seen.host, `127.0.0.1:${upstream.port}`);
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("run-scoped cloud requests are refused when the destination binding changes", async () => {
+  let upstreamRequests = 0;
+  const upstream = await startUpstream((_request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { id: "s-1" } }));
+  });
+  const destination = new URL(`http://127.0.0.1:${upstream.port}/api/v1`);
+  const proxy = await startDecisionProxy(() => ({ status: "ready", url: destination, binding: "binding-1" }));
+  try {
+    // Capabilities are not run identity and do not require a binding.
+    const capabilities = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(capabilities.status, 200);
+
+    const unbound = await fetch(`${proxy.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-formal", "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(unbound.status, 409);
+    assert.equal(
+      ((await unbound.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_CHANGED",
+    );
+    assert.equal(upstreamRequests, 1, "only capabilities reached upstream; the unbound run request did not");
+
+    const stale = await fetch(`${proxy.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-formal",
+        "content-type": "application/json",
+        "x-fit-trace-cloud-destination": "binding-0",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal(upstreamRequests, 1);
+
+    const bound = await fetch(`${proxy.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-formal",
+        "content-type": "application/json",
+        "x-fit-trace-cloud-destination": "binding-1",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(bound.status, 200);
+    assert.equal(upstreamRequests, 2);
   } finally {
     await close(proxy.server);
     await close(upstream.server);

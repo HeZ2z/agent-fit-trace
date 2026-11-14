@@ -92,6 +92,15 @@ function allowedMethods(method: string, pathname: string): boolean {
   return false;
 }
 
+/**
+ * Run-scoped cloud paths whose identifiers belong to one destination. `read
+ * capabilities`, conversation history and destination configuration are not
+ * run identity and stay usable after a destination change.
+ */
+export function isRunScopedCloudPath(pathname: string): boolean {
+  return /^\/api\/v1\/coaching\/cloud\/(?:sessions|snapshots|runs)(?:\/|$)/.test(pathname);
+}
+
 function isLoopbackAddress(address: string): boolean {
   if (isIP(address) === 4) return address.startsWith("127.");
   return address === "::1";
@@ -489,6 +498,8 @@ export interface CloudProxyRoute {
 export interface CloudProxyDestinationDecision {
   status: "ready" | "unconfigured" | "unconfirmed" | "invalid";
   url?: URL;
+  /** Stable id of the destination the request must be bound to, when ready. */
+  binding?: string;
   code?: string;
   message?: string;
 }
@@ -582,6 +593,19 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
           status,
           decision.code ?? "CLOUD_DISABLED",
           decision.message ?? "Cloud coaching has no usable destination.",
+        );
+        return;
+      }
+      if (
+        decision.binding !== undefined &&
+        isRunScopedCloudPath(route.pathname) &&
+        request.headers["x-fit-trace-cloud-destination"] !== decision.binding
+      ) {
+        sendJson(
+          response,
+          409,
+          "CLOUD_DESTINATION_CHANGED",
+          "The cloud server changed while this run was in progress. The operation was not sent to another server; restore the original server or start a new run.",
         );
         return;
       }

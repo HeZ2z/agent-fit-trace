@@ -447,8 +447,19 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
     [sharedClient, boundTokenProvider],
   );
+  // Destination+issuer+binding of the cloud run this hook is currently bound
+  // to. Established run-scoped requests echo the binding so a destination
+  // change cannot silently redirect reconnect/cancel/same-key retries.
+  const cloudBindingRef = useRef<{
+    destination: string;
+    issuer: string;
+    binding: string;
+  } | null>(null);
   const cloudClient = useMemo(
-    () => new CloudCoachingClient({ getAccessToken: boundTokenProvider }),
+    () => new CloudCoachingClient({
+      getAccessToken: boundTokenProvider,
+      destinationBinding: () => cloudBindingRef.current?.binding ?? null,
+    }),
     [boundTokenProvider],
   );
   const router = useMemo(
@@ -578,9 +589,6 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   // restore failure can be re-verified on an explicit retry without inventing
   // state. Cleared as soon as the run is verified (or definitively reset).
   const restoreRecordRef = useRef<CoachResumeRecord | null>(null);
-  // Destination+issuer of the cloud run this hook is bound to. Set before a
-  // cloud submit and refreshed by a verified restore; never used for local runs.
-  const cloudBindingRef = useRef<{ destination: string; issuer: string } | null>(null);
   // True while a subscription is attached and has not settled: a cancel that
   // succeeds after a transport failure re-opens the tail only when it is false.
   const streamLiveRef = useRef(false);
@@ -1012,14 +1020,19 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       if (isCloudBackend(backendId) && cloudProxy) {
         try {
           const current = await readCloudDestination({ getAccessToken });
-          if (current.destination === null || current.issuer === null) {
+          if (generationRef.current !== gen) return;
+          if (current.destination === null || current.issuer === null || current.binding === null) {
             throw new ApiError({
               code: "CLOUD_DESTINATION_UNAVAILABLE",
               message:
                 "Cloud coaching has no configured server or account service. Configure it in Coach settings.",
             });
           }
-          cloudBindingRef.current = { destination: current.destination, issuer: current.issuer };
+          cloudBindingRef.current = {
+            destination: current.destination,
+            issuer: current.issuer,
+            binding: current.binding,
+          };
         } catch (caught) {
           if (generationRef.current === gen) {
             cloudBindingRef.current = null;
@@ -1613,6 +1626,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     lastConsumedRef.current = -1;
     pendingRetryRef.current = null;
     restoreRecordRef.current = null;
+    cloudBindingRef.current = null;
     // The old account's resume ids must never restore under the new account.
     // A null -> A transition (sign-in) is not a switch away from a known
     // account, so a same-account resume is left for the restore effect; the
@@ -1795,7 +1809,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
             beginPhase("idle");
             return;
           }
-          if (current.destination === null || current.issuer === null) {
+          if (current.destination === null || current.issuer === null || current.binding === null) {
             throw new ApiError({
               code: "CLOUD_DESTINATION_UNAVAILABLE",
               message: "The cloud server binding could not be verified.",
@@ -1804,6 +1818,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
           cloudBindingRef.current = {
             destination: current.destination,
             issuer: current.issuer,
+            binding: current.binding,
           };
         }
         if (!client.isBootstrapped) await client.bootstrap();

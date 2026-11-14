@@ -27,6 +27,7 @@ const OFFICIAL = {
   host: "cloud.example.test",
   officialDestination: "https://cloud.example.test/api/v1",
   issuer: "https://project.example.test",
+  binding: "binding-official",
   consent: "not-applicable",
 };
 

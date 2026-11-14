@@ -343,7 +343,9 @@ Landed after the sync work (#83):
 - Cloud runs now persist the destination and issuer that created them. On a
   destination change the record is retained and its resume is blocked before
   any session/run identifier is read, rather than replayed against the new
-  host.
+  host. Live run-scoped requests also echo an opaque destination binding, so a
+  change while a run is active or its submit acknowledgement is unresolved
+  fails closed instead of redirecting reconnect, cancel, or a same-key retry.
 
 Still open, and why this ADR is not marked Accepted for the whole issue:
 

@@ -62,6 +62,13 @@ export interface CloudCoachingClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   getAccessToken?: () => string | null | Promise<string | null>;
+  /**
+   * Stable destination id for the current run. Sent on run-scoped requests so
+   * the daemon can refuse to redirect an established run after the user
+   * changes the Cloud server. Capabilities and conversation history are not
+   * run identity and do not carry it.
+   */
+  destinationBinding?: () => string | null;
   /** Tests may shorten the abortable tail backoff. */
   tail?: CloudTailOptions;
 }
@@ -84,6 +91,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isOkStatus(status: number): boolean {
   return status >= 200 && status < 300;
+}
+
+/** The same paths the daemon binds to one destination. */
+function isRunScopedCloudPath(path: string): boolean {
+  return /^\/coaching\/cloud\/(?:sessions|snapshots|runs)(?:\/|$)/.test(path);
 }
 
 function assertSameOriginBase(baseUrl: string): void {
@@ -211,6 +223,7 @@ export class CloudCoachingClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly getAccessToken?: () => string | null | Promise<string | null>;
+  private readonly destinationBinding?: () => string | null;
   private readonly tailInitialBackoffMs: number;
   private readonly tailMaxBackoffMs: number;
   private readonly tailMaxMs: number;
@@ -223,12 +236,14 @@ export class CloudCoachingClient {
     // pins the receiver to `globalThis`, matching HttpFitTraceClient.
     fetchImpl = (input, init) => globalThis.fetch(input, init),
     getAccessToken,
+    destinationBinding,
     tail,
   }: CloudCoachingClientOptions = {}) {
     assertSameOriginBase(baseUrl);
     this.baseUrl = baseUrl;
     this.fetchImpl = fetchImpl;
     this.getAccessToken = getAccessToken;
+    this.destinationBinding = destinationBinding;
     this.tailInitialBackoffMs = positiveMs(
       tail?.initialBackoffMs,
       DEFAULT_TAIL_INITIAL_BACKOFF_MS,
@@ -525,7 +540,10 @@ export class CloudCoachingClient {
           finishAborted();
           return;
         }
-        const headers: Record<string, string> = { accept: "text/event-stream" };
+        const headers: Record<string, string> = {
+          accept: "text/event-stream",
+          ...this.destinationHeaders(`/coaching/cloud/runs/${runId}/events`),
+        };
         if (accessToken !== null && accessToken !== "") {
           headers.authorization = `Bearer ${accessToken}`;
         }
@@ -624,6 +642,14 @@ export class CloudCoachingClient {
     return { close, done };
   }
 
+  private destinationHeaders(path: string): Record<string, string> {
+    if (!isRunScopedCloudPath(path) || this.destinationBinding === undefined) return {};
+    const binding = this.destinationBinding();
+    return typeof binding === "string" && binding !== ""
+      ? { "x-fit-trace-cloud-destination": binding }
+      : {};
+  }
+
   private async request<T>(
     path: string,
     opts: {
@@ -640,7 +666,10 @@ export class CloudCoachingClient {
         : this.getAccessToken === undefined
           ? null
           : await this.getAccessToken();
-    const headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      ...this.destinationHeaders(path),
+    };
     if (opts.jsonBody !== undefined) headers["content-type"] = "application/json";
     if (accessToken !== null && accessToken !== "") {
       headers.authorization = `Bearer ${accessToken}`;

@@ -584,12 +584,36 @@ test("a user-entered destination is validated, consented per account, and proxie
     });
     assert.equal(confirmed.status, 200);
     const confirmedBody = (await confirmed.json()) as {
-      data: { source: string; consent: string; destination: string };
+      data: { source: string; consent: string; destination: string; binding: string };
     };
     assert.equal(confirmedBody.data.source, "user");
     assert.equal(confirmedBody.data.consent, "confirmed");
     assert.equal(confirmedBody.data.destination, cloud.apiBase);
+    assert.match(confirmedBody.data.binding, /^[0-9a-f]{32}$/);
     assert.equal(existsSync(join(daemon.dataDir, "cloud-destination.json")), true);
+
+    // Run-scoped requests are bound to the destination they started against.
+    // A request without the binding is refused before upstream; the same
+    // destination with the binding is forwarded.
+    const beforeBinding = cloud.requests.length;
+    const unbound = await fetch(`${daemon.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    });
+    assert.equal(unbound.status, 409);
+    assert.equal(
+      ((await unbound.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_CHANGED",
+    );
+    assert.equal(cloud.requests.length, beforeBinding);
+    const bound = await fetch(`${daemon.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: { ...headers, "x-fit-trace-cloud-destination": confirmedBody.data.binding },
+      body: JSON.stringify({}),
+    });
+    assert.equal(bound.status, 404, "the bound request reaches the upstream fake");
+    assert.equal(cloud.requests.length, beforeBinding + 1);
 
     // A different account sees the same device-local destination but must
     // confirm it for itself; its bearer is not forwarded before that.

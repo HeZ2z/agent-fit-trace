@@ -33,6 +33,12 @@ export interface CloudDestinationStatus {
   officialDestination: string | null;
   /** This daemon's account-service issuer (Supabase project URL), or null. */
   issuer: string | null;
+  /**
+   * Stable opaque id of the effective destination + account service. Cloud
+   * run-scoped requests echo it so the daemon can refuse to redirect an
+   * established run to a destination that changed underneath it.
+   */
+  binding: string | null;
   consent: CloudDestinationConsent;
   error?: CloudDestinationError;
 }
@@ -101,13 +107,17 @@ export function parseCloudDestinationStatus(value: unknown): CloudDestinationSta
     host: assertNullableString(value.host, "host"),
     officialDestination: assertNullableString(value.officialDestination, "officialDestination"),
     issuer: assertNullableString(value.issuer, "issuer"),
+    binding: assertNullableString(value.binding, "binding"),
     consent: value.consent,
   };
   if (value.error !== undefined) status.error = parseError(value.error);
   if (status.source === "official" || status.source === "user") {
-    if (status.destination === null || status.host === null) {
-      fail("destination", "must be present when a destination is in use");
+    if (status.destination === null || status.host === null || status.binding === null) {
+      fail("binding", "must be present when a destination is in use");
     }
+  }
+  if (status.source !== "official" && status.source !== "user" && status.binding !== null) {
+    fail("binding", "must be null when no destination is in use");
   }
   if (status.source === "invalid" && status.error === undefined) {
     fail("error", "must explain an invalid stored destination");

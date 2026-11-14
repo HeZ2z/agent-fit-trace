@@ -16,7 +16,7 @@
  * The official destination stays an operator/build decision. A user setting
  * overrides it; resetting removes the file and falls back to it.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -173,6 +173,25 @@ export function canonicalCloudDestination(destination: URL): string {
 /** The confirmation name for a destination: host plus a non-default port. */
 export function cloudDestinationHost(destination: URL): string {
   return destination.host;
+}
+
+/**
+ * Stable opaque id of the effective destination + account service.
+ *
+ * It is not a secret and not an authorization token: the proxy still checks the
+ * principal's destination consent on every request. The id lets a client prove
+ * that a run-scoped request belongs to the destination it started against, so
+ * a destination change cannot silently redirect an established run.
+ */
+export function cloudDestinationBinding(
+  source: "official" | "user",
+  destination: URL,
+  issuer: string | null,
+): string {
+  return createHash("sha256")
+    .update(`${source}\n${canonicalCloudDestination(destination)}\n${issuer ?? ""}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 /** Normalize an account-service URL for issuer comparison. */
@@ -404,6 +423,7 @@ export class CloudDestinationStore {
         host: null,
         officialDestination,
         issuer: this.issuer,
+        binding: null,
         consent: "not-applicable",
         error: { code: "CLOUD_DESTINATION_INVALID", message: this.state.message },
       };
@@ -415,6 +435,7 @@ export class CloudDestinationStore {
         host: null,
         officialDestination,
         issuer: this.issuer,
+        binding: null,
         consent: "not-applicable",
       };
     }
@@ -424,6 +445,7 @@ export class CloudDestinationStore {
       host: cloudDestinationHost(this.state.destination),
       officialDestination,
       issuer: this.issuer,
+      binding: cloudDestinationBinding(this.state.kind, this.state.destination, this.issuer),
       consent: this.consentState(principalId),
     };
   }
@@ -449,7 +471,11 @@ export class CloudDestinationStore {
       };
     }
     if (this.state.kind === "official") {
-      return { status: "ready", url: this.state.destination };
+      return {
+        status: "ready",
+        url: this.state.destination,
+        binding: cloudDestinationBinding("official", this.state.destination, this.issuer),
+      };
     }
     if (this.consentFor(principalId, this.state.destination) === null) {
       return {
@@ -460,7 +486,11 @@ export class CloudDestinationStore {
         )}. Confirm it in Coach settings first.`,
       };
     }
-    return { status: "ready", url: this.state.destination };
+    return {
+      status: "ready",
+      url: this.state.destination,
+      binding: cloudDestinationBinding("user", this.state.destination, this.issuer),
+    };
   }
 
   private assertIssuer(): string {

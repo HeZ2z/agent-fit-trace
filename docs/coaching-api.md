@@ -63,7 +63,7 @@ account.
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| `GET` | `/api/v1/coaching/cloud/destination` | current source (official/user/unset/invalid), canonical destination, host, issuer, and this principal's consent state |
+| `GET` | `/api/v1/coaching/cloud/destination` | current source (official/user/unset/invalid), canonical destination, host, issuer, opaque destination binding, and this principal's consent state |
 | `POST` | `/api/v1/coaching/cloud/destination/preview` | `{ address }` → `{ ok, destination, host, official, issuerCompatible, error? }`; no state change and no bearer to the candidate |
 | `PUT` | `/api/v1/coaching/cloud/destination` | `{ address, confirmHost }` → saves the canonical destination and this principal's consent after re-validating the issuer |
 | `DELETE` | `/api/v1/coaching/cloud/destination` | removes the user setting and every consent, falling back to the build default |
@@ -74,7 +74,10 @@ every proxied request. A custom destination must publish the same
 `supabaseUrl` at `/api/v1/public-config` as this daemon; otherwise it is refused
 with `CLOUD_DESTINATION_ISSUER_INCOMPATIBLE`. Consent is per principal and
 bound to the canonical destination and issuer; a destination change clears all
-consents. See [`local-daemon.md`](local-daemon.md) "Cloud coaching proxy".
+consents. Run-scoped proxy requests (`sessions`, `snapshots`, `runs`) must echo
+the status `binding`; a mismatch after a destination change is
+`409 CLOUD_DESTINATION_CHANGED`, so an established run is never redirected to
+another host. See [`local-daemon.md`](local-daemon.md) "Cloud coaching proxy".
 
 ### Backend capability discovery
 

@@ -316,6 +316,13 @@ surface at the SAME loopback origin. The destination is resolved per request:
   `docs/release.md`), so an inherited environment variable cannot repoint a
   packaged app; the user setting is an explicit authenticated action in the
   settings page, not an environment default.
+- Run-scoped requests (`sessions`, `snapshots`, `runs`, including event tails
+  and cancellation) must echo the opaque destination binding returned by the
+  status route. If the destination changes while a run is active or its submit
+  acknowledgement is unresolved, the proxy answers `409
+  CLOUD_DESTINATION_CHANGED` instead of forwarding the run's identifiers or a
+  same-key submit retry to the new host. Capabilities and conversation history
+  are not run identity and remain usable after a destination change.
 - Redirects are refused. Hostnames are resolved and every answer must be a
   public address (loopback, private, carrier-NAT, link-local, metadata,
   multicast, documentation and ULA ranges are rejected); the checked address is

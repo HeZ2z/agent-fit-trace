@@ -278,6 +278,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
     host: "cloud.example.test",
     officialDestination: "https://cloud.example.test/api/v1",
     issuer: AUTH_BASE,
+    binding: "binding-official",
     consent: "not-applicable",
   };
   const tailHarness: CloudTailHarness = {
@@ -453,6 +454,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
             host: parsed.host,
             officialDestination: "https://cloud.example.test/api/v1",
             issuer: AUTH_BASE,
+            binding: "binding-custom",
             consent: "confirmed",
           };
           return jsonData(cloudDestination);
@@ -464,6 +466,7 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
             host: "cloud.example.test",
             officialDestination: "https://cloud.example.test/api/v1",
             issuer: AUTH_BASE,
+            binding: "binding-official",
             consent: "not-applicable",
           };
           return jsonData(cloudDestination);
@@ -815,6 +818,10 @@ describe("browser coach backend selection", () => {
     };
     expect(resume.destination).toBe("https://cloud.example.test/api/v1");
     expect(resume.issuer).toBe(AUTH_BASE);
+    const cloudSubmit = seen.find(
+      (entry) => entry.url === "/api/v1/coaching/cloud/runs" && entry.method === "POST",
+    );
+    expect(cloudSubmit?.headers["x-fit-trace-cloud-destination"]).toBe("binding-official");
     const runReadsBefore = seen.filter((entry) => entry.url.includes(`/runs/${CLOUD_RUN}`)).length;
 
     first.unmount();
@@ -825,6 +832,7 @@ describe("browser coach backend selection", () => {
       host: "custom.example.test",
       officialDestination: "https://cloud.example.test/api/v1",
       issuer: AUTH_BASE,
+      binding: "binding-custom",
       consent: "confirmed",
     });
     render(<App />);

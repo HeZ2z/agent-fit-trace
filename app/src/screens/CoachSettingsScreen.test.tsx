@@ -150,6 +150,7 @@ const OFFICIAL_DESTINATION = {
   host: "cloud.example.test",
   officialDestination: "https://cloud.example.test/api/v1",
   issuer: "https://project.example.test",
+  binding: "binding-official",
   consent: "not-applicable" as const,
 };
 
@@ -344,6 +345,7 @@ describe("coach settings: cloud section", () => {
       source: "user",
       destination: "https://custom.example.test/api/v1",
       host: "custom.example.test",
+      binding: "binding-custom",
       consent: "confirmed",
     });
     const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
@@ -402,6 +404,7 @@ describe("coach settings: cloud section", () => {
       source: "user",
       destination: "https://custom.example.test/api/v1",
       host: "custom.example.test",
+      binding: "binding-custom",
       consent: "required",
     });
     vi.mocked(cloudDestination.confirmCloudDestination).mockResolvedValue({
@@ -409,6 +412,7 @@ describe("coach settings: cloud section", () => {
       source: "user",
       destination: "https://custom.example.test/api/v1",
       host: "custom.example.test",
+      binding: "binding-custom",
       consent: "confirmed",
     });
     const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
@@ -436,6 +440,7 @@ describe("coach settings: cloud section", () => {
       source: "invalid",
       destination: null,
       host: null,
+      binding: null,
       consent: "not-applicable",
       error: { code: "CLOUD_DESTINATION_INVALID", message: "The stored setting is invalid." },
     });
