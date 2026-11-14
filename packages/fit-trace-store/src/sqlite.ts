@@ -23,6 +23,65 @@ const CREATE_SQL = `
   CREATE INDEX IF NOT EXISTS workouts_date_idx ON workouts(date);
 `;
 
+/** Migration is serialized with all other store writers, including MCP and pi. */
+function migrateSyncSchema(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    if (version === 0) {
+      db.exec(`
+        ALTER TABLE workouts ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'
+          CHECK (origin IN ('local', 'remote'));
+        CREATE TABLE sync_outbox (
+          workout_id TEXT PRIMARY KEY NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+          account_id TEXT, endpoint TEXT,
+          state TEXT NOT NULL DEFAULT 'unassigned'
+            CHECK (state IN ('unassigned', 'pending', 'retry', 'complete', 'device-only')),
+          attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_error TEXT,
+          updated_at TEXT NOT NULL,
+          CHECK ((account_id IS NULL AND endpoint IS NULL) OR (account_id IS NOT NULL AND endpoint IS NOT NULL))
+        );
+        CREATE TABLE sync_revoked_session (
+          issuer TEXT NOT NULL, account_id TEXT NOT NULL, session_id TEXT NOT NULL,
+          PRIMARY KEY (issuer, account_id, session_id)
+        );
+        CREATE TABLE sync_consent (
+          account_id TEXT NOT NULL, endpoint TEXT NOT NULL, enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          PRIMARY KEY (account_id, endpoint)
+        );
+        CREATE TABLE sync_lease (
+          account_id TEXT NOT NULL, endpoint TEXT NOT NULL, owner TEXT NOT NULL,
+          generation INTEGER NOT NULL, expires_at TEXT NOT NULL, issuer TEXT NOT NULL, session_id TEXT NOT NULL,
+          PRIMARY KEY (account_id, endpoint)
+        );
+        CREATE TABLE sync_remote_membership (
+          account_id TEXT NOT NULL, endpoint TEXT NOT NULL, workout_id TEXT NOT NULL REFERENCES workouts(id),
+          fingerprint TEXT NOT NULL, PRIMARY KEY (account_id, endpoint, workout_id)
+        );
+        CREATE TABLE sync_status (
+          account_id TEXT NOT NULL, endpoint TEXT NOT NULL, last_success_at TEXT,
+          PRIMARY KEY (account_id, endpoint)
+        );
+        INSERT INTO sync_outbox (workout_id, updated_at)
+          SELECT id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM workouts;
+        CREATE TRIGGER workouts_enqueue_local AFTER INSERT ON workouts
+          WHEN NEW.origin = 'local'
+          BEGIN
+            INSERT INTO sync_outbox (workout_id, updated_at)
+              VALUES (NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+          END;
+        PRAGMA user_version = 1;
+      `);
+    } else if (version !== 1) {
+      throw new Error(`Unsupported workout database schema version: ${version}`);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    rollbackQuietly(db);
+    throw error;
+  }
+}
+
 /** Milliseconds a writer waits on a locked database before giving up (busy_timeout). */
 const BUSY_TIMEOUT_MS = 5000;
 
@@ -118,6 +177,7 @@ export class SqliteWorkoutStore {
       this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
       this.db.exec("PRAGMA foreign_keys = ON");
       this.db.exec(CREATE_SQL);
+      migrateSyncSchema(this.db);
     } catch (error) {
       // Setup failed (e.g. the file is not a database): release the handle
       // before propagating, or the descriptor leaks for the process lifetime.

@@ -1,0 +1,13 @@
+{
+  "name": "@agent-fit-trace/sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-fit-trace/api-contracts": "workspace:*",
+    "@agent-fit-trace/core": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

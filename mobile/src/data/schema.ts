@@ -33,20 +33,7 @@ export interface WorkoutMigration {
   statements: readonly string[];
 }
 
-/** Sync ownership identity; intentionally native-runtime independent. */
-export interface SyncScope {
-  accountId: string;
-  endpoint: string;
-  /** Present only for writes made by an active durable sync worker. */
-  leaseOwner?: string;
-  leaseGeneration?: number;
-}
-
-export interface SyncLease {
-  owner: string;
-  generation: number;
-  expiresAt: string;
-}
+export type { SyncScope, SyncLease } from "../../../packages/fit-trace-sync/src/types.ts";
 
 export const WORKOUTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS workouts (
   id TEXT PRIMARY KEY NOT NULL,

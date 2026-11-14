@@ -56,6 +56,8 @@ function stage(label, scriptPath) {
   }
 }
 
+// Clear any prior sync approval before another build stage can fail.
+stage("build:sync-config", path.join(__dirname, "buildSyncConfig.cjs"));
 stage("build:public-config", path.join(__dirname, "buildPublicConfig.cjs"));
 stage("build:daemon", path.join(__dirname, "buildDaemon.cjs"));
 stage("build:extension", path.join(__dirname, "buildExtension.cjs"));

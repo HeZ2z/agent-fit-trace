@@ -41,6 +41,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const { childEnvironment } = require("./publicConfig.cjs");
+const { configurePackagedSync } = require("./syncConfig.cjs");
 const { loadOrigin, saveOrigin } = require("./origin.cjs");
 const { app, BrowserWindow, dialog } = require("electron");
 const {
@@ -344,7 +345,13 @@ if (!gotLock) {
       desktopPort = loadOrigin(app.getPath("userData"));
       if (app.isPackaged) {
         const config = JSON.parse(fs.readFileSync(path.join(process.resourcesPath, "desktop-public-config.json"), "utf8"));
-        childEnv = childEnvironment(config, LAUNCH_PLAN.env);
+        const authEnv = childEnvironment(config, LAUNCH_PLAN.env);
+        childEnv = configurePackagedSync(
+          () => fs.readFileSync(path.join(process.resourcesPath, "desktop-sync-config.json"), "utf8"),
+          config,
+          authEnv,
+          (message) => dialog.showErrorBox("fit-trace workout sync", message),
+        );
       }
     } catch (error) {
       dialog.showErrorBox("fit-trace configuration", "Desktop configuration or saved origin is invalid. Reinstall the app or contact support. No account details were displayed.");

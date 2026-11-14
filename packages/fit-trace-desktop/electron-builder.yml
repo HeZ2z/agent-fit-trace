@@ -72,6 +72,8 @@ files:
 extraResources:
   - from: staging/desktop-public-config.json
     to: desktop-public-config.json
+  - from: staging/desktop-sync-config.json
+    to: desktop-sync-config.json
   # The daemon bundle, executed by the app's own binary as node.
   - from: staging/daemon.mjs
     to: daemon.mjs

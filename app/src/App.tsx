@@ -135,7 +135,7 @@ function RequireAuth({
   legacyLoopback?: boolean;
   client?: FitTraceClient;
 }) {
-  const { status, publicConfig, configError, authError, refresh } = useAuth();
+  const { status, publicConfig, configError, authError, refresh, retrySyncTransition } = useAuth();
   const { t } = useI18n();
   if (isLegacyLoopbackAllowed(legacyLoopback)) {
     return <ProtectedContent client={client}>{children}</ProtectedContent>;
@@ -143,6 +143,16 @@ function RequireAuth({
   if (status === "loading") {
     // A transient Auth outage keeps the loading gate with a retry instead
     // of signing out: the stored session is preserved (see AuthProvider).
+    if (authError !== null && authError.code === "SYNC_TRANSITION_UNCONFIRMED") {
+      return <section aria-labelledby="sync-transition-heading">
+        <h1 id="sync-transition-heading">{t("Sync identity change was not confirmed")}</h1>
+        <p role="alert">{authError.message}</p>
+        <p>{t("Sync remains unavailable until the daemon confirms the change.")}</p>
+        {retrySyncTransition
+          ? <button type="button" onClick={() => void retrySyncTransition()}>{t("Retry")}</button>
+          : <button type="button" onClick={() => window.location.reload()}>{t("Reload")}</button>}
+      </section>;
+    }
     if (authError !== null && authError.code === "AUTH_UNAVAILABLE") {
       return (
         <section aria-labelledby="auth-retry-heading">

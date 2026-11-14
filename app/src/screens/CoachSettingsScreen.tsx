@@ -1,3 +1,4 @@
+import { WorkoutSyncSettings } from "./WorkoutSyncSettings.tsx";
 /**
  * Coaching backend settings.
  *
@@ -71,7 +72,7 @@ function BackendRow({
 }
 
 export function CoachSettingsScreen() {
-  const { user } = useAuth();
+  const { user, authSurface } = useAuth();
   const { t } = useI18n();
   const {
     backends,
@@ -172,6 +173,7 @@ export function CoachSettingsScreen() {
         </button>
       </section>
 
+      {authSurface === "daemon-optional" ? <WorkoutSyncSettings /> : null}
       <section className="me-section" aria-labelledby="coach-settings-cloud">
         <h2 id="coach-settings-cloud">{t("Cloud coaching")}</h2>
         {isGuest ? (

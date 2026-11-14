@@ -376,3 +376,50 @@ Desktop session restoration depends on Electron preserving renderer storage as
 well as the saved origin. Live sign-in, restart restoration, and sign-out were
 checked against the intended project in a macOS arm64 package. Live token
 refresh, two-account switching, and Windows/Linux packaged runs remain untested.
+
+### Foreground workout sync (operator opt-in)
+
+Workout sync is disabled unless the daemon receives a fixed HTTPS
+`FIT_TRACE_API_BASE_URL` ending in the hosted API base (for example,
+`https://example.test/api/v1`) and `FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH=1`,
+and `FIT_TRACE_SYNC_PUBLIC_KEYS`, a JSON array of one or two operator-approved
+public P-256 JWKs, in addition to its Supabase URL and publishable key. The
+project must also have the reviewed session-ownership RPC migration deployed.
+The trust flag is an
+operator attestation that this Supabase project issues `session_id` only for
+its own Auth sessions: custom access-token hooks, imported signing keys and
+third-party signers must not be able to forge that claim. Do not enable the
+setting if this cannot be established. A renderer cannot enable this setting.
+Each sync authentication locally verifies the ES256 signature against an
+approved key, verifies the bearer through Auth, and asks the RPC whether that
+session belongs to the signed-in account. Unavailable checks fail closed.
+Previously sent remote requests may have committed before a session is revoked.
+
+In desktop coaching settings, connect sync to see its destination, then
+explicitly allow account-wide workout sync and choose **Sync now**. Each run
+uses the current access token in memory and transfers workout records only.
+There is no background sync or delete propagation. Identical IDs are
+idempotent; different records with the same ID are reported as conflicts and
+neither original is overwritten. Guest workouts remain in the guest store.
+The guest import preview shows copies, identical records and conflicts; the
+explicit import also consents to uploading this account's workouts on a later
+manual sync. It preserves guest originals and skips conflicting records.
+
+A confirmed daemon sign-out or identity transition fences the old session.
+If sign-out or a transition cannot be confirmed, retry while connected. A
+request already sent may have reached the hosted service before cancellation;
+retrying reconciles by record ID. A completed run does not prove a single
+consistent snapshot of the hosted history. The daemon persists session
+revocations across restarts. If it reports that recovery requires administrator
+help, do not remove its lock or edit its databases while it is running: a
+crash between the old-session revocation and the new-session commit is kept
+blocked rather than silently restoring an old session. Automatic recovery from
+that intermediate state is not available.
+
+Signing in to the desktop or syncing an account does not switch MCP or pi to
+that account. The daemon currently records guest as the default active
+identity on startup, so default followers use the guest store. Already-running
+MCP and pi processes keep the store they opened. Explicit `--principal`,
+`--store`, `FIT_TRACE_PRINCIPAL`, or `PI_FIT_TRACE_STORE` overrides select
+their own store. Coordinating confirmed account switches and already-running
+followers remains future work; restarting alone does not select the account.

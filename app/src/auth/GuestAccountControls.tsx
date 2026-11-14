@@ -42,6 +42,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
   const [resending, setResending] = useState(false);
   const [checking, setChecking] = useState(false);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkMessage, setCheckMessage] = useState<string | null>(null);
 
@@ -148,12 +149,19 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
     navigate("/login");
   }
 
-  function onSignOut(): void {
-    // Tear down the coach with the still-live guest credentials, then clear
-    // the session and leave for the sign-in screen.
-    coach.teardown();
-    void signOutSession();
-    navigate("/login", { replace: true });
+  async function onSignOut(): Promise<void> {
+    setSigningOut(true);
+    setError(null);
+    try {
+      // Tear down the coach while the guest credentials are still available.
+      coach.teardown();
+      await signOutSession();
+      navigate("/login", { replace: true });
+    } catch {
+      setError(t("Could not confirm sign out. Check your connection and try again."));
+    } finally {
+      setSigningOut(false);
+    }
   }
 
   if (compact) {
@@ -169,6 +177,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
         <Link className="account-link" to="/me">
           {t("Account details")}
         </Link>
+        {error !== null ? <p role="alert">{error}</p> : null}
         {confirmingSignOut ? (
           <div
             className="account-guest-warning"
@@ -181,10 +190,10 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
               )}
             </p>
             <div className="account-guest-actions">
-              <button type="button" onClick={onSignOut}>
-                {t("Sign out and lose guest access")}
+              <button type="button" disabled={signingOut} onClick={() => void onSignOut()}>
+                {signingOut ? t("Signing out…") : t("Sign out and lose guest access")}
               </button>
-              <button type="button" onClick={() => setConfirmingSignOut(false)}>
+              <button type="button" disabled={signingOut} onClick={() => setConfirmingSignOut(false)}>
                 {t("Cancel")}
               </button>
             </div>
@@ -286,10 +295,10 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
             )}
           </p>
           <div className="account-guest-actions">
-            <button type="button" onClick={onSignOut}>
-              {t("Sign out and lose guest access")}
+            <button type="button" disabled={signingOut} onClick={() => void onSignOut()}>
+              {signingOut ? t("Signing out…") : t("Sign out and lose guest access")}
             </button>
-            <button type="button" onClick={() => setConfirmingSignOut(false)}>
+            <button type="button" disabled={signingOut} onClick={() => setConfirmingSignOut(false)}>
               {t("Cancel")}
             </button>
           </div>

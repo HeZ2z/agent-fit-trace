@@ -281,6 +281,57 @@ this file only as a complete pair. A partial pair fails startup and the legacy
 `SUPABASE_ANON_KEY` cannot fill or change it. Direct `agent-fit-trace daemon`
 retains its existing environment configuration.
 
+### Desktop workout sync release configuration
+
+Desktop workout sync is **off by default**, including in a release-channel
+build. To opt a release into sync, an operator must set the public build
+variables `FIT_TRACE_DESKTOP_SYNC_APPROVED=1` and
+`FIT_TRACE_DESKTOP_SYNC_API_BASE_URL` to the fixed HTTPS API base, including
+`/api/v1`, and set `FIT_TRACE_DESKTOP_SYNC_PUBLIC_KEYS` to a JSON array of one
+or two approved public P-256 JWKs containing exactly `kty`, `crv`, `kid`, `x`
+and `y`. Verify the public keys against the intended project independently.
+Deploy the reviewed `fit_trace_sync_session_owned` migration first; until it
+is deployed, session verification fails closed. The approval attests that the chosen destination belongs to the
+selected Supabase project and that only that project's Supabase Auth can issue
+its session IDs; custom access-token hooks, third-party issuers and imported
+signers must not be able to forge them. Build-time validation cannot establish
+that operational relationship. Never put a service-role key, token, provider
+credential or other secret in these variables.
+
+Apply that migration as one transaction with a role that owns any existing
+function of the same signature. `CREATE OR REPLACE` preserves its existing
+owner and all existing grants: inspect the complete function ACL and remove
+unintended grants before relying on its restricted interface. A production
+project without migration history needs its existing schema and each prior
+migration independently reconciled before recording a baseline; do not run
+`supabase db push` against it until that reconciliation is complete.
+
+The build creates a separate versioned `desktop-sync-config.json`; it does not
+change the four-field authentication configuration. The sync file contains
+only the public API base, public Supabase URL, publishable key, and approved
+public signing keys. Missing approval leaves it disabled. Partial approval,
+invalid URLs and enabling sync in a guest-only build fail the build. Each build
+first writes a disabled sync configuration, so a failed build cannot leave a
+previous approval staged. The GitHub release workflow reads the three optional
+variables from repository variables; neither is enabled by default.
+
+At packaged startup the daemon receives the approved API base and trusted Auth
+flag only if the sync file, the release auth file and the selected runtime auth
+pair all match. A different auth override, absent or invalid sync file, or a
+disabled sync file leaves sync disabled. Inherited `FIT_TRACE_API_BASE_URL`
+`FIT_TRACE_SYNC_PUBLIC_KEYS` and `FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH` cannot override that decision in a
+packaged build. Development and direct daemon launches continue to use their
+explicit environment settings. Rebuild and redistribute the desktop artifact
+after changing the approved target or project; never edit the staged file as
+an operational shortcut.
+
+For planned signing-key rotation, approve the current and next public keys,
+publish the updated desktop build before rotating Supabase Auth, then remove
+the old public key in a subsequent release after the transition. The dual-key
+interval trusts both private-key holders. A client that has not received the
+new approved key fails closed after refresh; ordinary sign-in is unaffected.
+Emergency key compromise may require immediate revocation and interruption.
+
 Verification in this change included an unsigned macOS arm64 guest-only
 package, launched twice with temporary HOME, data, and Electron userData
 directories; both launches served guest-local public configuration at the same

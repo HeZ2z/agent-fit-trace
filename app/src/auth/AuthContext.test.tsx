@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from "./AuthContext.tsx";
 import { Layout } from "../components/Layout.tsx";
 import { AUTH_STORAGE_KEY, serializeSession } from "./supabaseAuth.ts";
 import type { SupabaseSession } from "./supabaseAuth.ts";
+import * as workoutSync from "../api/workoutSync.ts";
 import {
   GUEST_UPGRADE_STORAGE_KEY,
   loadPendingGuestUpgrade,
@@ -36,18 +37,20 @@ function deferredResponse(body: unknown, status = 200): {
 }
 
 function Probe() {
-  const { status, user, getAccessToken, signOutSession, refresh } = useAuth();
+  const { status, user, getAccessToken, signOutSession, refresh, retrySyncTransition, authError } = useAuth();
   return (
     <div>
       <span data-testid="status">{status}</span>
       <span data-testid="user">{user?.id ?? "none"}</span>
       <span data-testid="token">{getAccessToken() ?? "none"}</span>
+      <span data-testid="probe-auth-error">{authError?.code ?? "none"}</span>
       <button type="button" onClick={() => void signOutSession()}>
         sign out
       </button>
       <button type="button" onClick={() => void refresh()}>
         refresh
       </button>
+      {retrySyncTransition && <button type="button" onClick={() => void retrySyncTransition()}>retry sync transition</button>}
     </div>
   );
 }
@@ -56,6 +59,104 @@ describe("AuthProvider", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+  });
+
+  it("blocks on unconfirmed sync revocation after a permanently rejected refresh", async () => {
+    const spy = vi.spyOn(workoutSync, "revokeWorkoutSync").mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: "invalid refresh" }), { status: 400 })) as typeof fetch;
+    try {
+      render(<AuthProvider skipBootstrap publicConfig={{ supabaseUrl: "https://project.example", supabasePublishableKey: "pub", daemon: true, auth_configured: true }} fetchImpl={fetchImpl} initialSession={sessionFor("user-1", "a@example.com")}><Probe /></AuthProvider>);
+      fireEvent.click(screen.getByText("refresh"));
+      await waitFor(() => expect(spy).toHaveBeenCalledWith("access-user-1"));
+      await waitFor(() => expect(screen.getByTestId("status")).toHaveTextContent("loading"));
+      expect(screen.getByTestId("user")).toHaveTextContent("user-1");
+      fireEvent.click(await screen.findByText("retry sync transition"));
+      await waitFor(() => expect(screen.getByTestId("user")).toHaveTextContent("guest"));
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(spy).toHaveBeenLastCalledWith("access-user-1");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("does not let a late failed-refresh revocation clear a newer account", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const revoke = vi.spyOn(workoutSync, "revokeWorkoutSync").mockReturnValue(pending);
+    const transition = vi.spyOn(workoutSync, "transitionWorkoutSyncIfConnected").mockResolvedValue();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: "invalid refresh" }), { status: 400 })) as typeof fetch;
+    try {
+      render(<AuthProvider skipBootstrap publicConfig={{ supabaseUrl: "https://project.example", supabasePublishableKey: "pub", daemon: true, auth_configured: true }} fetchImpl={fetchImpl} initialSession={sessionFor("user-1", "a@example.com")}><Probe /></AuthProvider>);
+      fireEvent.click(screen.getByText("refresh"));
+      await waitFor(() => expect(revoke).toHaveBeenCalled());
+      const next = sessionFor("user-2", "b@example.com");
+      act(() => window.dispatchEvent(new StorageEvent("storage", { key: AUTH_STORAGE_KEY, newValue: serializeSession(next) })));
+      await waitFor(() => expect(screen.getByTestId("user")).toHaveTextContent("user-2"));
+      await act(async () => { finish(); await pending; });
+      expect(screen.getByTestId("user")).toHaveTextContent("user-2");
+      expect(screen.getByTestId("status")).toHaveTextContent("signed-in");
+    } finally { revoke.mockRestore(); transition.mockRestore(); }
+  });
+
+  it("does not offer A's retry after B replaces A and B's cross-tab logout fails", async () => {
+    const revoke = vi.spyOn(workoutSync, "revokeWorkoutSync").mockRejectedValue(new Error("offline"));
+    const transition = vi.spyOn(workoutSync, "transitionWorkoutSyncIfConnected").mockResolvedValue();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: "invalid refresh" }), { status: 400 })) as typeof fetch;
+    try {
+      render(<AuthProvider skipBootstrap publicConfig={{ supabaseUrl: "https://project.example", supabasePublishableKey: "pub", daemon: true, auth_configured: true }} fetchImpl={fetchImpl} initialSession={sessionFor("user-1", "a@example.com")}><Probe /></AuthProvider>);
+      fireEvent.click(screen.getByText("refresh"));
+      await screen.findByText("retry sync transition");
+      const next = sessionFor("user-2", "b@example.com");
+      act(() => window.dispatchEvent(new StorageEvent("storage", { key: AUTH_STORAGE_KEY, newValue: serializeSession(next) })));
+      await waitFor(() => expect(screen.getByTestId("user")).toHaveTextContent("user-2"));
+      act(() => window.dispatchEvent(new StorageEvent("storage", { key: AUTH_STORAGE_KEY, newValue: null })));
+      await waitFor(() => expect(screen.getByTestId("probe-auth-error")).toHaveTextContent("SYNC_TRANSITION_UNCONFIRMED"));
+      expect(screen.getByTestId("status")).toHaveTextContent("loading");
+      expect(screen.queryByText("retry sync transition")).not.toBeInTheDocument();
+      expect(revoke).toHaveBeenLastCalledWith("access-user-2");
+    } finally { revoke.mockRestore(); transition.mockRestore(); }
+  });
+
+  it("does not revalidate the old unexpired token while failed-refresh revocation is pending", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const revoke = vi.spyOn(workoutSync, "revokeWorkoutSync").mockReturnValue(pending);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => String(input).includes("grant_type=refresh_token")
+      ? new Response(JSON.stringify({ message: "invalid refresh" }), { status: 400 })
+      : new Response(JSON.stringify({ id: "user-1", email: "a@example.com", is_anonymous: false }), { status: 200 })) as typeof fetch;
+    try {
+      render(<AuthProvider skipBootstrap skipValidation={false} publicConfig={{ supabaseUrl: "https://project.example", supabasePublishableKey: "pub", daemon: true, auth_configured: true }} fetchImpl={fetchImpl} initialSession={sessionFor("user-1", "a@example.com")}><Probe /></AuthProvider>);
+      await waitFor(() => expect(screen.getByTestId("status")).toHaveTextContent("signed-in"));
+      fireEvent.click(screen.getByText("refresh"));
+      await waitFor(() => expect(revoke).toHaveBeenCalled());
+      const verifiedBefore = vi.mocked(fetchImpl).mock.calls.filter(([url]) => String(url).includes("/auth/v1/user")).length;
+      await act(async () => { await Promise.resolve(); });
+      expect(vi.mocked(fetchImpl).mock.calls.filter(([url]) => String(url).includes("/auth/v1/user"))).toHaveLength(verifiedBefore);
+      await act(async () => { finish(); await pending; });
+      await waitFor(() => expect(screen.getByTestId("user")).toHaveTextContent("guest"));
+    } finally { revoke.mockRestore(); }
+  });
+
+  it("does not let a refresh cancel sign-out while sync revocation is pending", async () => {
+    let finishRefresh!: (response: Response) => void;
+    let finishRevoke!: () => void;
+    const refreshResponse = new Promise<Response>((resolve) => { finishRefresh = resolve; });
+    const revocation = new Promise<void>((resolve) => { finishRevoke = resolve; });
+    const spy = vi.spyOn(workoutSync, "revokeWorkoutSync").mockReturnValue(revocation);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("grant_type=refresh_token")) return refreshResponse;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      render(<AuthProvider skipBootstrap publicConfig={{ supabaseUrl: "http://127.0.0.1:54321", supabasePublishableKey: "pub", daemon: true, auth_configured: true }} fetchImpl={fetchImpl} initialSession={sessionFor("user-1", "a@example.com")}><Probe /></AuthProvider>);
+      fireEvent.click(screen.getByText("refresh"));
+      fireEvent.click(screen.getByText("sign out"));
+      await act(async () => {
+        finishRefresh(new Response(JSON.stringify({ access_token: "refreshed", refresh_token: "new-refresh", expires_in: 3600, user: { id: "user-1" } }), { status: 200 }));
+        await Promise.resolve();
+        finishRevoke();
+      });
+      await waitFor(() => expect(screen.getByTestId("user").textContent).toBe("guest"));
+      expect(screen.getByTestId("token").textContent).not.toBe("refreshed");
+    } finally { spy.mockRestore(); }
   });
 
   it("exposes the session token and clears everything on sign-out", async () => {

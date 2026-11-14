@@ -32,10 +32,11 @@ export function createSupabaseVerifier(options: SupabaseVerifierOptions): TokenV
   }
 
   return {
-    async verify(bearerToken: string): Promise<AuthPrincipal> {
+    async verify(bearerToken: string, requestOptions?: { signal?: AbortSignal }): Promise<AuthPrincipal> {
       let response: Response;
       try {
         response = await fetchImpl(`${supabaseUrl}/auth/v1/user`, {
+          signal: requestOptions?.signal,
           headers: {
             apikey: options.publishableKey,
             Authorization: `Bearer ${bearerToken}`,

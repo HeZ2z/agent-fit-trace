@@ -216,7 +216,7 @@ describe("App coach logout teardown (item 1)", () => {
     render(<App />);
 
     // Sign in as A, then open the (runtime-gated) Coach route.
-    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument());
     await user.type(screen.getByLabelText("Email"), "a@example.com");
     await user.type(screen.getByLabelText("Password"), "pw-a-1234");
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
@@ -233,7 +233,7 @@ describe("App coach logout teardown (item 1)", () => {
 
     await user.click(screen.getByRole("link", { name: /^me$/i }));
     await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
-    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument());
 
     const coachLogout = seen.find((entry) => entry.url.endsWith("/coaching/logout"));
     const authLogout = seen.find((entry) => entry.url === `${AUTH_BASE}/auth/v1/logout`);
@@ -269,7 +269,7 @@ describe("App coach logout teardown (item 1)", () => {
     render(<App />);
 
     // Sign in as A and start a live run on the Coach route.
-    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument());
     await user.type(screen.getByLabelText("Email"), "a@example.com");
     await user.type(screen.getByLabelText("Password"), "pw-a-1234");
     await user.click(screen.getByRole("button", { name: /^sign in$/i }));
@@ -294,7 +294,7 @@ describe("App coach logout teardown (item 1)", () => {
     // retained credentials, before the auth sign-out.
     await user.click(screen.getByRole("link", { name: /^me$/i }));
     await user.click(await screen.findByRole("button", { name: /^sign out$/i }));
-    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument());
 
     const coachLogout = seen.find((entry) => entry.url.endsWith("/coaching/logout"));
     const coachCancel = seen.find((entry) => entry.url.endsWith(`/coaching/runs/${RUN}/cancel`));
