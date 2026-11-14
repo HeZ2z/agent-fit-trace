@@ -270,6 +270,44 @@ function collectBody(request: IncomingMessage, maxBytes: number): Promise<string
   });
 }
 
+/** The slice of `IncomingMessage`/`ServerResponse` the body pump needs. */
+export interface ProxyBodySource {
+  on(event: "data", listener: (chunk: Buffer) => void): unknown;
+  pause(): unknown;
+  resume(): unknown;
+}
+
+export interface ProxyBodySink {
+  write(chunk: Buffer): boolean;
+  on(event: "drain", listener: () => void): unknown;
+}
+
+/**
+ * Copy an upstream body into the caller's response with backpressure.
+ *
+ * `ServerResponse.write` returning false means the client is not keeping up;
+ * the upstream is paused until the response drains. Without this the daemon
+ * would buffer an arbitrarily large hostile body even though the response
+ * socket has a bounded queue. The caller owns headers, status, end and error.
+ */
+export function pipeUpstreamBody(
+  upstream: ProxyBodySource,
+  response: ProxyBodySink,
+  limit: number,
+  onLimitExceeded: () => void,
+): void {
+  let bytes = 0;
+  upstream.on("data", (chunk: Buffer) => {
+    bytes += chunk.length;
+    if (bytes > limit) {
+      onLimitExceeded();
+      return;
+    }
+    if (!response.write(chunk)) upstream.pause();
+  });
+  response.on("drain", () => upstream.resume());
+}
+
 export interface CloudProxyOptions {
   /** Operator-approved HTTPS origin ending in `/api/v1`. */
   apiBaseUrl: URL;
@@ -396,7 +434,6 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
     });
 
     let settled = false;
-    let responseBytes = 0;
     let responseLimit = maxJsonBytes;
     const fail = (status: number, code: string, message: string): void => {
       if (settled) return;
@@ -425,18 +462,12 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
       const contentTypeUpstream = String(upstreamResponse.headers["content-type"] ?? "");
       responseLimit = contentTypeUpstream.startsWith("text/event-stream") ? maxSseBytes : maxJsonBytes;
       response.writeHead(status, forwardableResponseHeaders(upstreamResponse.headers));
-      upstreamResponse.on("data", (chunk: Buffer) => {
+      pipeUpstreamBody(upstreamResponse, response, responseLimit, () => {
         if (settled) return;
-        responseBytes += chunk.length;
-        if (responseBytes > responseLimit) {
-          settled = true;
-          upstreamResponse.destroy();
-          response.destroy();
-          return;
-        }
-        if (!response.write(chunk)) upstreamResponse.pause();
+        settled = true;
+        upstreamResponse.destroy();
+        response.destroy();
       });
-      response.on("drain", () => upstreamResponse.resume());
       upstreamResponse.on("end", () => {
         if (settled) return;
         settled = true;

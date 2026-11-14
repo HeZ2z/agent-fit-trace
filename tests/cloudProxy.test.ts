@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { createServer, get as httpGet } from "node:http";
+import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { once } from "node:events";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
@@ -12,6 +13,7 @@ import {
   isAllowedCloudPath,
   isPublicAddress,
   parseCloudApiBase,
+  pipeUpstreamBody,
   resolveApprovedAddress,
 } from "../packages/fit-trace-cli/src/cloudProxy.ts";
 
@@ -337,51 +339,30 @@ test("proxy aborts the upstream request when the client disconnects", async () =
   }
 });
 
-test("proxy backpressures a slow reader instead of draining the upstream", async () => {
-  let finished = false;
-  let sawBackpressure = false;
-  const upstream = await startUpstream((_request, response) => {
-    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
-    let sent = 0;
-    const chunk = `data: ${"x".repeat(64 * 1024)}\n\n`;
-    const pump = (): void => {
-      while (sent < 64) {
-        sent += 1;
-        if (!response.write(chunk)) {
-          sawBackpressure = true;
-          response.once("drain", pump);
-          return;
-        }
-      }
-      finished = true;
-      response.end();
-    };
-    pump();
-  });
-  const proxy = await startProxy(upstream.port, { maxSseBytes: 16 * 1024 * 1024 });
-  try {
-    // Use the raw client request, not fetch: it does not read the body until a
-    // listener/resume is attached, so the proxy's response buffer is what the
-    // test actually observes.
-    const response = await new Promise<IncomingMessage>((resolve, reject) => {
-      const request = httpGet(`${proxy.url}/api/v1/coaching/cloud/runs/r1/events`, {
-        headers: { authorization: "Bearer token-formal", accept: "text/event-stream" },
-      }, resolve);
-      request.on("error", reject);
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, 150));
-    assert.equal(finished, false, "upstream was drained while the client was not reading");
-    response.resume();
-    await once(response, "end");
-    for (let index = 0; index < 100 && !finished; index += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+test("proxy body pump pauses upstream when the client sink is full", async () => {
+  // Deterministic unit of the real pump: a real read stream and a fake sink
+  // whose write() always reports a full buffer. OS socket buffering makes a
+  // socket-level assertion environment-dependent, so this tests the contract
+  // the proxy actually relies on: pause on a short write, resume on drain.
+  class FullSink extends EventEmitter {
+    write(): boolean {
+      return false;
     }
-    assert.equal(finished, true, "upstream never resumed after the client read");
-    assert.equal(sawBackpressure, true, "the upstream response buffer never applied backpressure");
-  } finally {
-    await close(proxy.server);
-    await close(upstream.server);
   }
+  const upstream = new PassThrough();
+  const sink = new FullSink();
+  let limitExceeded = 0;
+  pipeUpstreamBody(upstream, sink, 64, () => {
+    limitExceeded += 1;
+  });
+  upstream.write(Buffer.alloc(16));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(upstream.isPaused(), true, "a short write must pause the upstream");
+  sink.emit("drain");
+  assert.equal(upstream.isPaused(), false, "drain must resume the upstream");
+  upstream.write(Buffer.alloc(64));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(limitExceeded, 1, "the byte cap must stop the pump");
 });
 
 test("proxy caps a response instead of buffering it without bound", async () => {
