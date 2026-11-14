@@ -519,6 +519,35 @@ test("cloud HTTP: SSE streams the first stored event before the terminal event",
   assert.match(rest, /"status":"completed"/);
 });
 
+test("cloud HTTP: streaming SSE validates the initial cursor before returning 200", async () => {
+  // The stream must not commit a 200 before its first repository read: an
+  // expired cursor has to reach the client as structured 410 JSON so the
+  // coach can enter its refetch-from-firstSeq recovery path.
+  const { handler } = setup(undefined, {
+    streamSse: true,
+    sse: { pollMs: 1, maxDurationMs: 60_000, pageLimit: 200 },
+  });
+  const { sessionId, snapshot } = await createSessionAndSnapshot(handler);
+  const submitted = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-initial-cursor"),
+  });
+  assert.equal(submitted.status, 201);
+  const runId = (submitted.json?.data as { run: { id: string } }).run.id;
+  const response = await call(handler, {
+    method: "GET",
+    pathname: `/coaching/cloud/runs/${runId}/events`,
+    token: "token-formal",
+    accept: "text/event-stream",
+    search: "fromSeq=5",
+  });
+  assert.equal(response.status, 410);
+  assert.equal((response.json?.error as { code: string }).code, "EXPIRED_CURSOR");
+  assert.equal(response.raw.includes("data:"), false, "an invalid cursor must not open an SSE stream");
+});
+
 test("cloud snapshot exposes only the hosted source records to the provider", async () => {
   // Sentinel records make the data boundary observable: the local/desktop
   // store is NOT a source for a cloud run. A run that merely "completed" would

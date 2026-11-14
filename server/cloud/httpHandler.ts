@@ -34,7 +34,7 @@ import type { TokenVerifier } from "../auth/verifier.ts";
 import { DEFAULT_MAX_BODY_BYTES } from "../authenticatedHandler.ts";
 import type { WorkoutSource } from "../coaching/coachingService.ts";
 import { WorkoutSourceUnavailable } from "../coaching/coachingService.ts";
-import type { CloudRequestRepository } from "./repository.ts";
+import type { CloudEventPage, CloudRequestRepository } from "./repository.ts";
 import { CloudError } from "./repository.ts";
 
 const MAX_SNAPSHOT_RECORDS = 5000;
@@ -393,7 +393,7 @@ export function createCloudCoachingHandler(
         const fromSeq = parseFromSeq(params);
         if ((request.accept ?? "").includes("text/event-stream")) {
           return streamSse
-            ? streamSseResponse(repository, runId, fromSeq, sse, now, sleep)
+            ? await streamSseResponse(repository, runId, fromSeq, sse, now, sleep)
             : await replaySse(repository, runId, fromSeq, sse, now, sleep);
         }
         return ok(await repository.readEvents(runId, fromSeq, sse.pageLimit));
@@ -425,19 +425,23 @@ function sseResponse(body: string, stream?: ReadableStream<Uint8Array>): CloudHt
  * deadline, or the total-byte cap; a client resumes from its cursor in every
  * non-terminal case. No heartbeat or invented frame is ever emitted.
  */
-function streamSseResponse(
+async function streamSseResponse(
   repository: CloudRequestRepository,
   runId: string,
   fromSeq: number,
   sse: CloudSseOptions,
   now: () => number,
   sleep: (ms: number) => Promise<void>,
-): CloudHttpResponse {
+): Promise<CloudHttpResponse> {
   const deadline = now() + sse.maxDurationMs;
   const encoder = new TextEncoder();
   let cursor = fromSeq;
   let bytes = 0;
   let closed = false;
+  // Read the first page BEFORE committing a 200: an invalid/expired cursor or
+  // a missing run must reach `mapError` and the client as its structured 410 /
+  // 404 JSON. Only failures after headers are committed become stream errors.
+  let page: CloudEventPage | null = await repository.readEvents(runId, fromSeq, sse.pageLimit);
 
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -445,9 +449,20 @@ function streamSseResponse(
       try {
         for (;;) {
           if (closed) return;
-          const page = await repository.readEvents(runId, cursor, sse.pageLimit);
+          if (page === null) {
+            if (now() >= deadline) {
+              closed = true;
+              controller.close();
+              return;
+            }
+            await sleep(sse.pollMs);
+            if (closed) return;
+            page = await repository.readEvents(runId, cursor, sse.pageLimit);
+          }
+          const current = page;
+          page = null;
           let emitted = false;
-          for (const envelope of page.events) {
+          for (const envelope of current.events) {
             if (closed) return;
             const frame = encodeCoachingEventFrame(envelope);
             const frameBytes = byteLength(frame);
@@ -461,7 +476,7 @@ function streamSseResponse(
             cursor = envelope.seq + 1;
             emitted = true;
           }
-          if (isCloudTerminalStatus(page.run.status) && cursor > page.lastSeq) {
+          if (isCloudTerminalStatus(current.run.status) && cursor > current.lastSeq) {
             closed = true;
             controller.close();
             return;
@@ -474,7 +489,6 @@ function streamSseResponse(
           // Returning after any emitted frame lets the consumer drain the
           // queue; the next pull continues from the cursor without a delay.
           if (emitted) return;
-          await sleep(sse.pollMs);
         }
       } catch (error) {
         if (closed) return;

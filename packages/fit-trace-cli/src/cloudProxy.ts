@@ -427,7 +427,17 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
       headers: requestHeaders,
       // Connect only to the address we checked. For TLS, SNI/Host remain the
       // DNS name, so certificate verification still binds the name.
-      lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
+      // Node 24's family autoselection calls this with `all: true` and expects
+      // an ARRAY of resolved addresses. Returning only the scalar triple makes
+      // the connect fail with ERR_INVALID_IP_ADDRESS before a hostname-based
+      // destination is reached (IP-literal tests would not see it).
+      lookup: (_hostname, lookupOptions, callback) => {
+        if (lookupOptions.all === true) {
+          callback(null, [{ address: pinned.address, family: pinned.family }]);
+        } else {
+          callback(null, pinned.address, pinned.family);
+        }
+      },
       ...(isHttps ? { servername: target.hostname.replace(/^\[|\]$/g, "") } : {}),
       // No redirect following: a 3xx is rejected below.
       agent: false,

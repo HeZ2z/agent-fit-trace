@@ -45,13 +45,19 @@ async function startUpstream(handler: UpstreamHandler): Promise<{ server: Server
 
 async function startProxy(
   upstreamPort: number,
-  options: { verifier?: ReturnType<typeof createTestVerifier>; maxSseBytes?: number } = {},
+  options: {
+    verifier?: ReturnType<typeof createTestVerifier>;
+    maxSseBytes?: number;
+    destinationHost?: string;
+    resolveHost?: (hostname: string) => Promise<readonly { address: string; family: number }[]>;
+  } = {},
 ): Promise<{ server: Server; url: string }> {
   const proxy = createCloudProxyHandler({
-    apiBaseUrl: new URL(`http://127.0.0.1:${upstreamPort}/api/v1`),
+    apiBaseUrl: new URL(`http://${options.destinationHost ?? `127.0.0.1:${upstreamPort}`}/api/v1`),
     verifier: options.verifier ?? createTestVerifier(TOKENS),
     allowInsecureLoopback: true,
     ...(options.maxSseBytes === undefined ? {} : { maxSseBytes: options.maxSseBytes }),
+    ...(options.resolveHost === undefined ? {} : { resolveHost: options.resolveHost }),
   });
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -173,6 +179,33 @@ test("proxy forwards the caller bearer, path, query and JSON body, and strips Ho
     assert.equal(seen.authorization, "Bearer token-formal");
     assert.equal(seen.host, `127.0.0.1:${upstream.port}`);
     assert.equal(seen.body, JSON.stringify({ sessionId: "s1" }));
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("proxy dials a hostname destination through the pinned lookup callback", async () => {
+  // Regression for Node 24 family autoselection: it calls `lookup` with
+  // `all: true` and expects an address array. A scalar-only callback fails
+  // before connect, so every hostname destination returned 502.
+  const upstream = await startUpstream((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { enabled: true } }));
+  });
+  const proxy = await startProxy(upstream.port, {
+    destinationHost: `cloud.example.test:${upstream.port}`,
+    resolveHost: async (hostname) => {
+      assert.equal(hostname, "cloud.example.test");
+      return [{ address: "127.0.0.1", family: 4 }];
+    },
+  });
+  try {
+    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { data: { enabled: true } });
   } finally {
     await close(proxy.server);
     await close(upstream.server);
