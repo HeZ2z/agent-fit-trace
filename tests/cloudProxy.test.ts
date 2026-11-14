@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, get as httpGet } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
@@ -359,19 +360,19 @@ test("proxy backpressures a slow reader instead of draining the upstream", async
   });
   const proxy = await startProxy(upstream.port, { maxSseBytes: 16 * 1024 * 1024 });
   try {
-    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/runs/r1/events`, {
-      headers: { authorization: "Bearer token-formal", accept: "text/event-stream" },
+    // Use the raw client request, not fetch: it does not read the body until a
+    // listener/resume is attached, so the proxy's response buffer is what the
+    // test actually observes.
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const request = httpGet(`${proxy.url}/api/v1/coaching/cloud/runs/r1/events`, {
+        headers: { authorization: "Bearer token-formal", accept: "text/event-stream" },
+      }, resolve);
+      request.on("error", reject);
     });
-    assert.ok(response.body, "expected a streaming body");
-    // Do not read yet: the proxy must stop pulling from upstream once the
-    // client-side response buffer is full, so upstream cannot finish.
     await new Promise<void>((resolve) => setTimeout(resolve, 150));
     assert.equal(finished, false, "upstream was drained while the client was not reading");
-    const reader = response.body.getReader();
-    for (;;) {
-      const read = await reader.read();
-      if (read.done) break;
-    }
+    response.resume();
+    await once(response, "end");
     for (let index = 0; index < 100 && !finished; index += 1) {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
