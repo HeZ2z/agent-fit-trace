@@ -271,6 +271,11 @@ test("proxy refuses the local guest bearer and guest-classified accounts", async
     assert.equal(guest.status, 403);
     const missing = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`);
     assert.equal(missing.status, 401);
+    const rejected = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-does-not-exist" },
+    });
+    assert.equal(rejected.status, 401);
+    assert.equal(((await rejected.json()) as { error: { code: string } }).error.code, "UNAUTHENTICATED");
     assert.equal(upstreamCalls, 0, "the bearer must never reach upstream before account verification");
   } finally {
     await close(proxy.server);
