@@ -31,7 +31,13 @@ function workout(): WorkoutRecord {
 
 function setup(
   db = new FakeCloudDatabase(),
-  options: { providerConfigured?: boolean } = {},
+  options: {
+    providerConfigured?: boolean;
+    streamSse?: boolean;
+    sse?: { pollMs: number; maxDurationMs: number; pageLimit: number };
+    sleep?: (ms: number) => Promise<void>;
+    records?: WorkoutRecord[];
+  } = {},
 ) {
   let repositoryCalls = 0;
   const handler = createCloudCoachingHandler({
@@ -42,14 +48,15 @@ function setup(
     },
     source: {
       async listWorkouts(): Promise<WorkoutRecord[]> {
-        return [workout()];
+        return options.records ?? [workout()];
       },
     },
     providerConfigured: options.providerConfigured ?? true,
     providerLimits: { maxSteps: 4, maxTokens: 2048, timeoutMs: 60_000 },
-    sse: { pollMs: 1, maxDurationMs: 100, pageLimit: 200 },
+    sse: options.sse ?? { pollMs: 1, maxDurationMs: 100, pageLimit: 200 },
+    ...(options.streamSse === true ? { streamSse: true } : {}),
     now: () => db.nowMs,
-    sleep: async () => undefined,
+    sleep: options.sleep ?? (async () => undefined),
   });
   return { db, handler, repositoryCalls: () => repositoryCalls };
 }
@@ -76,15 +83,36 @@ async function call(
     ...(input.accept === undefined ? {} : { accept: input.accept }),
   });
   const isSse = (response.headers["content-type"] ?? "").startsWith("text/event-stream");
+  const raw =
+    response.stream === undefined ? response.body : await readResponseStream(response.stream);
   return {
     status: response.status,
     headers: response.headers,
     json:
-      isSse || response.body === ""
+      isSse || raw === ""
         ? null
-        : (JSON.parse(response.body) as Record<string, unknown>),
-    raw: response.body,
+        : (JSON.parse(raw) as Record<string, unknown>),
+    raw,
   };
+}
+
+async function readResponseStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const read = await reader.read();
+    if (read.done) return text + decoder.decode();
+    text += decoder.decode(read.value, { stream: true });
+  }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("timed out waiting for a condition");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 async function createSessionAndSnapshot(handler: Handler) {
@@ -408,6 +436,174 @@ test("cloud HTTP: SSE replays only stored events and resumes from cursor", async
   });
   assert.ok(!resumed.raw.includes('"seq":0'), "cursor must not replay seq 0");
   assert.match(resumed.raw, /"status":"completed"/);
+});
+
+test("cloud HTTP: SSE streams the first stored event before the terminal event", async () => {
+  // A long page deadline proves the response does not buffer until the
+  // deadline: the handler returns a stream immediately and the first frame is
+  // readable while the run is still going.
+  const { db, handler } = setup(undefined, {
+    streamSse: true,
+    sse: { pollMs: 5, maxDurationMs: 60_000, pageLimit: 200 },
+  });
+  const { sessionId, snapshot } = await createSessionAndSnapshot(handler);
+  const submitted = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-stream"),
+  });
+  assert.equal(submitted.status, 201);
+  const runId = (submitted.json?.data as { run: { id: string } }).run.id;
+
+  let release = (): void => {
+    throw new Error("provider gate was not initialized");
+  };
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const provider: CloudCoachingProvider = {
+    async run(input) {
+      await input.beforeProviderRequest();
+      await input.onAccepted({
+        generationId: "gen-stream",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, known: true },
+      });
+      await input.onEvent({ type: "text_delta", delta: "first frame" });
+      await gate;
+      return {
+        status: "completed",
+        generationId: "gen-stream",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, known: true },
+      };
+    },
+  };
+  const worker = createCloudOutboxWorker({
+    repository: db.workerRepository(),
+    provider,
+    enabled: true,
+    workerId: "worker-stream",
+    leaseMs: 60_000,
+    batch: 1,
+  });
+  const tick = worker.tick();
+  await waitFor(() => db.getEvents(runId).some((event) => event.event.type === "text_delta"));
+
+  const sse = await handler({
+    method: "GET",
+    pathname: `/coaching/cloud/runs/${runId}/events`,
+    searchParams: new URLSearchParams(),
+    authorization: "Bearer token-formal",
+    accept: "text/event-stream",
+  });
+  assert.equal(sse.status, 200);
+  assert.match(String(sse.headers["content-type"]), /^text\/event-stream/);
+  assert.equal(sse.body, "");
+  assert.ok(sse.stream, "a streaming handler must return a readable stream");
+  const reader = sse.stream.getReader();
+  const decoder = new TextDecoder();
+  const first = await reader.read();
+  assert.equal(first.done, false);
+  const firstText = decoder.decode(first.value, { stream: true });
+  assert.match(firstText, /"type":"text_delta"/);
+  assert.ok(!firstText.includes('"status":"completed"'), "the terminal has not been stored yet");
+
+  release();
+  await tick;
+  let rest = "";
+  for (;;) {
+    const read = await reader.read();
+    if (read.done) break;
+    rest += decoder.decode(read.value, { stream: true });
+  }
+  assert.match(rest, /"status":"completed"/);
+});
+
+test("cloud HTTP: streaming SSE validates the initial cursor before returning 200", async () => {
+  // The stream must not commit a 200 before its first repository read: an
+  // expired cursor has to reach the client as structured 410 JSON so the
+  // coach can enter its refetch-from-firstSeq recovery path.
+  const { handler } = setup(undefined, {
+    streamSse: true,
+    sse: { pollMs: 1, maxDurationMs: 60_000, pageLimit: 200 },
+  });
+  const { sessionId, snapshot } = await createSessionAndSnapshot(handler);
+  const submitted = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-initial-cursor"),
+  });
+  assert.equal(submitted.status, 201);
+  const runId = (submitted.json?.data as { run: { id: string } }).run.id;
+  const response = await call(handler, {
+    method: "GET",
+    pathname: `/coaching/cloud/runs/${runId}/events`,
+    token: "token-formal",
+    accept: "text/event-stream",
+    search: "fromSeq=5",
+  });
+  assert.equal(response.status, 410);
+  assert.equal((response.json?.error as { code: string }).code, "EXPIRED_CURSOR");
+  assert.equal(response.raw.includes("data:"), false, "an invalid cursor must not open an SSE stream");
+});
+
+test("cloud snapshot exposes only the hosted source records to the provider", async () => {
+  // Sentinel records make the data boundary observable: the local/desktop
+  // store is NOT a source for a cloud run. A run that merely "completed" would
+  // prove nothing about which history the tools saw.
+  const hosted = validateWorkoutRecord({
+    schema_version: 1,
+    id: "2026-09-02-hosted-sentinel",
+    date: "2026-09-02",
+    session_type: "strength",
+    exercises: [{ name: "squat", sets: [{ weight: 100, reps: 5, rpe: 8 }] }],
+  }).record;
+  const localOnly = validateWorkoutRecord({
+    schema_version: 1,
+    id: "2026-09-03-local-sentinel",
+    date: "2026-09-03",
+    session_type: "strength",
+    exercises: [{ name: "deadlift", sets: [{ weight: 120, reps: 3, rpe: 9 }] }],
+  }).record;
+  const { db, handler } = setup(undefined, { records: [hosted] });
+  const { sessionId, snapshot } = await createSessionAndSnapshot(handler);
+  assert.deepEqual((snapshot as unknown as { recordIds?: string[] }).recordIds, [hosted.id]);
+  const submitted = await call(handler, {
+    method: "POST",
+    pathname: "/coaching/cloud/runs",
+    token: "token-formal",
+    body: submitBody(sessionId, snapshot, "idem-sentinel"),
+  });
+  assert.equal(submitted.status, 201);
+  let exposed: string[] = [];
+  const provider: CloudCoachingProvider = {
+    async run(input) {
+      exposed = input.records.map((record) => record.id);
+      await input.beforeProviderRequest();
+      await input.onAccepted({
+        generationId: "gen-sentinel",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, known: true },
+      });
+      await input.onEvent({ type: "text_delta", delta: "hosted only" });
+      return {
+        status: "completed",
+        generationId: "gen-sentinel",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, known: true },
+      };
+    },
+  };
+  const worker = createCloudOutboxWorker({
+    repository: db.workerRepository(),
+    provider,
+    enabled: true,
+    workerId: "worker-sentinel",
+    leaseMs: 60_000,
+    batch: 1,
+  });
+  assert.equal((await worker.tick()).completed, 1);
+  assert.deepEqual(exposed, [hosted.id]);
+  assert.ok(!exposed.includes(localOnly.id), "a local-only sentinel must never enter the cloud snapshot");
 });
 
 test("cloud HTTP: invalid snapshot date filter maps to 400, not an internal error", async () => {

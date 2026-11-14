@@ -207,13 +207,17 @@ the reserved headroom. Both sides size frames with the same
 `encodeCoachingEventFrame`/`coachingEventFrameBytes` helper, so the framing +
 size rule lives in one place.
 
-Cloud event GETs are bounded long-poll pages, each bounded by the same stream
-budgets. A page that ends without the terminal is a NORMAL page boundary, not a
-disconnect: the cloud client incrementally folds the page and automatically
-GETs the same run from the consumed cursor + 1 using abortable bounded
-backoff, within a bounded tail time budget. It never repeats the run POST. Only
-a transport/HTTP failure or tail-budget expiry is surfaced as a disconnect
-(keeping the run id, backend, and resume refs for an explicit reconnect).
+Cloud event GETs stream stored frames as they appear, each response bounded by
+the same stream budgets. A response ends at the terminal, the page deadline or
+the byte cap; any non-terminal end (including a deadline page) is a NORMAL page
+boundary, not a disconnect. The cloud client incrementally folds the response
+and automatically GETs the same run from the consumed cursor + 1 using
+abortable bounded backoff, within a bounded tail time budget. It never repeats
+the run POST. Only a transport/HTTP failure or tail-budget expiry is surfaced
+as a disconnect (keeping the run id, backend, and resume refs for an explicit
+reconnect). The hosted handler no longer accumulates frames into one buffered
+body; the Vercel adapter pipes its response stream, and the desktop daemon's
+proxy pipes that response through with backpressure and abort propagation.
 
 ## App client lifecycle (single account-level owner)
 

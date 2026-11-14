@@ -203,7 +203,7 @@ export function CoachScreen() {
         >
           {disclosedLocation === "cloud"
             ? t(
-                "Hosted cloud coaching uses credits and sends your question and workout data to the provider.",
+                "Hosted cloud coaching uses credits, reads the records synced to your account, and sends your question and that data to the provider. Records that exist only on this device are not visible until you sync them.",
               )
             : t(
                 "{backend} runs locally. Your question and workout data are sent to its model provider.",

@@ -318,7 +318,11 @@ variables from repository variables; neither is enabled by default.
 At packaged startup the daemon receives the approved API base and trusted Auth
 flag only if the sync file, the release auth file and the selected runtime auth
 pair all match. A different auth override, absent or invalid sync file, or a
-disabled sync file leaves sync disabled. Inherited `FIT_TRACE_API_BASE_URL`
+disabled sync file leaves sync disabled. The daemon also receives that approved
+API base as `FIT_TRACE_CLOUD_API_BASE_URL`; cloud coaching therefore uses the
+same destination and is unavailable when sync is disabled. Any inherited
+`FIT_TRACE_CLOUD_API_BASE_URL` is removed before this decision, so a packaged
+build cannot be repointed through its environment. Inherited `FIT_TRACE_API_BASE_URL`
 `FIT_TRACE_SYNC_PUBLIC_KEYS` and `FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH` cannot override that decision in a
 packaged build. Development and direct daemon launches continue to use their
 explicit environment settings. Rebuild and redistribute the desktop artifact

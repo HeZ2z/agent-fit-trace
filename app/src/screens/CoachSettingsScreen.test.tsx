@@ -3,6 +3,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CoachingCapabilityDiscovery } from "@agent-fit-trace/api-contracts";
 import { CoachDiscoveryProvider, useCoachDiscovery } from "../coaching/CoachDiscoveryContext.tsx";
+import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
+import type { CloudCapabilities } from "@agent-fit-trace/api-contracts";
 import { CoachSettingsScreen } from "./CoachSettingsScreen.tsx";
 
 // Both are hook-only modules with no injectable provider, so they are mocked at
@@ -97,13 +99,46 @@ function renderPage({
   );
 }
 
+function cloudCapabilities(overrides: Partial<CloudCapabilities> = {}): CloudCapabilities {
+  return {
+    enabled: true,
+    providerConfigured: true,
+    providerEnabled: true,
+    accountFormal: true,
+    quotaConfigured: true,
+    budgetConfigured: true,
+    concurrentLimit: 2,
+    reservedCount: 0,
+    tokensRemaining: 10_000,
+    tokensReserved: 0,
+    perRunTokenBudget: 2_000,
+    perStepTokenBudget: 500,
+    perRunRequestLimit: 20,
+    tools: ["get_training_history", "analyze_progress"],
+    maxSteps: 8,
+    maxTokens: 10_000,
+    timeoutMs: 600_000,
+    ...overrides,
+  };
+}
+
+function setCloudRuntime(enabled: boolean): void {
+  (window as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME = {
+    mode: "http",
+    coaching: "same-origin",
+    ...(enabled ? { cloud: true } : {}),
+  };
+}
+
 beforeEach(() => {
   window.localStorage.clear();
+  delete (window as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME;
   vi.restoreAllMocks();
 });
 
 afterEach(() => {
   window.localStorage.clear();
+  delete (window as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME;
   vi.restoreAllMocks();
 });
 
@@ -190,6 +225,69 @@ describe("coach settings: cloud section", () => {
     const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
     renderPage({ user: { id: "user-a", isAnonymous: false }, client });
     expect(await screen.findByTestId("cloud-not-wired")).toBeInTheDocument();
+  });
+
+  it("offers the proxied hosted coach and discloses the synced-history boundary", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(cloudCapabilities());
+    const client = stubClient(
+      discoveryOf([
+        descriptor({ backendId: "local-pi" }),
+        // The daemon's local discovery still carries its own unavailable
+        // cloud-default entry. The proxy's answer must REPLACE it, not add a
+        // second contradictory "Cloud coach" row.
+        descriptor({
+          backendId: "cloud-default",
+          runtimeId: "hosted-sdk",
+          executionLocation: "cloud",
+          displayName: "Cloud coach",
+          available: false,
+          unavailableReason: {
+            code: "identity-unverified",
+            message: "Cloud eligibility could not be verified.",
+          },
+          capabilities: {
+            ...descriptor({ backendId: "local-pi" }).capabilities,
+            accountEligibility: "required",
+            quotaReservation: "required",
+            dataDestination: "vendor-api",
+          },
+        }),
+      ]),
+    );
+    renderPage({ user: { id: "user-cloud-settings", isAnonymous: false }, client });
+
+    const clouds = await screen.findAllByRole("radio", { name: /cloud coach/i });
+    expect(clouds).toHaveLength(1);
+    const cloud = clouds[0] as HTMLInputElement;
+    expect(cloud.disabled).toBe(false);
+    expect(cloud.checked).toBe(true);
+    expect(await screen.findByTestId("cloud-history-disclosure")).toHaveTextContent(
+      /only on this device are not visible/i,
+    );
+  });
+
+  it("keeps cloud visible but refuses it when the hosted service reports no budget", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(
+      cloudCapabilities({ quotaConfigured: false }),
+    );
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-cloud-quota", isAnonymous: false }, client });
+
+    const cloud = (await screen.findByRole("radio", { name: /cloud coach/i })) as HTMLInputElement;
+    expect(cloud.disabled).toBe(true);
+    expect(await screen.findByTestId("reason-cloud-default")).toHaveTextContent(/finite execution budget/i);
+    // No silent switch: the local backend becomes the usable default instead.
+    const pi = screen.getByRole("radio", { name: /pi cli/i }) as HTMLInputElement;
+    expect(pi.checked).toBe(true);
+  });
+
+  it("keeps the guest placeholder even when the daemon proxies cloud", async () => {
+    setCloudRuntime(true);
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "guest-cloud-settings", isAnonymous: true }, client });
+    expect(await screen.findByTestId("cloud-placeholder")).toHaveTextContent(/sign in/i);
   });
 });
 

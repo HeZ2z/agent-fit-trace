@@ -7,6 +7,7 @@ import {
   descriptorToOption,
   isBackendSupportedInMode,
   localPiOption,
+  preferredBackendChoice,
   selectLocalBackend,
   resolveLocalBackendChoice,
 } from "./coachBackend.ts";
@@ -85,6 +86,87 @@ describe("mode-bound restore compatibility", () => {
   it("never replays a local launcher run through a plain browser", () => {
     expect(isBackendSupportedInMode("local-pi", "browser")).toBe(false);
     expect(isBackendSupportedInMode("cloud-default", "browser")).toBe(true);
+  });
+});
+
+describe("cloud default with a daemon proxy", () => {
+  it("prefers cloud for a formal account when no preference is stored", () => {
+    expect(
+      defaultCoachBackend({ mode: "launcher", accountId: "user-cloud", guest: false, cloudProxy: true }),
+    ).toBe("cloud-default");
+  });
+
+  it("never gives a guest a cloud preference", () => {
+    expect(
+      defaultCoachBackend({ mode: "launcher", accountId: "guest-cloud", guest: true, cloudProxy: true }),
+    ).toBeNull();
+  });
+
+  it("keeps a stored local preference ahead of the cloud default", () => {
+    writeBackendPreference("user-local", "local-codex");
+    expect(
+      defaultCoachBackend({ mode: "launcher", accountId: "user-local", guest: false, cloudProxy: true }),
+    ).toBe("local-codex");
+  });
+
+  it("lets a proxy launcher replay cloud runs, while the legacy launcher still cannot", () => {
+    expect(isBackendSupportedInMode("cloud-default", "launcher", true)).toBe(true);
+    expect(isBackendSupportedInMode("cloud-default", "launcher", false)).toBe(false);
+  });
+
+  it("keeps an unavailable saved preference instead of silently switching", () => {
+    const choice = preferredBackendChoice({
+      preference: "local-codex",
+      defaultId: null,
+      options: [localPiOption(true)],
+      cloudProxy: true,
+    });
+    expect(choice.backendId).toBe("local-codex");
+    expect(choice.source).toBe("preference");
+  });
+
+  it("ignores a saved cloud preference in a launcher with no cloud proxy", () => {
+    const choice = preferredBackendChoice({
+      preference: "cloud-default",
+      defaultId: null,
+      options: [localPiOption(true)],
+      cloudProxy: false,
+      cloudSupported: false,
+    });
+    expect(choice).toEqual({ backendId: "local-pi", source: "automatic" });
+  });
+
+  it("keeps a saved cloud preference where cloud is addressable", () => {
+    const choice = preferredBackendChoice({
+      preference: "cloud-default",
+      defaultId: null,
+      options: [localPiOption(true), cloudOptionFromCapabilities(capabilities())],
+      cloudProxy: true,
+      cloudSupported: true,
+    });
+    expect(choice).toEqual({ backendId: "cloud-default", source: "preference" });
+  });
+
+  it("uses cloud only when the option is actually available", () => {
+    const unavailable = {
+      ...cloudOptionFromCapabilities(capabilities({ enabled: false })),
+    };
+    expect(
+      preferredBackendChoice({
+        preference: null,
+        defaultId: null,
+        options: [localPiOption(true), unavailable],
+        cloudProxy: true,
+      }).backendId,
+    ).toBe("local-pi");
+    expect(
+      preferredBackendChoice({
+        preference: null,
+        defaultId: null,
+        options: [localPiOption(true), cloudOptionFromCapabilities(capabilities())],
+        cloudProxy: true,
+      }),
+    ).toEqual({ backendId: "cloud-default", source: "cloud-default" });
   });
 });
 

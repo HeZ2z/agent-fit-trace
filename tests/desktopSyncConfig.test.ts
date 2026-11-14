@@ -44,16 +44,19 @@ test("packaged daemon receives sync settings only with matching release authenti
   const auth = childEnvironment(release, inherited);
   const selected = applySyncEnvironment(enabled, release, auth);
   assert.equal(selected.FIT_TRACE_API_BASE_URL, env.FIT_TRACE_DESKTOP_SYNC_API_BASE_URL);
+  assert.equal(selected.FIT_TRACE_CLOUD_API_BASE_URL, env.FIT_TRACE_DESKTOP_SYNC_API_BASE_URL);
   assert.equal(selected.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH, "1");
   for (const sync of [null, disabledSyncConfig()]) {
     const result = applySyncEnvironment(sync, release, auth);
     assert.equal(result.FIT_TRACE_API_BASE_URL, undefined);
+    assert.equal(result.FIT_TRACE_CLOUD_API_BASE_URL, undefined);
     assert.equal(result.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH, undefined);
     assert.equal(result.FIT_TRACE_SYNC_PUBLIC_KEYS, undefined);
   }
   const other = childEnvironment(release, { ...inherited, SUPABASE_URL: "https://other.example", SUPABASE_PUBLISHABLE_KEY: "sb_publishable_other" });
   const blocked = applySyncEnvironment(enabled, release, other);
   assert.equal(blocked.FIT_TRACE_API_BASE_URL, undefined);
+  assert.equal(blocked.FIT_TRACE_CLOUD_API_BASE_URL, undefined);
   assert.equal(blocked.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH, undefined);
   const mismatchedFile = { ...enabled, authUrl: "https://other.example", authPublishableKey: "sb_publishable_other" };
   assert.equal(applySyncEnvironment(mismatchedFile, release, auth).FIT_TRACE_API_BASE_URL, undefined);
@@ -81,6 +84,7 @@ test("packaged launch plan passes only approved sync settings to the daemon chil
   const child = applySyncEnvironment(resolveBuildSyncConfig(env), release, auth);
   assert.equal(child.ELECTRON_RUN_AS_NODE, "1");
   assert.equal(child.FIT_TRACE_API_BASE_URL, "https://api.example/api/v1");
+  assert.equal(child.FIT_TRACE_CLOUD_API_BASE_URL, "https://api.example/api/v1");
   assert.equal(child.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH, "1");
   const off = applySyncEnvironment(disabledSyncConfig(), release, auth);
   assert.equal(off.FIT_TRACE_API_BASE_URL, undefined);

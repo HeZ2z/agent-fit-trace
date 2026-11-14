@@ -13,6 +13,7 @@ import { buildCoachedEnv } from "../../../server/coaching/piProcessAdapter.ts";
 import { startCoachingServer } from "../../../server/coaching/coachingServer.ts";
 import type { CoachingServer } from "../../../server/coaching/coachingServer.ts";
 import { createSupabaseVerifier } from "../../../server/auth/supabaseVerifier.ts";
+import { createCloudProxyHandler, parseCloudApiBase } from "./cloudProxy.ts";
 import {
   createLocalDaemonVerifier,
   LOCAL_DAEMON_BEARER,
@@ -177,6 +178,12 @@ export interface DaemonServerOptions {
   env?: Record<string, string | undefined>;
   /** Injected verifier (tests). Undefined resolves the composite daemon verifier. */
   verifier?: TokenVerifier;
+  /**
+   * TEST-ONLY: allow the cloud proxy to reach a plain-HTTP loopback upstream.
+   * Production destination validation accepts HTTPS only. The proxy tests use
+   * this to exercise real streaming/backpressure/abort behaviour.
+   */
+  allowInsecureCloudProxyLoopback?: boolean;
   /** Injected session ownership transport (tests). */
   syncAuthFetch?: typeof fetch;
   /** Injected runtime factory (tests). Undefined uses CoachedPiProcess. */
@@ -347,11 +354,15 @@ function collectBody(request: IncomingMessage, maxBytes: number): Promise<string
   });
 }
 
-function buildRuntimeScriptBody(options?: { piAvailable?: boolean }): string {
+function buildRuntimeScriptBody(options?: { piAvailable?: boolean; cloud?: boolean }): string {
   const pi = options?.piAvailable === undefined
     ? ""
     : `, piAvailable: ${options.piAvailable ? "true" : "false"}`;
-  return `window.__FIT_TRACE_RUNTIME = { mode: "http", coaching: "same-origin"${pi} };\n`;
+  // `cloud: true` means this daemon has a reviewed proxy to an approved hosted
+  // destination. It is a transport capability, not an entitlement: the hosted
+  // capabilities route still decides whether this account may start a run.
+  const cloud = options?.cloud === true ? ", cloud: true" : "";
+  return `window.__FIT_TRACE_RUNTIME = { mode: "http", coaching: "same-origin"${pi}${cloud} };\n`;
 }
 
 function injectRuntimeScript(html: string): string {
@@ -687,6 +698,18 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     }
   } catch { /* Invalid trust configuration keeps sync disabled. */ }
   const syncConfigured = env.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH === "1" && supabaseConfig !== null && !!env.FIT_TRACE_API_BASE_URL && syncPublicKeys.length > 0;
+  // Cloud coaching needs both a verified account (Supabase configured) and a
+  // fixed, operator-approved hosted destination. Without either, the route
+  // stays visibly off instead of pretending to be reachable.
+  const cloudApiBaseUrl = parseCloudApiBase(env.FIT_TRACE_CLOUD_API_BASE_URL);
+  const cloudConfigured = cloudApiBaseUrl !== null && supabaseConfig !== null;
+  const cloudProxy = cloudConfigured
+    ? createCloudProxyHandler({
+        apiBaseUrl: cloudApiBaseUrl,
+        verifier,
+        ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
+      })
+    : null;
   const handler = createAuthenticatedHandler({
     verifier,
     stores,
@@ -752,7 +775,10 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   // The injected flag must reflect whether a run can actually start, not the
   // raw CLI probe: an installed pi whose extension is missing must report
   // `false` here, otherwise the Coach UI offers a backend that fails on use.
-  let runtimeScript = buildRuntimeScriptBody(enablePiSignal === undefined ? {} : { piAvailable: enablePiSignal });
+  let runtimeScript = buildRuntimeScriptBody({
+    ...(enablePiSignal === undefined ? {} : { piAvailable: enablePiSignal }),
+    ...(cloudConfigured ? { cloud: true } : {}),
+  });
 
   async function servePublicConfig(response: ServerResponse): Promise<void> {
     // The standard Supabase fields are carried ONLY when a project is
@@ -845,6 +871,27 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
       } catch {
         sendJson(response, 403, errorEnvelope("FORBIDDEN", "Sync could not be confirmed. Retry, or sign in again; recovery may require administrator help."));
       }
+      return;
+    }
+
+    // Cloud coaching is proxied to the approved hosted destination with the
+    // caller's own bearer. It must be handled before the local data plane and
+    // before the generic body reader, because the proxy owns the body and the
+    // response stream (SSE included).
+    if (bare === "/coaching/cloud" || bare.startsWith("/coaching/cloud/")) {
+      if (cloudProxy === null) {
+        sendJson(
+          response,
+          503,
+          errorEnvelope("CLOUD_DISABLED", "Cloud coaching is not configured on this daemon."),
+        );
+        return;
+      }
+      await cloudProxy(request, response, {
+        method,
+        pathname,
+        search: routeUrl.search,
+      });
       return;
     }
 

@@ -25,11 +25,19 @@ import type { ReactNode } from "react";
 import type { CoachingCapabilityDiscovery } from "@agent-fit-trace/api-contracts";
 import { useAuth } from "../auth/AuthContext.tsx";
 import { CoachingClient } from "../api/coachingClient.ts";
-import { isCoachingEnabled, isHttpModeActive, runtimePiAvailable } from "../api/runtimeMode.ts";
+import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
 import {
+  isCloudCoachingProxied,
+  isCoachingEnabled,
+  isHttpModeActive,
+  runtimePiAvailable,
+} from "../api/runtimeMode.ts";
+import {
+  cloudOptionFromCapabilities,
   descriptorToOption,
   initialBackendOptions,
   localPiOption,
+  unavailableCloudOption,
 } from "./coachBackend.ts";
 import type { CoachBackendOption, CoachMode } from "./coachBackend.ts";
 
@@ -118,6 +126,13 @@ export function CoachDiscoveryProvider({
   // this same client, so a null provider here would make every run unauthenticated.
   const { getAccessToken, status: authStatus, user } = useAuth();
   const accountId = user?.id ?? null;
+  const cloudProxy = isCloudCoachingProxied();
+  const cloudClient = useMemo(
+    () => (cloudProxy && mode !== "inactive"
+      ? new CloudCoachingClient({ getAccessToken })
+      : null),
+    [cloudProxy, mode, getAccessToken, accountId],
+  );
   const client = useMemo(() => {
     if (clientProp !== undefined) return clientProp;
     if (mode === "inactive") return null;
@@ -198,20 +213,44 @@ export function CoachDiscoveryProvider({
         })();
         if (!mounted.current || requestGeneration !== generation.current) return;
         const piAvailable = runtimePiAvailable();
+        const localOptions = discovery.backends.map((descriptor) => {
+          if (descriptor.backendId !== "local-pi" || piAvailable !== false) {
+            return descriptorToOption(descriptor);
+          }
+          // Prefer the SERVER's reason: it separates a missing CLI from a
+          // missing or broken extension, and only the former is fixed by
+          // installing pi (see #67).
+          const option = descriptorToOption(descriptor);
+          if (option.available === false && option.unavailableReason !== undefined) {
+            return option;
+          }
+          return localPiOption(false);
+        });
+        // A daemon with a cloud proxy can also offer the hosted coach. The
+        // hosted capabilities route remains the authority: this only asks it
+        // for a FORMAL account, and a failure leaves local coaching untouched.
+        let cloudOptions: CoachBackendOption[] = [];
+        if (mode === "launcher" && cloudProxy && user?.isAnonymous === false && cloudClient !== null) {
+          try {
+            cloudOptions = [cloudOptionFromCapabilities(await cloudClient.readCapabilities())];
+          } catch (caught) {
+            cloudOptions = [
+              unavailableCloudOption(
+                `Cloud availability could not be verified (${caught instanceof Error ? caught.message : String(caught)}). Cloud coaching stays off.`,
+              ),
+            ];
+          }
+          if (!mounted.current || requestGeneration !== generation.current) return;
+        }
+        // The daemon's LOCAL discovery reports cloud-default as unavailable
+        // because it has no trusted hosted identity. When the reviewed proxy
+        // supplies the authoritative answer, replace that entry instead of
+        // rendering two "Cloud coach" options with contradictory reasons.
+        const effectiveLocalOptions = cloudProxy
+          ? localOptions.filter((option) => option.id !== "cloud-default")
+          : localOptions;
         setState({
-          backends: discovery.backends.map((descriptor) => {
-            if (descriptor.backendId !== "local-pi" || piAvailable !== false) {
-              return descriptorToOption(descriptor);
-            }
-            // Prefer the SERVER's reason: it separates a missing CLI from a
-            // missing or broken extension, and only the former is fixed by
-            // installing pi (see #67).
-            const option = descriptorToOption(descriptor);
-            if (option.available === false && option.unavailableReason !== undefined) {
-              return option;
-            }
-            return localPiOption(false);
-          }),
+          backends: [...effectiveLocalOptions, ...cloudOptions],
           defaultBackendId: discovery.defaultBackendId ?? null,
           defaultBackendSource: discovery.defaultBackendSource ?? null,
           status: "ready",
@@ -229,7 +268,7 @@ export function CoachDiscoveryProvider({
         }));
       }
     },
-    [client, mode],
+    [client, cloudClient, cloudProxy, mode, user?.isAnonymous],
   );
 
   const refresh = useCallback((): Promise<void> => {

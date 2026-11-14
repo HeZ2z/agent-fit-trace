@@ -41,6 +41,10 @@ function applySyncEnvironment(syncConfig, releaseConfig, childEnv) {
   delete result.FIT_TRACE_API_BASE_URL;
   delete result.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH;
   delete result.FIT_TRACE_SYNC_PUBLIC_KEYS;
+  // A packaged build must not inherit a renderer/operator environment pointing
+  // the cloud proxy at another host. Only the approved sync destination may
+  // enable it below.
+  delete result.FIT_TRACE_CLOUD_API_BASE_URL;
   if (syncConfig === null) return result;
   const sync = validateSyncConfig(syncConfig);
   const release = validateConfig(releaseConfig);
@@ -48,6 +52,11 @@ function applySyncEnvironment(syncConfig, releaseConfig, childEnv) {
       sync.authUrl === release.supabaseUrl && sync.authPublishableKey === release.supabasePublishableKey &&
       result.SUPABASE_URL === release.supabaseUrl && result.SUPABASE_PUBLISHABLE_KEY === release.supabasePublishableKey) {
     result.FIT_TRACE_API_BASE_URL = sync.apiBaseUrl;
+    // Cloud coaching proxies the caller's bearer to the same approved hosted
+    // destination. Sync must be configured for cloud to be meaningful (the
+    // hosted coach reads synced account records), so this reuse adds no new
+    // trust decision.
+    result.FIT_TRACE_CLOUD_API_BASE_URL = sync.apiBaseUrl;
     result.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH = "1";
     result.FIT_TRACE_SYNC_PUBLIC_KEYS = JSON.stringify(sync.publicKeys);
   }
