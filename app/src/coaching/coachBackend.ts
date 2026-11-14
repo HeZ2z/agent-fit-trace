@@ -284,9 +284,24 @@ export function preferredBackendChoice(input: {
   defaultSource?: "runtime" | "automatic" | null;
   options: readonly CoachBackendOption[];
   cloudProxy: boolean;
+  /**
+   * Whether this session can address a cloud run at all: the daemon proxy in
+   * launcher mode, or the browser's same-origin cloud deployment. Defaults to
+   * `cloudProxy`; a launcher without the marker must not inherit a browser's
+   * saved cloud preference.
+   */
+  cloudSupported?: boolean;
 }): { backendId: CoachingBackendId | null; source: LocalSelectionSource } {
-  if (input.preference !== null) return { backendId: input.preference, source: "preference" };
-  if (input.cloudProxy && input.options.some((option) => option.id === "cloud-default" && option.available)) {
+  const cloudSupported = input.cloudSupported ?? input.cloudProxy;
+  if (input.preference !== null) {
+    // A saved cloud choice survives only where cloud is addressable. In a
+    // legacy launcher it belongs to another session mode; selecting it would
+    // leave the run unusable even when a local CLI is available.
+    if (input.preference !== "cloud-default" || cloudSupported) {
+      return { backendId: input.preference, source: "preference" };
+    }
+  }
+  if (cloudSupported && input.options.some((option) => option.id === "cloud-default" && option.available)) {
     return { backendId: "cloud-default", source: "cloud-default" };
   }
   return resolveLocalBackendChoice({

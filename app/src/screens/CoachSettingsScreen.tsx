@@ -111,10 +111,11 @@ export function CoachSettingsScreen() {
       defaultSource: defaultBackendSource,
       options: backends,
       cloudProxy,
+      cloudSupported: cloudProxy || mode === "browser",
     });
     // `preferenceRevision` is not read directly; it is the invalidation signal
     // that makes this recompute after `writeBackendPreference`.
-  }, [accountId, backends, defaultBackendId, defaultBackendSource, cloudProxy, preferenceRevision]);
+  }, [accountId, backends, defaultBackendId, defaultBackendSource, cloudProxy, mode, preferenceRevision]);
   const selected = selection.backendId;
 
   function select(id: CoachBackendOption["id"]): void {

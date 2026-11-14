@@ -125,6 +125,28 @@ describe("cloud default with a daemon proxy", () => {
     expect(choice.source).toBe("preference");
   });
 
+  it("ignores a saved cloud preference in a launcher with no cloud proxy", () => {
+    const choice = preferredBackendChoice({
+      preference: "cloud-default",
+      defaultId: null,
+      options: [localPiOption(true)],
+      cloudProxy: false,
+      cloudSupported: false,
+    });
+    expect(choice).toEqual({ backendId: "local-pi", source: "automatic" });
+  });
+
+  it("keeps a saved cloud preference where cloud is addressable", () => {
+    const choice = preferredBackendChoice({
+      preference: "cloud-default",
+      defaultId: null,
+      options: [localPiOption(true), cloudOptionFromCapabilities(capabilities())],
+      cloudProxy: true,
+      cloudSupported: true,
+    });
+    expect(choice).toEqual({ backendId: "cloud-default", source: "preference" });
+  });
+
   it("uses cloud only when the option is actually available", () => {
     const unavailable = {
       ...cloudOptionFromCapabilities(capabilities({ enabled: false })),
