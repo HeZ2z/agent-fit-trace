@@ -37,6 +37,45 @@
   outline-offset: 3px;
 }
 
+.coach-settings-destination {
+  margin-top: 16px;
+}
+
+.coach-settings-destination h3 {
+  margin: 0 0 6px;
+}
+
+.coach-settings-inline-form {
+  max-width: var(--content-narrow);
+  margin-top: 12px;
+}
+
+.coach-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.coach-settings-confirm {
+  max-width: var(--content-narrow);
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: var(--border-w) solid var(--border);
+  border-left: 6px solid var(--blue-deep);
+  background: var(--info-soft);
+}
+
+.coach-settings-confirm p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.coach-settings-confirm p:last-child {
+  margin-bottom: 0;
+}
+
 .plan-status {
   display: block;
   margin: 0 0 12px;

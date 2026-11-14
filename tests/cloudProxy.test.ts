@@ -495,3 +495,195 @@ test("proxy caps a response instead of buffering it without bound", async () => 
     await close(upstream.server);
   }
 });
+
+// --- per-principal destination decisions (#87) ---
+
+async function startDecisionProxy(
+  decision: (principal: AuthPrincipal) => {
+    status: "ready" | "unconfigured" | "unconfirmed" | "invalid";
+    url?: URL;
+    binding?: string;
+    code?: string;
+    message?: string;
+  },
+  resolveHost?: (hostname: string) => Promise<readonly { address: string; family: number }[]>,
+): Promise<{ server: Server; url: string }> {
+  const proxy = createCloudProxyHandler({
+    verifier: createTestVerifier(TOKENS),
+    destinationFor: decision,
+    allowInsecureLoopback: true,
+    ...(resolveHost === undefined ? {} : { resolveHost }),
+  });
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    void proxy(request, response, {
+      method: (request.method ?? "GET").toUpperCase(),
+      pathname: url.pathname,
+      search: url.search,
+    });
+  });
+  const port = await listen(server);
+  return { server, url: `http://127.0.0.1:${port}` };
+}
+
+test("an unconfirmed destination is refused before any upstream request or bearer", async () => {
+  let upstreamRequests = 0;
+  const upstream = await startUpstream((_request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { ok: true } }));
+  });
+  const proxy = await startDecisionProxy(() => ({
+    status: "unconfirmed",
+    code: "CLOUD_DESTINATION_CONSENT_REQUIRED",
+    message: "Confirm the custom cloud server first.",
+  }));
+  try {
+    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(response.status, 403);
+    assert.equal(
+      ((await response.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_CONSENT_REQUIRED",
+    );
+    assert.equal(upstreamRequests, 0, "a refusal must not reach the upstream");
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("an unconfigured or invalid destination is refused with a structured reason", async () => {
+  const proxy = await startDecisionProxy(() => ({
+    status: "unconfigured",
+    code: "CLOUD_DESTINATION_UNCONFIGURED",
+    message: "No cloud server is configured on this daemon.",
+  }));
+  try {
+    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(response.status, 503);
+    assert.equal(
+      ((await response.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_UNCONFIGURED",
+    );
+  } finally {
+    await close(proxy.server);
+  }
+});
+
+test("a dynamic destination forwards the caller's bearer to the approved upstream", async () => {
+  const seen: { authorization?: string; host?: string } = {};
+  const upstream = await startUpstream((request, response) => {
+    seen.authorization = request.headers.authorization;
+    seen.host = request.headers.host;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { enabled: true } }));
+  });
+  const destination = new URL(`http://127.0.0.1:${upstream.port}/api/v1`);
+  const proxy = await startDecisionProxy(() => ({ status: "ready", url: destination }));
+  try {
+    const response = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(seen.authorization, "Bearer token-formal");
+    assert.equal(seen.host, `127.0.0.1:${upstream.port}`);
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("run-scoped cloud requests are refused when the destination binding changes", async () => {
+  let upstreamRequests = 0;
+  const upstream = await startUpstream((_request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { id: "s-1" } }));
+  });
+  const destination = new URL(`http://127.0.0.1:${upstream.port}/api/v1`);
+  const proxy = await startDecisionProxy(() => ({ status: "ready", url: destination, binding: "binding-1" }));
+  try {
+    // Capabilities are not run identity and do not require a binding.
+    const capabilities = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(capabilities.status, 200);
+
+    const unbound = await fetch(`${proxy.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-formal", "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(unbound.status, 409);
+    assert.equal(
+      ((await unbound.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_CHANGED",
+    );
+    assert.equal(upstreamRequests, 1, "only capabilities reached upstream; the unbound run request did not");
+
+    const stale = await fetch(`${proxy.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-formal",
+        "content-type": "application/json",
+        "x-fit-trace-cloud-destination": "binding-0",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal(upstreamRequests, 1);
+
+    const bound = await fetch(`${proxy.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-formal",
+        "content-type": "application/json",
+        "x-fit-trace-cloud-destination": "binding-1",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(bound.status, 200);
+    assert.equal(upstreamRequests, 2);
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});
+
+test("a DNS answer changing between requests is rejected before the second upstream call", async () => {
+  let upstreamRequests = 0;
+  const upstream = await startUpstream((_request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { enabled: true } }));
+  });
+  let resolutions = 0;
+  const destination = new URL(`http://coach.example.test:${upstream.port}/api/v1`);
+  const proxy = await startDecisionProxy(
+    () => ({ status: "ready", url: destination }),
+    async () => {
+      resolutions += 1;
+      return resolutions === 1
+        ? [{ address: "127.0.0.1", family: 4 }]
+        : [{ address: "10.0.0.1", family: 4 }];
+    },
+  );
+  try {
+    const first = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(first.status, 200);
+    const second = await fetch(`${proxy.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(second.status, 502);
+    assert.equal(upstreamRequests, 1, "the rebinding answer must not reach the upstream");
+  } finally {
+    await close(proxy.server);
+    await close(upstream.server);
+  }
+});

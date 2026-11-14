@@ -319,11 +319,16 @@ At packaged startup the daemon receives the approved API base and trusted Auth
 flag only if the sync file, the release auth file and the selected runtime auth
 pair all match. A different auth override, absent or invalid sync file, or a
 disabled sync file leaves sync disabled. The daemon also receives that approved
-API base as `FIT_TRACE_CLOUD_API_BASE_URL`; cloud coaching therefore uses the
-same destination and is unavailable when sync is disabled. Any inherited
-`FIT_TRACE_CLOUD_API_BASE_URL` is removed before this decision, so a packaged
-build cannot be repointed through its environment. Inherited `FIT_TRACE_API_BASE_URL`
-`FIT_TRACE_SYNC_PUBLIC_KEYS` and `FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH` cannot override that decision in a
+API base as `FIT_TRACE_CLOUD_API_BASE_URL`, so it is the default cloud
+destination. Cloud coaching is not gated on sync: the account may already hold
+hosted records from the web app or mobile, and the UI states that only hosted
+records are visible. A signed-in formal account may override the cloud
+destination at runtime in Coach settings (#87); that device-local setting is
+explicitly confirmed per account and has no effect on workout sync's approved
+target. Any inherited `FIT_TRACE_CLOUD_API_BASE_URL` is removed before this
+decision, so a packaged build cannot be repointed through its environment.
+Inherited `FIT_TRACE_API_BASE_URL`, `FIT_TRACE_SYNC_PUBLIC_KEYS` and
+`FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH` cannot override that decision in a
 packaged build. Development and direct daemon launches continue to use their
 explicit environment settings. Rebuild and redistribute the desktop artifact
 after changing the approved target or project; never edit the staged file as
