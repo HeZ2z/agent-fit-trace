@@ -54,6 +54,28 @@ requests without `Origin` still require both credentials.
 | `GET` | `/coaching/capabilities` | — | `200` versioned backend/capability discovery |
 | `GET` | `/public-config` | public, no token | `200 { supabaseUrl, supabasePublishableKey }` (secret keys never served) |
 
+### Daemon cloud destination (desktop only)
+
+The standalone daemon mounts a device-local destination setting next to the
+proxied cloud surface. These routes are local configuration, not hosted cloud
+coaching: they are never forwarded upstream, and they require a verified formal
+account.
+
+| Method | Path | Purpose |
+| ------ | ---- | ------- |
+| `GET` | `/api/v1/coaching/cloud/destination` | current source (official/user/unset/invalid), canonical destination, host, issuer, and this principal's consent state |
+| `POST` | `/api/v1/coaching/cloud/destination/preview` | `{ address }` → `{ ok, destination, host, official, issuerCompatible, error? }`; no state change and no bearer to the candidate |
+| `PUT` | `/api/v1/coaching/cloud/destination` | `{ address, confirmHost }` → saves the canonical destination and this principal's consent after re-validating the issuer |
+| `DELETE` | `/api/v1/coaching/cloud/destination` | removes the user setting and every consent, falling back to the build default |
+
+Accepted addresses are HTTPS with exactly the `/api/v1` path. The proxy's SSRF,
+redirect and DNS-pinning rules apply to the preview's public-config read and to
+every proxied request. A custom destination must publish the same
+`supabaseUrl` at `/api/v1/public-config` as this daemon; otherwise it is refused
+with `CLOUD_DESTINATION_ISSUER_INCOMPATIBLE`. Consent is per principal and
+bound to the canonical destination and issuer; a destination change clears all
+consents. See [`local-daemon.md`](local-daemon.md) "Cloud coaching proxy".
+
 ### Backend capability discovery
 
 `GET /coaching/capabilities` returns the versioned discovery payload defined in

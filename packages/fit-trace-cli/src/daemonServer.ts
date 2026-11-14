@@ -13,7 +13,12 @@ import { buildCoachedEnv } from "../../../server/coaching/piProcessAdapter.ts";
 import { startCoachingServer } from "../../../server/coaching/coachingServer.ts";
 import type { CoachingServer } from "../../../server/coaching/coachingServer.ts";
 import { createSupabaseVerifier } from "../../../server/auth/supabaseVerifier.ts";
-import { createCloudProxyHandler, parseCloudApiBase } from "./cloudProxy.ts";
+import { createCloudProxyHandler, parseCloudApiBase, probeCloudDestinationIssuer } from "./cloudProxy.ts";
+import {
+  CloudDestinationSettingError,
+  CloudDestinationStore,
+  normalizeCloudIssuer,
+} from "./cloudDestination.ts";
 import {
   createLocalDaemonVerifier,
   LOCAL_DAEMON_BEARER,
@@ -698,18 +703,38 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     }
   } catch { /* Invalid trust configuration keeps sync disabled. */ }
   const syncConfigured = env.FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH === "1" && supabaseConfig !== null && !!env.FIT_TRACE_API_BASE_URL && syncPublicKeys.length > 0;
-  // Cloud coaching needs both a verified account (Supabase configured) and a
-  // fixed, operator-approved hosted destination. Without either, the route
-  // stays visibly off instead of pretending to be reachable.
-  const cloudApiBaseUrl = parseCloudApiBase(env.FIT_TRACE_CLOUD_API_BASE_URL);
-  const cloudConfigured = cloudApiBaseUrl !== null && supabaseConfig !== null;
-  const cloudProxy = cloudConfigured
-    ? createCloudProxyHandler({
-        apiBaseUrl: cloudApiBaseUrl,
+  // Cloud coaching needs a verified account (Supabase configured). The
+  // destination is either the build/operator default or a device-local user
+  // setting (#87); a malformed stored file fails closed instead of silently
+  // falling back to the official server. The proxy exists whenever an account
+  // service does, so the settings page can add a destination at runtime.
+  const cloudOfficialRaw = env.FIT_TRACE_CLOUD_API_BASE_URL;
+  const cloudOfficialDestination = parseCloudApiBase(cloudOfficialRaw);
+  const cloudOfficialError =
+    cloudOfficialRaw !== undefined && cloudOfficialRaw.trim() !== "" && cloudOfficialDestination === null
+      ? "The configured FIT_TRACE_CLOUD_API_BASE_URL is not a canonical HTTPS /api/v1 URL."
+      : null;
+  const cloudIssuer = supabaseConfig === null ? null : normalizeCloudIssuer(supabaseConfig.supabaseUrl);
+  const cloudDestinationStore = supabaseConfig === null
+    ? null
+    : await CloudDestinationStore.load({
+        dataDir,
+        officialDestination: cloudOfficialDestination,
+        officialError: cloudOfficialError,
+        issuer: cloudIssuer,
+        probe: (destination) => probeCloudDestinationIssuer(destination, {
+          ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
+        }),
+        ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
+      });
+  const cloudConfigured = cloudDestinationStore !== null;
+  const cloudProxy = cloudDestinationStore === null
+    ? null
+    : createCloudProxyHandler({
+        destinationFor: (principal) => cloudDestinationStore.decisionFor(principal.id),
         verifier,
         ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
-      })
-    : null;
+      });
   const handler = createAuthenticatedHandler({
     verifier,
     stores,
@@ -805,6 +830,117 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     );
   }
 
+  /**
+   * Daemon-local cloud destination setting (#87). These routes are NOT
+   * forwarded upstream: they configure which upstream the proxy may use. Only
+   * a verified formal account may read or change the setting; a guest bearer
+   * never authorizes a host or a consent.
+   */
+  async function handleCloudDestinationApi(
+    request: IncomingMessage,
+    response: ServerResponse,
+    method: string,
+    bare: string,
+  ): Promise<void> {
+    const store = cloudDestinationStore;
+    if (store === null || supabaseConfig === null) {
+      sendJson(response, 503, errorEnvelope("CLOUD_DISABLED", "Cloud coaching is not configured on this daemon."));
+      return;
+    }
+    const token = extractBearerToken(
+      typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
+    );
+    if (token === null) {
+      sendJson(response, 401, errorEnvelope("UNAUTHENTICATED", "Sign in to change the cloud server."));
+      return;
+    }
+    if (token === LOCAL_DAEMON_BEARER) {
+      sendJson(response, 403, errorEnvelope("ACCOUNT_NOT_FORMAL", "Cloud coaching requires a signed-in account."));
+      return;
+    }
+    let principal: AuthPrincipal;
+    try {
+      principal = await verifier.verify(token);
+    } catch (error) {
+      const status = error instanceof Error && "status" in error && typeof (error as { status?: unknown }).status === "number"
+        ? (error as { status: number }).status
+        : undefined;
+      if (status !== undefined && status >= 500) {
+        sendJson(response, status, errorEnvelope("STORAGE_UNAVAILABLE", "Authentication service is unavailable."));
+      } else {
+        sendJson(response, 401, errorEnvelope("UNAUTHENTICATED", "Invalid or expired bearer token."));
+      }
+      return;
+    }
+    if (principal.isAnonymous !== false) {
+      sendJson(response, 403, errorEnvelope("ACCOUNT_NOT_FORMAL", "Cloud coaching requires a formal account."));
+      return;
+    }
+
+    if (bare === "/coaching/cloud/destination" && method === "GET") {
+      sendJson(response, 200, JSON.stringify({ data: store.statusFor(principal.id) }));
+      return;
+    }
+    if (bare === "/coaching/cloud/destination" && method === "DELETE") {
+      sendJson(response, 200, JSON.stringify({ data: await store.reset() }));
+      return;
+    }
+    if (bare !== "/coaching/cloud/destination" && bare !== "/coaching/cloud/destination/preview") {
+      sendJson(response, 404, errorEnvelope("NOT_FOUND", "Unknown cloud destination route."));
+      return;
+    }
+    if (method !== "POST" && method !== "PUT") {
+      sendJson(response, 404, errorEnvelope("NOT_FOUND", "Unknown cloud destination route."));
+      return;
+    }
+    let body: string | undefined;
+    try {
+      body = await collectBody(request, 8 * 1024);
+    } catch {
+      sendJson(response, 400, errorEnvelope("VALIDATION_ERROR", "The request body is too large."));
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body ?? "null");
+    } catch {
+      sendJson(response, 400, errorEnvelope("VALIDATION_ERROR", "The request body must be JSON."));
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      sendJson(response, 400, errorEnvelope("VALIDATION_ERROR", "The request body must be an object."));
+      return;
+    }
+    const address = (parsed as { address?: unknown }).address;
+    if (typeof address !== "string" || address.trim() === "") {
+      sendJson(response, 400, errorEnvelope("VALIDATION_ERROR", "A cloud server address is required."));
+      return;
+    }
+    if (bare === "/coaching/cloud/destination/preview" && method === "POST") {
+      sendJson(response, 200, JSON.stringify({ data: await store.check(address) }));
+      return;
+    }
+    if (method === "PUT") {
+      const confirmHost = (parsed as { confirmHost?: unknown }).confirmHost;
+      if (typeof confirmHost !== "string" || confirmHost.trim() === "") {
+        sendJson(response, 400, errorEnvelope("CLOUD_DESTINATION_CONFIRMATION_REQUIRED", "Confirm the exact server host."));
+        return;
+      }
+      try {
+        const status = await store.confirm(address, confirmHost, principal.id);
+        sendJson(response, 200, JSON.stringify({ data: status }));
+      } catch (error) {
+        if (error instanceof CloudDestinationSettingError) {
+          sendJson(response, error.status, errorEnvelope(error.code, error.message));
+        } else {
+          sendJson(response, 500, errorEnvelope("API_ERROR", "The cloud server could not be saved."));
+        }
+      }
+      return;
+    }
+    sendJson(response, 404, errorEnvelope("NOT_FOUND", "Unknown cloud destination route."));
+  }
+
   async function handleApiV1(
     request: IncomingMessage,
     response: ServerResponse,
@@ -817,6 +953,17 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     // route; additive fields the handler itself does not serialize).
     if (bare === API_ENDPOINTS.publicConfig && method === "GET") {
       await servePublicConfig(response);
+      return;
+    }
+
+    // Destination configuration is a daemon-local setting; it must be handled
+    // before the cloud proxy, which forwards everything else under this prefix
+    // to an upstream host.
+    if (
+      bare === "/coaching/cloud/destination" ||
+      bare === "/coaching/cloud/destination/preview"
+    ) {
+      await handleCloudDestinationApi(request, response, method, bare);
       return;
     }
 

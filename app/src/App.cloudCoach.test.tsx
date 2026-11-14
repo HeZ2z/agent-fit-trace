@@ -149,6 +149,8 @@ function cloudBackendDescriptor() {
 interface CloudTailHarness {
   push: (entry: CoachingEventEnvelope) => void;
   close: () => void;
+  /** Mutate the destination status the fake daemon reports (custom-server tests). */
+  setDestination: (status: Record<string, unknown>) => void;
 }
 
 function requestHeaders(init?: RequestInit): Record<string, string> {
@@ -270,6 +272,14 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
   let cloudSubmits = 0;
   let cloudEventReads = 0;
   let cloudCapabilityReads = 0;
+  let cloudDestination: Record<string, unknown> = {
+    source: "official",
+    destination: "https://cloud.example.test/api/v1",
+    host: "cloud.example.test",
+    officialDestination: "https://cloud.example.test/api/v1",
+    issuer: AUTH_BASE,
+    consent: "not-applicable",
+  };
   const tailHarness: CloudTailHarness = {
     push: (entry) => {
       const bytes = new TextEncoder().encode(`data: ${JSON.stringify(entry)}\n\n`);
@@ -289,6 +299,9 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
           // Detached already.
         }
       }
+    },
+    setDestination: (status) => {
+      cloudDestination = status;
     },
   };
   vi.stubGlobal(
@@ -405,6 +418,55 @@ function installRouter(seen: SeenRequest[], options: RouterOptions = {}): CloudT
         // A plain browser never calls the launcher's local discovery route.
         if (url === "/api/v1/coaching/capabilities") {
           return jsonError("NOT_FOUND", "local discovery is launcher-only", 404);
+        }
+        if (url === "/api/v1/coaching/cloud/destination" && method === "GET") {
+          return jsonData(cloudDestination);
+        }
+        if (url === "/api/v1/coaching/cloud/destination/preview" && method === "POST") {
+          const { address } = parseBody(init) as { address: string };
+          const parsed = new URL(address);
+          const issuerCompatible = !address.includes("other-issuer");
+          return jsonData(
+            issuerCompatible
+              ? {
+                  ok: true,
+                  destination: `${parsed.origin}/api/v1`,
+                  host: parsed.host,
+                  official: false,
+                  issuerCompatible: true,
+                }
+              : {
+                  ok: false,
+                  error: {
+                    code: "CLOUD_DESTINATION_ISSUER_INCOMPATIBLE",
+                    message: "This server uses a different account service.",
+                  },
+                },
+          );
+        }
+        if (url === "/api/v1/coaching/cloud/destination" && method === "PUT") {
+          const { address } = parseBody(init) as { address: string };
+          const parsed = new URL(address);
+          cloudDestination = {
+            source: "user",
+            destination: `${parsed.origin}/api/v1`,
+            host: parsed.host,
+            officialDestination: "https://cloud.example.test/api/v1",
+            issuer: AUTH_BASE,
+            consent: "confirmed",
+          };
+          return jsonData(cloudDestination);
+        }
+        if (url === "/api/v1/coaching/cloud/destination" && method === "DELETE") {
+          cloudDestination = {
+            source: "official",
+            destination: "https://cloud.example.test/api/v1",
+            host: "cloud.example.test",
+            officialDestination: "https://cloud.example.test/api/v1",
+            issuer: AUTH_BASE,
+            consent: "not-applicable",
+          };
+          return jsonData(cloudDestination);
         }
         if (url === "/api/v1/coaching/cloud/capabilities" && method === "GET") {
           if (principal.isAnonymous) {
@@ -727,6 +789,54 @@ describe("browser coach backend selection", () => {
       seen.filter((entry) => entry.url.includes("/coaching/cloud/runs") && entry.method === "POST"),
     ).toHaveLength(0);
     expect(seen.filter((entry) => entry.url.endsWith("/coaching/bootstrap"))).toHaveLength(0);
+  });
+
+  it("binds a cloud run to its destination and blocks replay after the destination changes", async () => {
+    (globalThis as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME = {
+      mode: "http",
+      coaching: "same-origin",
+      cloud: true,
+    };
+    const seen: SeenRequest[] = [];
+    const tail = installRouter(seen, { launcherDiscovery: true });
+    const user = userEvent.setup();
+    const first = render(<App />);
+
+    await signIn(user, FORMAL_A);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+    await user.selectOptions(await screen.findByTestId("coach-backend-select"), "cloud-default");
+    await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
+    await user.click(screen.getByRole("button", { name: /ask coach/i }));
+    expect(await screen.findByTestId("coach-text")).toHaveTextContent("cloud answer");
+
+    const resume = JSON.parse(window.sessionStorage.getItem(RESUME_V2_KEY) ?? "null") as {
+      destination?: string;
+      issuer?: string;
+    };
+    expect(resume.destination).toBe("https://cloud.example.test/api/v1");
+    expect(resume.issuer).toBe(AUTH_BASE);
+    const runReadsBefore = seen.filter((entry) => entry.url.includes(`/runs/${CLOUD_RUN}`)).length;
+
+    first.unmount();
+    // The device-local destination changed after the run was persisted.
+    tail.setDestination({
+      source: "user",
+      destination: "https://custom.example.test/api/v1",
+      host: "custom.example.test",
+      officialDestination: "https://cloud.example.test/api/v1",
+      issuer: AUTH_BASE,
+      consent: "confirmed",
+    });
+    render(<App />);
+    await user.click(await screen.findByRole("link", { name: /^coach$/i }));
+
+    const blocked = await screen.findByTestId("coach-resume-blocked");
+    expect(blocked).toHaveTextContent(/custom\.example\.test/);
+    expect(blocked).toHaveTextContent(/saved run was kept/i);
+    // The old run's identifiers were not replayed against the new host.
+    expect(
+      seen.filter((entry) => entry.url.includes(`/runs/${CLOUD_RUN}`)).length,
+    ).toBe(runReadsBefore);
   });
 
   it("restores a run's server-verified conversation while replaying", async () => {

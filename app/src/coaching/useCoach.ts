@@ -2,12 +2,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { AnalysisResult } from "@agent-fit-trace/core";
 import { API_ERROR_CODES, ApiError, COACHING_ERROR_CODES, NetworkError, isCoachingBackendId } from "@agent-fit-trace/api-contracts";
 import type {
+  CloudDestinationStatus,
   CoachingBackendId,
   CoachingDataSnapshot,
   CoachingEventEnvelope,
   CoachingTerminalStatus,
 } from "@agent-fit-trace/api-contracts";
 import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
+import { readCloudDestination } from "../api/cloudDestination.ts";
 import { CoachingClient } from "../api/coachingClient.ts";
 import {
   isCloudCoachingProxied,
@@ -58,6 +60,12 @@ interface CoachResumeRecord {
   runId: string;
   /** Highest folded event seq, or -1 before the first event. */
   lastSeq: number;
+  /**
+   * Custom cloud destination binding (#87). Present on cloud runs created or
+   * refreshed after server binding was introduced; absent on legacy records.
+   */
+  destination?: string;
+  issuer?: string;
 }
 
 function isNonBlank(value: unknown): value is string {
@@ -85,6 +93,33 @@ function resumeBackendName(backendId: CoachingBackendId): string {
   }
 }
 
+/**
+ * A saved cloud run may be resumed only against the destination and issuer that
+ * created it. A legacy record (no binding) is safe only on the official
+ * destination; otherwise it is retained and surfaced as blocked, never replayed
+ * through a new host (#87).
+ */
+function cloudResumeBlockMessage(
+  record: CoachResumeRecord,
+  status: CloudDestinationStatus,
+): string | null {
+  if (record.destination !== undefined && record.issuer !== undefined) {
+    if (status.destination === record.destination && status.issuer === record.issuer) return null;
+    return (
+      `A saved cloud run belongs to ${record.destination}, but this app now uses ` +
+      `${status.destination ?? "a different or unconfigured cloud server"}. The saved run was kept ` +
+      "and was not replayed against the new server. Switch back to the original server to resume it, " +
+      "or start a new run."
+    );
+  }
+  if (status.source === "official") return null;
+  return (
+    "A saved cloud run predates cloud-server binding, and this app now uses a custom cloud server. " +
+    "The saved run was kept and was not replayed against the custom server. Reset to the official " +
+    "server to resume it, or start a new run."
+  );
+}
+
 function readStoredCoachResume(): CoachResumeRecord | null {
   try {
     const storage = globalThis.sessionStorage;
@@ -102,6 +137,8 @@ function readStoredCoachResume(): CoachResumeRecord | null {
           isNonBlank(record.runId) &&
           isResumeCursor(record.lastSeq)
         ) {
+          const destination = isNonBlank(record.destination) ? record.destination : undefined;
+          const issuer = isNonBlank(record.issuer) ? record.issuer : undefined;
           return {
             version: 2,
             accountId: record.accountId,
@@ -110,6 +147,8 @@ function readStoredCoachResume(): CoachResumeRecord | null {
             sessionId: record.sessionId,
             runId: record.runId,
             lastSeq: record.lastSeq,
+            // A partial pair is treated as legacy/unbound, never half-trusted.
+            ...(destination !== undefined && issuer !== undefined ? { destination, issuer } : {}),
           };
         }
       }
@@ -152,6 +191,9 @@ function writeStoredCoachResume(record: CoachResumeRecord): void {
         sessionId: record.sessionId,
         runId: record.runId,
         lastSeq: record.lastSeq,
+        ...(record.destination !== undefined && record.issuer !== undefined
+          ? { destination: record.destination, issuer: record.issuer }
+          : {}),
       }),
     );
     // Old pi clients read only v1; keep the exact compact shape for local-pi
@@ -536,6 +578,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   // restore failure can be re-verified on an explicit retry without inventing
   // state. Cleared as soon as the run is verified (or definitively reset).
   const restoreRecordRef = useRef<CoachResumeRecord | null>(null);
+  // Destination+issuer of the cloud run this hook is bound to. Set before a
+  // cloud submit and refreshed by a verified restore; never used for local runs.
+  const cloudBindingRef = useRef<{ destination: string; issuer: string } | null>(null);
   // True while a subscription is attached and has not settled: a cancel that
   // succeeds after a transport failure re-opens the tail only when it is false.
   const streamLiveRef = useRef(false);
@@ -562,6 +607,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     const backendId = activeBackendRef.current;
     if (currentAccount === null || currentAccount === undefined) return;
     if (sessionId === null || runId === null || backendId === null) return;
+    const binding = isCloudBackend(backendId) ? cloudBindingRef.current : null;
     writeStoredCoachResume({
       version: 2,
       accountId: currentAccount,
@@ -570,6 +616,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       sessionId,
       runId,
       lastSeq: lastConsumedRef.current,
+      ...(binding === null ? {} : { destination: binding.destination, issuer: binding.issuer }),
     });
   }, [accountId]);
 
@@ -957,6 +1004,34 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       pendingRetryRef.current = null;
       restoreRecordRef.current = null;
       runIdRef.current = null;
+      // Bind the persisted record to the destination this run will use. The
+      // daemon independently refuses an unconfirmed custom destination; this
+      // binding is what stops a later destination change from replaying the
+      // run identifiers against a different host (#87). Resolve it BEFORE
+      // clearing an existing resume so a failed resolution does not lose it.
+      if (isCloudBackend(backendId) && cloudProxy) {
+        try {
+          const current = await readCloudDestination({ getAccessToken });
+          if (current.destination === null || current.issuer === null) {
+            throw new ApiError({
+              code: "CLOUD_DESTINATION_UNAVAILABLE",
+              message:
+                "Cloud coaching has no configured server or account service. Configure it in Coach settings.",
+            });
+          }
+          cloudBindingRef.current = { destination: current.destination, issuer: current.issuer };
+        } catch (caught) {
+          if (generationRef.current === gen) {
+            cloudBindingRef.current = null;
+            unpinBackend();
+            beginPhase("idle");
+            setError(friendlyCoachError(caught));
+          }
+          return;
+        }
+      } else {
+        cloudBindingRef.current = null;
+      }
       // Item 4: a fresh submit supersedes any persisted resume until the new
       // run is established below.
       clearStoredCoachResume();
@@ -1142,6 +1217,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       blocksFreshRun,
       clearFold,
       client,
+      cloudProxy,
+      getAccessToken,
       persistResume,
       pinBackend,
       unpinBackend,
@@ -1703,6 +1780,32 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const runRestore = useCallback(
     async (gen: number, record: CoachResumeRecord): Promise<void> => {
       try {
+        if (isCloudBackend(record.backendId) && cloudProxy) {
+          // Verify the CURRENT destination BEFORE reading the run. A daemon
+          // failure here is ambiguous (retry), not proof the run is gone.
+          const current = await readCloudDestination({ getAccessToken });
+          if (generationRef.current !== gen) return;
+          const block = cloudResumeBlockMessage(record, current);
+          if (block !== null) {
+            restoreRecordRef.current = null;
+            restoreCompletedRef.current = accountId;
+            cloudBindingRef.current = null;
+            setBlockedResume({ backendId: record.backendId, message: block });
+            unpinBackend();
+            beginPhase("idle");
+            return;
+          }
+          if (current.destination === null || current.issuer === null) {
+            throw new ApiError({
+              code: "CLOUD_DESTINATION_UNAVAILABLE",
+              message: "The cloud server binding could not be verified.",
+            });
+          }
+          cloudBindingRef.current = {
+            destination: current.destination,
+            issuer: current.issuer,
+          };
+        }
         if (!client.isBootstrapped) await client.bootstrap();
         if (generationRef.current !== gen) return;
         const session = await client.readSession(record.sessionId);
@@ -1782,7 +1885,16 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
         beginPhase("disconnected");
       }
     },
-    [accountId, attachStream, beginPhase, client, persistResume, unpinBackend],
+    [
+      accountId,
+      attachStream,
+      beginPhase,
+      client,
+      cloudProxy,
+      getAccessToken,
+      persistResume,
+      unpinBackend,
+    ],
   );
 
   /** Begin a restore attempt for `record` under a fresh generation. */

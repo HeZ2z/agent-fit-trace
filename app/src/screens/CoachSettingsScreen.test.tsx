@@ -6,6 +6,14 @@ import { CoachDiscoveryProvider, useCoachDiscovery } from "../coaching/CoachDisc
 import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
 import type { CloudCapabilities } from "@agent-fit-trace/api-contracts";
 import { CoachSettingsScreen } from "./CoachSettingsScreen.tsx";
+import * as cloudDestination from "../api/cloudDestination.ts";
+
+vi.mock("../api/cloudDestination.ts", () => ({
+  readCloudDestination: vi.fn(),
+  previewCloudDestination: vi.fn(),
+  confirmCloudDestination: vi.fn(),
+  resetCloudDestination: vi.fn(),
+}));
 
 // Both are hook-only modules with no injectable provider, so they are mocked at
 // the module boundary. Mocking here is deliberate: the page's contract is "read
@@ -20,8 +28,14 @@ vi.mock("../auth/AuthContext.tsx", () => ({
   }),
 }));
 vi.mock("../i18n/useI18n.ts", () => ({
-  // Identity translator: the assertions below match the English source strings.
-  useI18n: () => ({ t: (text: string) => text }),
+  // Source-string translator with the same {placeholder} substitution the real
+  // provider performs; the assertions match the English source strings.
+  useI18n: () => ({
+    t: (text: string, params?: Record<string, unknown>) =>
+      text.replace(/\{(\w+)\}/g, (match, key: string) =>
+        params?.[key] === undefined ? match : String(params[key]),
+      ),
+  }),
 }));
 
 /**
@@ -130,10 +144,23 @@ function setCloudRuntime(enabled: boolean): void {
   };
 }
 
+const OFFICIAL_DESTINATION = {
+  source: "official" as const,
+  destination: "https://cloud.example.test/api/v1",
+  host: "cloud.example.test",
+  officialDestination: "https://cloud.example.test/api/v1",
+  issuer: "https://project.example.test",
+  consent: "not-applicable" as const,
+};
+
 beforeEach(() => {
   window.localStorage.clear();
   delete (window as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME;
   vi.restoreAllMocks();
+  vi.mocked(cloudDestination.readCloudDestination).mockResolvedValue(OFFICIAL_DESTINATION);
+  vi.mocked(cloudDestination.previewCloudDestination).mockReset();
+  vi.mocked(cloudDestination.confirmCloudDestination).mockReset();
+  vi.mocked(cloudDestination.resetCloudDestination).mockReset();
 });
 
 afterEach(() => {
@@ -288,6 +315,139 @@ describe("coach settings: cloud section", () => {
     const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
     renderPage({ user: { id: "guest-cloud-settings", isAnonymous: true }, client });
     expect(await screen.findByTestId("cloud-placeholder")).toHaveTextContent(/sign in/i);
+  });
+
+  it("shows the official cloud server in use for a signed-in account", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(cloudCapabilities());
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-cloud-server", isAnonymous: false }, client });
+
+    expect(await screen.findByTestId("cloud-server-official")).toHaveTextContent(
+      /official cloud server in use: cloud\.example\.test/i,
+    );
+    expect(screen.getByTestId("cloud-server-settings")).toBeInTheDocument();
+  });
+
+  it("requires an explicit confirmation naming the host before saving a custom destination", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(cloudCapabilities());
+    vi.mocked(cloudDestination.previewCloudDestination).mockResolvedValue({
+      ok: true,
+      destination: "https://custom.example.test/api/v1",
+      host: "custom.example.test",
+      official: false,
+      issuerCompatible: true,
+    });
+    vi.mocked(cloudDestination.confirmCloudDestination).mockResolvedValue({
+      ...OFFICIAL_DESTINATION,
+      source: "user",
+      destination: "https://custom.example.test/api/v1",
+      host: "custom.example.test",
+      consent: "confirmed",
+    });
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-cloud-confirm", isAnonymous: false }, client });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /use a different server/i }));
+    await user.type(screen.getByTestId("cloud-server-input"), "https://custom.example.test/api/v1");
+    await user.click(screen.getByRole("button", { name: /check server/i }));
+
+    const confirmation = await screen.findByTestId("cloud-server-confirm");
+    expect(confirmation).toHaveTextContent(/custom\.example\.test/);
+    expect(vi.mocked(cloudDestination.confirmCloudDestination)).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /confirm and use this server/i }));
+    await waitFor(() =>
+      expect(vi.mocked(cloudDestination.confirmCloudDestination)).toHaveBeenCalledWith(
+        "https://custom.example.test/api/v1",
+        "custom.example.test",
+        expect.anything(),
+      ),
+    );
+    expect(await screen.findByTestId("cloud-server-custom")).toHaveTextContent(/custom\.example\.test/);
+  });
+
+  it("refuses an incompatible destination without offering confirmation", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(cloudCapabilities());
+    vi.mocked(cloudDestination.previewCloudDestination).mockResolvedValue({
+      ok: false,
+      error: {
+        code: "CLOUD_DESTINATION_ISSUER_INCOMPATIBLE",
+        message: "This server uses a different account service.",
+      },
+    });
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-cloud-wrong-issuer", isAnonymous: false }, client });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /use a different server/i }));
+    await user.type(screen.getByTestId("cloud-server-input"), "https://other.example.test/api/v1");
+    await user.click(screen.getByRole("button", { name: /check server/i }));
+
+    expect(await screen.findByTestId("cloud-server-form-error")).toHaveTextContent(
+      /different account service/i,
+    );
+    expect(screen.queryByTestId("cloud-server-confirm")).toBeNull();
+    expect(screen.queryByRole("button", { name: /confirm and use this server/i })).toBeNull();
+  });
+
+  it("asks a second account to confirm an already stored custom server", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(cloudCapabilities());
+    vi.mocked(cloudDestination.readCloudDestination).mockResolvedValue({
+      ...OFFICIAL_DESTINATION,
+      source: "user",
+      destination: "https://custom.example.test/api/v1",
+      host: "custom.example.test",
+      consent: "required",
+    });
+    vi.mocked(cloudDestination.confirmCloudDestination).mockResolvedValue({
+      ...OFFICIAL_DESTINATION,
+      source: "user",
+      destination: "https://custom.example.test/api/v1",
+      host: "custom.example.test",
+      consent: "confirmed",
+    });
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-cloud-second", isAnonymous: false }, client });
+
+    expect(await screen.findByTestId("cloud-server-unconfirmed")).toHaveTextContent(
+      /custom\.example\.test/,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /confirm custom\.example\.test/i }));
+    await waitFor(() =>
+      expect(vi.mocked(cloudDestination.confirmCloudDestination)).toHaveBeenCalledWith(
+        "https://custom.example.test/api/v1",
+        "custom.example.test",
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("surfaces an invalid stored destination and offers a reset to official", async () => {
+    setCloudRuntime(true);
+    vi.spyOn(CloudCoachingClient.prototype, "readCapabilities").mockResolvedValue(cloudCapabilities());
+    vi.mocked(cloudDestination.readCloudDestination).mockResolvedValue({
+      ...OFFICIAL_DESTINATION,
+      source: "invalid",
+      destination: null,
+      host: null,
+      consent: "not-applicable",
+      error: { code: "CLOUD_DESTINATION_INVALID", message: "The stored setting is invalid." },
+    });
+    vi.mocked(cloudDestination.resetCloudDestination).mockResolvedValue(OFFICIAL_DESTINATION);
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-cloud-invalid", isAnonymous: false }, client });
+
+    expect(await screen.findByTestId("cloud-server-invalid")).toHaveTextContent(/stored setting is invalid/i);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /reset to the official cloud server/i }));
+    await waitFor(() => expect(vi.mocked(cloudDestination.resetCloudDestination)).toHaveBeenCalled());
+    expect(await screen.findByTestId("cloud-server-official")).toHaveTextContent(/cloud\.example\.test/);
   });
 });
 

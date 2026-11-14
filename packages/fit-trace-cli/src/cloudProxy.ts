@@ -4,15 +4,16 @@
  * The desktop app's cloud client is intentionally same-origin: the hosted
  * service must not need CORS, and exactly one reviewed place may attach the
  * caller's bearer. This module forwards the public cloud route
- * (`/api/v1/coaching/cloud/*`) to a fixed, operator-approved HTTPS origin and
- * streams the response back with backpressure and disconnect cancellation.
+ * (`/api/v1/coaching/cloud/*`) to the destination the daemon currently
+ * approves for the verified principal, and streams the response back with
+ * backpressure and disconnect cancellation.
  *
  * Boundaries that are enforced here, not in the renderer:
  * - the local daemon guest bearer is never forwarded, and only a verified
  *   formal account may use the route;
- * - the destination is a build/operator decision. A user-entered destination
- *   is not supported yet, so an unapproved value cannot be smuggled in by a
- *   renderer setting;
+ * - the destination is resolved per request from the daemon's setting (an
+ *   operator/build default or a user-entered destination with explicit
+ *   consent); a renderer cannot smuggle an unapproved value into the proxy;
  * - redirects are refused, never followed with the bearer;
  * - hostname resolution is checked for loopback/private/link-local/metadata
  *   targets, and the checked address is the one connected to (DNS rebinding
@@ -40,6 +41,8 @@ const DEFAULT_BODY_BYTES = 1024 * 1024;
 const DEFAULT_JSON_BYTES = 1024 * 1024;
 const DEFAULT_SSE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
+const DEFAULT_PROBE_BYTES = 64 * 1024;
 
 export class CloudProxyError extends Error {
   readonly status: number;
@@ -189,6 +192,12 @@ export async function resolveApprovedAddress(
   resolveHost: ResolveHost = defaultResolveHost,
   allowInsecureLoopback = false,
 ): Promise<ResolvedAddress> {
+  // Defence in depth: the static destination parser already requires HTTPS,
+  // and the test seam must not turn into an accidental plaintext bearer path.
+  const insecureHttp = destination.protocol === "http:";
+  if (destination.protocol !== "https:" && !(allowInsecureLoopback && insecureHttp)) {
+    throw new CloudProxyError(502, "The cloud destination must use HTTPS.");
+  }
   const hostname = destination.hostname.replace(/^\[|\]$/g, "");
   const literal = isIP(hostname);
   const answers: readonly ResolvedAddress[] = literal === 4 || literal === 6
@@ -198,12 +207,147 @@ export async function resolveApprovedAddress(
       });
   if (answers.length === 0) throw new CloudProxyError(502, "The cloud destination did not resolve.");
   for (const answer of answers) {
-    if (allowInsecureLoopback && isLoopbackAddress(answer.address)) continue;
+    // The test-only plain-HTTP seam is strictly loopback: a plain-HTTP
+    // destination that resolves to any public or private non-loopback address
+    // must never receive the bearer.
+    if (allowInsecureLoopback && insecureHttp) {
+      if (!isLoopbackAddress(answer.address)) {
+        throw new CloudProxyError(502, "The cloud destination resolves to a disallowed network address.");
+      }
+      continue;
+    }
     if (!isPublicAddress(answer.address)) {
       throw new CloudProxyError(502, "The cloud destination resolves to a disallowed network address.");
     }
   }
   return answers[0] as ResolvedAddress;
+}
+
+export interface CloudDestinationProbeOptions {
+  /** TEST-ONLY: allow a plain-HTTP loopback destination. */
+  allowInsecureLoopback?: boolean;
+  resolveHost?: ResolveHost;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+/**
+ * Read a candidate destination's public bootstrap configuration and return its
+ * account-service issuer (`supabaseUrl`), or null when it publishes none.
+ *
+ * This is the only request made before a user destination is saved. It sends
+ * no bearer and no workout data, refuses redirects, and applies the same
+ * address pinning/SSRF policy as the coaching proxy: the CI check for an
+ * incompatible destination must not itself become an SSRF primitive.
+ */
+export async function probeCloudDestinationIssuer(
+  destination: URL,
+  options: CloudDestinationProbeOptions = {},
+): Promise<string | null> {
+  const allowInsecure = options.allowInsecureLoopback === true;
+  const isHttps = destination.protocol === "https:";
+  if (!isHttps && !(allowInsecure && destination.protocol === "http:")) {
+    throw new CloudProxyError(502, "The cloud destination must use HTTPS.");
+  }
+  const resolveHost = options.resolveHost ?? defaultResolveHost;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const maxBytes = options.maxBytes ?? DEFAULT_PROBE_BYTES;
+  const target = new URL(`${destination.origin}${destination.pathname}/public-config`);
+
+  let pinned: ResolvedAddress;
+  try {
+    pinned = await resolveApprovedAddress(destination, resolveHost, allowInsecure);
+  } catch (error) {
+    throw error instanceof CloudProxyError
+      ? error
+      : new CloudProxyError(502, "The cloud destination could not be resolved.");
+  }
+
+  return await new Promise<string | null>((resolve, reject) => {
+    let settled = false;
+    const settle = (error: Error | null, issuer: string | null = null): void => {
+      if (settled) return;
+      settled = true;
+      if (error === null) resolve(issuer);
+      else reject(error);
+    };
+    const requestModule = isHttps ? httpsRequest : httpRequest;
+    const upstream = requestModule({
+      protocol: target.protocol,
+      hostname: target.hostname.replace(/^\[|\]$/g, ""),
+      port: target.port === "" ? undefined : Number(target.port),
+      path: `${target.pathname}${target.search}`,
+      method: "GET",
+      headers: { accept: "application/json", host: target.host },
+      lookup: (_hostname, lookupOptions, callback) => {
+        if (lookupOptions.all === true) {
+          callback(null, [{ address: pinned.address, family: pinned.family }]);
+        } else {
+          callback(null, pinned.address, pinned.family);
+        }
+      },
+      ...(isHttps ? { servername: target.hostname.replace(/^\[|\]$/g, "") } : {}),
+      agent: false,
+    });
+    upstream.setTimeout(timeoutMs, () => {
+      upstream.destroy();
+      settle(new CloudProxyError(504, "The cloud destination did not answer in time."));
+    });
+    upstream.on("error", () => {
+      settle(new CloudProxyError(502, "The cloud destination is unavailable."));
+    });
+    upstream.on("response", (upstreamResponse) => {
+      const status = upstreamResponse.statusCode ?? 502;
+      if (status >= 300 && status < 400) {
+        upstreamResponse.destroy();
+        upstream.destroy();
+        settle(new CloudProxyError(502, "The cloud destination redirected the request; refusing to follow it."));
+        return;
+      }
+      if (status !== 200) {
+        upstreamResponse.destroy();
+        settle(new CloudProxyError(502, `The cloud destination answered ${status}.`));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      upstreamResponse.on("data", (chunk: Buffer) => {
+        if (settled) return;
+        size += chunk.length;
+        if (size > maxBytes) {
+          upstreamResponse.destroy();
+          upstream.destroy();
+          settle(new CloudProxyError(502, "The cloud destination configuration is too large."));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      upstreamResponse.on("end", () => {
+        if (settled) return;
+        try {
+          const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const data =
+            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) && "data" in parsed
+              ? (parsed as { data: unknown }).data
+              : undefined;
+          const issuer =
+            typeof data === "object" && data !== null && !Array.isArray(data) && "supabaseUrl" in data
+              ? (data as { supabaseUrl?: unknown }).supabaseUrl
+              : undefined;
+          settle(
+            null,
+            typeof issuer === "string" && issuer.trim() !== "" ? issuer.trim() : null,
+          );
+        } catch {
+          settle(new CloudProxyError(502, "The cloud destination did not return valid JSON."));
+        }
+      });
+      upstreamResponse.on("error", () => {
+        settle(new CloudProxyError(502, "The cloud destination response failed."));
+      });
+    });
+    upstream.end();
+  });
 }
 
 function sendJson(response: ServerResponse, status: number, code: string, message: string): void {
@@ -310,8 +454,17 @@ export function pipeUpstreamBody(
 }
 
 export interface CloudProxyOptions {
-  /** Operator-approved HTTPS origin ending in `/api/v1`. */
-  apiBaseUrl: URL;
+  /**
+   * Static operator-approved HTTPS origin ending in `/api/v1`. Kept for
+   * callers that have exactly one destination; `destinationFor` is the
+   * per-principal dynamic form used by the daemon (#87).
+   */
+  apiBaseUrl?: URL;
+  /**
+   * Resolve the destination for a verified principal. A decision that is not
+   * `ready` refuses the request before any body is read or bearer forwarded.
+   */
+  destinationFor?: (principal: AuthPrincipal) => CloudProxyDestinationDecision;
   verifier: TokenVerifier | null;
   /** Test seam: resolution without real DNS. */
   resolveHost?: ResolveHost;
@@ -333,6 +486,13 @@ export interface CloudProxyRoute {
   search: string;
 }
 
+export interface CloudProxyDestinationDecision {
+  status: "ready" | "unconfigured" | "unconfirmed" | "invalid";
+  url?: URL;
+  code?: string;
+  message?: string;
+}
+
 export type CloudProxyHandler = (
   request: IncomingMessage,
   response: ServerResponse,
@@ -344,7 +504,6 @@ export type CloudProxyHandler = (
  * same-origin `/api/v1` surface, after the loopback Host/Origin gate.
  */
 export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyHandler {
-  const destination = options.apiBaseUrl;
   const resolveHost = options.resolveHost ?? defaultResolveHost;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_BODY_BYTES;
@@ -410,6 +569,27 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
     const contentType = typeof request.headers["content-type"] === "string" ? request.headers["content-type"] : "";
     if (body !== undefined && !/^application\/json\b/i.test(contentType)) {
       sendJson(response, 415, "VALIDATION_ERROR", "Cloud requests must be application/json.");
+      return;
+    }
+
+    let destination: URL;
+    if (options.destinationFor !== undefined) {
+      const decision = options.destinationFor(principal);
+      if (decision.status !== "ready" || decision.url === undefined) {
+        const status = decision.status === "unconfirmed" ? 403 : 503;
+        sendJson(
+          response,
+          status,
+          decision.code ?? "CLOUD_DISABLED",
+          decision.message ?? "Cloud coaching has no usable destination.",
+        );
+        return;
+      }
+      destination = decision.url;
+    } else if (options.apiBaseUrl !== undefined) {
+      destination = options.apiBaseUrl;
+    } else {
+      sendJson(response, 503, "CLOUD_DISABLED", "Cloud coaching has no configured destination.");
       return;
     }
 
