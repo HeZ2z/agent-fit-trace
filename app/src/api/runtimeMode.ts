@@ -99,7 +99,12 @@ export function evaluateRuntimeMode(input: RuntimeModeInput): RuntimeModeEvaluat
 }
 
 interface RuntimeHolder {
-  __FIT_TRACE_RUNTIME?: { mode?: unknown; coaching?: unknown; piAvailable?: unknown };
+  __FIT_TRACE_RUNTIME?: {
+    mode?: unknown;
+    coaching?: unknown;
+    piAvailable?: unknown;
+    cloud?: unknown;
+  };
 }
 
 function runtimeHolder(): RuntimeHolder {
@@ -206,4 +211,17 @@ export function isCoachVisible(): boolean {
 export function runtimePiAvailable(): boolean | null {
   const value = runtimeHolder().__FIT_TRACE_RUNTIME?.piAvailable;
   return typeof value === "boolean" ? value : null;
+}
+
+/**
+ * True only when the daemon runtime says it has a reviewed cloud proxy to an
+ * approved hosted destination (`window.__FIT_TRACE_RUNTIME.cloud === true`).
+ *
+ * This is a TRANSPORT capability, never entitlement: the hosted capabilities
+ * route still decides whether the signed-in account may start a run. The old
+ * launcher does not set it, so its cloud path stays exactly as unavailable as
+ * before.
+ */
+export function isCloudCoachingProxied(): boolean {
+  return runtimeHolder().__FIT_TRACE_RUNTIME?.cloud === true;
 }

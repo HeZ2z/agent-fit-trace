@@ -1,6 +1,8 @@
 # ADR 0008: Cloud coaching from the desktop app, and where sync runs
 
-- **Status:** Proposed. Design decision only; no code changes accompany this ADR.
+- **Status:** Partially implemented. Transport and sync landed; a user-entered
+  destination and live packaged verification remain open (see "Implementation
+  status").
 - **Date:** 2026-11-09
 - **Scope:** issue #69. The desktop app's path to the hosted coach, the settings
   surface for choosing a local CLI, and the sync boundary that makes cloud
@@ -307,6 +309,39 @@ foreground is sufficient for this issue. Unattended sync is a separate product
 feature ("sync automatically"), and it must solve credential storage in the same
 change that introduces it. Folding it in here would spread one security decision
 across two features, which is how it gets made twice and inconsistently.
+
+## Implementation status (2026-11-14)
+
+Landed after the sync work (#83):
+
+- The hosted cloud events route streams stored frames progressively instead of
+  accumulating a page body and returning it at the deadline. The Vercel adapter
+  pipes the stream; the JSON routes are unchanged.
+- The daemon proxies `/api/v1/coaching/cloud/*` to a fixed, operator-approved
+  HTTPS destination with the caller's own formal-account bearer. The local guest
+  bearer is refused before any upstream request, redirects are refused, DNS is
+  resolved and every answer checked for loopback/private/link-local/metadata
+  targets, and the checked address is pinned for the connection. The proxy
+  streams responses with backpressure and aborts upstream on client disconnect.
+- The app's daemon runtime advertises `cloud: true`; cloud discovery merges the
+  hosted capabilities option with local CLI discovery, cloud is the default
+  selection for a formal account when no preference is stored, and a saved
+  preference still wins. The Coach disclosure and the coaching settings page
+  state that cloud reads only the account's synced records.
+- A release desktop build passes the approved sync destination to the daemon as
+  `FIT_TRACE_CLOUD_API_BASE_URL`; inherited values are stripped first.
+
+Still open, and why this ADR is not marked Accepted for the whole issue:
+
+- **No user-entered destination.** The address is a build/operator decision.
+  The consent UI, canonical-destination binding, issuer compatibility check and
+  persisted-destination/run-identity rules are not implemented.
+- **No live packaged verification.** A signed-in packaged build running against
+  a deployed hosted service (including real provider/quota and platform-level
+  SSE streaming) has not been exercised here; local tests cover the seams, not
+  the deployment.
+- **No destination-change run blocking.** With a fixed destination this cannot
+  occur yet; it becomes necessary with the custom-destination work.
 
 ## Review history
 

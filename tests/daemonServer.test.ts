@@ -20,6 +20,7 @@ import {
 import type { DaemonServer, DaemonServerOptions } from "../packages/fit-trace-cli/src/daemonServer.ts";
 import type { DetectedLocalCli } from "../server/coaching/localRuntimeRegistrations.ts";
 import { LOCAL_DAEMON_BEARER } from "../server/auth/localVerifier.ts";
+import { createTestVerifier } from "../server/auth/testVerifier.ts";
 import { CAPABILITY_HEADER } from "../server/coaching/coachingServer.ts";
 
 /**
@@ -407,6 +408,45 @@ test("coaching discovery reports pi unavailable and cloud closed for the guest",
     assert.equal(cloud?.available, false);
   } finally {
     await daemon.close();
+  }
+});
+
+// --- cloud coaching proxy surface ---
+
+test("cloud proxy is advertised only when an account service and destination are configured", async () => {
+  const configured = await bootDaemon({
+    env: {
+      SUPABASE_URL: "https://project.example.test",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+      FIT_TRACE_CLOUD_API_BASE_URL: "https://cloud.example.test/api/v1",
+    },
+    verifier: createTestVerifier({ "token-formal": { id: "user-1", email: "formal@example.test", isAnonymous: false } }),
+  });
+  try {
+    const script = await (await fetch(`${configured.daemon.url}/fit-trace-runtime.js`)).text();
+    assert.match(script, /cloud: true/);
+    const guest = await fetch(`${configured.daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: GUEST_AUTH },
+    });
+    assert.equal(guest.status, 403);
+    assert.equal(((await guest.json()) as { error: { code: string } }).error.code, "ACCOUNT_NOT_FORMAL");
+    const missing = await fetch(`${configured.daemon.url}/api/v1/coaching/cloud/capabilities`);
+    assert.equal(missing.status, 401);
+  } finally {
+    await configured.daemon.close();
+  }
+
+  const disabled = await bootDaemon();
+  try {
+    const script = await (await fetch(`${disabled.daemon.url}/fit-trace-runtime.js`)).text();
+    assert.ok(!script.includes("cloud: true"));
+    const response = await fetch(`${disabled.daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: GUEST_AUTH },
+    });
+    assert.equal(response.status, 503);
+    assert.equal(((await response.json()) as { error: { code: string } }).error.code, "CLOUD_DISABLED");
+  } finally {
+    await disabled.daemon.close();
   }
 });
 

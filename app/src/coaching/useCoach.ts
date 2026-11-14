@@ -9,17 +9,22 @@ import type {
 } from "@agent-fit-trace/api-contracts";
 import { CloudCoachingClient } from "../api/cloudCoachingClient.ts";
 import { CoachingClient } from "../api/coachingClient.ts";
-import { isCoachingEnabled, isHttpModeActive, runtimePiAvailable } from "../api/runtimeMode.ts";
+import {
+  isCloudCoachingProxied,
+  isCoachingEnabled,
+  isHttpModeActive,
+  runtimePiAvailable,
+} from "../api/runtimeMode.ts";
 import { useAuth } from "../auth/AuthContext.tsx";
 import {
   cloudOptionFromCapabilities,
   defaultCoachBackend,
-  resolveLocalBackendChoice,
   descriptorToOption,
   initialBackendOptions,
   isBackendSupportedInMode,
   isCloudBackend,
   localBackendSelection,
+  preferredBackendChoice,
   localPiOption,
   unavailableCloudOption,
   readBackendPreference,
@@ -355,6 +360,9 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       : browserMode
         ? "browser"
         : "inactive";
+  // A daemon that proxies the hosted coach adds cloud to launcher mode. The
+  // legacy launcher never sets this, so its mode-exclusive behaviour is intact.
+  const cloudProxy = !explicitClient && isCloudCoachingProxied();
   // `isAnonymous === true` is the only verified guest signal. `undefined`/
   // missing classification fails cloud closed: it is never treated as formal.
   const isGuest = user?.isAnonymous === true;
@@ -424,10 +432,10 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const [expiredFirstSeq, setExpiredFirstSeq] = useState(0);
   // Backend selection (next run) is separate from the run's pinned backend.
   const [selectedBackend, setSelectedBackend] = useState<CoachingBackendId | null>(() =>
-    defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest }),
+    defaultCoachBackend({ mode: coachMode, accountId, guest: user?.isAnonymous !== false, cloudProxy }),
   );
   const [selectionSource, setSelectionSource] = useState<LocalSelectionSource>(() =>
-    accountId !== null && defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest }) !== null ? "preference" : "none",
+    accountId !== null && defaultCoachBackend({ mode: coachMode, accountId, guest: user?.isAnonymous !== false, cloudProxy }) !== null ? "preference" : "none",
   );
   const [activeBackend, setActiveBackend] = useState<CoachingBackendId | null>(null);
   const [runConversationId, setRunConversationId] = useState<string | null>(null);
@@ -629,12 +637,12 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     if (accountId === null) return;
     if (backendPinnedNow()) return;
     const stored = readBackendPreference(accountId);
-    if (stored === null || (coachMode === "launcher" && stored === "cloud-default")) return;
+    if (stored === null || (coachMode === "launcher" && stored === "cloud-default" && !cloudProxy)) return;
     setSelectionSource("preference");
     if (stored === selectedBackendRef.current) return;
     selectedBackendRef.current = stored;
     setSelectedBackend(stored);
-  }, [sharedPreferenceRevision, accountId, coachMode, backendPinnedNow]);
+  }, [sharedPreferenceRevision, accountId, coachMode, backendPinnedNow, cloudProxy]);
 
   const selectBackend = useCallback(
     (backendId: CoachingBackendId): void => {
@@ -1573,7 +1581,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     // with no pin and no inherited discovery result.
     unpinBackend();
     explicitlySelected.current = false;
-    const nextDefault = defaultCoachBackend({ mode: coachMode, accountId, guest: isGuest });
+    const nextDefault = defaultCoachBackend({ mode: coachMode, accountId, guest: user?.isAnonymous !== false, cloudProxy });
     selectedBackendRef.current = nextDefault;
     setSelectedBackend(nextDefault);
     setSelectionSource(nextDefault === null ? "none" : "preference");
@@ -1840,7 +1848,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     // A plain browser cannot address a local launcher run. Keep the v2 record
     // (backend/origin included) and tell the user to start the original
     // connector; never clear it or replay it through the current/cloud backend.
-    if (!isBackendSupportedInMode(record.backendId, coachMode)) {
+    if (!isBackendSupportedInMode(record.backendId, coachMode, cloudProxy)) {
       restoreCompletedRef.current = accountId;
       const localRun = !isCloudBackend(record.backendId);
       setBlockedResume({
@@ -1891,7 +1899,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   // would keep offering a backend that settings had just found available.
   const discoveryKey = `${coachMode}:${accountId ?? "none"}:${
     isGuest ? "guest" : identityUnverified ? "unverified" : "formal"
-  }:${sharedDiscoveryRevision}`;
+  }:${cloudProxy ? "cloud" : "local"}:${sharedDiscoveryRevision}`;
   // A provider-owned list is authoritative when present: it is the result of
   // the ONE bootstrap in the app, and re-running discovery here would cache a
   // second, independently stale list (a rescan in settings then updated the
@@ -1900,8 +1908,14 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     if (sharedBackends === null) return;
     if (coachMode === "browser") return;
     setBackends([...sharedBackends]);
-    if (coachMode === "launcher" && !backendPinnedNow() && !explicitlySelected.current && (accountId === null || readBackendPreference(accountId) === null || readBackendPreference(accountId) === "cloud-default")) {
-      const choice = resolveLocalBackendChoice({ preference: null, defaultId: sharedDefaultBackend, defaultSource: sharedDefaultSource, options: sharedBackends });
+    if (coachMode === "launcher" && !backendPinnedNow() && !explicitlySelected.current) {
+      const choice = preferredBackendChoice({
+        preference: accountId === null ? null : readBackendPreference(accountId),
+        defaultId: sharedDefaultBackend,
+        defaultSource: sharedDefaultSource,
+        options: sharedBackends,
+        cloudProxy,
+      });
       selectedBackendRef.current = choice.backendId;
       setSelectedBackend(choice.backendId);
       setSelectionSource(choice.source);
@@ -1910,7 +1924,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     setDiscoveryFailed(false);
     // Nothing else to do: the provider already ran the probe sequence.
     discoveryKeyRef.current = discoveryKey;
-  }, [sharedBackends, sharedDefaultBackend, sharedDefaultSource, coachMode, accountId, backendPinnedNow, discoveryKey]);
+  }, [sharedBackends, sharedDefaultBackend, sharedDefaultSource, coachMode, accountId, backendPinnedNow, discoveryKey, cloudProxy]);
 
   useEffect(() => {
     if (!canOperate) return;
@@ -1957,13 +1971,43 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
               }
               return localPiOption(false);
             });
-          if (coachMode === "launcher" && !backendPinnedNow() && !explicitlySelected.current && (accountId === null || readBackendPreference(accountId) === null || readBackendPreference(accountId) === "cloud-default")) {
-            const choice = resolveLocalBackendChoice({ preference: null, defaultId: discovery.defaultBackendId ?? null, defaultSource: discovery.defaultBackendSource, options: discoveredOptions });
+          // The daemon's LOCAL discovery reports cloud-default as unavailable;
+          // the proxy's hosted capabilities are authoritative in this mode.
+          const localOptions = cloudProxy
+            ? discoveredOptions.filter((option) => option.id !== "cloud-default")
+            : discoveredOptions;
+          let options = localOptions;
+          // The daemon's cloud proxy adds the hosted coach to launcher mode.
+          // Ask only for a verified formal account; a failure leaves local
+          // coaching untouched and shows the cloud reason.
+          if (cloudProxy && !isGuest && !identityUnverified) {
+            try {
+              const capabilities = await cloudClient.readCapabilities();
+              if (cancelled) return;
+              options = [...localOptions, cloudOptionFromCapabilities(capabilities)];
+            } catch (caught) {
+              if (cancelled) return;
+              options = [
+                ...localOptions,
+                unavailableCloudOption(
+                  `Cloud availability could not be verified (${friendlyCoachError(caught)}). Cloud coaching stays off.`,
+                ),
+              ];
+            }
+          }
+          if (coachMode === "launcher" && !backendPinnedNow() && !explicitlySelected.current) {
+            const choice = preferredBackendChoice({
+              preference: accountId === null ? null : readBackendPreference(accountId),
+              defaultId: discovery.defaultBackendId ?? null,
+              defaultSource: discovery.defaultBackendSource,
+              options,
+              cloudProxy,
+            });
             selectedBackendRef.current = choice.backendId;
             setSelectedBackend(choice.backendId);
             setSelectionSource(choice.source);
           }
-          setBackends(discoveredOptions);
+          setBackends(options);
         }
         if (cancelled) return;
         setDiscoveryNotice(null);
@@ -2006,6 +2050,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     coachMode,
     discoveryAttempt,
     discoveryKey,
+    cloudProxy,
     identityUnverified,
     isGuest,
     localClient,

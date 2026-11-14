@@ -32,7 +32,8 @@ import { useMemo } from "react";
 import { useAuth } from "../auth/AuthContext.tsx";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useCoachDiscovery } from "../coaching/CoachDiscoveryContext.tsx";
-import { readBackendPreference, writeBackendPreference, resolveLocalBackendChoice } from "../coaching/coachBackend.ts";
+import { isCloudCoachingProxied } from "../api/runtimeMode.ts";
+import { preferredBackendChoice, readBackendPreference, writeBackendPreference } from "../coaching/coachBackend.ts";
 import type { CoachBackendOption } from "../coaching/coachBackend.ts";
 
 /** One selectable backend, with its evidence and its refusal reason. */
@@ -88,6 +89,9 @@ export function CoachSettingsScreen() {
   } = useCoachDiscovery();
   const accountId = user?.id ?? null;
   const isGuest = user?.isAnonymous !== false;
+  // The daemon's reviewed proxy to the approved hosted destination. It is a
+  // transport capability; the hosted route still decides entitlement.
+  const cloudProxy = isCloudCoachingProxied();
 
   const localOptions = useMemo(
     () => backends.filter((option) => option.location === "local"),
@@ -101,14 +105,20 @@ export function CoachSettingsScreen() {
   // The preference is per account; a guest has none, so the server's suggestion
   // (or the eventual default) is what the radio shows.
   const selection = useMemo(() => {
-    return resolveLocalBackendChoice({ preference: accountId === null ? null : readBackendPreference(accountId), defaultId: defaultBackendId, defaultSource: defaultBackendSource, options: localOptions });
+    return preferredBackendChoice({
+      preference: accountId === null ? null : readBackendPreference(accountId),
+      defaultId: defaultBackendId,
+      defaultSource: defaultBackendSource,
+      options: backends,
+      cloudProxy,
+    });
     // `preferenceRevision` is not read directly; it is the invalidation signal
     // that makes this recompute after `writeBackendPreference`.
-  }, [accountId, defaultBackendId, defaultBackendSource, localOptions, preferenceRevision]);
+  }, [accountId, backends, defaultBackendId, defaultBackendSource, cloudProxy, preferenceRevision]);
   const selected = selection.backendId;
 
   function select(id: CoachBackendOption["id"]): void {
-    const option = localOptions.find((candidate) => candidate.id === id);
+    const option = backends.find((candidate) => candidate.id === id);
     // Re-check availability here rather than trusting the disabled attribute:
     // a stale render could otherwise persist an unavailable choice.
     if (option === undefined || !option.available) return;
@@ -185,10 +195,16 @@ export function CoachSettingsScreen() {
               "Cloud coaching runs on the hosted service and needs a signed-in account, so it is not available as a guest. Sign in from the Me screen to enable it.",
             )}
           </p>
-        ) : (
+        ) : !cloudProxy ? (
           <p data-testid="cloud-not-wired">
             {t(
-              "Cloud coaching will appear here once sign-in is wired to this desktop build. Until then, only local coaching is available.",
+              "This build has no approved cloud server destination, so cloud coaching is unavailable. Only local coaching can run.",
+            )}
+          </p>
+        ) : (
+          <p data-testid="cloud-history-disclosure">
+            {t(
+              "The hosted coach reads the workout records synced to your account. Records that exist only on this device are not visible to it until you sync them.",
             )}
           </p>
         )}
@@ -198,12 +214,14 @@ export function CoachSettingsScreen() {
               <BackendRow
                 key={option.id}
                 option={option}
-                selected={false}
-                disabled
-                onSelect={() => undefined}
+                selected={selected === option.id}
+                disabled={accountId === null}
+                onSelect={() => select(option.id)}
               />
             ))}
           </ul>
+        ) : cloudProxy && !isGuest && status === "loading" ? (
+          <p data-testid="cloud-checking">{t("Checking cloud availability…")}</p>
         ) : null}
         {mode === "inactive" ? (
           <p className="coach-settings-note">

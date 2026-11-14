@@ -53,6 +53,12 @@ export interface CloudHttpResponse {
   status: number;
   body: string;
   headers: Record<string, string>;
+  /**
+   * Progressive response body. When present, `body` is empty and the platform
+   * adapter MUST pipe this stream instead of buffering it. Only the replay SSE
+   * route uses it; every JSON route remains a single buffered body.
+   */
+  stream?: ReadableStream<Uint8Array>;
 }
 
 export interface CloudSseOptions {
@@ -72,6 +78,13 @@ export interface CloudHttpHandlerOptions {
   providerConfigured: boolean;
   providerLimits: { maxSteps: number; maxTokens: number; timeoutMs: number };
   sse?: CloudSseOptions;
+  /**
+   * Emit SSE frames as they are stored instead of accumulating a page and
+   * returning it when the deadline expires. The platform adapter must pipe
+   * `CloudHttpResponse.stream` for this to reach a client progressively.
+   * Defaults to false so request/response unit tests keep their textual shape.
+   */
+  streamSse?: boolean;
   maxBodyBytes?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -195,6 +208,7 @@ export function createCloudCoachingHandler(
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const sse = options.sse ?? { pollMs: 1000, maxDurationMs: 15_000, pageLimit: 200 };
+  const streamSse = options.streamSse === true;
 
   return async function handle(request: CloudHttpRequest): Promise<CloudHttpResponse> {
     try {
@@ -378,7 +392,9 @@ export function createCloudCoachingHandler(
         const runId = decodeURIComponent(eventsMatch[1] ?? "");
         const fromSeq = parseFromSeq(params);
         if ((request.accept ?? "").includes("text/event-stream")) {
-          return await replaySse(repository, runId, fromSeq, sse, now, sleep);
+          return streamSse
+            ? streamSseResponse(repository, runId, fromSeq, sse, now, sleep)
+            : await replaySse(repository, runId, fromSeq, sse, now, sleep);
         }
         return ok(await repository.readEvents(runId, fromSeq, sse.pageLimit));
       }
@@ -388,6 +404,91 @@ export function createCloudCoachingHandler(
       return mapError(error);
     }
   };
+}
+
+const SSE_HEADERS: Record<string, string> = {
+  "content-type": "text/event-stream; charset=utf-8",
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+  // Ask reverse proxies not to accumulate a page before forwarding it.
+  "x-accel-buffering": "no",
+};
+
+function sseResponse(body: string, stream?: ReadableStream<Uint8Array>): CloudHttpResponse {
+  return { status: 200, body, headers: { ...SSE_HEADERS }, ...(stream === undefined ? {} : { stream }) };
+}
+
+/**
+ * Progressive replay: every stored frame is enqueued as soon as it is read,
+ * so the first event reaches the client immediately instead of waiting for the
+ * bounded page deadline. The stream still stops at a terminal state, the page
+ * deadline, or the total-byte cap; a client resumes from its cursor in every
+ * non-terminal case. No heartbeat or invented frame is ever emitted.
+ */
+function streamSseResponse(
+  repository: CloudRequestRepository,
+  runId: string,
+  fromSeq: number,
+  sse: CloudSseOptions,
+  now: () => number,
+  sleep: (ms: number) => Promise<void>,
+): CloudHttpResponse {
+  const deadline = now() + sse.maxDurationMs;
+  const encoder = new TextEncoder();
+  let cursor = fromSeq;
+  let bytes = 0;
+  let closed = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (closed) return;
+      try {
+        for (;;) {
+          if (closed) return;
+          const page = await repository.readEvents(runId, cursor, sse.pageLimit);
+          let emitted = false;
+          for (const envelope of page.events) {
+            if (closed) return;
+            const frame = encodeCoachingEventFrame(envelope);
+            const frameBytes = byteLength(frame);
+            if (bytes + frameBytes > MAX_COACHING_SSE_TOTAL_BYTES) {
+              closed = true;
+              controller.close();
+              return;
+            }
+            controller.enqueue(encoder.encode(frame));
+            bytes += frameBytes;
+            cursor = envelope.seq + 1;
+            emitted = true;
+          }
+          if (isCloudTerminalStatus(page.run.status) && cursor > page.lastSeq) {
+            closed = true;
+            controller.close();
+            return;
+          }
+          if (now() >= deadline) {
+            closed = true;
+            controller.close();
+            return;
+          }
+          // Returning after any emitted frame lets the consumer drain the
+          // queue; the next pull continues from the cursor without a delay.
+          if (emitted) return;
+          await sleep(sse.pollMs);
+        }
+      } catch (error) {
+        if (closed) return;
+        closed = true;
+        controller.error(error);
+      }
+    },
+    cancel() {
+      // Client disconnect: stop polling and drop the upstream work.
+      closed = true;
+    },
+  });
+
+  return sseResponse("", stream);
 }
 
 async function replaySse(
@@ -408,15 +509,7 @@ async function replaySse(
       const frame = encodeCoachingEventFrame(envelope);
       const frameBytes = byteLength(frame);
       if (bytes + frameBytes > MAX_COACHING_SSE_TOTAL_BYTES) {
-        return {
-          status: 200,
-          body,
-          headers: {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-store",
-            "x-content-type-options": "nosniff",
-          },
-        };
+        return sseResponse(body);
       }
       body += frame;
       bytes += frameBytes;
@@ -427,13 +520,5 @@ async function replaySse(
     // No heartbeat frames: every byte on this stream is a stored event.
     await sleep(sse.pollMs);
   }
-  return {
-    status: 200,
-    body,
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-    },
-  };
+  return sseResponse(body);
 }

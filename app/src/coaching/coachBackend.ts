@@ -213,6 +213,8 @@ export function defaultCoachBackend(input: {
   mode: CoachMode;
   accountId: string | null;
   guest: boolean;
+  /** The daemon advertises a reviewed cloud proxy (`cloud: true`). */
+  cloudProxy?: boolean;
 }): CoachingBackendId | null {
   if (input.mode === "explicit" || input.mode === "inactive") {
     return "local-pi";
@@ -223,8 +225,16 @@ export function defaultCoachBackend(input: {
   // Codex while the run used pi.
   if (input.mode === "launcher") {
     if (input.accountId === null) return null;
-    const storedLocal = readBackendPreference(input.accountId);
-    return storedLocal !== null && storedLocal !== "cloud-default" ? storedLocal : null;
+    const stored = readBackendPreference(input.accountId);
+    // A saved choice survives, even when it is currently unavailable: silently
+    // switching to another backend would change the cost/privacy boundary.
+    // A cloud preference still belongs to a browser/proxied-daemon session;
+    // the legacy launcher (no cloud proxy) cannot address it.
+    if (stored !== null) return stored === "cloud-default" && input.cloudProxy !== true ? null : stored;
+    // Cloud is the preferred default when the daemon proxies it, unless the
+    // account is a guest (whose only option is a local CLI).
+    if (input.cloudProxy === true && !input.guest) return "cloud-default";
+    return null;
   }
   if (input.mode !== "browser" || input.guest || input.accountId === null) return null;
   const stored = readBackendPreference(input.accountId);
@@ -235,7 +245,7 @@ export function defaultCoachBackend(input: {
 }
 
 /** Preserve an explicit server selection; otherwise use only verified local options. */
-export type LocalSelectionSource = "preference" | "runtime" | "automatic" | "server" | "none";
+export type LocalSelectionSource = "preference" | "runtime" | "automatic" | "server" | "cloud-default" | "none";
 
 /** A user preference outranks the server's explicit runtime and automatic choice. */
 export function resolveLocalBackendChoice(input: {
@@ -256,6 +266,35 @@ export function resolveLocalBackendChoice(input: {
 
 export function selectLocalBackend(defaultId: string | null, options: readonly CoachBackendOption[]): CoachingBackendId | null {
   return resolveLocalBackendChoice({ preference: null, defaultId, options }).backendId;
+}
+
+/**
+ * Pick the selection for the NEXT run.
+ *
+ * Ordering is deliberate (ADR 0008):
+ * 1. a saved preference always wins, even if it is currently unavailable —
+ *    submission is then blocked instead of silently changing cost/privacy;
+ * 2. cloud is the preferred default ONLY when the daemon proxies it and the
+ *    server reports it available;
+ * 3. otherwise the existing local ordering applies.
+ */
+export function preferredBackendChoice(input: {
+  preference: CoachingBackendId | null;
+  defaultId: string | null;
+  defaultSource?: "runtime" | "automatic" | null;
+  options: readonly CoachBackendOption[];
+  cloudProxy: boolean;
+}): { backendId: CoachingBackendId | null; source: LocalSelectionSource } {
+  if (input.preference !== null) return { backendId: input.preference, source: "preference" };
+  if (input.cloudProxy && input.options.some((option) => option.id === "cloud-default" && option.available)) {
+    return { backendId: "cloud-default", source: "cloud-default" };
+  }
+  return resolveLocalBackendChoice({
+    preference: null,
+    defaultId: input.defaultId,
+    defaultSource: input.defaultSource,
+    options: input.options,
+  });
 }
 
 /** Backend selection sent to the LOCAL submit route; legacy pi omits it. */
@@ -282,9 +321,12 @@ export function isCloudBackend(backendId: CoachingBackendId): boolean {
 export function isBackendSupportedInMode(
   backendId: CoachingBackendId,
   mode: CoachMode,
+  cloudProxy = false,
 ): boolean {
   if (mode === "explicit") return true;
-  if (mode === "launcher") return !isCloudBackend(backendId);
+  // A daemon with a cloud proxy can address cloud runs in launcher mode; the
+  // legacy launcher (no `cloud` runtime marker) still cannot.
+  if (mode === "launcher") return cloudProxy || !isCloudBackend(backendId);
   if (mode === "browser") return isCloudBackend(backendId);
   return false;
 }

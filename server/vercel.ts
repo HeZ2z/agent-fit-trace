@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +57,38 @@ function send(
     ...headers,
   });
   response.end(body);
+}
+
+/**
+ * Write a cloud handler result. JSON responses stay a single bounded body;
+ * an SSE response is piped so frames reach the caller as they are stored.
+ * `pipeline` owns backpressure and destroys (cancels) the upstream stream
+ * when the client disconnects or the response errors.
+ */
+async function sendCloudResponse(
+  response: ServerResponse,
+  result: { status: number; body: string; headers: Record<string, string>; stream?: ReadableStream<Uint8Array> },
+): Promise<void> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    ...result.headers,
+  };
+  response.writeHead(result.status, headers);
+  if (result.stream === undefined) {
+    response.end(result.body);
+    return;
+  }
+  const readable = Readable.fromWeb(result.stream as Parameters<typeof Readable.fromWeb>[0]);
+  try {
+    await pipeline(readable, response);
+  } catch {
+    // A client disconnect or an upstream read failure ends this response;
+    // there is no later channel to report it on.
+    response.destroy();
+  }
 }
 
 function byteSizeUtf8(value: string): number {
@@ -492,6 +526,9 @@ export async function handleVercelApi(
         maxDurationMs: CLOUD_SAFE_DEFAULTS.sseMaxDurationMs,
         pageLimit: CLOUD_SAFE_DEFAULTS.ssePageLimit,
       },
+      // Cloud runs emit stored frames as they appear; buffering a whole page
+      // here would make the desktop proxy's streaming meaningless.
+      streamSse: true,
     });
     const accept = request.headers.accept;
     const result = await cloudHandler({
@@ -502,7 +539,7 @@ export async function handleVercelApi(
       authorization: typeof authorization === "string" ? authorization : undefined,
       accept: typeof accept === "string" ? accept : Array.isArray(accept) ? accept[0] : undefined,
     });
-    send(response, result.status, result.body, result.headers);
+    await sendCloudResponse(response, result);
     return;
   }
 
