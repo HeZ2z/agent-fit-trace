@@ -197,4 +197,41 @@ export const messages: Record<string, string> = {
   "Reconnect": "重新连接",
   "Retry restore": "重试恢复",
   "Reload from earliest events": "从最早的事件重新加载",
+
+  /* ── coach settings (CoachSettingsScreen) ───────────────────── */
+  "Coach settings": "教练设置",
+  "Unavailable for an unspecified reason.": "因未知原因不可用。",
+  "Local coaching": "本地教练",
+  "A local coach runs on this machine using your own agent CLI. Nothing leaves your device through this path; the CLI uses whatever model provider you configured for it.":
+    "本地教练使用你自己的智能体 CLI 在本机运行。此路径不会将任何内容发送离开你的设备；CLI 使用你为它配置的模型提供方。",
+  "Could not read which agent CLIs are installed: {error}": "无法读取已安装的智能体 CLI：{error}",
+  "Checking which agent CLIs are installed…": "正在检查已安装的智能体 CLI…",
+  "No local coaching backend is configured.": "未配置本地教练后端。",
+  "Sign in to remember this choice. You can still change it per session from the Coach screen.":
+    "登录后可记住此选择。你仍可在教练页面按会话更改。",
+  "Check again": "重新检查",
+  "Cloud coaching": "云端教练",
+  "Cloud coaching runs on the hosted service and needs a signed-in account, so it is not available as a guest. Sign in from the Me screen to enable it.":
+    "云端教练在托管服务上运行，需要登录账号，因此访客无法使用。请从“我的”页面登录以启用。",
+  "This build has no approved cloud server destination, so cloud coaching is unavailable. Only local coaching can run.":
+    "此构建没有已批准的云服务器目标，因此云端教练不可用。只能运行本地教练。",
+  "The hosted coach reads the workout records synced to your account. Records that exist only on this device are not visible to it until you sync them.":
+    "托管教练会读取已同步到账号的训练记录。仅存在于本机的记录在你同步之前对它不可见。",
+  "Hosted cloud coaching uses credits, reads the records synced to your account, and sends your question and that data to the provider. Records that exist only on this device are not visible until you sync them.":
+    "云端教练会消耗额度，读取已同步到账号的训练记录，并将你的问题与这些数据发送给提供方。仅存在于本机的记录在你同步之前不可见。",
+  "Checking cloud availability…": "正在检查云端可用性…",
+  "This build has no coaching surface configured.": "此构建未配置教练功能。",
+
+  /* ── coach notices (CoachScreen) ────────────────────────────── */
+  "Cloud coaching requires a formal account. Guests can use their own local coach only: install pi, then run `agent-fit-trace start` on this machine.":
+    "云端教练需要正式账号。访客只能使用自己的本地教练：安装 pi，然后在本机运行 `agent-fit-trace start`。",
+  "Cloud coaching is unavailable until your account identity is verified.":
+    "在你的账号身份通过验证之前，云端教练不可用。",
+  "The selected coach backend is unavailable.": "所选的教练后端不可用。",
+  "Cloud coaching is selected for the next run. It uses your cloud coaching credits.":
+    "下一次运行已选择云端教练。它会消耗你的云端教练额度。",
+  "Workout history is not ready yet. Wait for it to load before importing.":
+    "训练历史尚未就绪。请等待其加载完成后再导入。",
+  "Workout history changed since the preview. Review the current conflicts before importing.":
+    "自预览以来训练历史已变化。导入前请检查当前的冲突。",
 };

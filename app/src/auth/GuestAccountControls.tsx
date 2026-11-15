@@ -306,7 +306,7 @@ export function GuestAccountControls({ compact = false }: { compact?: boolean })
       ) : (
         <div className="account-guest-actions">
           <button type="button" onClick={onSwitch}>
-            Sign in to an existing account
+            {t("Sign in to an existing account")}
           </button>
           <button type="button" onClick={() => setConfirmingSignOut(true)}>
             {t("Sign out guest")}
