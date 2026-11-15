@@ -341,7 +341,11 @@ export class CloudCoachingClient {
   async cancelRun(
     runId: string,
     reason?: string,
-    cleanup?: { accessToken?: string | null; capability?: string | null },
+    cleanup?: {
+      accessToken?: string | null;
+      capability?: string | null;
+      destinationBinding?: string | null;
+    },
   ): Promise<CloudCancelRunResult> {
     assertNonBlank(runId, "runId");
     return this.request(
@@ -352,6 +356,9 @@ export class CloudCoachingClient {
         capability: null,
         ...(cleanup?.accessToken !== undefined
           ? { accessTokenOverride: cleanup.accessToken }
+          : {}),
+        ...(cleanup?.destinationBinding !== undefined
+          ? { destinationBindingOverride: cleanup.destinationBinding }
           : {}),
       },
       parseCloudCancelRunResult,
@@ -642,9 +649,14 @@ export class CloudCoachingClient {
     return { close, done };
   }
 
-  private destinationHeaders(path: string): Record<string, string> {
-    if (!isRunScopedCloudPath(path) || this.destinationBinding === undefined) return {};
-    const binding = this.destinationBinding();
+  private destinationHeaders(path: string, override?: string | null): Record<string, string> {
+    if (!isRunScopedCloudPath(path)) return {};
+    const binding =
+      override !== undefined
+        ? override
+        : this.destinationBinding === undefined
+          ? null
+          : this.destinationBinding();
     return typeof binding === "string" && binding !== ""
       ? { "x-fit-trace-cloud-destination": binding }
       : {};
@@ -657,6 +669,7 @@ export class CloudCoachingClient {
       jsonBody?: unknown;
       capability: null;
       accessTokenOverride?: string | null;
+      destinationBindingOverride?: string | null;
     },
     parse: (data: unknown) => T,
   ): Promise<T> {
@@ -668,7 +681,7 @@ export class CloudCoachingClient {
           : await this.getAccessToken();
     const headers: Record<string, string> = {
       accept: "application/json",
-      ...this.destinationHeaders(path),
+      ...this.destinationHeaders(path, opts.destinationBindingOverride),
     };
     if (opts.jsonBody !== undefined) headers["content-type"] = "application/json";
     if (accessToken !== null && accessToken !== "") {

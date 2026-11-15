@@ -513,7 +513,11 @@ export class CoachingClient {
   async cancelRun(
     runId: string,
     reason?: string,
-    cleanup?: { accessToken?: string | null; capability?: string | null },
+    cleanup?: {
+      accessToken?: string | null;
+      capability?: string | null;
+      destinationBinding?: string | null;
+    },
   ): Promise<CancelCoachingRunResult> {
     assertNonBlankId(runId, "runId");
     const body = parseCancelCoachingRunBody(reason === undefined ? undefined : { reason });

@@ -577,6 +577,8 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     backendId: CoachingBackendId | null;
     /** Client that owns the run; cleanup must not consult a later mutable router. */
     client: CoachRunClient | null;
+    /** Destination binding of the cloud run, captured for its cleanup. */
+    destinationBinding: string | null;
   }>({
     accountId: null,
     runId: null,
@@ -584,6 +586,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     accessToken: null,
     backendId: null,
     client: null,
+    destinationBinding: null,
   });
   // The in-flight restore's account-bound record, kept ONLY so an ambiguous
   // restore failure can be re-verified on an explicit retry without inventing
@@ -1626,6 +1629,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     lastConsumedRef.current = -1;
     pendingRetryRef.current = null;
     restoreRecordRef.current = null;
+    // Capture the binding before clearing it: the old run's cancellation is
+    // dispatched with the destination it started against, not whatever the
+    // next account selects. The cloud client reads this ref synchronously when
+    // it builds a request, so it must be passed explicitly.
+    const previousCloudBinding = cloudBindingRef.current?.binding ?? null;
     cloudBindingRef.current = null;
     // The old account's resume ids must never restore under the new account.
     // A null -> A transition (sign-in) is not a switch away from a known
@@ -1648,7 +1656,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     if (previousCapability !== null || (previousWasCloud && previousToken !== null)) {
       if (runId !== null) {
         void cleanupClient
-          .cancelRun(runId, undefined, { capability: previousCapability, accessToken: previousToken })
+          .cancelRun(runId, undefined, {
+            capability: previousCapability,
+            accessToken: previousToken,
+            ...(previousCloudBinding === null ? {} : { destinationBinding: previousCloudBinding }),
+          })
           .catch(() => undefined);
       }
       void cleanupClient
@@ -1664,6 +1676,7 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
       accessToken: null,
       backendId: null,
       client: null,
+      destinationBinding: null,
     };
     // Adopt the new identity's client + live bearer for the next switch.
     prevClientRef.current = client;
@@ -1716,6 +1729,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
         : isCloudBackend(active)
           ? cloudClient
           : localClient;
+      retained.destinationBinding = isCloudBackend(active)
+        ? cloudBindingRef.current?.binding ?? null
+        : null;
+    } else {
+      retained.destinationBinding = null;
     }
     const ownerClient = retained.client ?? client;
     const capability = ownerClient.capabilitySnapshot();
@@ -1728,8 +1746,14 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   // bearer/getAccessToken, so a switched-in account's token can never be
   // replayed for the old account. No React state is touched.
   const runRetainedCoachCleanup = useCallback((): void => {
-    const { capability, accessToken, runId, backendId, client: cleanupClient } =
-      retainedLogoutRef.current;
+    const {
+      capability,
+      accessToken,
+      runId,
+      backendId,
+      client: cleanupClient,
+      destinationBinding,
+    } = retainedLogoutRef.current;
     const isCloudRun = backendId !== null && isCloudBackend(backendId);
     // A local capability is mandatory for the local transport; a cloud run is
     // cleaned up with its captured bearer and has no capability at all.
@@ -1739,7 +1763,11 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
     // Never route this through a later mutable active client/router.
     if (runId !== null) {
       void cleanupClient
-        .cancelRun(runId, undefined, { capability, accessToken })
+        .cancelRun(runId, undefined, {
+          capability,
+          accessToken,
+          ...(destinationBinding === null ? {} : { destinationBinding }),
+        })
         .catch(() => undefined);
     }
     void cleanupClient.logout({ capability, accessToken }).catch(() => undefined);

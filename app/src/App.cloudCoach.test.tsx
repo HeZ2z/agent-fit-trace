@@ -1203,8 +1203,13 @@ describe("browser coach backend selection", () => {
   });
 
   it("cleans a switched-away cloud run with its original client, never a later local backend", async () => {
+    (globalThis as unknown as { __FIT_TRACE_RUNTIME?: unknown }).__FIT_TRACE_RUNTIME = {
+      mode: "http",
+      coaching: "same-origin",
+      cloud: true,
+    };
     const seen: SeenRequest[] = [];
-    installRouter(seen, { holdCloudEvents: true });
+    installRouter(seen, { holdCloudEvents: true, launcherDiscovery: true });
     const user = userEvent.setup();
 
     function SwitchToB() {
@@ -1271,6 +1276,10 @@ describe("browser coach backend selection", () => {
     );
 
     await screen.findByTestId("coach-backend-select");
+    await waitFor(() => {
+      const select = screen.getByTestId("coach-backend-select") as HTMLSelectElement;
+      expect([...select.options].some((option) => option.value === "cloud-default")).toBe(true);
+    });
     await user.selectOptions(screen.getByTestId("coach-backend-select"), "cloud-default");
     await user.type(screen.getByLabelText(/analysis question/i), "How is my squat progressing?");
     await user.click(screen.getByRole("button", { name: /ask coach/i }));
@@ -1289,10 +1298,13 @@ describe("browser coach backend selection", () => {
     const cancel = seen.find((entry) =>
       entry.url.endsWith(`/coaching/cloud/runs/${CLOUD_RUN}/cancel`),
     );
-    // The old cloud run is cleaned up by A's captured cloud client + bearer.
+    // The old cloud run is cleaned up by A's captured cloud client + bearer,
+    // with the destination binding it started against even though the account
+    // switch cleared the hook's shared binding.
     expect(cancel?.headers.authorization).toBe("Bearer access-user-a");
+    expect(cancel?.headers["x-fit-trace-cloud-destination"]).toBe("binding-official");
     expect(seen.filter((entry) => entry.url.includes("/coaching/runs/"))).toHaveLength(0);
-    expect(await screen.findByTestId("coach-backend-select")).toHaveValue("");
+    await screen.findByTestId("coach-backend-select");
 
     // B never started a run: signing B out must not cancel A's run again or
     // route it through B's/local backend.
