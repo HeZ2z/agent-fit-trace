@@ -171,4 +171,22 @@ export const messages: Record<string, string> = {
     "无法应用此验证链接。当前会话未被更改。",
   "Finishing sign-in…": "正在完成登录…",
   "Verifying your link.": "正在验证链接。",
+
+  /* ── sync identity transition ──────────────────────────────── */
+  "Sync identity change was not confirmed": "同步身份变更未确认",
+  "Sync remains unavailable until the daemon confirms the change.":
+    "在守护进程确认变更之前，同步仍不可用。",
+
+  /* ── account sign-out ───────────────────────────────────────── */
+  "Could not confirm sign out. Check your connection and try again.":
+    "无法确认退出登录。请检查网络连接后重试。",
+  "Signing out…": "正在退出登录…",
+
+  /* ── daemon-backed auth shell ──────────────────────────────── */
+  "Your local guest workouts remain on this machine and are not transferred or uploaded when you sign in.":
+    "你的本地访客训练仍保留在本机，登录时不会被转移或上传。",
+  "Return to local guest": "返回本地访客",
+  "Your workouts are stored by the local daemon on this machine under this guest identity. These workouts stay in the local guest store. Signing in uses a separate account store; guest workouts are not transferred or uploaded.":
+    "你的训练由本机守护进程以此访客身份存储。这些训练保留在本地访客存储中。登录使用独立的账号存储；访客训练不会被转移或上传。",
+  "Try again": "重试",
 };

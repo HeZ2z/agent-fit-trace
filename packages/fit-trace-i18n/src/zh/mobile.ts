@@ -289,4 +289,9 @@ export const messages: Record<string, string> = {
   "简体中文": "简体中文",
   Pixel: "Pixel",
   Glass: "Glass",
+
+  /* ── manual sync receipts ──────────────────────────────────── */
+  "Pending uploads: {count}": "待上传：{count}",
+  "No complete sync recorded yet.": "尚无完整的同步记录。",
+  "Last complete sync: {date}": "最近一次完整同步：{date}",
 };

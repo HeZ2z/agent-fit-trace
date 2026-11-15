@@ -466,9 +466,9 @@ export function ResetPasswordScreen() {
           <p>{t("Login is unavailable: the server did not provide its public configuration.")}</p>
           <p>
             <button type="button" onClick={() => window.location.reload()}>
-              Reload
+              {t("Reload")}
             </button>{" "}
-            <Link to="/forgot-password">Request a new link</Link>
+            <Link to="/forgot-password">{t("Request a new link")}</Link>
           </p>
         </div>
       ) : null}

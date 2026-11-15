@@ -274,6 +274,9 @@ second data model. The boundary is the design:
   different instruction; such text is preserved verbatim.
 - **UI copy is looked up by its exact English source** in a per-area Chinese
   table. A missing entry falls back to English instead of showing a raw key.
+  `tests/i18nCoverage.test.ts` keeps that table honest: it fails when a literal
+  `t("…")` source has no entry, or when JSX renders raw English copy instead of
+  going through `t()`.
 - **Switching never rewrites data.** Changing language does not touch the
   workout store, snapshots, adoption or export payloads, so it cannot
   invalidate a saved plan confirmation.

@@ -180,7 +180,7 @@ export function CoachScreen() {
       {coach.backendNotice !== null && !(coach.mode === "browser" && coach.isGuest) && (!coach.canAsk || coach.canRetryBackendDiscovery) && (
         <>
           <p role="note" data-testid="coach-backend-notice" className="coach-meta">
-            {coach.backendNotice}
+            {t(coach.backendNotice)}
           </p>
           {coach.canRetryBackendDiscovery && (
             <button

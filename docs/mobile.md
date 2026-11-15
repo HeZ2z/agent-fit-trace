@@ -298,7 +298,8 @@ starts in the device language (Chinese locale selects Chinese, otherwise English
 and remembers an explicit choice under the shared `agent-fit-trace:lang:v1` key; the
 Me screen switches it, and while signed in the choice is written through to
 account metadata. A dictionary integrity test checks every slice, including the
-mobile shell and mobile coach copy.
+mobile shell and mobile coach copy; a source coverage test rejects a literal
+`t("…")` source without an entry and raw English JSX text.
 
 ## Optional sync
 
