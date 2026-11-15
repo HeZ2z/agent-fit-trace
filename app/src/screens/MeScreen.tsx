@@ -533,7 +533,7 @@ export function MeScreen() {
       // against the settled records, never the ones captured before the await.
       if (historyStatusRef.current !== "ready") {
         setWorkoutFileError(
-          "Workout history is not ready yet. Wait for it to load before importing.",
+          t("Workout history is not ready yet. Wait for it to load before importing."),
         );
         return;
       }
@@ -570,7 +570,7 @@ export function MeScreen() {
       return;
     }
     if (historyStatusRef.current !== "ready") {
-      setWorkoutRunError("Workout history is not ready yet. Wait for it to load before importing.");
+      setWorkoutRunError(t("Workout history is not ready yet. Wait for it to load before importing."));
       return;
     }
 
@@ -589,7 +589,7 @@ export function MeScreen() {
       setWorkoutRunError(
         latest.totalEntries === 0
           ? null
-          : "Workout history changed since the preview. Review the current conflicts before importing.",
+          : t("Workout history changed since the preview. Review the current conflicts before importing."),
       );
       return;
     }

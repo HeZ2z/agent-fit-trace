@@ -230,4 +230,8 @@ export const messages: Record<string, string> = {
   "The selected coach backend is unavailable.": "所选的教练后端不可用。",
   "Cloud coaching is selected for the next run. It uses your cloud coaching credits.":
     "下一次运行已选择云端教练。它会消耗你的云端教练额度。",
+  "Workout history is not ready yet. Wait for it to load before importing.":
+    "训练历史尚未就绪。请等待其加载完成后再导入。",
+  "Workout history changed since the preview. Review the current conflicts before importing.":
+    "自预览以来训练历史已变化。导入前请检查当前的冲突。",
 };
