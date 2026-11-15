@@ -1,8 +1,8 @@
 # ADR 0008: Cloud coaching from the desktop app, and where sync runs
 
-- **Status:** Partially implemented. Transport and sync landed; a user-entered
-  destination and live packaged verification remain open (see "Implementation
-  status").
+- **Status:** Partially implemented. Transport, sync and a user-entered
+  destination landed; live packaged verification remains open (see
+  "Implementation status").
 - **Date:** 2026-11-09
 - **Scope:** issue #69. The desktop app's path to the hosted coach, the settings
   surface for choosing a local CLI, and the sync boundary that makes cloud
@@ -255,8 +255,10 @@ coaching becomes meaningful rather than silently empty.
 **Negative / open work.** The extraction touches the mobile callers, which is
 the part with real users today. The daemon gains a SQLite repository adapter
 that did not exist. SSE remains non-streaming until the hosted side changes.
-A custom destination's identity provider still needs its own answer — the
-official default is the only one whose auth bootstrap is defined here.
+A custom destination must use the same account service as this app: its
+public-config issuer is checked before consent, and an unrelated identity
+system is refused rather than supported. The official default remains the only
+destination with a release-owned auth bootstrap.
 
 ## Decisions taken after review (2026-11-09)
 
@@ -330,19 +332,35 @@ Landed after the sync work (#83):
   state that cloud reads only the account's synced records.
 - A release desktop build passes the approved sync destination to the daemon as
   `FIT_TRACE_CLOUD_API_BASE_URL`; inherited values are stripped first.
+- A verified formal account may set a custom cloud destination in Coach
+  settings (#87). The setting is device-local, canonical HTTPS `/api/v1` only,
+  and overrides the build default. It needs an explicit confirmation naming the
+  host; consent is per principal and bound to the destination and the daemon's
+  account-service issuer. The daemon proves issuer compatibility against the
+  destination's public `/api/v1/public-config` before saving, clears every
+  consent on a destination change, and fails closed on a malformed stored file.
+  Workout sync's destination is separate and is not implicit consent for cloud.
+- Cloud runs now persist the destination and issuer that created them. On a
+  destination change the record is retained and its resume is blocked before
+  any session/run identifier is read, rather than replayed against the new
+  host. Live run-scoped requests also echo an opaque destination binding, so a
+  change while a run is active or its submit acknowledgement is unresolved
+  fails closed instead of redirecting reconnect, cancel, or a same-key retry.
 
 Still open, and why this ADR is not marked Accepted for the whole issue:
 
-- **No user-entered destination.** The address is a build/operator decision.
-  The consent UI, canonical-destination binding, issuer compatibility check and
-  persisted-destination/run-identity rules are split into follow-up #87, so the
-  official-destination transport can be reviewed on its own.
 - **No live packaged verification.** A signed-in packaged build running against
   a deployed hosted service (including real provider/quota and platform-level
   SSE streaming) has not been exercised here; local tests cover the seams, not
   the deployment.
-- **No destination-change run blocking.** With a fixed destination this cannot
-  occur yet; it becomes necessary with the custom-destination work.
+- **Custom destinations are not self-hosted loopback.** The setting accepts only
+  HTTPS and refuses loopback/private targets, so a server on the same machine is
+  not supported. That is a product limitation, not an unresolved transport
+  question.
+- **A custom cloud destination is not a sync destination.** Workout sync keeps
+  its own build-approved target, so a custom coach server may see different
+  hosted records from the server sync uploads to. The UI states both boundaries;
+  reconciling them remains future product work.
 
 ## Review history
 

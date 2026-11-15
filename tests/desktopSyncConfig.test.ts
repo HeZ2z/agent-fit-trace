@@ -40,7 +40,7 @@ test("sync build requires explicit approval and a public release-bound HTTPS des
 
 test("packaged daemon receives sync settings only with matching release authentication", () => {
   const enabled = resolveBuildSyncConfig(env);
-  const inherited = { FIT_TRACE_API_BASE_URL: "https://evil.example/api/v1", FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH: "1", FIT_TRACE_SYNC_PUBLIC_KEYS: "untrusted" };
+  const inherited = { FIT_TRACE_API_BASE_URL: "https://evil.example/api/v1", FIT_TRACE_SYNC_TRUSTED_SUPABASE_AUTH: "1", FIT_TRACE_SYNC_PUBLIC_KEYS: "untrusted", FIT_TRACE_CLOUD_API_BASE_URL: "https://evil.example/api/v1" };
   const auth = childEnvironment(release, inherited);
   const selected = applySyncEnvironment(enabled, release, auth);
   assert.equal(selected.FIT_TRACE_API_BASE_URL, env.FIT_TRACE_DESKTOP_SYNC_API_BASE_URL);

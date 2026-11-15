@@ -1,4 +1,5 @@
 import { WorkoutSyncSettings } from "./WorkoutSyncSettings.tsx";
+import { CloudDestinationSettings } from "./CloudDestinationSettings.tsx";
 /**
  * Coaching backend settings.
  *
@@ -203,11 +204,16 @@ export function CoachSettingsScreen() {
             )}
           </p>
         ) : (
-          <p data-testid="cloud-history-disclosure">
-            {t(
-              "The hosted coach reads the workout records synced to your account. Records that exist only on this device are not visible to it until you sync them.",
-            )}
-          </p>
+          <>
+            <p data-testid="cloud-history-disclosure">
+              {t(
+                "The hosted coach reads the workout records synced to your account. Records that exist only on this device are not visible to it until you sync them.",
+              )}
+            </p>
+            {mode === "launcher" ? (
+              <CloudDestinationSettings onChanged={() => void refresh()} />
+            ) : null}
+          </>
         )}
         {cloudOptions.length > 0 ? (
           <ul className="coach-backend-list">

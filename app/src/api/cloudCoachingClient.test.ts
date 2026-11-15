@@ -16,6 +16,7 @@ interface SeenRequest {
   url: string;
   method: string;
   authorization: string | null;
+  destinationBinding: string | null;
 }
 
 function envelope(seq: number, event: CoachingEventEnvelope["event"]): CoachingEventEnvelope {
@@ -48,6 +49,7 @@ function pagesFetch(pages: Response[], seen: SeenRequest[]): typeof fetch {
       url,
       method: (init?.method ?? "GET").toUpperCase(),
       authorization: headers.get("authorization"),
+      destinationBinding: headers.get("x-fit-trace-cloud-destination"),
     });
     const page = pages.shift();
     if (page === undefined) throw new Error(`unexpected fetch: ${url}`);
@@ -55,10 +57,16 @@ function pagesFetch(pages: Response[], seen: SeenRequest[]): typeof fetch {
   }) as typeof fetch;
 }
 
-function client(fetchImpl: typeof fetch, initialBackoffMs = 5, maxTailMs = 5_000) {
+function client(
+  fetchImpl: typeof fetch,
+  initialBackoffMs = 5,
+  maxTailMs = 5_000,
+  destinationBinding?: () => string | null,
+) {
   return new CloudCoachingClient({
     fetchImpl,
     getAccessToken: () => "token-a",
+    ...(destinationBinding === undefined ? {} : { destinationBinding }),
     tail: { initialBackoffMs, maxBackoffMs: initialBackoffMs, maxTailMs },
   });
 }
@@ -211,6 +219,7 @@ describe("CloudCoachingClient.subscribeRunEvents", () => {
         url: String(input),
         method: (init?.method ?? "GET").toUpperCase(),
         authorization: null,
+        destinationBinding: null,
       });
       return textResponse("");
     }) as typeof fetch;
@@ -258,6 +267,79 @@ describe("CloudCoachingClient non-SSE body bounds", () => {
       code: API_ERROR_CODES.API_ERROR,
       status: 500,
     });
+  });
+});
+
+describe("CloudCoachingClient destination binding", () => {
+  it("sends the binding on run-scoped JSON requests but not capabilities", async () => {
+    const seen: SeenRequest[] = [];
+    const capabilities = {
+      enabled: true,
+      providerConfigured: true,
+      providerEnabled: true,
+      accountFormal: true,
+      quotaConfigured: true,
+      budgetConfigured: true,
+      concurrentLimit: 4,
+      reservedCount: 0,
+      tokensRemaining: 200_000,
+      tokensReserved: 0,
+      perRunTokenBudget: 20_000,
+      perStepTokenBudget: 4_096,
+      perRunRequestLimit: 8,
+      tools: ["get_training_history", "analyze_progress"],
+      maxSteps: 4,
+      maxTokens: 2_048,
+      timeoutMs: 60_000,
+    };
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      seen.push({
+        url,
+        method: (init?.method ?? "GET").toUpperCase(),
+        authorization: headers.get("authorization"),
+        destinationBinding: headers.get("x-fit-trace-cloud-destination"),
+      });
+      if (url.endsWith("/coaching/cloud/capabilities")) {
+        return new Response(JSON.stringify({ data: capabilities }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/coaching/cloud/sessions")) {
+        return new Response(JSON.stringify({ data: { id: "s-1" } }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+    const bound = new CloudCoachingClient({
+      fetchImpl,
+      getAccessToken: () => "token-a",
+      destinationBinding: () => "binding-1",
+    });
+    await bound.readCapabilities();
+    await bound.createSession();
+    expect(seen[0]?.destinationBinding).toBeNull();
+    expect(seen[1]?.destinationBinding).toBe("binding-1");
+  });
+
+  it("sends the binding on the run event tail", async () => {
+    const seen: SeenRequest[] = [];
+    const subscription = client(
+      pagesFetch([textResponse(frame(envelope(0, { type: "terminal", status: "completed" })))], seen),
+      5,
+      5_000,
+      () => "binding-1",
+    ).subscribeRunEvents(
+      { runId: RUN, sessionId: SESSION, fromSeq: 0 },
+      () => undefined,
+    );
+    await subscription.done;
+    expect(seen[0]?.url).toContain(EVENTS_PATH);
+    expect(seen[0]?.destinationBinding).toBe("binding-1");
   });
 });
 

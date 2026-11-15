@@ -59,7 +59,7 @@ Behavior:
 | --- | --- |
 | `FIT_TRACE_DATA_DIR` | Data directory override (default `~/.fit-trace/data`). |
 | `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) | Optional. When both are set (and the URL is http(s), the key is not a secret/service-role key), any bearer other than the local daemon token is verified against that Supabase project. Unset/invalid → the daemon serves the pure guest plane and login attempts fail closed. |
-| `FIT_TRACE_CLOUD_API_BASE_URL` | Optional. A fixed, operator-approved **HTTPS** hosted API base ending in exactly `/api/v1`. When set together with a Supabase project, the daemon proxies `/api/v1/coaching/cloud/*` to that destination with the caller's own account bearer. Unset/invalid keeps cloud coaching visibly unavailable. |
+| `FIT_TRACE_CLOUD_API_BASE_URL` | Optional. The build/operator default **HTTPS** hosted API base ending in exactly `/api/v1`. With a Supabase project configured, the daemon proxies `/api/v1/coaching/cloud/*` to the effective destination with the caller's own account bearer. A verified formal account may override it with a device-local setting; see "Cloud coaching proxy". Unset/invalid without a user setting keeps cloud coaching visibly unavailable with an actionable reason. |
 
 Flags `--port`, `--data`, and `--dist` override the corresponding values.
 
@@ -279,19 +279,50 @@ Two packaging facts that will bite the next person:
 
 ### Cloud coaching proxy
 
-When `FIT_TRACE_CLOUD_API_BASE_URL` and a Supabase project are both configured,
-the daemon also mounts the public cloud surface at the SAME loopback origin:
+When a Supabase project is configured, the daemon mounts the public cloud
+surface at the SAME loopback origin. The destination is resolved per request:
+
+1. a device-local user setting in `<dataDir>/cloud-destination.json`;
+2. otherwise the build/operator default `FIT_TRACE_CLOUD_API_BASE_URL`;
+3. otherwise unset, which reports `CLOUD_DESTINATION_UNCONFIGURED` and keeps
+   cloud coaching visibly off.
 
 - `/api/v1/coaching/cloud/*` is forwarded to
   `<destination>/coaching/cloud/*` with the caller's own account bearer. The
   local guest bearer is refused before any request, and the proxy only accepts
   a verified formal account (the hosted route still makes the authoritative
   entitlement/quota decision).
-- The destination is an operator/build decision, not a renderer setting.
-  `parseCloudApiBase` accepts only HTTPS, no credentials/query/fragment, and
-  exactly the `/api/v1` path. A release desktop build receives this value only
-  from its approved sync configuration (see `docs/release.md`), so an inherited
-  environment variable cannot repoint a packaged app.
+- Every destination is canonical: HTTPS, no credentials/query/fragment, and
+  exactly the `/api/v1` path. `http://` is rejected, including loopback; a
+  self-hosted server on the same machine is not supported. A stored file that
+  is malformed, non-canonical, or names the wrong consent destination fails
+  closed; the daemon never silently falls back to the official server.
+- A user-entered destination requires an explicit confirmation naming its host.
+  Consent is stored per principal and bound to the canonical destination and
+  the daemon's account-service issuer. Changing the destination clears every
+  prior consent; the confirming account gets a fresh one in the same atomic
+  write. Another account on the same device sees `consent: required` and cannot
+  send its bearer until it confirms too.
+- Before a custom destination can be saved, the daemon reads that destination's
+  public `/api/v1/public-config` (with no bearer) and requires its
+  `supabaseUrl` to match this daemon's account service. An unrelated identity
+  provider is refused with an actionable reason. The probe reuses the same
+  SSRF/redirect/pinning rules and is time/size bounded.
+- The daemon-local `GET|POST|PUT|DELETE /api/v1/coaching/cloud/destination`
+  routes serve the status and confirmation flow. They require a verified formal
+  account and are never forwarded upstream. `DELETE` drops the user setting and
+  every consent, falling back to the build default. A release desktop build
+  receives the official value only from its approved sync configuration (see
+  `docs/release.md`), so an inherited environment variable cannot repoint a
+  packaged app; the user setting is an explicit authenticated action in the
+  settings page, not an environment default.
+- Run-scoped requests (`sessions`, `snapshots`, `runs`, including event tails
+  and cancellation) must echo the opaque destination binding returned by the
+  status route. If the destination changes while a run is active or its submit
+  acknowledgement is unresolved, the proxy answers `409
+  CLOUD_DESTINATION_CHANGED` instead of forwarding the run's identifiers or a
+  same-key submit retry to the new host. Capabilities and conversation history
+  are not run identity and remain usable after a destination change.
 - Redirects are refused. Hostnames are resolved and every answer must be a
   public address (loopback, private, carrier-NAT, link-local, metadata,
   multicast, documentation and ULA ranges are rejected); the checked address is
@@ -305,10 +336,9 @@ the daemon also mounts the public cloud surface at the SAME loopback origin:
 - The hosted coach reads the account's **hosted** workout history. Desktop
   workouts reach it only through the explicit sync flow; local-only records are
   not visible. The app states this in the Coach disclosure and the coaching
-  settings page.
-- There is no user-entered destination yet. A custom hosted server needs its
-  own consent, issuer-compatibility and persisted-destination design; that is
-  tracked in #87. Until then only the approved destination is reachable.
+  settings page. Workout sync has its own destination and is not changed by the
+  cloud-server setting; a custom cloud server may therefore see different
+  hosted records from the server desktop sync uploads to.
 
 The daemon's LOCAL `/coaching/capabilities` discovery still reports
 `cloud-default` as unavailable (the daemon has no trusted hosted identity
@@ -384,11 +414,10 @@ that option with the local CLI options from `/coaching/capabilities`.
   `opencode`). It does not filter discovery: every installed CLI is still
   reported. A cloud runtime is refused because the daemon has no cloud execution
   path yet.
-- Cloud coaching is reachable only with an operator-approved destination and a
-  verified formal account. User-entered destinations, a destination change
-  while a persisted cloud run exists, and live packaged verification against a
-  deployed hosted service remain open (#69). The proxy never treats local
-  discovery as cloud entitlement.
+- Cloud coaching is reachable with a verified formal account and a configured
+  destination (operator default or a user-confirmed custom server). Live
+  packaged verification against a deployed hosted service remains open (#69).
+  The proxy never treats local discovery as cloud entitlement.
 - `start` still owns the documented same-origin proxy contract; the two
   commands do not share a journal or a port, and running both at once is
   supported only on different ports (each scans forward independently).
@@ -413,7 +442,8 @@ Back up user data before taking that recovery step.
 
 When desktop sign-in is configured, the local guest and each signed-in account
 use separate local databases. Signing in does not move guest records, upload them,
-or enable sync or cloud coaching. Guest import remains a separate future action.
+or enable sync; cloud coaching still needs a configured destination. Guest
+import remains a separate future action.
 The daemon's `identity.json` currently identifies guest to newly launched MCP/pi
 followers; signing in through the desktop does not switch their active store.
 Desktop session restoration depends on Electron preserving renderer storage as
@@ -439,8 +469,10 @@ approved key, verifies the bearer through Auth, and asks the RPC whether that
 session belongs to the signed-in account. Unavailable checks fail closed.
 Previously sent remote requests may have committed before a session is revoked.
 
-The same approved destination is passed to the cloud-coaching proxy; cloud is
-therefore available only when sync is configured for the build. In desktop
+The same approved destination is passed to the cloud-coaching proxy as its
+official default, but cloud coaching is a separate setting and consent: a
+signed-in account may override the cloud destination, and hosted records from
+the web app or mobile may already be visible without desktop sync. In desktop
 coaching settings, connect sync to see its destination, then explicitly allow
 account-wide workout sync and choose **Sync now**. Each run
 uses the current access token in memory and transfers workout records only.

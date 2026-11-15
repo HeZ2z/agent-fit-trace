@@ -413,27 +413,114 @@ test("coaching discovery reports pi unavailable and cloud closed for the guest",
 
 // --- cloud coaching proxy surface ---
 
-test("cloud proxy is advertised only when an account service and destination are configured", async () => {
-  const configured = await bootDaemon({
+async function listen(server: ReturnType<typeof createServer>): Promise<number> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("server did not bind");
+  return address.port;
+}
+
+function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+  return new Promise((resolve, reject) =>
+    server.close((error) => (error === undefined ? resolve() : reject(error))),
+  );
+}
+
+/** A local hosted-cloud stand-in: public-config proves the issuer, everything else echoes. */
+async function startFakeCloudApi(issuer: string): Promise<{
+  apiBase: string;
+  requests: { method: string; path: string; authorization?: string }[];
+  close: () => Promise<void>;
+}> {
+  const requests: { method: string; path: string; authorization?: string }[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    requests.push({
+      method: request.method ?? "GET",
+      path: url.pathname,
+      ...(typeof request.headers.authorization === "string" ? { authorization: request.headers.authorization } : {}),
+    });
+    if (url.pathname === "/api/v1/public-config") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { supabaseUrl: issuer, supabasePublishableKey: "pub" } }));
+      return;
+    }
+    if (url.pathname === "/api/v1/coaching/cloud/capabilities") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { enabled: true, from: "fake-cloud" } }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }));
+  });
+  const port = await listen(server);
+  return {
+    apiBase: `http://127.0.0.1:${port}/api/v1`,
+    requests,
+    close: () => closeServer(server),
+  };
+}
+
+test("cloud is advertised whenever an account service is configured, and its destination state is explicit", async () => {
+  const verifier = createTestVerifier({
+    "token-formal": { id: "user-1", email: "formal@example.test", isAnonymous: false },
+  });
+  const official = await bootDaemon({
     env: {
       SUPABASE_URL: "https://project.example.test",
       SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
       FIT_TRACE_CLOUD_API_BASE_URL: "https://cloud.example.test/api/v1",
     },
-    verifier: createTestVerifier({ "token-formal": { id: "user-1", email: "formal@example.test", isAnonymous: false } }),
+    verifier,
   });
   try {
-    const script = await (await fetch(`${configured.daemon.url}/fit-trace-runtime.js`)).text();
+    const script = await (await fetch(`${official.daemon.url}/fit-trace-runtime.js`)).text();
     assert.match(script, /cloud: true/);
-    const guest = await fetch(`${configured.daemon.url}/api/v1/coaching/cloud/capabilities`, {
+    const status = await fetch(`${official.daemon.url}/api/v1/coaching/cloud/destination`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(status.status, 200);
+    const body = (await status.json()) as { data: { source: string; destination: string; host: string; consent: string } };
+    assert.equal(body.data.source, "official");
+    assert.equal(body.data.destination, "https://cloud.example.test/api/v1");
+    assert.equal(body.data.host, "cloud.example.test");
+    assert.equal(body.data.consent, "not-applicable");
+    const guest = await fetch(`${official.daemon.url}/api/v1/coaching/cloud/destination`, {
       headers: { authorization: GUEST_AUTH },
     });
     assert.equal(guest.status, 403);
-    assert.equal(((await guest.json()) as { error: { code: string } }).error.code, "ACCOUNT_NOT_FORMAL");
-    const missing = await fetch(`${configured.daemon.url}/api/v1/coaching/cloud/capabilities`);
+    const missing = await fetch(`${official.daemon.url}/api/v1/coaching/cloud/capabilities`);
     assert.equal(missing.status, 401);
   } finally {
-    await configured.daemon.close();
+    await official.daemon.close();
+  }
+
+  // An account service without a destination still advertises the proxy
+  // surface: the settings page can add a user destination at runtime.
+  const unset = await bootDaemon({
+    env: {
+      SUPABASE_URL: "https://project.example.test",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+    },
+    verifier,
+  });
+  try {
+    const script = await (await fetch(`${unset.daemon.url}/fit-trace-runtime.js`)).text();
+    assert.match(script, /cloud: true/);
+    const status = await fetch(`${unset.daemon.url}/api/v1/coaching/cloud/destination`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(((await status.json()) as { data: { source: string } }).data.source, "unset");
+    const capabilities = await fetch(`${unset.daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-formal" },
+    });
+    assert.equal(capabilities.status, 503);
+    assert.equal(
+      ((await capabilities.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_UNCONFIGURED",
+    );
+  } finally {
+    await unset.daemon.close();
   }
 
   const disabled = await bootDaemon();
@@ -447,6 +534,210 @@ test("cloud proxy is advertised only when an account service and destination are
     assert.equal(((await response.json()) as { error: { code: string } }).error.code, "CLOUD_DISABLED");
   } finally {
     await disabled.daemon.close();
+  }
+});
+
+test("a user-entered destination is validated, consented per account, and proxied only after confirmation", async (t) => {
+  const issuer = "https://project.example.test";
+  const cloud = await startFakeCloudApi(issuer);
+  t.after(() => cloud.close());
+  const verifier = createTestVerifier({
+    "token-a": { id: "user-a", email: "a@example.test", isAnonymous: false },
+    "token-b": { id: "user-b", email: "b@example.test", isAnonymous: false },
+  });
+  const { daemon } = await bootDaemon({
+    env: {
+      SUPABASE_URL: issuer,
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+    },
+    verifier,
+    allowInsecureCloudProxyLoopback: true,
+  });
+  try {
+    const headers = { authorization: "Bearer token-a", "content-type": "application/json" };
+    const preview = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination/preview`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ address: cloud.apiBase }),
+    });
+    assert.equal(preview.status, 200);
+    const previewBody = (await preview.json()) as {
+      data: { ok: boolean; destination: string; host: string; issuerCompatible: boolean };
+    };
+    assert.equal(previewBody.data.ok, true);
+    assert.equal(previewBody.data.destination, cloud.apiBase);
+    assert.equal(previewBody.data.issuerCompatible, true);
+    const host = previewBody.data.host;
+
+    const wrongHost = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ address: cloud.apiBase, confirmHost: "wrong.example.test" }),
+    });
+    assert.equal(wrongHost.status, 400);
+    assert.equal(existsSync(join(daemon.dataDir, "cloud-destination.json")), false);
+
+    const confirmed = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ address: cloud.apiBase, confirmHost: host }),
+    });
+    assert.equal(confirmed.status, 200);
+    const confirmedBody = (await confirmed.json()) as {
+      data: { source: string; consent: string; destination: string; binding: string };
+    };
+    assert.equal(confirmedBody.data.source, "user");
+    assert.equal(confirmedBody.data.consent, "confirmed");
+    assert.equal(confirmedBody.data.destination, cloud.apiBase);
+    assert.match(confirmedBody.data.binding, /^[0-9a-f]{32}$/);
+    assert.equal(existsSync(join(daemon.dataDir, "cloud-destination.json")), true);
+
+    // Run-scoped requests are bound to the destination they started against.
+    // A request without the binding is refused before upstream; the same
+    // destination with the binding is forwarded.
+    const beforeBinding = cloud.requests.length;
+    const unbound = await fetch(`${daemon.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    });
+    assert.equal(unbound.status, 409);
+    assert.equal(
+      ((await unbound.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_CHANGED",
+    );
+    assert.equal(cloud.requests.length, beforeBinding);
+    const bound = await fetch(`${daemon.url}/api/v1/coaching/cloud/sessions`, {
+      method: "POST",
+      headers: { ...headers, "x-fit-trace-cloud-destination": confirmedBody.data.binding },
+      body: JSON.stringify({}),
+    });
+    assert.equal(bound.status, 404, "the bound request reaches the upstream fake");
+    assert.equal(cloud.requests.length, beforeBinding + 1);
+
+    // A different account sees the same device-local destination but must
+    // confirm it for itself; its bearer is not forwarded before that.
+    const otherStatus = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination`, {
+      headers: { authorization: "Bearer token-b" },
+    });
+    assert.equal(((await otherStatus.json()) as { data: { consent: string } }).data.consent, "required");
+    const before = cloud.requests.length;
+    const refused = await fetch(`${daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-b" },
+    });
+    assert.equal(refused.status, 403);
+    assert.equal(
+      ((await refused.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_CONSENT_REQUIRED",
+    );
+    assert.equal(cloud.requests.length, before, "an unconfirmed account must not reach the upstream");
+
+    const proxied = await fetch(`${daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(proxied.status, 200);
+    assert.equal(
+      ((await proxied.json()) as { data: { from: string } }).data.from,
+      "fake-cloud",
+    );
+    const forwarded = cloud.requests.find((request) => request.path === "/api/v1/coaching/cloud/capabilities");
+    assert.equal(forwarded?.authorization, "Bearer token-a");
+
+    const reset = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(reset.status, 200);
+    assert.equal(((await reset.json()) as { data: { source: string } }).data.source, "unset");
+    assert.equal(existsSync(join(daemon.dataDir, "cloud-destination.json")), false);
+    const afterReset = await fetch(`${daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(afterReset.status, 503);
+    assert.equal(
+      ((await afterReset.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_UNCONFIGURED",
+    );
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("an incompatible destination issuer is refused before any consent is stored", async (t) => {
+  const cloud = await startFakeCloudApi("https://other-project.example.test");
+  t.after(() => cloud.close());
+  const verifier = createTestVerifier({
+    "token-a": { id: "user-a", email: "a@example.test", isAnonymous: false },
+  });
+  const { daemon } = await bootDaemon({
+    env: {
+      SUPABASE_URL: "https://project.example.test",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+    },
+    verifier,
+    allowInsecureCloudProxyLoopback: true,
+  });
+  try {
+    const headers = { authorization: "Bearer token-a", "content-type": "application/json" };
+    const preview = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination/preview`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ address: cloud.apiBase }),
+    });
+    assert.equal(preview.status, 200);
+    const body = (await preview.json()) as {
+      data: { ok: boolean; error: { code: string; message: string } };
+    };
+    assert.equal(body.data.ok, false);
+    assert.equal(body.data.error.code, "CLOUD_DESTINATION_ISSUER_INCOMPATIBLE");
+    assert.match(body.data.error.message, /different account service/);
+    const put = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ address: cloud.apiBase, confirmHost: new URL(cloud.apiBase).host }),
+    });
+    assert.equal(put.status, 400);
+    assert.equal(
+      ((await put.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_ISSUER_INCOMPATIBLE",
+    );
+    assert.equal(existsSync(join(daemon.dataDir, "cloud-destination.json")), false);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a malformed stored destination fails closed instead of using the official default", async () => {
+  const dataDir = await makeDataDir();
+  await writeFile(join(dataDir, "cloud-destination.json"), "{not json", "utf8");
+  const daemon = await startDaemonServer({
+    port: 0,
+    dataDir,
+    distDir: null,
+    env: {
+      SUPABASE_URL: "https://project.example.test",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+      FIT_TRACE_CLOUD_API_BASE_URL: "https://cloud.example.test/api/v1",
+    },
+    verifier: createTestVerifier({ "token-a": { id: "user-a", email: "a@example.test", isAnonymous: false } }),
+  });
+  try {
+    const status = await fetch(`${daemon.url}/api/v1/coaching/cloud/destination`, {
+      headers: { authorization: "Bearer token-a" },
+    });
+    const body = (await status.json()) as { data: { source: string; error: { code: string } } };
+    assert.equal(body.data.source, "invalid");
+    assert.equal(body.data.error.code, "CLOUD_DESTINATION_INVALID");
+    const capabilities = await fetch(`${daemon.url}/api/v1/coaching/cloud/capabilities`, {
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(capabilities.status, 503);
+    assert.equal(
+      ((await capabilities.json()) as { error: { code: string } }).error.code,
+      "CLOUD_DESTINATION_INVALID",
+    );
+  } finally {
+    await daemon.close();
   }
 });
 

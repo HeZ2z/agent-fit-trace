@@ -52,7 +52,12 @@ export interface CoachRunClient {
   cancelRun(
     runId: string,
     reason?: string,
-    cleanup?: { accessToken?: string | null; capability?: string | null },
+    cleanup?: {
+      accessToken?: string | null;
+      capability?: string | null;
+      /** Destination the run was started against (cloud only). */
+      destinationBinding?: string | null;
+    },
   ): Promise<unknown>;
   subscribeRunEvents(
     input: { runId: string; sessionId: string; fromSeq?: number },
