@@ -47,6 +47,39 @@ function parseMacProxy(text) {
 }
 
 /**
+ * Node's built-in env-proxy support parses HTTPS_PROXY as an absolute URL at
+ * startup; older Node 24 releases abort with ERR_INVALID_URL when handed a
+ * bare `host:port` (which Chromium and the daemon's own resolver accept).
+ * Normalize the value before it reaches the child, and return null for
+ * values Node cannot represent as an HTTP(S) proxy so the daemon can reject
+ * them instead of the app failing to boot.
+ *
+ * @param {string} raw
+ * @returns {string | null}
+ */
+function normalizeProxyUrl(raw) {
+  const value = raw.trim();
+  if (value === "") return null;
+  const hasScheme = value.includes("://");
+  let url;
+  try {
+    url = new URL(hasScheme ? value : `http://${value}`);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.hostname === "") return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  if (url.search !== "" || url.hash !== "") return null;
+  if (hasScheme) return value;
+  const credentials =
+    url.username === "" && url.password === ""
+      ? ""
+      : `${url.username}${url.password === "" ? "" : `:${url.password}`}@`;
+  return `${url.protocol}//${credentials}${url.host}`;
+}
+
+/**
  * Add proxy variables to a child environment without overriding explicit
  * values. Returns the same object for convenient use at the spawn site.
  *
@@ -56,6 +89,12 @@ function parseMacProxy(text) {
 function applyProxyEnv(env, options = {}) {
   const httpsExplicit = env.HTTPS_PROXY || env.https_proxy;
   if (httpsExplicit !== undefined && httpsExplicit !== "") {
+    const normalized = normalizeProxyUrl(httpsExplicit);
+    // Leave an unsupported value untouched: the daemon reports it explicitly,
+    // while enabling Node's env proxy with it would abort the child at startup.
+    if (normalized === null) return env;
+    env.HTTPS_PROXY = normalized;
+    env.https_proxy = normalized;
     env.NODE_USE_ENV_PROXY ??= "1";
     return env;
   }
@@ -63,13 +102,14 @@ function applyProxyEnv(env, options = {}) {
   // destinations. Normalize a supported HTTP(S) form to HTTPS_PROXY before
   // spawn; a SOCKS-only ALL_PROXY is left for the daemon to reject explicitly.
   const fallback = env.ALL_PROXY || env.all_proxy || env.HTTP_PROXY || env.http_proxy;
-  if (fallback !== undefined && /^https?:\/\//i.test(fallback)) {
-    env.HTTPS_PROXY = fallback;
-    env.https_proxy = fallback;
+  if (fallback !== undefined && fallback !== "") {
+    const normalized = normalizeProxyUrl(fallback);
+    if (normalized === null) return env;
+    env.HTTPS_PROXY = normalized;
+    env.https_proxy = normalized;
     env.NODE_USE_ENV_PROXY ??= "1";
     return env;
   }
-  if (fallback !== undefined && fallback !== "") return env;
   if ((options.platform ?? process.platform) !== "darwin") return env;
   let text;
   try {

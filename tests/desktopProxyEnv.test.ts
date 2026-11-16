@@ -10,6 +10,37 @@ test("desktop proxy env marks explicit env so Node fetch can use it", () => {
   assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:10808");
 });
 
+test("desktop proxy env normalizes a bare explicit proxy before Node parses it", () => {
+  const env: NodeJS.ProcessEnv = { HTTPS_PROXY: "127.0.0.1:10808" };
+  applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:10808");
+  assert.equal(env.https_proxy, "http://127.0.0.1:10808");
+  assert.equal(env.NODE_USE_ENV_PROXY, "1");
+});
+
+test("desktop proxy env normalizes a bare lowercase proxy", () => {
+  const env: NodeJS.ProcessEnv = { https_proxy: "proxy.example.test:3128" };
+  applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.HTTPS_PROXY, "http://proxy.example.test:3128");
+  assert.equal(env.https_proxy, "http://proxy.example.test:3128");
+  assert.equal(env.NODE_USE_ENV_PROXY, "1");
+});
+
+test("desktop proxy env normalizes a bare HTTP_PROXY fallback", () => {
+  const env: NodeJS.ProcessEnv = { HTTP_PROXY: "127.0.0.1:10808" };
+  applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:10808");
+  assert.equal(env.https_proxy, "http://127.0.0.1:10808");
+  assert.equal(env.NODE_USE_ENV_PROXY, "1");
+});
+
+test("desktop proxy env leaves an unsupported explicit proxy for the daemon to reject", () => {
+  const env: NodeJS.ProcessEnv = { HTTPS_PROXY: "socks5://127.0.0.1:1080" };
+  applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.HTTPS_PROXY, "socks5://127.0.0.1:1080");
+  assert.equal(env.NODE_USE_ENV_PROXY, undefined);
+});
+
 test("desktop proxy env normalizes HTTP(S) ALL_PROXY for Node fetch", () => {
   const env: NodeJS.ProcessEnv = { ALL_PROXY: "http://127.0.0.1:10808" };
   applyProxyEnv(env, { platform: "linux" });
