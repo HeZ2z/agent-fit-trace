@@ -229,6 +229,28 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * Server-reported CLI evidence under a backend row: version and the resolved
+ * executable path. Kept outside the <label> so the radio's accessible name
+ * stays the backend label, and the path may wrap instead of widening the row.
+ */
+.coach-backend-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  max-width: 88ch;
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.coach-backend-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
 .coach-disclosure {
   max-width: var(--content-narrow);
   margin: 0 0 12px;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CloudCapabilities } from "@agent-fit-trace/api-contracts";
+import type { CloudCapabilities, CoachingBackendDescriptor } from "@agent-fit-trace/api-contracts";
 import {
   cloudOptionFromCapabilities,
   defaultCoachBackend,
@@ -257,4 +257,50 @@ it("selection records preference, runtime, automatic and empty provenance", () =
   expect(resolveLocalBackendChoice({ preference: null, defaultId: "local-codex", defaultSource: "automatic", options })).toEqual({ backendId: "local-codex", source: "automatic" });
   expect(resolveLocalBackendChoice({ preference: null, defaultId: null, options: [pi] })).toEqual({ backendId: null, source: "none" });
   expect(resolveLocalBackendChoice({ preference: null, defaultId: "local-pi", options })).toEqual({ backendId: "local-pi", source: "server" });
+});
+
+describe("local CLI evidence", () => {
+  const descriptor: CoachingBackendDescriptor = {
+    backendId: "local-pi",
+    runtimeId: "pi",
+    executionLocation: "local",
+    displayName: "pi CLI (local)",
+    available: true,
+    version: "1.5.2",
+    executablePath: "/opt/fit-trace/bin/pi",
+    capabilities: {
+      capabilityVersion: 1,
+      protocolVersion: 1,
+      tools: ["get_training_history", "analyze_progress"],
+      productReplay: false,
+      nativeContinuation: true,
+      cancelConfirmation: "process-exit",
+      maxInputBytes: 1024,
+      maxEvents: 10,
+      maxEventBytes: 1024,
+      accountEligibility: "not-required",
+      quotaReservation: "not-required",
+      dataDestination: "cli-provider",
+    },
+  };
+
+  it("carries the server's version and executable path into the option", () => {
+    const option = descriptorToOption(descriptor);
+    expect(option.version).toBe("1.5.2");
+    expect(option.executablePath).toBe("/opt/fit-trace/bin/pi");
+  });
+
+  it("does not invent evidence the server omitted", () => {
+    const option = descriptorToOption({
+      ...descriptor,
+      version: undefined,
+      executablePath: undefined,
+    });
+    expect(option.version).toBeUndefined();
+    expect(option.executablePath).toBeUndefined();
+    // The synthetic fallback used before discovery has no evidence either.
+    const fallback = localPiOption(true);
+    expect(fallback.version).toBeUndefined();
+    expect(fallback.executablePath).toBeUndefined();
+  });
 });

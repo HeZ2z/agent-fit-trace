@@ -210,6 +210,8 @@ export const messages: Record<string, string> = {
   "Sign in to remember this choice. You can still change it per session from the Coach screen.":
     "登录后可记住此选择。你仍可在教练页面按会话更改。",
   "Check again": "重新检查",
+  "Version {version}": "版本 {version}",
+  "Path:": "路径：",
   "Cloud coaching": "云端教练",
   "Cloud coaching runs on the hosted service and needs a signed-in account, so it is not available as a guest. Sign in from the Me screen to enable it.":
     "云端教练在托管服务上运行，需要登录账号，因此访客无法使用。请从“我的”页面登录以启用。",
