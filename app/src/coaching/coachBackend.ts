@@ -29,6 +29,16 @@ export interface CoachBackendOption {
   location: CoachOrigin;
   available: boolean;
   unavailableReason?: { code: string; message: string };
+  /**
+   * Version and resolved executable path the SERVER reported for a local CLI.
+   *
+   * These are evidence, never client-side guesses: the settings page shows
+   * which binary the probe checked and the run will spawn. Both are optional
+   * because discovery may not have resolved a version (or any executable), and
+   * inventing either would contradict the server-derived availability rule.
+   */
+  version?: string;
+  executablePath?: string;
 }
 
 /** The subset of the local/cloud clients the lifecycle owner drives. */
@@ -104,6 +114,10 @@ export function descriptorToOption(descriptor: CoachingBackendDescriptor): Coach
     ...(descriptor.unavailableReason === undefined
       ? {}
       : { unavailableReason: { ...descriptor.unavailableReason } }),
+    ...(descriptor.version === undefined ? {} : { version: descriptor.version }),
+    ...(descriptor.executablePath === undefined
+      ? {}
+      : { executablePath: descriptor.executablePath }),
   };
 }
 

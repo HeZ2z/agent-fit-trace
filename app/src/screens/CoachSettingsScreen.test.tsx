@@ -197,6 +197,33 @@ describe("coach settings: local CLI section", () => {
     expect(screen.queryByTestId("reason-local-pi")).toBeNull();
   });
 
+  it("shows the detected CLI's version and executable path from the server", async () => {
+    const client = stubClient(
+      discoveryOf([
+        descriptor({
+          backendId: "local-pi",
+          version: "1.5.2",
+          executablePath: "/opt/fit-trace/bin/pi",
+        }),
+      ]),
+    );
+    renderPage({ user: { id: "user-evidence", isAnonymous: false }, client });
+
+    // The page renders the server's evidence verbatim: a version without the
+    // path would not tell the user which binary the run will spawn, and the
+    // page must never infer either locally.
+    const evidence = await screen.findByTestId("cli-evidence-local-pi");
+    expect(evidence).toHaveTextContent("Version 1.5.2");
+    expect(evidence).toHaveTextContent("/opt/fit-trace/bin/pi");
+  });
+
+  it("omits CLI evidence the server did not report", async () => {
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-no-evidence", isAnonymous: false }, client });
+    await screen.findByRole("radio", { name: /pi cli/i });
+    expect(screen.queryByTestId("cli-evidence-local-pi")).toBeNull();
+  });
+
   it("refuses to select an unavailable backend", async () => {
     const client = stubClient(
       discoveryOf([

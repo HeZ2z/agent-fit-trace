@@ -51,6 +51,7 @@ function BackendRow({
 }) {
   const { t } = useI18n();
   const selectable = option.available && !disabled;
+  const hasEvidence = option.version !== undefined || option.executablePath !== undefined;
   return (
     <li className="coach-backend-row" data-backend={option.id}>
       <label>
@@ -64,6 +65,18 @@ function BackendRow({
         />
         <span className="coach-backend-label">{option.label}</span>
       </label>
+      {hasEvidence ? (
+        <p className="coach-backend-meta" data-testid={`cli-evidence-${option.id}`}>
+          {option.version === undefined ? null : (
+            <span>{t("Version {version}", { version: option.version })}</span>
+          )}
+          {option.executablePath === undefined ? null : (
+            <span>
+              {t("Path:")} <code className="coach-backend-path">{option.executablePath}</code>
+            </span>
+          )}
+        </p>
+      ) : null}
       {option.available ? null : (
         <p className="coach-backend-reason" data-testid={`reason-${option.id}`}>
           {option.unavailableReason?.message ?? t("Unavailable for an unspecified reason.")}
