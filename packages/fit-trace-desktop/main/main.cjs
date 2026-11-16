@@ -41,6 +41,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const { childEnvironment } = require("./publicConfig.cjs");
+const { applyProxyEnv } = require("./proxyEnv.cjs");
 const { configurePackagedSync } = require("./syncConfig.cjs");
 const { loadOrigin, saveOrigin } = require("./origin.cjs");
 const { app, BrowserWindow, dialog } = require("electron");
@@ -118,7 +119,10 @@ function startDaemon() {
     // correct and the daemon's default must stay in charge.
     extensionPath: LAUNCH_PLAN.extensionPath,
     port: desktopPort,
-    env: childEnv ?? LAUNCH_PLAN.env,
+    // Global fetch reads NODE_USE_ENV_PROXY at process start. A Finder launch
+    // has no shell proxy environment, so resolve it in this parent and hand it
+    // to the daemon before spawn; setting it inside the daemon is too late.
+    env: applyProxyEnv(childEnv ?? LAUNCH_PLAN.env),
   });
   daemon.child.stdout.on("data", (chunk) => process.stdout.write(`[daemon] ${chunk}`));
   daemon.child.stderr.on("data", (chunk) => process.stderr.write(`[daemon] ${chunk}`));

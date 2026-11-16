@@ -31,6 +31,10 @@ import type { AuthPrincipal } from "@agent-fit-trace/api-contracts";
 import { extractBearerToken } from "../../../server/auth/verifier.ts";
 import type { TokenVerifier } from "../../../server/auth/verifier.ts";
 import { LOCAL_DAEMON_BEARER } from "../../../server/auth/localVerifier.ts";
+import type { OutboundProxyState } from "./systemProxy.ts";
+import { shouldBypassProxy } from "./systemProxy.ts";
+import { createProxyTunnel } from "./cloudProxyTunnel.ts";
+import type { ProxyTunnel } from "./cloudProxyTunnel.ts";
 
 const CLOUD_API_BASE_PATH = "/api/v1";
 const CLOUD_ROUTE_PREFIX = "/coaching/cloud/";
@@ -238,6 +242,8 @@ export interface CloudDestinationProbeOptions {
   resolveHost?: ResolveHost;
   timeoutMs?: number;
   maxBytes?: number;
+  /** Resolved once by the daemon; absent/direct in tests. */
+  outboundProxy?: OutboundProxyState;
 }
 
 /**
@@ -262,6 +268,10 @@ export async function probeCloudDestinationIssuer(
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? DEFAULT_PROBE_BYTES;
   const target = new URL(`${destination.origin}${destination.pathname}/public-config`);
+  const outboundProxy = options.outboundProxy ?? { kind: "direct" as const };
+  if (isHttps && outboundProxy.kind === "unsupported") {
+    throw new CloudProxyError(503, outboundProxy.message);
+  }
 
   let pinned: ResolvedAddress;
   try {
@@ -274,30 +284,53 @@ export async function probeCloudDestinationIssuer(
 
   return await new Promise<string | null>((resolve, reject) => {
     let settled = false;
+    let tunnel: ProxyTunnel | null = null;
     const settle = (error: Error | null, issuer: string | null = null): void => {
       if (settled) return;
       settled = true;
+      tunnel?.destroy();
       if (error === null) resolve(issuer);
       else reject(error);
     };
+    const useProxy =
+      isHttps &&
+      outboundProxy.kind === "proxy" &&
+      !shouldBypassProxy(
+        target.hostname,
+        outboundProxy.proxy.bypass,
+        target.port === "" ? 443 : Number(target.port),
+      );
+    if (useProxy && outboundProxy.kind === "proxy") {
+      tunnel = createProxyTunnel({
+        proxy: outboundProxy.proxy,
+        target,
+        pinned,
+        timeoutMs,
+      });
+    }
     const requestModule = isHttps ? httpsRequest : httpRequest;
-    const upstream = requestModule({
+    const requestOptions: import("node:https").RequestOptions = {
       protocol: target.protocol,
       hostname: target.hostname.replace(/^\[|\]$/g, ""),
       port: target.port === "" ? undefined : Number(target.port),
       path: `${target.pathname}${target.search}`,
       method: "GET",
       headers: { accept: "application/json", host: target.host },
-      lookup: (_hostname, lookupOptions, callback) => {
+      ...(isHttps ? { servername: target.hostname.replace(/^\[|\]$/g, "") } : {}),
+    };
+    if (tunnel !== null) {
+      requestOptions.agent = tunnel.agent;
+    } else {
+      requestOptions.lookup = (_hostname, lookupOptions, callback) => {
         if (lookupOptions.all === true) {
           callback(null, [{ address: pinned.address, family: pinned.family }]);
         } else {
           callback(null, pinned.address, pinned.family);
         }
-      },
-      ...(isHttps ? { servername: target.hostname.replace(/^\[|\]$/g, "") } : {}),
-      agent: false,
-    });
+      };
+      requestOptions.agent = false;
+    }
+    const upstream = requestModule(requestOptions);
     upstream.setTimeout(timeoutMs, () => {
       upstream.destroy();
       settle(new CloudProxyError(504, "The cloud destination did not answer in time."));
@@ -483,6 +516,8 @@ export interface CloudProxyOptions {
    * accepts HTTPS and this flag also requires a loopback destination.
    */
   allowInsecureLoopback?: boolean;
+  /** Resolved once by the daemon; absent/direct in tests. */
+  outboundProxy?: OutboundProxyState;
   timeoutMs?: number;
   maxBodyBytes?: number;
   maxJsonBytes?: number;
@@ -627,6 +662,11 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
     }
 
     const target = new URL(`${destination.origin}${destination.pathname}${route.pathname.slice(CLOUD_API_BASE_PATH.length)}${route.search}`);
+    const outboundProxy = options.outboundProxy ?? { kind: "direct" as const };
+    if (target.protocol === "https:" && outboundProxy.kind === "unsupported") {
+      sendJson(response, 503, "CLOUD_PROXY_UNSUPPORTED", outboundProxy.message);
+      return;
+    }
     const requestHeaders = forwardableRequestHeaders(request);
     requestHeaders.host = target.host;
     if (body !== undefined) {
@@ -635,31 +675,52 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
     }
 
     const isHttps = target.protocol === "https:";
+    const useProxy =
+      isHttps &&
+      outboundProxy.kind === "proxy" &&
+      !shouldBypassProxy(
+        target.hostname,
+        outboundProxy.proxy.bypass,
+        target.port === "" ? 443 : Number(target.port),
+      );
+    const tunnel = useProxy && outboundProxy.kind === "proxy"
+      ? createProxyTunnel({
+          proxy: outboundProxy.proxy,
+          target,
+          pinned,
+          timeoutMs,
+        })
+      : null;
     const requestModule = isHttps ? httpsRequest : httpRequest;
-    const upstream = requestModule({
+    const requestOptions: import("node:https").RequestOptions = {
       protocol: target.protocol,
       hostname: target.hostname.replace(/^\[|\]$/g, ""),
       port: target.port === "" ? undefined : Number(target.port),
       path: `${target.pathname}${target.search}`,
       method,
       headers: requestHeaders,
+      ...(isHttps ? { servername: target.hostname.replace(/^\[|\]$/g, "") } : {}),
+    };
+    if (tunnel !== null) {
+      requestOptions.agent = tunnel.agent;
+    } else {
       // Connect only to the address we checked. For TLS, SNI/Host remain the
-      // DNS name, so certificate verification still binds the name.
-      // Node 24's family autoselection calls this with `all: true` and expects
-      // an ARRAY of resolved addresses. Returning only the scalar triple makes
-      // the connect fail with ERR_INVALID_IP_ADDRESS before a hostname-based
+      // DNS name, so certificate verification still binds the name. Node 24's
+      // family autoselection calls this with `all: true` and expects an ARRAY
+      // of resolved addresses; returning only the scalar triple makes the
+      // connect fail with ERR_INVALID_IP_ADDRESS before a hostname-based
       // destination is reached (IP-literal tests would not see it).
-      lookup: (_hostname, lookupOptions, callback) => {
+      requestOptions.lookup = (_hostname, lookupOptions, callback) => {
         if (lookupOptions.all === true) {
           callback(null, [{ address: pinned.address, family: pinned.family }]);
         } else {
           callback(null, pinned.address, pinned.family);
         }
-      },
-      ...(isHttps ? { servername: target.hostname.replace(/^\[|\]$/g, "") } : {}),
+      };
       // No redirect following: a 3xx is rejected below.
-      agent: false,
-    });
+      requestOptions.agent = false;
+    }
+    const upstream = requestModule(requestOptions);
 
     let settled = false;
     let responseLimit = maxJsonBytes;
@@ -667,13 +728,17 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
       if (settled) return;
       settled = true;
       upstream.destroy();
+      tunnel?.destroy();
       sendJson(response, status, code, message);
     };
 
     upstream.setTimeout(timeoutMs, () => fail(504, "UPSTREAM_TIMEOUT", "The cloud service did not answer in time."));
     upstream.on("error", () => fail(502, "UPSTREAM_UNAVAILABLE", "The cloud service is unavailable."));
     response.on("close", () => {
-      if (!response.writableEnded) upstream.destroy();
+      if (!response.writableEnded) {
+        upstream.destroy();
+        tunnel?.destroy();
+      }
     });
     upstream.on("response", (upstreamResponse) => {
       if (settled) {
@@ -703,6 +768,7 @@ export function createCloudProxyHandler(options: CloudProxyOptions): CloudProxyH
         if (settled) return;
         settled = true;
         response.end();
+        tunnel?.destroy();
       });
       upstreamResponse.on("error", () => {
         if (settled) return;

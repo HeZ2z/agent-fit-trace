@@ -14,6 +14,7 @@ import { startCoachingServer } from "../../../server/coaching/coachingServer.ts"
 import type { CoachingServer } from "../../../server/coaching/coachingServer.ts";
 import { createSupabaseVerifier } from "../../../server/auth/supabaseVerifier.ts";
 import { createCloudProxyHandler, parseCloudApiBase, probeCloudDestinationIssuer } from "./cloudProxy.ts";
+import { applyProxyEnvironment, resolveOutboundProxy } from "./systemProxy.ts";
 import {
   CloudDestinationSettingError,
   CloudDestinationStore,
@@ -641,6 +642,12 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
   const host = options.host ?? BIND_HOST;
   assertLoopbackHost(host);
   const env = options.env ?? process.env;
+  // Resolve egress before creating the verifier: Node 24's global fetch reads
+  // NODE_USE_ENV_PROXY/HTTPS_PROXY on first use, and a Finder-launched app has
+  // no shell proxy environment for the raw cloud transport or for Supabase
+  // verification. This is intentionally once per daemon process.
+  const outboundProxy = resolveOutboundProxy({ env });
+  applyProxyEnvironment(outboundProxy, env);
   const portRaw = options.port ?? DEFAULT_DAEMON_PORT;
   // Port 0 is a valid preference meaning "bind once on any free loopback
   // port" (same as the launcher's scan loop below and `startCoachingServer`).
@@ -724,6 +731,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
         issuer: cloudIssuer,
         probe: (destination) => probeCloudDestinationIssuer(destination, {
           ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
+          outboundProxy,
         }),
         ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
       });
@@ -733,6 +741,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     : createCloudProxyHandler({
         destinationFor: (principal) => cloudDestinationStore.decisionFor(principal.id),
         verifier,
+        outboundProxy,
         ...(options.allowInsecureCloudProxyLoopback === true ? { allowInsecureLoopback: true } : {}),
       });
   const handler = createAuthenticatedHandler({
