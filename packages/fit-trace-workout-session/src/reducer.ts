@@ -114,7 +114,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     // Exercises.
     case "addExercise": {
       // The creator claims `key` for the exercise and `key + 1` for its first set.
-      const exercise = createDraftExercise(allocateKey(draft));
+      // The optional name is the catalog's canonical English spelling.
+      const exercise = createDraftExercise(allocateKey(draft), action.name ?? "");
       return withDraft(state, { ...draft, exercises: [...draft.exercises, exercise] });
     }
     case "removeExercise": {

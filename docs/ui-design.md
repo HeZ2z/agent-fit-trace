@@ -10,9 +10,10 @@ applicable to `mobile/`. Behaviour and data access remain governed by
 The system is adapted from the **FORGE Fit Trace** responsive prototype, used
 as a *style reference only*. No prototype page content, demo data, local-storage
 keys, language layer or theme switcher was copied. The prototype and this app
-happen to share the same six destinations (History, Log, Analysis, Plan, Coach,
-Me); the restyle keeps this app's own information architecture, validation
-states, auth gates and safety semantics.
+happen to share the same six original destinations (History, Log, Analysis,
+Plan, Coach, Me); the app adds a seventh, **Exercise Library**, over the
+bundled exercise catalog. The restyle keeps this app's own information
+architecture, validation states, auth gates and safety semantics.
 
 Two skins share one token set: **Pixel** (the default, hard 3px rules and
 offset shadows) and **Glass** (hairlines, soft diffusion and a frosted chrome).
@@ -352,6 +353,48 @@ save gate (see [ADR 0003](adr/0003-exercise-catalog.md)).
   wrapping, `Enter` selects the active option while the list is open and
   otherwise keeps its normal submit meaning, and blur closes the list. Focus
   stays in the input; the active row is highlighted without moving DOM focus.
+
+## Exercise library
+
+The Exercise Library (`/exercises`) is a browse-and-select surface over the
+same bundled catalog. It is display data, not coaching guidance:
+
+- **Browse and search.** A search field matches canonical English names,
+  English aliases, Chinese display names and Chinese aliases through the
+  shared ranking; results are not capped at the eight-suggestion autocomplete
+  limit. Filters cover movement pattern, muscle (primary **or** secondary),
+  resistance-equipment category and difficulty, and combine. An empty query
+  lists the catalog in canonical-name order.
+- **Detail.** Selecting a result shows the display name (Chinese through the
+  catalog display table, with the canonical English name beside it in Chinese
+  UI), movement pattern, primary and secondary muscles, equipment category,
+  difficulty, mechanics and force. A missing classification reads
+  "Not classified". The page carries a visible review notice: the catalog is a
+  reference, its mappings are still under review, and the page makes no
+  technique or personal-suitability claim. Accessories (a bench, a pull-up bar)
+  are not part of the equipment category, and difficulty is the catalog's own
+  classification.
+- **Add to workout.** The detail action adds one editable exercise, using the
+  canonical English name, to the owner's stored session draft and opens the Log
+  editor; a fresh draft's single blank exercise is named rather than duplicated.
+  The page never saves a workout. A draft that cannot be read is left untouched
+  and the page explains that Log Workout owns recovery; a failed write keeps the
+  page in place.
+- **Editor entry.** Log Workout's exercises fieldset has a "Browse library"
+  action beside "Add exercise". It flushes the current in-memory draft first —
+  so an unsaved keystroke is not lost — then opens the library. The in-editor
+  picker dialog is not part of this surface yet.
+- **Accessibility and narrow screens.** The search and every filter have
+  visible labels; the result list is a labelled list of buttons with an
+  `aria-pressed` selection; one `h1` heads the screen. A search or filter that
+  hides the selected entry clears the detail and removes its action, so a
+  hidden entry is never actionable. Below 900px the page switches between the
+  two panes: selecting a result replaces the list with the detail, and a
+  **Back to results** action restores the list, so the detail is never parked
+  below a long result list.
+
+There are no images, videos, cue text or common-mistake content in this
+surface, and mobile has no library screen yet.
 
 ## Accessibility and test constraints
 

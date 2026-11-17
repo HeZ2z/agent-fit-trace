@@ -69,6 +69,16 @@ export {
   MAX_EXERCISE_SUGGESTIONS,
   displayExerciseName,
   displayStoredExerciseName,
+  searchExerciseLibrary,
   searchExerciseSuggestions,
 } from "./exercises.ts";
 export type { ExerciseSuggestion } from "./exercises.ts";
+
+export {
+  displayDifficulty,
+  displayEquipmentCategory,
+  displayForce,
+  displayMechanics,
+  displayMovementPattern,
+  displayMuscle,
+} from "./taxonomy.ts";

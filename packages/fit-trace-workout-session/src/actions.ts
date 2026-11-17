@@ -23,8 +23,9 @@ export type SessionAction =
   | { type: "setDurationMinutes"; value: string }
   | { type: "setSleepHours"; value: string }
   | { type: "setNotes"; value: string }
-  // Exercises.
-  | { type: "addExercise" }
+  // Exercises. `name` is optional so the row can be created preselected from
+  // the catalog; callers that add a blank row omit it.
+  | { type: "addExercise"; name?: string }
   | { type: "removeExercise"; exerciseKey: number }
   | { type: "setExerciseName"; exerciseKey: number; name: string }
   | { type: "setExerciseRestSeconds"; exerciseKey: number; restSeconds: number }

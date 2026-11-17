@@ -21,7 +21,8 @@
  * catalog data.
  */
 
-import { resolveExerciseName, searchExercises } from "@agent-fit-trace/core";
+import { listExercises, resolveExerciseName, searchExercises } from "@agent-fit-trace/core";
+import type { ExerciseCatalogEntry, ExerciseListFilter } from "@agent-fit-trace/core";
 import type { AppLanguage } from "./index.ts";
 import { EXERCISE_ALIASES_ZH, EXERCISE_DISPLAY_NAMES_ZH } from "./zh/exercises.ts";
 
@@ -180,4 +181,43 @@ export function searchExerciseSuggestions(
   }
 
   return suggestions;
+}
+
+/**
+ * Browse/search the catalog for the exercise library.
+ *
+ * An empty or whitespace-only query returns every entry matching `filter`, in
+ * the core's canonical-name order. Otherwise the bilingual autocomplete search
+ * ranks matches (English canonical names and aliases first, then Chinese
+ * display names and aliases, de-duplicated) with a cap derived from the catalog
+ * size rather than the eight-suggestion autocomplete default, and only entries
+ * matching `filter` are kept. The returned order is the search ranking order.
+ *
+ * The catalog is display data: this helper never writes a record. A row
+ * selected from the result writes the entry's canonical English `name` through
+ * the normal exercise field.
+ */
+export function searchExerciseLibrary(
+  query: string,
+  language: AppLanguage,
+  filter: ExerciseListFilter = {},
+): ExerciseCatalogEntry[] {
+  const filtered = listExercises(filter);
+  if (query.trim() === "") return filtered;
+
+  // Derive the cap from the catalog itself so a larger catalog can never be
+  // silently truncated by the autocomplete default. Filtering happens after the
+  // ranked merge so an approved filter never hides a valid ranked match.
+  const allowed = new Set(filtered.map((entry) => entry.id));
+  const suggestions = searchExerciseSuggestions(
+    query,
+    language,
+    listExercises().length,
+  );
+  const results: ExerciseCatalogEntry[] = [];
+  for (const suggestion of suggestions) {
+    const entry = resolveExerciseName(suggestion.canonicalName);
+    if (entry !== null && allowed.has(entry.id)) results.push(entry);
+  }
+  return results;
 }

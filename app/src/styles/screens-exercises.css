@@ -1,0 +1,243 @@
+/*
+ * agent-fit-trace — exercise library
+ *
+ * A two-column browse/detail screen: ranked results and filters on the left,
+ * the selected exercise on the right. Below 900px the columns stack and the
+ * detail no longer sticks. The browser viewport is ordinary page scroll; the
+ * catalog is small enough that a virtualized list would be premature.
+ */
+
+.exercise-library {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.exercise-library-browse {
+  min-width: 0;
+}
+
+.exercise-library-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 10px;
+}
+
+.exercise-library-controls .exercise-library-search {
+  grid-column: 1 / -1;
+}
+
+.exercise-library-reference {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--accent);
+  background: var(--soft);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.exercise-library-notes {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.exercise-library-count {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.exercise-library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exercise-library-list button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: var(--border-w) solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  text-align: left;
+}
+
+.exercise-library-list button:hover:not(:disabled) {
+  background: var(--soft);
+  border-color: var(--fg);
+  color: var(--fg);
+  transform: none;
+}
+
+.exercise-library-list button[aria-pressed="true"],
+.exercise-library-list button[aria-pressed="true"]:hover {
+  background: var(--border);
+  border-color: var(--fg);
+  color: var(--bg);
+  box-shadow: var(--shadow-red-sm);
+}
+
+.exercise-library-name {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.exercise-library-meta {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  opacity: 0.72;
+}
+
+.exercise-library-empty {
+  padding: 18px;
+  border: var(--border-w-thin) dashed var(--border);
+  background: var(--bg);
+  text-align: center;
+}
+
+.exercise-library-empty p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.exercise-library-detail {
+  position: sticky;
+  top: 16px;
+  min-height: 240px;
+  padding: 18px;
+  border: var(--border-w) solid var(--fg);
+  background: var(--bg);
+  box-shadow: var(--shadow-ink);
+}
+
+.exercise-library-detail h2 {
+  margin-top: 0;
+}
+
+/* Programmatic focus lands on the heading so the detail is announced and its
+ * actions are the next tab stops; keep a visible ring for keyboard users. */
+.exercise-library-detail h2:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Narrow screens use a list-or-detail view; this is the way back to the list. */
+.exercise-library-back {
+  margin-bottom: 10px;
+}
+
+.exercise-library-canonical {
+  margin: -4px 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.exercise-library-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  margin: 0 0 16px;
+}
+
+.exercise-library-facts > div {
+  min-width: 0;
+}
+
+.exercise-library-facts dt {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.exercise-library-facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.exercise-library-add {
+  width: 100%;
+  min-height: 48px;
+  border: var(--border-w) solid var(--fg);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: var(--shadow-ink);
+}
+
+.exercise-library-add:hover:not(:disabled) {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.exercise-library-placeholder {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* The editor's exercises fieldset grows a second action without a new row. */
+.exercise-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 899px) {
+  .exercise-library {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .exercise-library-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The list and the detail never both occupy a long phone scroll: selecting a
+   * result replaces the list, and "Back to results" restores it. */
+  .exercise-library-detail {
+    display: none;
+    position: static;
+  }
+
+  .exercise-library[data-selected="true"] .exercise-library-browse {
+    display: none;
+  }
+
+  .exercise-library[data-selected="true"] .exercise-library-detail {
+    display: block;
+  }
+}
+
+@media (max-width: 600px) {
+  .exercise-library-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

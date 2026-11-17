@@ -18,16 +18,17 @@ export function createDraftSet(key: number): DraftSet {
 }
 
 /**
- * A blank exercise with one blank set.
+ * An exercise with one blank set, optionally named.
  *
  * The exercise claims `key` and its first set claims `key + 1`, so a caller
  * adding an exercise with `allocateKey(draft)` never collides with existing
- * keys.
+ * keys. `name` is the catalog's canonical English spelling when the row was
+ * preselected from the exercise library; blank rows keep the empty string.
  */
-export function createDraftExercise(key: number): DraftExercise {
+export function createDraftExercise(key: number, name = ""): DraftExercise {
   return {
     key,
-    name: "",
+    name,
     restSeconds: DEFAULT_REST_SECONDS,
     sets: [createDraftSet(key + 1)],
   };

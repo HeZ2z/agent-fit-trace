@@ -10,6 +10,7 @@ import { currentRuntimeMode, isCoachVisible } from "./api/runtimeMode.ts";
 import { HistoryScreen } from "./screens/HistoryScreen.tsx";
 import { WorkoutEditorScreen } from "./screens/WorkoutEditorScreen.tsx";
 import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
+import { ExerciseLibraryScreen } from "./screens/ExerciseLibraryScreen.tsx";
 import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
 import { CoachScreen } from "./screens/CoachScreen.tsx";
@@ -265,6 +266,14 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
             element={
               <RequireAuth legacyLoopback={legacyLoopback} client={client}>
                 <WorkoutSummaryScreen />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/exercises"
+            element={
+              <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+                <ExerciseLibraryScreen />
               </RequireAuth>
             }
           />

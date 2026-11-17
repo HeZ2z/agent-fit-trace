@@ -238,6 +238,35 @@ export function WorkoutEditorScreen() {
     }
   }, [draft, drafts, autosaveEnabled]);
 
+  /**
+   * Flush the in-memory draft before leaving for the exercise library.
+   *
+   * Autosave already persists every edit, but this button can be reached in the
+   * same tick as a change; an explicit save makes the navigation lossless. A
+   * failed write keeps the editor in place and reuses the existing save-error
+   * notice rather than navigating with stale storage.
+   */
+  function openExerciseLibrary(): void {
+    // Never write over a draft the editor could not read: a corrupt/read-error
+    // bootstrap disables autosave, and browsing can continue without touching
+    // the stored payload. The library page reports the unreadable draft itself.
+    if (autosaveEnabled) {
+      try {
+        drafts.save(draft);
+        autosaveBaselineRef.current = draft;
+        persistedBaselineRef.current = draft;
+        setHasDraft(true);
+        setDiscardedNotice(false);
+      } catch (error) {
+        autosaveFailedRef.current = true;
+        setHasDraft(true);
+        setDraftProblem({ kind: "save-error", message: messageOf(error) });
+        return;
+      }
+    }
+    navigate("/exercises");
+  }
+
   // Live clock. The model never reads a clock: this component injects the
   // current time into every timing/rest action and keeps one render-local `now`
   // so elapsed time and the rest countdown re-render on the ticker.
@@ -850,9 +879,14 @@ export function WorkoutEditorScreen() {
             </fieldset>
           ))}
 
-          <button type="button" onClick={() => dispatch({ type: "addExercise" })}>
-            {t("Add exercise")}
-          </button>
+          <div className="exercise-actions">
+            <button type="button" onClick={() => dispatch({ type: "addExercise" })}>
+              {t("Add exercise")}
+            </button>
+            <button type="button" onClick={openExerciseLibrary}>
+              {t("Browse library")}
+            </button>
+          </div>
         </fieldset>
 
         <fieldset>

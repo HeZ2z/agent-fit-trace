@@ -16,6 +16,7 @@ interface NavItem {
 const baseNavLinks: NavItem[] = [
   { to: "/", label: "History", icon: "history" },
   { to: "/workout/new", label: "Log Workout", icon: "log" },
+  { to: "/exercises", label: "Exercise Library", icon: "library" },
   { to: "/analysis", label: "Analysis", icon: "analysis" },
   { to: "/plan", label: "Plan", icon: "plan" },
   { to: "/me", label: "Me", icon: "me" },

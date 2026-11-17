@@ -255,3 +255,47 @@ test("covers every documented action variant", () => {
     assert.equal(testCase.action.type, type);
   }
 });
+
+test("addExercise carries an optional catalog name without replacing existing rows", () => {
+  const namedFirst = reduceSessionState(untimedState(), {
+    type: "setExerciseName",
+    exerciseKey: 1,
+    name: "Front Squat",
+  });
+  const snapshot = structuredClone(namedFirst);
+
+  const next = reduceSessionState(namedFirst, {
+    type: "addExercise",
+    name: "Barbell Bench Press - Medium Grip",
+  });
+
+  assert.deepEqual(namedFirst, snapshot, "adding must not mutate the input state");
+  assert.equal(next.draft.exercises.length, 2);
+  assert.deepEqual(next.draft.exercises[0], namedFirst.draft.exercises[0]);
+  const added = next.draft.exercises[1]!;
+  assert.equal(added.name, "Barbell Bench Press - Medium Grip");
+  assert.equal(added.key, 3, "the added exercise claims the next free key");
+  assert.equal(added.sets.length, 1);
+  assert.equal(added.sets[0]!.key, 4);
+  assert.equal(added.sets[0]!.reps, "");
+
+  const unnamed = reduceSessionState(namedFirst, { type: "addExercise" });
+  assert.equal(unnamed.draft.exercises[1]!.name, "", "the optional name defaults to blank");
+});
+
+test("addExercise preserves active timing and a running rest", () => {
+  const started = startedState();
+  const withExercise = reduceSessionState(started, {
+    type: "addExercise",
+    name: "Front Squat",
+  });
+  assert.deepEqual(withExercise.draft.timing, started.draft.timing);
+
+  const resting = restingState();
+  const duringRest = reduceSessionState(resting, {
+    type: "addExercise",
+    name: "Front Squat",
+  });
+  assert.deepEqual(duringRest.draft.timing, resting.draft.timing);
+  assert.deepEqual(duringRest.runtime, resting.runtime);
+});

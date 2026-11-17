@@ -9,13 +9,14 @@ import {
   ZH_MESSAGES,
   displayExerciseName,
   displayStoredExerciseName,
+  searchExerciseLibrary,
   searchExerciseSuggestions,
 } from "../packages/fit-trace-i18n/src/index.ts";
 import {
   displayRecommendation,
   displayTrend,
 } from "../packages/fit-trace-i18n/src/domain.ts";
-import { searchExercises } from "@agent-fit-trace/core";
+import { listExercises, searchExercises } from "@agent-fit-trace/core";
 import type {
   ExerciseTrend,
   Recommendation,
@@ -463,4 +464,86 @@ test("the shared search module only imports browser-safe modules", () => {
     );
   }
   assert.doesNotMatch(source, /\bMath\.random\b|\bDate\.now\b|\bprocess\.\w/);
+});
+
+/* ------------------------------------------------------------------------- */
+/* Library search (uncapped, bilingual, filterable)                          */
+/* ------------------------------------------------------------------------- */
+
+test("library search lists all entries for an empty query and applies filters", () => {
+  assert.equal(searchExerciseLibrary("", "en").length, CANONICAL_NAMES.length);
+  assert.equal(searchExerciseLibrary("  ", "zh").length, CANONICAL_NAMES.length);
+
+  const squats = searchExerciseLibrary("", "en", { pattern: "squat" });
+  assert.equal(squats.length, listExercises({ pattern: "squat" }).length);
+  assert.ok(squats.every((entry) => entry.pattern === "squat"));
+
+  // Filters are combinable and apply to the whole catalog, not one page.
+  const dumbbells = searchExerciseLibrary("", "en", { equipment: "dumbbell" });
+  assert.ok(dumbbells.length > 0);
+  assert.ok(dumbbells.every((entry) => entry.equipment.category === "dumbbell"));
+
+  const beginnerDumbbells = searchExerciseLibrary("", "en", {
+    equipment: "dumbbell",
+    difficulty: "beginner",
+  });
+  assert.ok(beginnerDumbbells.length <= dumbbells.length);
+  assert.ok(beginnerDumbbells.every((entry) => entry.difficulty === "beginner"));
+
+  const combined = searchExerciseLibrary("", "zh", {
+    pattern: "squat",
+    equipment: "barbell",
+    muscle: "quadriceps",
+  });
+  assert.ok(combined.length > 0);
+  for (const entry of combined) {
+    assert.equal(entry.pattern, "squat");
+    assert.equal(entry.equipment.category, "barbell");
+    assert.ok(
+      entry.primary_muscles.includes("quadriceps") ||
+        entry.secondary_muscles.includes("quadriceps"),
+    );
+  }
+});
+
+test("library search returns more than the autocomplete cap and keeps its order", () => {
+  const results = searchExerciseLibrary("press", "en");
+  assert.ok(results.length > MAX_EXERCISE_SUGGESTIONS);
+  assert.ok(results.length > 20, "the library must not reuse the 20-entry list cap");
+
+  const suggestions = searchExerciseSuggestions("press", "en", CANONICAL_NAMES.length);
+  assert.deepEqual(
+    results.map((entry) => entry.name),
+    suggestions.map((suggestion) => suggestion.canonicalName),
+  );
+  // The autocomplete default stays capped and is a prefix of the same ranking.
+  assert.equal(searchExerciseSuggestions("press", "en").length, MAX_EXERCISE_SUGGESTIONS);
+});
+
+test("library search matches Chinese names and aliases, then filters by field", () => {
+  const bench = searchExerciseLibrary("卧推", "zh");
+  assert.ok(bench.length > 0);
+  assert.equal(bench[0]?.name, BENCH_PRESS);
+
+  assert.ok(
+    searchExerciseLibrary("back squat", "en").some((entry) => entry.id === "barbell_squat"),
+  );
+  assert.ok(
+    searchExerciseLibrary("深蹲", "zh").some((entry) => entry.id === "barbell_squat"),
+  );
+
+  const barbellPresses = searchExerciseLibrary("press", "en", { equipment: "barbell" });
+  assert.ok(barbellPresses.length > 0);
+  assert.ok(barbellPresses.length < searchExerciseLibrary("press", "en").length);
+  assert.ok(barbellPresses.every((entry) => entry.equipment.category === "barbell"));
+});
+
+test("library search trims whitespace, keeps catalog entries, and returns none when unmatched", () => {
+  const results = searchExerciseLibrary("  squat  ", "en");
+  assert.ok(results.length > 0);
+  for (const entry of results) {
+    assert.ok(CANONICAL_NAME_SET.has(entry.name));
+    assert.equal(typeof entry.id, "string");
+  }
+  assert.deepEqual(searchExerciseLibrary("zzzz-not-an-exercise", "en"), []);
 });

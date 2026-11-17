@@ -9,6 +9,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: /primary/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /history/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /log workout/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /exercise library/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /analysis/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /plan/i })).toBeInTheDocument();
 

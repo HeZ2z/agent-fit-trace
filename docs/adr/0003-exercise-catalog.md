@@ -1,7 +1,6 @@
 # ADR 0003: Exercise catalog as a suggestion layer, backed by Unlicense data
 
-- **Status:** Accepted. The v1 implementation is on the `feat/exercise-catalog`
-  feature branch and awaits review and merge: the versioned 194-entry catalog
+- **Status:** Accepted. v1 shipped: the versioned 194-entry catalog
   and alias resolver/search (shared core), render-time Chinese display names,
   Chinese localization of catalog exercise names inside rebuilt copy,
   alias-normalized analysis trends, and web/mobile exercise-name autocomplete
@@ -15,7 +14,8 @@
   muscle/equipment review, and any cue authoring are not done, so the catalog
   is not yet authoritative. Upstream commits are pinned and provenance is
   recorded in the committed data and in
-  [`NOTICE`](../../data/exercise-catalog/NOTICE).
+  [`NOTICE`](../../data/exercise-catalog/NOTICE). Phase 1a (the web exercise
+  library and draft entry) shipped on 2026-11-17; see §7.
 - **Date:** 2026-10-20
 - **Scope:** the v1 exercise catalog and its integration as a suggestion layer.
   Media, workout-record schema changes, non-strength expansion, and
@@ -247,10 +247,19 @@ surface.
   exercise name as authored. Analysis therefore groups aliases into one
   canonical trend; this is a deliberate, user-visible change and the affected
   tests and docs were updated.
+- **Phase 1a (shipped 2026-11-17, web):** a text-only exercise-library page
+  with bilingual search, pattern/muscle/equipment/difficulty filters and a
+  detail view over the catalog, plus a draft entry that adds the selected
+  exercise to the current session draft; the Log editor can flush the draft and
+  open the library. The catalog is shown as a reference with a visible review
+  notice. This ships no media, cue/common-mistake content, favourites,
+  custom-exercise management, recent-exercise list, record schema change or
+  plan dependency. Mobile parity and the in-editor picker dialog are still
+  future work.
 - **Phase 1 (future, not in v1):** recent-exercise and equipment/muscle
   candidate lists; deterministic plan candidate/substitution suggestions using
-  equipment, movement pattern, muscles, and pain constraints; exercise detail
-  and per-exercise history; cue/common-mistake authoring and coaching review.
+  equipment, movement pattern, muscles, and pain constraints; per-exercise
+  history; cue/common-mistake authoring and coaching review.
   `PlanConstraints.equipment` becomes executable only when that lands.
 - **Phase 2 (conditional):** record-level `exercise_id` with schema v2, only if
   a real requirement appears. This needs a separate rollout decision covering
