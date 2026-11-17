@@ -80,6 +80,31 @@ function normalizeProxyUrl(raw) {
 }
 
 /**
+ * Node's built-in env-proxy support parses HTTPS_PROXY and HTTP_PROXY as
+ * absolute URLs at startup; older Node 24 releases abort with ERR_INVALID_URL
+ * when handed a bare `host:port` (which Chromium and the daemon's own resolver
+ * accept). Normalize every proxy variable Node may read before the child is
+ * spawned, including an inherited HTTP_PROXY that is not the selected route.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ */
+function normalizeProxyVariables(env) {
+  for (const key of [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+  ]) {
+    const raw = env[key];
+    if (raw === undefined || raw === "") continue;
+    const normalized = normalizeProxyUrl(raw);
+    if (normalized !== null) env[key] = normalized;
+  }
+}
+
+/**
  * Add proxy variables to a child environment without overriding explicit
  * values. Returns the same object for convenient use at the spawn site.
  *
@@ -87,6 +112,7 @@ function normalizeProxyUrl(raw) {
  * @param {{ platform?: NodeJS.Platform, readSystemProxy?: () => string | null }} [options]
  */
 function applyProxyEnv(env, options = {}) {
+  normalizeProxyVariables(env);
   const httpsExplicit = env.HTTPS_PROXY || env.https_proxy;
   if (httpsExplicit !== undefined && httpsExplicit !== "") {
     const normalized = normalizeProxyUrl(httpsExplicit);

@@ -29,8 +29,28 @@ test("desktop proxy env normalizes a bare lowercase proxy", () => {
 test("desktop proxy env normalizes a bare HTTP_PROXY fallback", () => {
   const env: NodeJS.ProcessEnv = { HTTP_PROXY: "127.0.0.1:10808" };
   applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.HTTP_PROXY, "http://127.0.0.1:10808");
   assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:10808");
   assert.equal(env.https_proxy, "http://127.0.0.1:10808");
+  assert.equal(env.NODE_USE_ENV_PROXY, "1");
+});
+
+test("desktop proxy env normalizes an inherited bare HTTP_PROXY next to an explicit HTTPS proxy", () => {
+  const env: NodeJS.ProcessEnv = {
+    HTTPS_PROXY: "http://127.0.0.1:10808",
+    HTTP_PROXY: "127.0.0.1:10808",
+  };
+  applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:10808");
+  assert.equal(env.HTTP_PROXY, "http://127.0.0.1:10808");
+  assert.equal(env.NODE_USE_ENV_PROXY, "1");
+});
+
+test("desktop proxy env normalizes a bare ALL_PROXY fallback", () => {
+  const env: NodeJS.ProcessEnv = { ALL_PROXY: "127.0.0.1:10808" };
+  applyProxyEnv(env, { platform: "linux" });
+  assert.equal(env.ALL_PROXY, "http://127.0.0.1:10808");
+  assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:10808");
   assert.equal(env.NODE_USE_ENV_PROXY, "1");
 });
 
