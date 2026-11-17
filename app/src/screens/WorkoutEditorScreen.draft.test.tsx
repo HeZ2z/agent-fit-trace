@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SessionDraftCorruptionError,
@@ -15,12 +16,18 @@ import {
   saveSessionDraft,
   sessionDraftKey,
 } from "../storage/sessionDraftRepository.ts";
+import { loadRecords } from "../storage/workoutRepository.ts";
 import { SessionDraftProvider } from "../state/SessionDraftContext.tsx";
 import { WorkoutStoreProvider } from "../state/WorkoutStoreContext.tsx";
 import { FakeFitTraceClient, clientFor } from "../test/asyncClient.ts";
 import { WorkoutEditorScreen } from "./WorkoutEditorScreen.tsx";
 
 const OWNER = "draft-test-owner";
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location-state">{JSON.stringify(location.state)}</output>;
+}
 
 function seededDraft(overrides: Partial<SessionDraft> = {}): SessionDraft {
   const base = createSessionDraft("2026-01-05");
@@ -48,22 +55,30 @@ function validDraft(): SessionDraft {
   };
 }
 
+type EditorEntry = string | { pathname: string; state?: unknown };
+
 function renderEditor(
   adapter: StorageAdapter = new MemoryStorageAdapter(),
   client: FitTraceClient = clientFor(adapter),
+  initialEntries: EditorEntry[] = ["/workout/new"],
+  strict = false,
 ) {
-  return render(
-    <MemoryRouter initialEntries={["/workout/new"]}>
+  const tree = (
+    <div className="app-shell">
+    <MemoryRouter initialEntries={initialEntries}>
       <WorkoutStoreProvider client={client}>
         <SessionDraftProvider ownerId={OWNER} adapter={adapter}>
           <Routes>
             <Route path="/workout/new" element={<WorkoutEditorScreen />} />
             <Route path="/workout/:id" element={<div data-testid="summary" />} />
           </Routes>
+          <LocationProbe />
         </SessionDraftProvider>
       </WorkoutStoreProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
+    </div>
   );
+  return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
 }
 
 function notesField(): HTMLElement {
@@ -360,5 +375,214 @@ describe("WorkoutEditorScreen session draft", () => {
     await waitFor(() =>
       expect(screen.getByTestId("session-elapsed")).toBeInTheDocument(),
     );
+  });
+});
+
+
+describe("exercise library integration", () => {
+  it("opens the library dialog, focuses search and appends an editable exercise without saving", async () => {
+    const adapter = new MemoryStorageAdapter();
+    renderEditor(adapter);
+    const user = userEvent.setup();
+    const trigger = screen.getByRole("button", { name: /browse exercise library/i });
+
+    await user.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: /exercise library/i });
+    expect(within(dialog).getByLabelText("Search exercises")).toHaveFocus();
+
+    await user.type(within(dialog).getByLabelText("Search exercises"), "barbell squat");
+    await user.click(within(dialog).getByRole("button", { name: /^Barbell Squat/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Add to workout" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    // Adding is a draft edit, never an implicit workout save.
+    expect(loadRecords(adapter)).toHaveLength(0);
+  });
+
+  it("closes the dialog with Escape and restores focus to the opener", async () => {
+    renderEditor();
+    const user = userEvent.setup();
+    const trigger = screen.getByRole("button", { name: /browse exercise library/i });
+    await user.click(trigger);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("consumes a one-shot library add from router state exactly once", async () => {
+    const adapter = new MemoryStorageAdapter();
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-1", name: "Barbell Squat" } },
+      },
+    ]);
+
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
+    expect(screen.getByTestId("location-state")).toHaveTextContent("null");
+    expect(loadRecords(adapter)).toHaveLength(0);
+  });
+
+  it("does not append twice when StrictMode replays the one-shot effect", async () => {
+    const adapter = new MemoryStorageAdapter();
+    renderEditor(
+      adapter,
+      clientFor(adapter),
+      [
+        {
+          pathname: "/workout/new",
+          state: { libraryAdd: { id: "request-strict", name: "Barbell Squat" } },
+        },
+      ],
+      true,
+    );
+
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
+  });
+
+  it("appends to a restored draft and keeps its notes", async () => {
+    const adapter = new MemoryStorageAdapter();
+    saveSessionDraft(adapter, seededDraft({ notes: "keep me" }), OWNER);
+
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-2", name: "Barbell Squat" } },
+      },
+    ]);
+
+    expect(screen.getByLabelText(/^notes$/i)).toHaveValue("keep me");
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    await waitFor(() => expect(loadSessionDraft(adapter, OWNER)?.exercises).toHaveLength(2));
+  });
+
+  it("never appends over a corrupt draft and preserves the original payload", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const key = sessionDraftKey(OWNER);
+    adapter.write(key, "{not json");
+
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-3", name: "Barbell Squat" } },
+      },
+    ]);
+
+    expect(screen.getByTestId("draft-corrupt")).toHaveTextContent(/could not restore/i);
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /browse exercise library/i })).toBeDisabled();
+    expect(adapter.read(key)).toBe("{not json");
+  });
+
+  it("drops a one-shot add when the draft cannot be read", async () => {
+    const adapter = new FailingReadAdapter();
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-read-error", name: "Barbell Squat" } },
+      },
+    ]);
+
+    expect(screen.getByTestId("draft-read-error")).toHaveTextContent(/read blocked/i);
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(1);
+    expect(screen.getByTestId("location-state")).toHaveTextContent("null");
+    expect(adapter.writes).toBe(0);
+  });
+
+  it("allows an intentional second add with a fresh request id", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const first = renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-fresh-1", name: "Barbell Squat" } },
+      },
+    ]);
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    first.unmount();
+
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-fresh-2", name: "Barbell Squat" } },
+      },
+    ]);
+    expect(await screen.findByLabelText(/exercise 3 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(3);
+  });
+
+  it("does not replay the same request id on a remount", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const request = {
+      pathname: "/workout/new",
+      state: { libraryAdd: { id: "request-replay", name: "Barbell Squat" } },
+    };
+    const first = renderEditor(adapter, clientFor(adapter), [request]);
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    first.unmount();
+
+    renderEditor(adapter, clientFor(adapter), [request]);
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
+  });
+
+  it("makes the app shell inert while the dialog is open and restores focus", async () => {
+    renderEditor();
+    const user = userEvent.setup();
+    const trigger = screen.getByRole("button", { name: /browse exercise library/i });
+    await user.click(trigger);
+    const shell = document.querySelector(".app-shell");
+    expect(shell).toHaveAttribute("inert");
+    const dialog = screen.getByRole("dialog");
+    await user.keyboard("{Escape}");
+    expect(dialog).not.toBeInTheDocument();
+    expect(shell).not.toHaveAttribute("inert");
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("keeps focus inside the dialog after clearing the query", async () => {
+    renderEditor();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /browse exercise library/i }));
+    const dialog = screen.getByRole("dialog");
+    const search = within(dialog).getByLabelText("Search exercises");
+    await user.type(search, "barbell");
+    await user.click(within(dialog).getByRole("button", { name: "Clear search" }));
+    expect(search).toHaveFocus();
+    await user.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await user.tab({ shift: true });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not recreate a discarded draft when the editor unmounts", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const key = sessionDraftKey(OWNER);
+    adapter.write(key, "{not json");
+    const { unmount } = renderEditor(adapter);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /discard draft/i }));
+    await user.click(screen.getByRole("button", { name: /discard draft/i }));
+    expect(loadSessionDraft(adapter, OWNER)).toBeNull();
+
+    unmount();
+    expect(loadSessionDraft(adapter, OWNER)).toBeNull();
+  });
+
+  it("persists the latest draft across navigation (autosave + defensive unmount flush)", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const { unmount } = renderEditor(adapter);
+    const user = userEvent.setup();
+    await user.type(notesField(), "latest draft");
+
+    unmount();
+    expect(loadSessionDraft(adapter, OWNER)?.notes).toBe("latest draft");
   });
 });

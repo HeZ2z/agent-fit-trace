@@ -255,3 +255,27 @@ test("covers every documented action variant", () => {
     assert.equal(testCase.action.type, type);
   }
 });
+
+test("a named add creates the same editable exercise with the canonical name", () => {
+  const before = untimedState();
+  const next = reduceSessionState(before, {
+    type: "addExercise",
+    name: "Barbell Squat",
+  });
+  const added = next.draft.exercises[next.draft.exercises.length - 1];
+  assert.equal(next.draft.exercises.length, before.draft.exercises.length + 1);
+  assert.equal(added.name, "Barbell Squat");
+  // Keys and defaults are the normal add path, not a second implementation.
+  assert.equal(added.key, 3);
+  assert.equal(added.sets.length, 1);
+  assert.equal(added.restSeconds, before.draft.exercises[0].restSeconds);
+  assert.equal(next.runtime, before.runtime);
+
+  // The same name is ordinary editable text; a later name edit wins.
+  const edited = reduceSessionState(next, {
+    type: "setExerciseName",
+    exerciseKey: added.key,
+    name: "Custom squat",
+  });
+  assert.equal(edited.draft.exercises[edited.draft.exercises.length - 1].name, "Custom squat");
+});

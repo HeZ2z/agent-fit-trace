@@ -24,7 +24,7 @@ export type SessionAction =
   | { type: "setSleepHours"; value: string }
   | { type: "setNotes"; value: string }
   // Exercises.
-  | { type: "addExercise" }
+  | { type: "addExercise"; name?: string }
   | { type: "removeExercise"; exerciseKey: number }
   | { type: "setExerciseName"; exerciseKey: number; name: string }
   | { type: "setExerciseRestSeconds"; exerciseKey: number; restSeconds: number }

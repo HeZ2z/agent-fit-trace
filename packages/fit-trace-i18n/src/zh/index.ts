@@ -5,6 +5,7 @@ import { messages as screensCoachMe } from "./screens-coach-me.ts";
 import { messages as screensWorkoutSession } from "./screens-workout-session.ts";
 import { messages as screensSettings } from "./screens-settings.ts";
 import { messages as screensOauth } from "./screens-oauth.ts";
+import { messages as screensExercises } from "./screens-exercises.ts";
 import { messages as domain } from "./domain.ts";
 import { messages as mobile } from "./mobile.ts";
 import { messages as mobileCoach } from "./mobile-coach.ts";
@@ -26,6 +27,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   ...screensWorkoutSession,
   ...screensSettings,
   ...screensOauth,
+  ...screensExercises,
   ...domain,
   ...mobile,
   ...mobileCoach,

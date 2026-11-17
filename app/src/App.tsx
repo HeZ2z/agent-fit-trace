@@ -9,6 +9,7 @@ import { LOCAL_DEV_BYPASS_OWNER, LocalFitTraceClient } from "./api/localFitTrace
 import { currentRuntimeMode, isCoachVisible } from "./api/runtimeMode.ts";
 import { HistoryScreen } from "./screens/HistoryScreen.tsx";
 import { WorkoutEditorScreen } from "./screens/WorkoutEditorScreen.tsx";
+import { ExerciseLibraryScreen } from "./screens/ExerciseLibraryScreen.tsx";
 import { WorkoutSummaryScreen } from "./screens/WorkoutSummaryScreen.tsx";
 import { AnalysisScreen } from "./screens/AnalysisScreen.tsx";
 import { PlanScreen } from "./screens/PlanScreen.tsx";
@@ -281,6 +282,14 @@ function AppRoutes({ legacyLoopback, client }: { legacyLoopback?: boolean; clien
             element={
               <RequireAuth legacyLoopback={legacyLoopback} client={client}>
                 <PlanScreen />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/exercises"
+            element={
+              <RequireAuth legacyLoopback={legacyLoopback} client={client}>
+                <ExerciseLibraryScreen />
               </RequireAuth>
             }
           />

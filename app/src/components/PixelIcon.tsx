@@ -7,7 +7,7 @@
  * accessible name.
  */
 
-export type PixelIconName = "history" | "log" | "analysis" | "plan" | "coach" | "me";
+export type PixelIconName = "history" | "log" | "analysis" | "plan" | "library" | "coach" | "me";
 
 type Rect = readonly [x: number, y: number, width: number, height: number];
 
@@ -36,6 +36,13 @@ const GLYPHS: Record<PixelIconName, readonly Rect[]> = {
   plan: [
     [6, 4, 12, 3],
     [4, 8, 16, 13],
+  ],
+  // Four book spines on a shelf.
+  library: [
+    [3, 4, 4, 15],
+    [9, 3, 4, 16],
+    [15, 5, 4, 14],
+    [3, 20, 16, 2],
   ],
   // A speech bubble with a tail.
   coach: [

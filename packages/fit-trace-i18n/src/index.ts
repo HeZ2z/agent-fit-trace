@@ -66,9 +66,22 @@ export { ZH_MESSAGES };
 export {
   EXERCISE_ALIASES_ZH,
   EXERCISE_DISPLAY_NAMES_ZH,
+  MAX_EXERCISE_LIBRARY_RESULTS,
   MAX_EXERCISE_SUGGESTIONS,
   displayExerciseName,
   displayStoredExerciseName,
+  searchCatalogExercises,
   searchExerciseSuggestions,
 } from "./exercises.ts";
 export type { ExerciseSuggestion } from "./exercises.ts";
+
+export {
+  displayDifficulty,
+  displayEquipmentCategory,
+  displayEquipmentItem,
+  displayForce,
+  displayMechanics,
+  displayMovementPattern,
+  displayMuscle,
+  humanizeExerciseMetadataId,
+} from "./exercise-metadata.ts";

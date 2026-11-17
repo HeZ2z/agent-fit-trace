@@ -21,7 +21,8 @@
  * catalog data.
  */
 
-import { resolveExerciseName, searchExercises } from "@agent-fit-trace/core";
+import { listExercises, resolveExerciseName, searchExercises } from "@agent-fit-trace/core";
+import type { ExerciseCatalogEntry } from "@agent-fit-trace/core";
 import type { AppLanguage } from "./index.ts";
 import { EXERCISE_ALIASES_ZH, EXERCISE_DISPLAY_NAMES_ZH } from "./zh/exercises.ts";
 
@@ -96,6 +97,21 @@ function suggestionFor(canonicalName: string, language: AppLanguage): ExerciseSu
 const CHINESE_DISPLAY_NAMES: readonly string[] = Object.keys(EXERCISE_DISPLAY_NAMES_ZH);
 
 /**
+ * The frozen catalog entries, indexed by canonical English name. Display
+ * search needs the entry (not just its name) when a Chinese match is found.
+ */
+const ALL_ENTRIES: readonly ExerciseCatalogEntry[] = listExercises();
+const ENTRY_BY_CANONICAL_NAME: ReadonlyMap<string, ExerciseCatalogEntry> = new Map(
+  ALL_ENTRIES.map((entry) => [entry.name, entry]),
+);
+
+/**
+ * Upper bound for a library search. The catalog is far smaller; a finite cap
+ * keeps the helper's contract explicit if the catalog grows substantially.
+ */
+export const MAX_EXERCISE_LIBRARY_RESULTS = 500;
+
+/**
  * Rank one catalog entry against a Chinese query using its display name and
  * aliases. Lower is better; `null` means no match.
  */
@@ -118,40 +134,36 @@ function chineseMatchRank(normalizedQuery: string, canonicalName: string): numbe
 }
 
 /**
- * Deterministic autocomplete suggestions for the editor's exercise-name field.
+ * Search the catalog across every language spelling the product accepts.
  *
- * English text is matched by the catalog's own `searchExercises` ranking;
- * Chinese text is matched against the generated display/alias tables (display
- * name before alias, prefix before substring). Both sources are merged and
- * de-duplicated by canonical name, so a name reachable through an English alias
- * and a Chinese alias appears once.
- *
- * `label` follows the UI language exactly: Chinese shows only the Chinese
- * display name, English shows only the canonical English name. Selection always
- * writes `canonicalName` regardless of language, so the stored value is never
- * the localized label.
+ * English canonical names and aliases use the core catalog ranking; Chinese
+ * display names and aliases use the same display/alias tiers as the
+ * autocomplete. The two sources are merged English-first, de-duplicated by
+ * canonical name, and truncated to `limit`. Ordering is deterministic and
+ * identical for the same query, language tables and catalog: the library and
+ * the editor autocomplete share this one implementation.
  */
-export function searchExerciseSuggestions(
+export function searchCatalogExercises(
   query: string,
-  language: AppLanguage,
-  limit: number = MAX_EXERCISE_SUGGESTIONS,
-): ExerciseSuggestion[] {
+  limit: number = MAX_EXERCISE_LIBRARY_RESULTS,
+): ExerciseCatalogEntry[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (normalizedQuery === "") return [];
   const max = Math.max(0, Math.floor(limit));
   if (max === 0) return [];
 
-  const suggestions: ExerciseSuggestion[] = [];
+  const entries: ExerciseCatalogEntry[] = [];
   const seen = new Set<string>();
-  const add = (canonicalName: string): void => {
-    if (suggestions.length >= max || seen.has(canonicalName)) return;
-    seen.add(canonicalName);
-    suggestions.push(suggestionFor(canonicalName, language));
+  const add = (entry: ExerciseCatalogEntry): void => {
+    if (entries.length >= max || seen.has(entry.id)) return;
+    seen.add(entry.id);
+    entries.push(entry);
   };
 
-  // Canonical-name and English-alias search first: the catalog owns this ranking.
+  // Canonical-name and English-alias search first: the core catalog owns this
+  // ranking, and the editor's combobox has always relied on it.
   for (const entry of searchExercises(normalizedQuery, max)) {
-    add(entry.name);
+    add(entry);
   }
 
   // Chinese display-name/alias matches, merged after and de-duplicated.
@@ -176,8 +188,33 @@ export function searchExerciseSuggestions(
       compareText(left.canonicalName, right.canonicalName),
   );
   for (const match of chineseMatches) {
-    add(match.canonicalName);
+    const entry = ENTRY_BY_CANONICAL_NAME.get(match.canonicalName);
+    if (entry !== undefined) add(entry);
   }
 
-  return suggestions;
+  return entries;
+}
+
+/**
+ * Deterministic autocomplete suggestions for the editor's exercise-name field.
+ *
+ * English text is matched by the catalog's own `searchExercises` ranking;
+ * Chinese text is matched against the generated display/alias tables (display
+ * name before alias, prefix before substring). Both sources are merged and
+ * de-duplicated by canonical name, so a name reachable through an English alias
+ * and a Chinese alias appears once.
+ *
+ * `label` follows the UI language exactly: Chinese shows only the Chinese
+ * display name, English shows only the canonical English name. Selection always
+ * writes `canonicalName` regardless of language, so the stored value is never
+ * the localized label.
+ */
+export function searchExerciseSuggestions(
+  query: string,
+  language: AppLanguage,
+  limit: number = MAX_EXERCISE_SUGGESTIONS,
+): ExerciseSuggestion[] {
+  return searchCatalogExercises(query, limit).map((entry) =>
+    suggestionFor(entry.name, language),
+  );
 }

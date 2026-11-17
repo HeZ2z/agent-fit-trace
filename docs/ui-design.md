@@ -353,13 +353,52 @@ save gate (see [ADR 0003](adr/0003-exercise-catalog.md)).
   otherwise keeps its normal submit meaning, and blur closes the list. Focus
   stays in the input; the active row is highlighted without moving DOM focus.
 
+## Exercise library (`/exercises`) and the Log picker
+
+The catalog gets a user-facing browse surface without becoming a gate. The
+`/exercises` page (nav: "Exercise Library") and a modal opened from the Log
+editor share one component: search, filters, a result list and a selected detail
+panel.
+
+- **Search** covers canonical English names, English aliases, Chinese display
+  names and Chinese aliases through the same deterministic ranking as the Log
+  autocomplete. English names/aliases go through the core catalog's
+  case/NFKC/separator normalization; Chinese names/aliases use the display and
+  alias tiers. The editor autocomplete keeps its eight-suggestion cap; the
+  library page does not use that cap (the catalog is small and client-side).
+- **Filters** are movement pattern, muscle (primary or secondary) and equipment
+  category. They combine with AND. "Clear search and filters" resets the query,
+  every filter and the selected detail. An empty result explains that the
+  current search/filters match nothing rather than implying an empty catalog.
+- **Detail** shows the localized and canonical names, pattern, primary/secondary
+  muscles, equipment category plus additional items, difficulty, mechanics and
+  force. Missing values render as "not recorded"/"not classified", never as an
+  invented fact. A visible notice states that this is catalog metadata with
+  incomplete content review, not technique, safety or suitability advice. There
+  are no images, cue copy or media placeholders.
+- **Adding** never saves a workout and never adds a stored catalog id. Choosing
+  an exercise pre-fills one ordinary editable exercise with the canonical
+  English name and the editor's normal defaults. From the page this is a
+  one-shot router-state request consumed by the editor after it restores the
+  draft; from the Log dialog it is the same reducer action against the live
+  draft. The draft is not reset; an in-progress timer/rest is unaffected. A
+  corrupt/unreadable draft stays fail-closed and the request is dropped rather
+  than overwriting it.
+- **Accessibility.** The page has one `h1`; the result rows are buttons with
+  `aria-current` on the selected row, and the detail update is announced
+  politely. The Log picker is a labelled modal dialog: focus moves to search,
+  Tab is trapped, Escape closes it, the app shell is inert while it is open and
+  focus returns to the opener. Narrow viewports keep a bounded, scrollable
+  result list and stack the detail below it; selecting a row scrolls the detail
+  into view rather than burying it under all results.
+
 ## Accessibility and test constraints
 
 The restyle deliberately kept the semantics the test suite pins:
 
 - Exactly one `h1` per screen; workout exercise names stay `h3`.
 - `<nav aria-label="Primary">` with the same accessible link names
-  (`History`, `Log Workout`, `Analysis`, `Plan`, `Me`, conditional `Coach`).
+  (`History`, `Log Workout`, `Analysis`, `Plan`, `Exercise Library`, `Me`, conditional `Coach`).
 - Account controls stay directly reachable (no collapsed-only menus), and the
   guest sign-out flow stays two-step.
 - Native form controls keep their existing labels; no new unlabeled inputs.

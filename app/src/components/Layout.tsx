@@ -18,6 +18,7 @@ const baseNavLinks: NavItem[] = [
   { to: "/workout/new", label: "Log Workout", icon: "log" },
   { to: "/analysis", label: "Analysis", icon: "analysis" },
   { to: "/plan", label: "Plan", icon: "plan" },
+  { to: "/exercises", label: "Exercise Library", icon: "library" },
   { to: "/me", label: "Me", icon: "me" },
 ];
 
