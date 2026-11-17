@@ -329,6 +329,22 @@ surface at the SAME loopback origin. The destination is resolved per request:
   pinned for the connection, so a DNS answer that changes between the check and
   the request is not followed. TLS certificate verification still binds the
   DNS name.
+- Egress follows the network's proxy when one is required. The daemon reads an
+  explicit `HTTPS_PROXY`/`https_proxy` (then `ALL_PROXY`/`all_proxy`) or, on
+  macOS when launched from Finder with no shell environment, the system
+  HTTP/HTTPS proxy from `scutil --proxy`. The proxy receives `CONNECT` for the
+  approved numeric address (not the hostname, so it cannot re-resolve and
+  bypass the SSRF check); TLS is negotiated through that tunnel with the
+  original hostname as SNI and certificate name. SOCKS-only, PAC/automatic and
+  malformed settings fail the cloud request with an actionable error instead of
+  silently connecting directly. The packaged Electron parent resolves the same
+  proxy before spawning the daemon and sets `NODE_USE_ENV_PROXY=1` there:
+  Node's global `fetch` reads that flag at process start, so setting it inside
+  the daemon would leave Supabase verification and sync direct on a
+  proxy-only network. A direct `agent-fit-trace daemon` launch needs the same
+  variables set before it starts. `NO_PROXY`/system exceptions keep bypassed
+  hosts direct. Proxy credentials, when present in the URL, are used only for
+  the CONNECT request and are never logged or forwarded to the destination.
 - Request/response sizes and time are bounded, response headers are
   allowlisted, and `Host`/`Origin`/cookies are never forwarded. The SSE
   response is piped with backpressure; a client disconnect destroys the
