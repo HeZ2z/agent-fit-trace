@@ -115,7 +115,10 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case "addExercise": {
       // The creator claims `key` for the exercise and `key + 1` for its first set.
       const exercise = createDraftExercise(allocateKey(draft));
-      return withDraft(state, { ...draft, exercises: [...draft.exercises, exercise] });
+      // The library hands in the canonical English name; autocomplete/free text
+      // keep using setExerciseName. Keys and defaults are identical either way.
+      const added = action.name === undefined ? exercise : { ...exercise, name: action.name };
+      return withDraft(state, { ...draft, exercises: [...draft.exercises, added] });
     }
     case "removeExercise": {
       // A session always keeps one exercise so the editor never loses its form.

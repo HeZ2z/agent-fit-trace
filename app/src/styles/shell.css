@@ -490,10 +490,17 @@
     min-height: 54px;
     padding: 5px 2px;
     border-width: var(--border-w-thin);
-    font-size: 10.5px;
+    font-size: 10px;
     letter-spacing: 0.01em;
     line-height: 1.1;
     text-align: center;
+  }
+
+  /* Seven dock items make a long label such as "Exercise Library" wider than
+     its 1/7 slot; let it wrap instead of overflowing the dock. */
+  .nav-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .nav-link:hover {

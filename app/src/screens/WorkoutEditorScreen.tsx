@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { createPortal } from "react-dom";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   EXTREME_RPE,
   SESSION_TYPES,
   stableStringify,
 } from "@agent-fit-trace/core";
 import type {
+  ExerciseCatalogEntry,
   SessionType,
   ValidationIssue,
   ValidationWarning,
@@ -31,6 +33,7 @@ import type {
   SessionDraft,
   SessionState,
 } from "@agent-fit-trace/workout-session";
+import { ExerciseLibrary } from "../components/ExerciseLibrary.tsx";
 import { ExerciseNameCombobox } from "../components/ExerciseNameCombobox.tsx";
 import { useSessionDraft } from "../state/SessionDraftContext.tsx";
 import type { SessionDraftContextValue } from "../state/SessionDraftContext.tsx";
@@ -74,6 +77,38 @@ function formatElapsed(ms: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/**
+ * One-shot exercise-library request carried through router state from
+ * `/exercises`. Only a non-empty canonical name is accepted; the editor clears
+ * the state before dispatching so refresh/back cannot replay it.
+ */
+interface LibraryAddRequest {
+  id: string;
+  name: string;
+}
+
+function libraryAddFromState(state: unknown): LibraryAddRequest | null {
+  if (typeof state !== "object" || state === null) return null;
+  const request = (state as { libraryAdd?: unknown }).libraryAdd;
+  if (typeof request !== "object" || request === null) return null;
+  const { id, name } = request as { id?: unknown; name?: unknown };
+  if (typeof name !== "string" || name.trim() === "") return null;
+  return { id: typeof id === "string" ? id : "", name };
+}
+
+/** Consumed request ids survive remounts of the editor within this SPA session;
+ * a reload cannot replay router state because the state is replaced first. */
+const consumedLibraryAddIds = new Set<string>();
+
+/** Focusable elements inside the library dialog, in DOM order. */
+function focusableDialogElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
 }
 
 /** Rest steps the UI's -15s/+15s buttons move the shared timer by. */
@@ -179,6 +214,7 @@ function bootstrapDraft(drafts: SessionDraftContextValue): DraftBootstrap {
 
 export function WorkoutEditorScreen() {
   const navigate = useNavigate();
+  const location = useLocation();
   const drafts = useSessionDraft();
   const { saveWorkout, saveStatus } = useWorkouts();
   const { language, t } = useI18n();
@@ -189,6 +225,7 @@ export function WorkoutEditorScreen() {
   // `useState` (over the same shared pure reducer) is used instead of
   // `useReducer` so a discard can replace the whole state with a blank draft.
   const [bootstrap] = useState(() => bootstrapDraft(drafts));
+  const [initialLibraryAdd] = useState(() => libraryAddFromState(location.state));
   const [state, setState] = useState<SessionState>(bootstrap.state);
   const dispatch = useCallback((action: SessionAction): void => {
     setState((current) => reduceSessionState(current, action));
@@ -211,6 +248,22 @@ export function WorkoutEditorScreen() {
   );
   const [discardConfirming, setDiscardConfirming] = useState(false);
   const [discardedNotice, setDiscardedNotice] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const libraryTriggerRef = useRef<HTMLButtonElement>(null);
+  const libraryDialogRef = useRef<HTMLDivElement>(null);
+  const libraryWasOpenRef = useRef(false);
+  const consumedLibraryAddRef = useRef(false);
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const autosaveEnabledRef = useRef(autosaveEnabled);
+  autosaveEnabledRef.current = autosaveEnabled;
+  const draftProblemRef = useRef(draftProblem);
+  draftProblemRef.current = draftProblem;
+  // A corrupt/unreadable draft is fail-closed for new logging too: the user
+  // must discard or repair it before the library can append. A save-error still
+  // has a readable in-memory draft, so browsing/editing remains available.
+  const libraryBlocked = draftProblem !== null && draftProblem.kind !== "save-error";
+
   // Autosave writes only drafts that differ from the last known-persisted (or
   // intentionally unpersisted) baseline. Because the check is value-identity
   // based, mounting, StrictMode's double effect run, and the post-discard reset
@@ -237,6 +290,64 @@ export function WorkoutEditorScreen() {
       setDraftProblem({ kind: "save-error", message: messageOf(error) });
     }
   }, [draft, drafts, autosaveEnabled]);
+
+  // The page/editor handoff must not depend on the autosave effect having run
+  // before navigation unmounts the editor. Flush the latest in-memory draft
+  // synchronously on unmount, but only when autosave is healthy and there is
+  // something newer than the last persisted baseline.
+  useEffect(() => {
+    return () => {
+      if (!autosaveEnabledRef.current) return;
+      if (draftProblemRef.current !== null) return;
+      if (autosaveFailedRef.current) return;
+      const latest = latestDraftRef.current;
+      if (latest === autosaveBaselineRef.current) return;
+      try {
+        drafts.save(latest);
+      } catch {
+        // The mounted autosave path reports storage failures in the UI; an
+        // unmount cannot, and a failed best-effort flush must not throw.
+      }
+    };
+  }, [drafts]);
+
+  // Consume a one-shot selection from `/exercises` exactly once. The history
+  // entry is replaced before dispatch, so a refresh or Back cannot replay it.
+  useEffect(() => {
+    if (initialLibraryAdd === null || consumedLibraryAddRef.current) return;
+    if (initialLibraryAdd.id !== "" && consumedLibraryAddIds.has(initialLibraryAdd.id)) return;
+    consumedLibraryAddRef.current = true;
+    if (initialLibraryAdd.id !== "") consumedLibraryAddIds.add(initialLibraryAdd.id);
+    navigate(location.pathname, { replace: true, state: null });
+    // A corrupt/unreadable draft is fail-closed: never append over it; the
+    // existing discard/recovery UI stays in charge.
+    if (draftProblem !== null) return;
+    dispatch({ type: "addExercise", name: initialLibraryAdd.name });
+  }, [dispatch, draftProblem, initialLibraryAdd, location.pathname, navigate]);
+
+  // Restore focus to the opener and lock background scroll while the library
+  // dialog is open. The dialog's search field is focused by the library itself.
+  useEffect(() => {
+    if (libraryOpen) {
+      libraryWasOpenRef.current = true;
+      const previous = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      // The dialog is portaled to body, outside the app shell; make the shell
+      // inert so keyboard/AT navigation cannot reach background controls.
+      const background = document.querySelector<HTMLElement>(".app-shell");
+      const wasInert = background?.hasAttribute("inert") ?? false;
+      background?.setAttribute("inert", "");
+      return () => {
+        document.body.style.overflow = previous;
+        if (background !== null && !wasInert) background.removeAttribute("inert");
+      };
+    }
+    if (libraryWasOpenRef.current) {
+      libraryWasOpenRef.current = false;
+      libraryTriggerRef.current?.focus();
+    }
+    return undefined;
+  }, [libraryOpen]);
 
   // Live clock. The model never reads a clock: this component injects the
   // current time into every timing/rest action and keeps one render-local `now`
@@ -461,6 +572,39 @@ export function WorkoutEditorScreen() {
     const pending = pendingSave;
     setPendingSave(null);
     await persist(pending.record);
+  }
+
+  function closeLibrary(): void {
+    setLibraryOpen(false);
+  }
+
+  function handleLibraryAdd(entry: ExerciseCatalogEntry): void {
+    if (libraryBlocked) return;
+    // Ordinary draft edit: no workout save, no timing/rest reset.
+    dispatch({ type: "addExercise", name: entry.name });
+    setLibraryOpen(false);
+  }
+
+  function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeLibrary();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = libraryDialogRef.current;
+    if (dialog === null) return;
+    const focusable = focusableDialogElements(dialog);
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   return (
@@ -853,6 +997,14 @@ export function WorkoutEditorScreen() {
           <button type="button" onClick={() => dispatch({ type: "addExercise" })}>
             {t("Add exercise")}
           </button>
+          <button
+            type="button"
+            ref={libraryTriggerRef}
+            disabled={libraryBlocked}
+            onClick={() => setLibraryOpen(true)}
+          >
+            {t("Browse exercise library")}
+          </button>
         </fieldset>
 
         <fieldset>
@@ -995,6 +1147,45 @@ export function WorkoutEditorScreen() {
           {t("Save workout")}
         </button>
       </form>
+
+      {libraryOpen
+        ? createPortal(
+            <div
+              className="exercise-library-dialog-backdrop"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeLibrary();
+              }}
+            >
+              <div
+                className="exercise-library-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="exercise-library-dialog-title"
+                aria-describedby="exercise-library-dialog-description"
+                ref={libraryDialogRef}
+                onKeyDown={handleDialogKeyDown}
+              >
+                <div className="exercise-library-dialog-header">
+                  <h2 id="exercise-library-dialog-title">{t("Exercise library")}</h2>
+                  <button type="button" onClick={closeLibrary}>
+                    {t("Close")}
+                  </button>
+                </div>
+                <div className="exercise-library-dialog-body">
+                  <p id="exercise-library-dialog-description">
+                    {t("Choose an exercise to add to the current workout.")}
+                  </p>
+                  <ExerciseLibrary
+                    autoFocusSearch
+                    addLabel={t("Add to workout")}
+                    onAdd={handleLibraryAdd}
+                  />
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </section>
   );
 }

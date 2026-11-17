@@ -10,7 +10,11 @@
   implemented as-is; no storage, record-schema, or API change is part of it.
   v1 carries no cue or common-mistake content and ships no logging helpers
   beyond name autocomplete (no recent-exercise or equipment/muscle candidate
-  lists) and no planning helpers; those are future work (§7). Content review
+  lists) and no planning helpers; those are future work (§7). A follow-up
+  user-facing library v0 (issue #92) adds a web browse/search/detail surface and
+  a Log picker over the same data. It remains a non-authoritative reference:
+  no persisted catalog id, no schema/API/storage change, no validation gate and
+  no automatic rewrite of records, with a mandatory content-review notice. Content review
   remains open: the 49 `content_status: "rewrite"` entries, the
   muscle/equipment review, and any cue authoring are not done, so the catalog
   is not yet authoritative. Upstream commits are pinned and provenance is
@@ -247,11 +251,13 @@ surface.
   exercise name as authored. Analysis therefore groups aliases into one
   canonical trend; this is a deliberate, user-visible change and the affected
   tests and docs were updated.
-- **Phase 1 (future, not in v1):** recent-exercise and equipment/muscle
-  candidate lists; deterministic plan candidate/substitution suggestions using
-  equipment, movement pattern, muscles, and pain constraints; exercise detail
-  and per-exercise history; cue/common-mistake authoring and coaching review.
-  `PlanConstraints.equipment` becomes executable only when that lands.
+- **Phase 1 (partly shipped, issue #92; remainder future):** the text-only
+  exercise library browse/search/detail surface and discovery-to-log handoff
+  are shipped as v0 with a reference notice. Recent-exercise and
+  equipment/muscle candidate lists, deterministic plan candidate/substitution
+  suggestions, per-exercise history, cue/common-mistake authoring and coaching
+  review remain future work. `PlanConstraints.equipment` becomes executable only
+  when those land.
 - **Phase 2 (conditional):** record-level `exercise_id` with schema v2, only if
   a real requirement appears. This needs a separate rollout decision covering
   old clients, mobile sync, and content-derived ids.
