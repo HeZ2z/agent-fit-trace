@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SessionDraftCorruptionError,
+  createDraftExercise,
   createSessionDraft,
 } from "@agent-fit-trace/workout-session";
 import type { SessionDraft } from "@agent-fit-trace/workout-session";
@@ -412,22 +413,84 @@ describe("exercise library integration", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("consumes a one-shot library add from router state exactly once", async () => {
+  it("replaces the pristine blank exercise instead of appending a second row", async () => {
     const adapter = new MemoryStorageAdapter();
     renderEditor(adapter, clientFor(adapter), [
       {
         pathname: "/workout/new",
-        state: { libraryAdd: { id: "request-1", name: "Barbell Squat" } },
+        state: { libraryAdd: { id: "request-pristine", name: "Barbell Squat" } },
+      },
+    ]);
+
+    // A new draft's untouched row becomes the chosen exercise: one row, no
+    // abandoned blank EXERCISE 1 above it.
+    expect(await screen.findByLabelText(/exercise 1 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(1);
+    // Reusing the row keeps its pristine blank set; nothing was invented.
+    expect(screen.getByLabelText(/exercise 1 set 1 weight/i)).toHaveValue(null);
+    expect(screen.getByLabelText(/exercise 1 set 1 reps/i)).toHaveValue(null);
+    expect(screen.getByLabelText(/exercise 1 set 1 rpe/i)).toHaveValue(null);
+    expect(screen.getByTestId("location-state")).toHaveTextContent("null");
+    expect(loadRecords(adapter)).toHaveLength(0);
+    await waitFor(() => expect(loadSessionDraft(adapter, OWNER)?.exercises).toHaveLength(1));
+  });
+
+  it("appends when the draft already has typed set values", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const base = createSessionDraft("2026-01-05");
+    const exercise = base.exercises[0]!;
+    saveSessionDraft(
+      adapter,
+      {
+        ...base,
+        exercises: [
+          {
+            ...exercise,
+            // Blank name but real data: the row is in use and must be kept.
+            sets: [{ ...exercise.sets[0]!, weight: "100", reps: "5" }],
+          },
+        ],
+      },
+      OWNER,
+    );
+
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-typed", name: "Barbell Squat" } },
       },
     ]);
 
     expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
     expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
-    expect(screen.getByTestId("location-state")).toHaveTextContent("null");
-    expect(loadRecords(adapter)).toHaveLength(0);
+    expect(screen.getByLabelText(/exercise 1 name/i)).toHaveValue("");
+    expect(screen.getByLabelText(/exercise 1 set 1 weight/i)).toHaveValue(100);
+    expect(screen.getByLabelText(/exercise 1 set 1 reps/i)).toHaveValue(5);
   });
 
-  it("does not append twice when StrictMode replays the one-shot effect", async () => {
+  it("appends when a blank draft already has more than one exercise", async () => {
+    const adapter = new MemoryStorageAdapter();
+    const base = createSessionDraft("2026-01-05");
+    saveSessionDraft(
+      adapter,
+      { ...base, exercises: [base.exercises[0]!, createDraftExercise(3)] },
+      OWNER,
+    );
+
+    renderEditor(adapter, clientFor(adapter), [
+      {
+        pathname: "/workout/new",
+        state: { libraryAdd: { id: "request-two-rows", name: "Barbell Squat" } },
+      },
+    ]);
+
+    expect(await screen.findByLabelText(/exercise 3 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(3);
+    expect(screen.getByLabelText(/exercise 1 name/i)).toHaveValue("");
+    expect(screen.getByLabelText(/exercise 2 name/i)).toHaveValue("");
+  });
+
+  it("consumes the one-shot request once even when StrictMode replays the effect", async () => {
     const adapter = new MemoryStorageAdapter();
     renderEditor(
       adapter,
@@ -441,8 +504,8 @@ describe("exercise library integration", () => {
       true,
     );
 
-    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
-    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
+    expect(await screen.findByLabelText(/exercise 1 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(1);
   });
 
   it("appends to a restored draft and keeps its notes", async () => {
@@ -502,17 +565,18 @@ describe("exercise library integration", () => {
         state: { libraryAdd: { id: "request-fresh-1", name: "Barbell Squat" } },
       },
     ]);
-    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    expect(await screen.findByLabelText(/exercise 1 name/i)).toHaveValue("Barbell Squat");
     first.unmount();
 
+    // The draft now holds a real exercise, so the next request appends.
     renderEditor(adapter, clientFor(adapter), [
       {
         pathname: "/workout/new",
         state: { libraryAdd: { id: "request-fresh-2", name: "Barbell Squat" } },
       },
     ]);
-    expect(await screen.findByLabelText(/exercise 3 name/i)).toHaveValue("Barbell Squat");
-    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(3);
+    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
   });
 
   it("does not replay the same request id on a remount", async () => {
@@ -522,12 +586,12 @@ describe("exercise library integration", () => {
       state: { libraryAdd: { id: "request-replay", name: "Barbell Squat" } },
     };
     const first = renderEditor(adapter, clientFor(adapter), [request]);
-    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
+    expect(await screen.findByLabelText(/exercise 1 name/i)).toHaveValue("Barbell Squat");
     first.unmount();
 
     renderEditor(adapter, clientFor(adapter), [request]);
-    expect(await screen.findByLabelText(/exercise 2 name/i)).toHaveValue("Barbell Squat");
-    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(2);
+    expect(await screen.findByLabelText(/exercise 1 name/i)).toHaveValue("Barbell Squat");
+    expect(screen.getAllByLabelText(/exercise \d+ name/i)).toHaveLength(1);
   });
 
   it("makes the app shell inert while the dialog is open and restores focus", async () => {

@@ -190,23 +190,47 @@ decision and its consequences are recorded in
 
 ```sh
 pnpm build             # builds app/dist (the web shell the daemon serves)
-pnpm desktop:build     # daemon bundle + runtime check + staged resources
+FIT_TRACE_DESKTOP_CHANNEL=guest-only pnpm desktop:build
+                       # daemon bundle + runtime check + staged resources
 pnpm desktop:package   # electron-builder for THIS host, unsigned
 ```
 
-`desktop:build` runs three stages inside the package, each also runnable
-on its own with `pnpm --filter @agent-fit-trace/desktop run <stage>`:
+The `FIT_TRACE_DESKTOP_CHANNEL=guest-only` prefix is required for a local-only
+build: packaging is fail-closed, so an unset channel aborts `desktop:build` with
+an actionable error rather than silently producing a guest-only app. A
+release-channel build (hosted authentication) instead sets
+`FIT_TRACE_DESKTOP_CHANNEL=release` plus the public URL and publishable key; see
+[`release.md`](release.md#desktop-public-authentication-configuration). Never
+put a service-role key or other secret in either variable.
+
+`desktop:build` runs these stages inside the package, in order:
 
 | stage | what it produces |
 | --- | --- |
+| `build:sync-config` | `staging/desktop-sync-config.json` — disabled unless sync is explicitly approved |
+| `build:public-config` | `staging/desktop-public-config.json` — validated public auth config (fails closed) |
 | `build:daemon` | `staging/daemon.mjs` — esbuild bundle of `packages/fit-trace-cli/src/cli.ts` |
+| `build:extension` | `staging/pi-extension.mjs` — the pi extension the pi backend loads |
 | `prepare:runtime` | downloads Electron if missing, then **proves** it can run `node:sqlite` + WAL |
 | `build:runtime` | `staging/app-dist/` — a copy of `app/dist` |
+
+`build`, `build:daemon`, `build:extension`, `prepare:runtime`, `build:runtime`
+and `package` are also runnable on their own with `pnpm --filter
+@agent-fit-trace/desktop run <stage>`. `build:sync-config` and
+`build:public-config` are plain scripts that `build` invokes directly, so run
+them with `node scripts/buildSyncConfig.cjs` / `node scripts/buildPublicConfig.cjs`
+from the package directory (the latter reads the same environment variables).
 
 `build` also runs `pnpm build` for you **only when** `app/dist/index.html`
 is missing. Unlike `desktop:dev` (which refuses and prints `pnpm build`), a
 command named `build` is expected to produce its inputs; an existing
 `app/dist` is never rebuilt behind your back.
+
+The first desktop build downloads Electron (pnpm 10 skips unapproved postinstall
+scripts). Behind an HTTP(S) proxy, `@electron/get` only honors
+`HTTP_PROXY`/`HTTPS_PROXY` when `ELECTRON_GET_USE_PROXY=true` is set; export it
+before the first build, or point `ELECTRON_MIRROR` at a reachable mirror. Later
+builds reuse the installed binary and do not need the network.
 
 Artifacts land in `packages/fit-trace-desktop/release/` (gitignored):
 macOS dmg + zip, Windows NSIS installer + portable, Linux AppImage.
@@ -241,17 +265,20 @@ today.
 
 **What a packaged build cannot do**
 
-- **Coaching needs the user's own `pi` CLI.** The extension *is* shipped
-  (`staging/pi-extension.mjs`, bundled by `build:extension`, passed to the
-  daemon as `--extension`), but pi itself is not: a coached run executes
-  `pi --mode rpc -e <resources>/pi-extension.mjs`, so it only works where pi is
-  installed and on `PATH`. Missing CLI and missing extension produce
-  **different** reasons — `cli-not-installed` versus a message naming the
-  extension path — because telling someone to install a CLI they already have
-  is the wrong fix. Availability is probed by file existence, which cannot
-  prove the bundle *loads*: a present-but-broken extension still fails at run
-  time as `EXTENSION_ERROR`. Workout tracking, the app shell, and the whole
-  `/api/v1` data plane are unaffected either way.
+- **Coaching executes a backend CLI the user must install.** The bundled
+  `staging/pi-extension.mjs` (from `build:extension`, passed to the daemon as
+  `--extension`) serves only the pi backend: a pi coached run executes
+  `pi --mode rpc -e <resources>/pi-extension.mjs`, so it works only where `pi`
+  is installed and on `PATH`. The Codex backend instead discovers and runs the
+  user's installed `codex` CLI/app-server (ADR 0007, read-only sandbox) and does
+  not use the extension; no agent CLI is bundled either way. OpenCode remains
+  gated on positive plugin-isolation evidence. A missing CLI and a missing
+  extension produce **different** reasons — `cli-not-installed` versus a message
+  naming the extension path — because telling someone to install a CLI they
+  already have is the wrong fix. For pi, availability is probed by file
+  existence, which cannot prove the bundle *loads*: a present-but-broken
+  extension still fails at run time as `EXTENSION_ERROR`. Workout tracking, the
+  app shell, and the whole `/api/v1` data plane are unaffected either way.
 - **The OS will warn on first launch.** macOS Gatekeeper blocks an
   unsigned app until the user right-clicks → Open (or clears quarantine);
   Windows SmartScreen shows "unrecognized app". This is inherent to the

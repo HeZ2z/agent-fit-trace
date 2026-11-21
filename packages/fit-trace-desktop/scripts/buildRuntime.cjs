@@ -32,9 +32,13 @@
  * somehow lost it reports coaching unavailable with the real cause instead of
  * advertising a coach that cannot start.
  *
- * What is still absent is the `pi` CLI itself: a coached run executes
- * `pi --mode rpc -e <resources>/pi-extension.mjs`, so coaching works only where
- * the user has pi installed. Workout tracking, the app shell, and the whole
+ * The bundled extension only serves the pi backend. A pi coached run executes
+ * `pi --mode rpc -e <resources>/pi-extension.mjs`, so it works only where the
+ * user has `pi` installed. The Codex backend instead discovers and runs the
+ * user's installed `codex` CLI/app-server (ADR 0007, read-only sandbox) and
+ * does not use the extension. OpenCode remains gated on plugin-isolation
+ * evidence. Without a usable backend CLI a coached run reports
+ * `cli-not-installed`. Workout tracking, the app shell, and the whole
  * `/api/v1` data plane are unaffected either way. See docs/local-daemon.md
  * ("Desktop shell") and docs/adr/0006.
  *
@@ -94,10 +98,11 @@ fs.writeFileSync(
       piExtension: "pi-extension.mjs",
       coachingIncluded: true,
       coachingNote:
-        "The pi extension ships as pi-extension.mjs and is passed to the daemon as --extension. " +
-        "Coaching still requires the user's own pi CLI on PATH; when pi is missing the daemon " +
-        "reports cli-not-installed, and when the extension file is missing it reports the real " +
-        "cause instead of advertising coaching. Workout tracking and the app shell are unaffected.",
+        "The pi extension ships as pi-extension.mjs and is passed to the daemon as --extension; " +
+        "it serves only the pi backend. Coaching executes the user's installed backend CLI: pi " +
+        "for the pi backend, or the codex CLI/app-server for the Codex backend (ADR 0007, " +
+        "read-only sandbox). OpenCode remains gated on plugin-isolation evidence. A missing CLI " +
+        "reports cli-not-installed; workout tracking and the app shell are unaffected.",
     },
     null,
     2,
@@ -106,5 +111,5 @@ fs.writeFileSync(
 
 console.log(
   `[desktop:${SCRIPT}] ok — daemon + app shell staged ` +
-    "(coaching needs the user's own pi CLI; the extension itself ships)",
+    "(coaching uses the user's installed backend CLI — pi or codex; OpenCode gated)",
 );

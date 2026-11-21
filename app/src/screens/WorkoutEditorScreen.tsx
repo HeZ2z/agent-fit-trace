@@ -29,6 +29,7 @@ import {
   validateSessionDraft,
 } from "@agent-fit-trace/workout-session";
 import type {
+  DraftExercise,
   SessionAction,
   SessionDraft,
   SessionState,
@@ -101,6 +102,25 @@ function libraryAddFromState(state: unknown): LibraryAddRequest | null {
 /** Consumed request ids survive remounts of the editor within this SPA session;
  * a reload cannot replay router state because the state is replaced first. */
 const consumedLibraryAddIds = new Set<string>();
+
+/**
+ * The one exercise a draft may reuse for the one-shot library handoff.
+ *
+ * A brand-new draft already holds a single untouched exercise (blank name, one
+ * blank set), so appending the chosen exercise would leave a confusing empty
+ * EXERCISE 1 above it. Only that genuinely untouched shape is reusable: any
+ * existing name, any typed set value, or more than one exercise means the draft
+ * holds real content and the add must append instead of overwriting.
+ */
+function untouchedExercise(draft: SessionDraft): DraftExercise | null {
+  if (draft.exercises.length !== 1) return null;
+  const exercise = draft.exercises[0];
+  if (exercise.name.trim() !== "") return null;
+  const untouched = exercise.sets.every(
+    (set) => set.weight.trim() === "" && set.reps.trim() === "" && set.rpe.trim() === "",
+  );
+  return untouched ? exercise : null;
+}
 
 /** Focusable elements inside the library dialog, in DOM order. */
 function focusableDialogElements(container: HTMLElement): HTMLElement[] {
@@ -313,6 +333,9 @@ export function WorkoutEditorScreen() {
 
   // Consume a one-shot selection from `/exercises` exactly once. The history
   // entry is replaced before dispatch, so a refresh or Back cannot replay it.
+  // A pristine draft's single untouched exercise is renamed instead of appended
+  // to: the user chose one exercise, so the editor must not keep an extra blank
+  // row above it. Any existing content keeps the append behavior.
   useEffect(() => {
     if (initialLibraryAdd === null || consumedLibraryAddRef.current) return;
     if (initialLibraryAdd.id !== "" && consumedLibraryAddIds.has(initialLibraryAdd.id)) return;
@@ -322,6 +345,15 @@ export function WorkoutEditorScreen() {
     // A corrupt/unreadable draft is fail-closed: never append over it; the
     // existing discard/recovery UI stays in charge.
     if (draftProblem !== null) return;
+    const reusable = untouchedExercise(latestDraftRef.current);
+    if (reusable !== null) {
+      dispatch({
+        type: "setExerciseName",
+        exerciseKey: reusable.key,
+        name: initialLibraryAdd.name,
+      });
+      return;
+    }
     dispatch({ type: "addExercise", name: initialLibraryAdd.name });
   }, [dispatch, draftProblem, initialLibraryAdd, location.pathname, navigate]);
 

@@ -143,7 +143,11 @@ export function CoachDiscoveryProvider({
     // (`coachingClient.ts:567`), so A's in-flight logout would erase B's
     // freshly acquired capability and every later B call would fail as
     // "missing capability", possibly mid-run.
-    return new CoachingClient({ getAccessToken });
+    //
+    // `accountId` also keys the tab-scoped capability mirror, so a full reload
+    // for the SAME account reuses a still-valid capability (the daemon caps
+    // issuance per account at five); an unknown identity stays memory-only.
+    return new CoachingClient({ getAccessToken, accountId });
     // `accountId` is the discriminator: a new identity gets a new client.
   }, [clientProp, mode, getAccessToken, accountId]);
 

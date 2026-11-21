@@ -65,6 +65,24 @@ const support = require("../packages/fit-trace-desktop/scripts/buildSupport.cjs"
   }) => string[];
 };
 
+const publicConfig = require("../packages/fit-trace-desktop/scripts/buildPublicConfig.cjs") as {
+  publicConfigFromEnv: (env: Record<string, string | undefined>) => {
+    schemaVersion: number;
+    channel: "release" | "guest-only";
+    supabaseUrl: string;
+    supabasePublishableKey: string;
+  };
+  writePublicConfig: (
+    env: Record<string, string | undefined>,
+    output: string,
+  ) => {
+    schemaVersion: number;
+    channel: "release" | "guest-only";
+    supabaseUrl: string;
+    supabasePublishableKey: string;
+  };
+};
+
 const tempDirs: string[] = [];
 after(async () => {
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
@@ -297,6 +315,90 @@ test("packagingInputProblems is silent once every input exists", async () => {
     electronBinary: "/fake/electron",
   });
   assert.deepEqual(problems, []);
+});
+
+test("public config fails closed with an actionable message when the channel is unset", () => {
+  // The documented local chain hit exactly this: an unset channel must never
+  // silently become a guest-only build, but it must name the fix.
+  assert.throws(
+    () => publicConfig.publicConfigFromEnv({}),
+    (error: Error) => {
+      assert.match(error.message, /FIT_TRACE_DESKTOP_CHANNEL must be "release" or "guest-only"/);
+      assert.match(error.message, /got unset/);
+      assert.match(error.message, /FIT_TRACE_DESKTOP_CHANNEL=guest-only pnpm desktop:build/);
+      assert.match(error.message, /docs\/release\.md/);
+      return true;
+    },
+  );
+});
+
+test("public config rejects an unknown channel and names the value", () => {
+  assert.throws(
+    () => publicConfig.publicConfigFromEnv({ FIT_TRACE_DESKTOP_CHANNEL: "local" }),
+    (error: Error) => {
+      assert.match(error.message, /FIT_TRACE_DESKTOP_CHANNEL must be "release" or "guest-only"/);
+      assert.match(error.message, /got "local"/);
+      assert.match(error.message, /FIT_TRACE_DESKTOP_CHANNEL=guest-only pnpm desktop:build/);
+      return true;
+    },
+  );
+});
+
+test("public config release channel requires both public auth values", () => {
+  assert.throws(
+    () => publicConfig.publicConfigFromEnv({ FIT_TRACE_DESKTOP_CHANNEL: "release" }),
+    (error: Error) => {
+      assert.match(error.message, /FIT_TRACE_DESKTOP_CHANNEL=release requires/);
+      assert.match(error.message, /FIT_TRACE_DESKTOP_SUPABASE_URL/);
+      assert.match(error.message, /FIT_TRACE_DESKTOP_SUPABASE_PUBLISHABLE_KEY/);
+      assert.match(error.message, /never a service-role key/);
+      return true;
+    },
+  );
+  // A partial pair is just as unusable, and the message names what is missing.
+  assert.throws(
+    () =>
+      publicConfig.publicConfigFromEnv({
+        FIT_TRACE_DESKTOP_CHANNEL: "release",
+        FIT_TRACE_DESKTOP_SUPABASE_URL: "https://example.supabase.co",
+      }),
+    /FIT_TRACE_DESKTOP_SUPABASE_PUBLISHABLE_KEY/,
+  );
+});
+
+test("public config reports an invalid release auth value without echoing it", () => {
+  const secret = "service_role_secret_do_not_print";
+  assert.throws(
+    () =>
+      publicConfig.publicConfigFromEnv({
+        FIT_TRACE_DESKTOP_CHANNEL: "release",
+        FIT_TRACE_DESKTOP_SUPABASE_URL: secret,
+        FIT_TRACE_DESKTOP_SUPABASE_PUBLISHABLE_KEY: secret,
+      }),
+    (error: Error) => {
+      assert.match(error.message, /Invalid release auth environment \(values are not printed\)/);
+      assert.match(error.message, /Invalid desktop public project URL/);
+      assert.doesNotMatch(error.message, new RegExp(secret), "the configured value must never be echoed");
+      return true;
+    },
+  );
+});
+
+test("public config guest-only succeeds and stages the exact four-field JSON", async () => {
+  const dir = await tempDir("fit-trace-public-config-");
+  const output = join(dir, "desktop-public-config.json");
+  // A stale file from an earlier build must not survive a rewrite.
+  await writeFile(output, '{"stale":true}\n');
+
+  const config = publicConfig.writePublicConfig({ FIT_TRACE_DESKTOP_CHANNEL: "guest-only" }, output);
+
+  assert.deepEqual(config, {
+    schemaVersion: 1,
+    channel: "guest-only",
+    supabaseUrl: "",
+    supabasePublishableKey: "",
+  });
+  assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), config);
 });
 
 test("the desktop manifest declares the packaging script set", () => {

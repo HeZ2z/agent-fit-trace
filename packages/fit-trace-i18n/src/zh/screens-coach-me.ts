@@ -202,8 +202,8 @@ export const messages: Record<string, string> = {
   "Coach settings": "教练设置",
   "Unavailable for an unspecified reason.": "因未知原因不可用。",
   "Local coaching": "本地教练",
-  "A local coach runs on this machine using your own agent CLI. Nothing leaves your device through this path; the CLI uses whatever model provider you configured for it.":
-    "本地教练使用你自己的智能体 CLI 在本机运行。此路径不会将任何内容发送离开你的设备；CLI 使用你为它配置的模型提供方。",
+  "A local coach runs on this machine using your own agent CLI. Fit Trace does not upload your data, but the CLI sends your question and workout data to whatever model provider you configured.":
+    "本地教练使用你自己的智能体 CLI 在本机运行。Fit Trace 不会上传你的数据，但该 CLI 会将你的问题和训练数据发送给你配置的模型提供方。",
   "Could not read which agent CLIs are installed: {error}": "无法读取已安装的智能体 CLI：{error}",
   "Checking which agent CLIs are installed…": "正在检查已安装的智能体 CLI…",
   "No local coaching backend is configured.": "未配置本地教练后端。",

@@ -151,7 +151,7 @@ export function CoachSettingsScreen() {
         <h2 id="coach-settings-cli">{t("Local coaching")}</h2>
         <p>
           {t(
-            "A local coach runs on this machine using your own agent CLI. Nothing leaves your device through this path; the CLI uses whatever model provider you configured for it.",
+            "A local coach runs on this machine using your own agent CLI. Fit Trace does not upload your data, but the CLI sends your question and workout data to whatever model provider you configured.",
           )}
         </p>
 

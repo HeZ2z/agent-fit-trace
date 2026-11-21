@@ -32,6 +32,14 @@ full map rejects new bootstrap with `503 STORAGE_UNAVAILABLE` instead of
 evicting a valid in-use cap. `POST /coaching/logout` cancels the caller's
 active runs and invalidates only that account's sessions/caps/snapshots.
 
+On the App side, `CoachingClient` keeps the capability in memory and — only when
+the account identity is known — mirrors it into tab-scoped `sessionStorage`
+keyed by canonical origin + account id, so a full reload of the same tab reuses
+a still-valid capability instead of minting another. Loading never extends the
+TTL, a stored entry for another origin/account is ignored, and a rejected
+(`401`) or discarded capability is removed (no bearer, prompt, or run data is
+stored).
+
 Host/Origin gate on every coaching route: exact match against the canonical
 server origin (`http://<bindHost>:<actualPort>` from the real listen address).
 Alias hosts, other ports, prefix domains, and comma-joined `Host` values are

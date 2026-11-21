@@ -128,7 +128,7 @@ shell itself refuse to start as a GUI app.
 `daemonChild.cjs` gained one additive option (`distDir` → `--dist`). It stays
 electron-free and its existing tests stay green.
 
-### 4. Coaching ships as a bundle; the pi CLI does not
+### 4. The pi extension ships; agent CLIs do not
 
 *(Superseded by #67. The original decision here was "coaching is not shipped at
 all"; that was correct for the packaging change alone but wrong as a product
@@ -154,10 +154,12 @@ Both are now fixed:
    it, and dev passes nothing so the daemon's own repo-relative default stays
    in charge — the same rule `--dist` already follows.
 
-**What is still absent: the `pi` CLI itself.** A coached run executes
-`pi --mode rpc -e <resources>/pi-extension.mjs`, so coaching works only where
-the user has pi installed, exactly like the source-run daemon. The app does not
-and should not bundle a model runtime or credentials.
+**What is still absent: the agent CLIs themselves.** A pi coached run executes
+`pi --mode rpc -e <resources>/pi-extension.mjs`, so the pi backend works only
+where the user has pi installed, exactly like the source-run daemon. The Codex
+backend discovers the user's installed `codex` CLI/app-server independently
+(ADR 0007); the app does not and should not bundle a model runtime or
+credentials.
 
 Availability is now decided by `resolvePiAvailability()`, which requires both a
 successful `pi --version` probe **and** an existing extension file. The two
@@ -280,9 +282,12 @@ unsigned posture, no committed signing material), plus the pre-existing
   channel, no metadata, and `dmg.writeUpdateInfo` is off.
 - **Windows and Linux are unverified locally.** They are configured and built
   by CI only; no one has launched a Windows or Linux artifact.
-- **Packaged coaching needs the user's own `pi` CLI.** The extension ships, but
-  pi does not; without pi on `PATH` a coached run reports `cli-not-installed`.
-  A present-but-unloadable extension still fails at run time, because the
+- **Packaged coaching needs a backend CLI the user installs.** The bundled
+  extension serves only the pi backend, so a pi coached run needs `pi` on
+  `PATH` (otherwise `cli-not-installed`); the Codex backend needs the user's
+  installed `codex` CLI/app-server (ADR 0007, read-only sandbox) and does not
+  use the extension. OpenCode remains gated on plugin-isolation evidence. A
+  present-but-unloadable pi extension still fails at run time, because the
   availability probe checks the file's existence, not whether it loads.
 - **The daemon bundle can go stale** relative to `packages/fit-trace-cli`; the
   build always rebuilds it, but a checked-in artifact is not a thing — the
