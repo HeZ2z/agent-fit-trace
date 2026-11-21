@@ -6,6 +6,9 @@ import {
   SESSION_TYPES,
   FitTraceError,
   analyzeProgress,
+  formatAnalysisText,
+  formatHistoryText,
+  formatPlanText,
   generateNextPlan,
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
@@ -169,10 +172,7 @@ export function registerFitTraceTools(server: McpServer, store: FitTraceStore): 
     async (params) => {
       try {
         const result = await store.query(params);
-        return textResult(
-          `Returned ${result.records.length} of ${result.total} matching record(s).`,
-          { ...result },
-        );
+        return textResult(formatHistoryText(result.records, result), { ...result });
       } catch (error) {
         return errorResult(error);
       }
@@ -195,10 +195,7 @@ export function registerFitTraceTools(server: McpServer, store: FitTraceStore): 
       try {
         const records = await store.all();
         const analysis = analyzeProgress(records, params);
-        return textResult(
-          `Analyzed ${analysis.metrics.sessions} session(s): volume ${analysis.metrics.volume_kg} kg, avg RPE ${analysis.metrics.avg_rpe ?? "n/a"}, ${analysis.flags.length} flag(s).`,
-          { ...analysis },
-        );
+        return textResult(formatAnalysisText(analysis), { ...analysis });
       } catch (error) {
         return errorResult(error);
       }
@@ -223,10 +220,7 @@ export function registerFitTraceTools(server: McpServer, store: FitTraceStore): 
       try {
         const records = await store.all();
         const draft = generateNextPlan(records, params);
-        return textResult(
-          `Generated a draft plan with ${draft.recommendations.length} recommendation(s). This is a draft and requires user confirmation.`,
-          { ...draft },
-        );
+        return textResult(formatPlanText(draft), { ...draft });
       } catch (error) {
         return errorResult(error);
       }

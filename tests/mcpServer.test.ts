@@ -169,10 +169,23 @@ test("drives history, analysis, and draft plan through MCP with the documented n
       assert.match(firstText(history), /Returned 3 of 3 matching record\(s\)\./);
       assert.equal((history.structuredContent as StructuredDetails).total, 3);
       assert.equal((history.structuredContent as StructuredDetails).records.length, 3);
+      assert.match(firstText(history), /2026-09-01-strength \| 2026-09-01 \| strength \| bench_press \(3 sets\), squat \(3 sets\)/);
+
+      // Alias-aware filter: the fixture stores `bench_press`, so the catalog
+      // alias must select the same records analyze_progress would.
+      const aliased = await client.callTool({
+        name: "get_training_history",
+        arguments: { exercise: "Barbell Bench Press" },
+      });
+      assert.ok(!aliased.isError);
+      assert.equal((aliased.structuredContent as StructuredDetails).total, 3);
+      assert.match(firstText(aliased), /^Returned 3 of 3 matching record\(s\)\./);
 
       const analysis = await client.callTool({ name: "analyze_progress", arguments: {} });
       assert.ok(!analysis.isError);
       assert.match(firstText(analysis), /Analyzed 3 session\(s\): volume 8325 kg/);
+      assert.match(firstText(analysis), /Barbell Bench Press - Medium Grip: 93\.33 -> 99\.17 kg/);
+      assert.match(firstText(analysis), /Source records: 2026-09-01-strength, 2026-09-04-strength, 2026-09-08-strength\./);
       const metrics = (analysis.structuredContent as StructuredDetails).metrics;
       assert.equal(metrics.sessions, 3);
       assert.equal(metrics.volume_kg, 8325);
@@ -183,6 +196,8 @@ test("drives history, analysis, and draft plan through MCP with the documented n
       });
       assert.ok(!plan.isError);
       assert.match(firstText(plan), /requires user confirmation/);
+      assert.match(firstText(plan), /Evidence: \{/);
+      assert.match(firstText(plan), /2026-09-01-strength/);
       const draft = plan.structuredContent as StructuredDetails;
       assert.equal(draft.is_draft, true);
       assert.equal(draft.requires_confirmation, true);

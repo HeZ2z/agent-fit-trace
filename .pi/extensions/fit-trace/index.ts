@@ -63,6 +63,9 @@ import {
   SESSION_TYPES,
   FitTraceError,
   analyzeProgress,
+  formatAnalysisText,
+  formatHistoryText,
+  formatPlanText,
   generateNextPlan,
   validateWorkoutRecord,
 } from "@agent-fit-trace/core";
@@ -271,10 +274,7 @@ function trainingHistoryTool(getStore: StoreOf, options?: { coached?: boolean })
       try {
         const store = await getStore();
         const result = await store.query(params);
-        return textResult(
-          `Returned ${result.records.length} of ${result.total} matching record(s).`,
-          result,
-        );
+        return textResult(formatHistoryText(result.records, result), result);
       } catch (error) {
         return rethrow(error);
       }
@@ -308,10 +308,7 @@ function analyzeProgressTool(getStore: StoreOf, options?: { coached?: boolean })
         const store = await getStore();
         const records = await store.all();
         const analysis = analyzeProgress(records, params);
-        return textResult(
-          `Analyzed ${analysis.metrics.sessions} session(s): volume ${analysis.metrics.volume_kg} kg, avg RPE ${analysis.metrics.avg_rpe ?? "n/a"}, ${analysis.flags.length} flag(s).`,
-          analysis,
-        );
+        return textResult(formatAnalysisText(analysis), analysis);
       } catch (error) {
         return rethrow(error);
       }
@@ -341,10 +338,7 @@ function generateNextPlanTool(getStore: StoreOf) {
         const store = await getStore();
         const records = await store.all();
         const draft = generateNextPlan(records, params);
-        return textResult(
-          `Generated a draft plan with ${draft.recommendations.length} recommendation(s). This is a draft and requires user confirmation.`,
-          draft,
-        );
+        return textResult(formatPlanText(draft), draft);
       } catch (error) {
         return rethrow(error);
       }

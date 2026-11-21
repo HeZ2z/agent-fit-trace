@@ -11,7 +11,7 @@ import {
 import type { AnalysisFilter, AnalysisResult, WorkoutRecord } from "./types.ts";
 
 /**
- * Build a predicate for the analysis exercise filter.
+ * Build a predicate for an exercise filter.
  *
  * A recorded exercise matches when either:
  * - its raw name equals a wanted value ignoring case (the pre-catalog
@@ -22,8 +22,11 @@ import type { AnalysisFilter, AnalysisResult, WorkoutRecord } from "./types.ts";
  *
  * Unresolved custom names are never normalized, so the catalog remains a
  * suggestion layer rather than a gate.
+ *
+ * Exported so every query surface (analysis, history, MCP, pi) resolves
+ * exercises identically instead of reimplementing the rules.
  */
-function exerciseFilterMatcher(wanted: readonly string[]): (name: string) => boolean {
+export function createExerciseMatcher(wanted: readonly string[]): (name: string) => boolean {
   const rawWanted = new Set(wanted.map((name) => name.toLowerCase()));
   const wantedEntryIds = new Set<string>();
   for (const name of wanted) {
@@ -61,7 +64,7 @@ export function filterRecords(records: WorkoutRecord[], filter: AnalysisFilter =
     scoped = scoped.filter((record) => toDateKey(record.date) <= toKey);
   }
   if (filter.exercises !== undefined && filter.exercises.length > 0) {
-    const matchesExercise = exerciseFilterMatcher(filter.exercises);
+    const matchesExercise = createExerciseMatcher(filter.exercises);
     scoped = scoped.filter((record) =>
       record.exercises.some((exercise) => matchesExercise(exercise.name)),
     );
