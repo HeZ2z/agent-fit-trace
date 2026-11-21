@@ -412,9 +412,13 @@ export async function navigate(
   timeoutMs: number,
 ): Promise<void> {
   const loaded = client.waitForEvent("Page.loadEventFired", sessionId, () => true, timeoutMs);
+  // The load wait may reject after `Page.navigate` fails or times out. Attach a
+  // handler immediately so that rejection can never surface as unhandled while
+  // the harness still needs its cleanup/manifest path (the later `await loaded`
+  // still observes the same rejection).
+  loaded.catch(() => undefined);
   const response = await client.send<{ errorText?: string }>("Page.navigate", { url }, sessionId);
   if (response.errorText !== undefined && response.errorText !== "") {
-    void loaded.catch(() => undefined);
     throw new Error(`Navigation to ${url} failed: ${response.errorText}`);
   }
   await loaded;
@@ -431,6 +435,9 @@ export async function reload(
   timeoutMs: number,
 ): Promise<void> {
   const loaded = client.waitForEvent("Page.loadEventFired", sessionId, () => true, timeoutMs);
+  // See `navigate`: a rejected load wait must not become an unhandled rejection
+  // when `Page.reload` fails before the event arrives.
+  loaded.catch(() => undefined);
   await client.send("Page.reload", { ignoreCache: true }, sessionId);
   await loaded;
   await waitFor(client, sessionId, 'document.readyState === "complete"', {

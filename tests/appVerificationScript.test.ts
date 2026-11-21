@@ -32,7 +32,7 @@ import {
   utcTimestamp,
 } from "../scripts/verification/helpers.ts";
 import type { ManifestInput, Provenance } from "../scripts/verification/helpers.ts";
-import { CdpClient } from "../scripts/verification/cdp.ts";
+import { CdpClient, navigate, reload } from "../scripts/verification/cdp.ts";
 
 test("exitCodeForOutcome maps the documented contract", () => {
   assert.equal(exitCodeForOutcome("passed"), 0);
@@ -404,4 +404,42 @@ test("CdpClient.send times out per command, names the method, and stays usable",
   socket.deliver({ id: sent.id, result: { ok: true } });
   assert.deepEqual(await pending, { ok: true });
   client.close();
+});
+
+test("navigate handles a load-event rejection when Page.navigate fails", async () => {
+  let rejectLoad: ((error: Error) => void) | null = null;
+  const loaded = new Promise<unknown>((_resolve, reject) => {
+    rejectLoad = reject;
+  });
+  const client = {
+    waitForEvent: () => loaded,
+    send: async () => {
+      rejectLoad?.(new Error("load never fired"));
+      throw new Error("navigate failed");
+    },
+  } as unknown as CdpClient;
+
+  await assert.rejects(
+    navigate(client, "session", "http://127.0.0.1/", 50),
+    /navigate failed/,
+  );
+  // Let any unhandled rejection surface before the test runner finishes.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+});
+
+test("reload handles a load-event rejection when Page.reload fails", async () => {
+  let rejectLoad: ((error: Error) => void) | null = null;
+  const loaded = new Promise<unknown>((_resolve, reject) => {
+    rejectLoad = reject;
+  });
+  const client = {
+    waitForEvent: () => loaded,
+    send: async () => {
+      rejectLoad?.(new Error("load never fired"));
+      throw new Error("reload failed");
+    },
+  } as unknown as CdpClient;
+
+  await assert.rejects(reload(client, "session", 50), /reload failed/);
+  await new Promise((resolve) => setTimeout(resolve, 10));
 });
