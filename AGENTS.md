@@ -29,6 +29,8 @@ PRs also receive an advisory, self-hosted AI review comment; it is not a merge g
 
 - `pnpm install`
 - `pnpm test` — extension (`node:test` over `tests/*.test.ts`) + app (`vitest`).
+- `pnpm verify:app` — real-app acceptance after `pnpm build`: throwaway daemon + system Chrome walk the guest flow (log → reload → history → analysis), cross-check `/api/v1/analysis`, and keep screenshots/manifest in `.fit-trace/verification/` (`docs/verification.md`; exit 3 = no Chrome, not a pass).
+- `pnpm verify:desktop` — packaged acceptance after a guest-only `pnpm build && pnpm desktop:build && pnpm --filter @agent-fit-trace/desktop run package:dir`: the real `.app` logs one workout, quits with a confirmed daemon-port release, reopens with the same data dir, and verifies history/analysis persisted (`docs/verification.md`; macOS only).
 - `pnpm typecheck` — root `tsc --noEmit` + app typecheck.
 - `pnpm dev:api` — run the loopback dev API (`127.0.0.1:5199`).
 - `pnpm daemon` — run the resident local daemon (loopback `127.0.0.1:5199`, SQLite data plane; see `docs/local-daemon.md`).

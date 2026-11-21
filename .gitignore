@@ -47,6 +47,9 @@ sites/
 # Local app data (workout store, durable coaching journal)
 .pi/fit-trace/
 
+# Real-app acceptance evidence (`pnpm verify:app`)
+.fit-trace/verification/
+
 # Editor / OS
 .DS_Store
 .idea/

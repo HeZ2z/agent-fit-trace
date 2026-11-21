@@ -18,6 +18,11 @@ Mention important tradeoffs or areas that need particular reviewer attention. --
 For bug fixes, identify a regression test that fails without the fix and passes with it.
 If tests are not included, explain why and provide manual verification steps.
 Include screenshots or recordings for UI changes.
+For App/UI or daemon changes, run `pnpm build && pnpm verify:app` and attach the
+evidence directory (screenshots, manifest, API cross-checks), or explain why it
+was not run.
+For desktop shell, packaging, spawn/quit, or restart-persistence changes, run
+`pnpm verify:desktop` against a guest-only package and attach its evidence.
 See CONTRIBUTING.md for required checks; explain any checks not run. -->
 
 ## Risks and compatibility (if applicable)

@@ -1,0 +1,59 @@
+[
+  {
+    "id": "pe-02-2026-02-02-bench",
+    "schema_version": 1,
+    "date": "2026-02-02",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 80, "reps": 5, "rpe": 7 },
+          { "weight": 80, "reps": 5, "rpe": 7 },
+          { "weight": 80, "reps": 5, "rpe": 7 }
+        ]
+      }
+    ],
+    "duration_minutes": 50,
+    "sleep_hours": 8,
+    "pain": []
+  },
+  {
+    "id": "pe-02-2026-02-09-bench",
+    "schema_version": 1,
+    "date": "2026-02-09",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 82.5, "reps": 5, "rpe": 7.5 },
+          { "weight": 82.5, "reps": 5, "rpe": 7.5 },
+          { "weight": 82.5, "reps": 5, "rpe": 7.5 }
+        ]
+      }
+    ],
+    "duration_minutes": 50,
+    "sleep_hours": 8,
+    "pain": []
+  },
+  {
+    "id": "pe-02-2026-02-16-bench",
+    "schema_version": 1,
+    "date": "2026-02-16",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 85, "reps": 5, "rpe": 8 },
+          { "weight": 85, "reps": 5, "rpe": 8 },
+          { "weight": 85, "reps": 5, "rpe": 8 }
+        ]
+      }
+    ],
+    "duration_minutes": 55,
+    "sleep_hours": 8,
+    "pain": []
+  }
+]

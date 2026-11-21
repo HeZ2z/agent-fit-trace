@@ -11,7 +11,7 @@ function HistoryRow({ record }: { record: WorkoutRecord }) {
   const avgRpe = metrics.avg_rpe === null ? t("n/a") : metrics.avg_rpe;
 
   return (
-    <li className="history-row">
+    <li className="history-row" data-record-id={record.id}>
       <Link
         to={`/workout/${record.id}`}
         aria-label={t("View {type} workout on {date}", {

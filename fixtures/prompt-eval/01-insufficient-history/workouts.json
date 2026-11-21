@@ -1,0 +1,21 @@
+[
+  {
+    "id": "pe-01-2026-03-02-bench",
+    "schema_version": 1,
+    "date": "2026-03-02",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 100, "reps": 5, "rpe": 8 },
+          { "weight": 100, "reps": 5, "rpe": 8 },
+          { "weight": 100, "reps": 5, "rpe": 8 }
+        ]
+      }
+    ],
+    "duration_minutes": 45,
+    "sleep_hours": 7.5,
+    "pain": []
+  }
+]

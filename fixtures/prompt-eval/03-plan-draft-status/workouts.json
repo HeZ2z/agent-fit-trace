@@ -1,0 +1,83 @@
+[
+  {
+    "id": "pe-03-2026-04-06-strength",
+    "schema_version": 1,
+    "date": "2026-04-06",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "squat",
+        "sets": [
+          { "weight": 100, "reps": 5, "rpe": 7 },
+          { "weight": 100, "reps": 5, "rpe": 7 },
+          { "weight": 100, "reps": 5, "rpe": 7 }
+        ]
+      },
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 70, "reps": 5, "rpe": 7 },
+          { "weight": 70, "reps": 5, "rpe": 7 },
+          { "weight": 70, "reps": 5, "rpe": 7 }
+        ]
+      }
+    ],
+    "duration_minutes": 60,
+    "sleep_hours": 7.5,
+    "pain": []
+  },
+  {
+    "id": "pe-03-2026-04-10-strength",
+    "schema_version": 1,
+    "date": "2026-04-10",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "squat",
+        "sets": [
+          { "weight": 102.5, "reps": 5, "rpe": 7 },
+          { "weight": 102.5, "reps": 5, "rpe": 7 },
+          { "weight": 102.5, "reps": 5, "rpe": 7 }
+        ]
+      },
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 72.5, "reps": 5, "rpe": 7 },
+          { "weight": 72.5, "reps": 5, "rpe": 7 },
+          { "weight": 72.5, "reps": 5, "rpe": 7 }
+        ]
+      }
+    ],
+    "duration_minutes": 60,
+    "sleep_hours": 7.5,
+    "pain": []
+  },
+  {
+    "id": "pe-03-2026-04-14-strength",
+    "schema_version": 1,
+    "date": "2026-04-14",
+    "session_type": "strength",
+    "exercises": [
+      {
+        "name": "squat",
+        "sets": [
+          { "weight": 105, "reps": 5, "rpe": 7 },
+          { "weight": 105, "reps": 5, "rpe": 7 },
+          { "weight": 105, "reps": 5, "rpe": 7 }
+        ]
+      },
+      {
+        "name": "bench_press",
+        "sets": [
+          { "weight": 75, "reps": 5, "rpe": 7 },
+          { "weight": 75, "reps": 5, "rpe": 7 },
+          { "weight": 75, "reps": 5, "rpe": 7 }
+        ]
+      }
+    ],
+    "duration_minutes": 65,
+    "sleep_hours": 8,
+    "pain": []
+  }
+]
