@@ -795,6 +795,28 @@ describe("CoachingClient credential races", () => {
     expect(client.isBootstrapped).toBe(false);
   });
 
+  it("unmount detach fences a late bootstrap without persisting it", async () => {
+    let resolveBody!: (value: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      resolveBody = resolve;
+    });
+    const impl = (async (url: string) => {
+      if (String(url).includes("/coaching/bootstrap")) return gate;
+      throw new Error("unexpected request: " + url);
+    }) as unknown as typeof fetch;
+    const client = new CoachingClient({
+      fetchImpl: impl,
+      getAccessToken: () => "bearer-now",
+      accountId: "user-a",
+    });
+    const pending = client.bootstrap();
+    client.detachForUnmount();
+    resolveBody(jsonResponse({ capability: "stale-cap", expiresInMs: 600_000 }));
+    await pending;
+    expect(client.isBootstrapped).toBe(false);
+    expect(window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY)).toBeNull();
+  });
+
   it("concurrent bootstraps issue one fetch", async () => {
     const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-1", expiresInMs: 600_000 })]);
     const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer-now" });
@@ -869,6 +891,29 @@ describe("CoachingClient tab-scoped capability reuse", () => {
     expect(await reloaded.readSession(SESSION)).toEqual({ id: SESSION });
     expect(reloadSeen.map((entry) => entry.url)).toEqual([`/coaching/sessions/${SESSION}`]);
     expect(headersOf(reloadSeen)[COACHING_CAPABILITY_HEADER]).toBe("cap-live");
+  });
+
+  it("keeps a live tab capability across an unmount detach", () => {
+    seed({
+      version: 1,
+      origin: ORIGIN,
+      accountId: "user-a",
+      capability: "cap-live",
+      expiresAt: Date.now() + 600_000,
+    });
+    const impl = (async () => {
+      throw new Error("unexpected request");
+    }) as unknown as typeof fetch;
+    const client = new CoachingClient({ fetchImpl: impl, accountId: "user-a" });
+    expect(client.isBootstrapped).toBe(true);
+
+    // StrictMode replays setup -> cleanup -> setup on mount. The cleanup must
+    // not turn a reusable tab capability into a fresh bootstrap.
+    client.detachForUnmount();
+
+    expect(client.isBootstrapped).toBe(true);
+    expect(client.capabilitySnapshot()).toBe("cap-live");
+    expect(readRecord()?.capability).toBe("cap-live");
   });
 
   it("treats an expired entry as absent and mints exactly one new capability", async () => {

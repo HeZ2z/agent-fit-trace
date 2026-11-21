@@ -512,6 +512,19 @@ export class CoachingClient {
   }
 
   /**
+   * React-lifecycle teardown (unmount, including StrictMode's replay).
+   *
+   * Fence any in-flight bootstrap so a late response cannot repopulate state,
+   * but keep the live capability and its tab mirror: unmount is not logout, and
+   * clearing the mirror here would defeat reload reuse (and burn another slot
+   * against the daemon's per-account cap on every dev reload).
+   */
+  detachForUnmount(): void {
+    this.credentialGeneration += 1;
+    this.inflightBootstrap = null;
+  }
+
+  /**
    * Non-throwing snapshot of the live capability for account-switch cleanup.
    * Returns `null` when missing/expired so the caller skips server cleanup
    * instead of sending another account's credentials (item 3).

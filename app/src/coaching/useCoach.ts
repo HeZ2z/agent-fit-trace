@@ -2238,7 +2238,10 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
         // Detach is best-effort.
       }
       subscriptionRef.current = null;
-      clientRef.current.discardCredentials();
+      // Lifecycle teardown only: keep a still-valid tab capability so a reload
+      // (and StrictMode's setup/cleanup replay) reuses it. Logout, account
+      // switch, and 401 paths still call discardCredentials explicitly.
+      clientRef.current.detachForUnmount();
     },
     [],
   );

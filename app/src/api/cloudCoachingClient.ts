@@ -273,6 +273,11 @@ export class CloudCoachingClient {
     // The bearer is resolved per request from the account-bound provider.
   }
 
+  /** No capability exists to preserve across unmount. */
+  detachForUnmount(): void {
+    // Nothing to fence: cloud requests resolve the bearer per request.
+  }
+
   async readCapabilities(): Promise<CloudCapabilities> {
     return this.request(
       "/coaching/cloud/capabilities",

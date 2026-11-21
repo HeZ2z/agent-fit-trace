@@ -109,6 +109,11 @@ export class CoachClientRouter implements CoachRunClient {
     this.cloud.discardCredentials();
   }
 
+  detachForUnmount(): void {
+    this.local.detachForUnmount();
+    this.cloud.detachForUnmount();
+  }
+
   logout(cleanup?: { accessToken?: string | null; capability?: string | null }): Promise<unknown> {
     if (this.activeBackend === "cloud-default") {
       return this.cloud.logout(cleanup);

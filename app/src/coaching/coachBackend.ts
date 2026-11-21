@@ -76,6 +76,12 @@ export interface CoachRunClient {
   ): { close(): void; done: Promise<{ aborted: boolean; lastConsumed: number }> };
   capabilitySnapshot(): string | null;
   discardCredentials(): void;
+  /**
+   * React-lifecycle teardown that must NOT invalidate a still-valid tab
+   * capability. Unmount (including StrictMode's setup/cleanup replay) is not
+   * logout or an account switch; the tab-scoped mirror stays reusable.
+   */
+  detachForUnmount(): void;
   logout(cleanup?: { accessToken?: string | null; capability?: string | null }): Promise<unknown>;
 }
 
