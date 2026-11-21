@@ -197,6 +197,21 @@ describe("coach settings: local CLI section", () => {
     expect(screen.queryByTestId("reason-local-pi")).toBeNull();
   });
 
+  it("discloses that the local CLI sends data to its configured model provider", async () => {
+    const client = stubClient(discoveryOf([descriptor({ backendId: "local-pi" })]));
+    renderPage({ user: { id: "user-privacy", isAnonymous: false }, client });
+
+    // The Fit Trace path is local, but the agent CLI sends the prompt and
+    // workout data to whatever provider it is configured with. The old copy
+    // claimed "nothing leaves your device", contradicting the Coach screen.
+    expect(
+      await screen.findByText(
+        /Fit Trace does not upload your data, but the CLI sends your question and workout data/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing leaves your device/i)).toBeNull();
+  });
+
   it("shows the detected CLI's version and executable path from the server", async () => {
     const client = stubClient(
       discoveryOf([
