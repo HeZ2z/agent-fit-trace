@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   API_ERROR_CODES,
@@ -8,7 +8,12 @@ import {
   utf8ByteLength,
 } from "@agent-fit-trace/api-contracts";
 import type { CoachingEventEnvelope } from "@agent-fit-trace/api-contracts";
-import { CoachingClient, COACHING_CAPABILITY_HEADER, parseSseEventsText } from "./coachingClient.ts";
+import {
+  CoachingClient,
+  COACHING_CAPABILITY_HEADER,
+  COACHING_CAPABILITY_STORAGE_KEY,
+  parseSseEventsText,
+} from "./coachingClient.ts";
 import type { CoachingAccessTokenProvider } from "./coachingClient.ts";
 
 const SESSION = "s-1";
@@ -263,12 +268,16 @@ describe("CoachingClient coaching routes", () => {
   it("maps auth/outage/malformed failures to distinct errors", async () => {
     const { client } = await bootstrappedClient([
       errorResponse("UNAUTHENTICATED", "Expired.", 401),
+      // A 401 discards the rejected capability, so the next call bootstraps.
+      jsonResponse({ capability: "cap-2", expiresInMs: 600_000 }),
       errorResponse("STORAGE_UNAVAILABLE", "Auth outage.", 503),
       new Response(JSON.stringify({ bogus: true }), { status: 200 }),
     ]);
     const unauth = await client.readRun(RUN).catch((caught: unknown) => caught);
     expect((unauth as ApiError).code).toBe(API_ERROR_CODES.UNAUTHENTICATED);
     expect((unauth as ApiError).status).toBe(401);
+    expect(client.isBootstrapped).toBe(false);
+    await client.bootstrap();
     const outage = await client.readRun(RUN).catch((caught: unknown) => caught);
     expect((outage as ApiError).code).toBe(API_ERROR_CODES.STORAGE_UNAVAILABLE);
     expect((outage as ApiError).status).toBe(503);
@@ -801,5 +810,196 @@ describe("CoachingClient credential races", () => {
     const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer-now" });
     await expect(client.bootstrap()).rejects.toMatchObject({ code: API_ERROR_CODES.STORAGE_UNAVAILABLE });
     expect(client.isBootstrapped).toBe(false);
+  });
+});
+
+describe("CoachingClient tab-scoped capability reuse", () => {
+  const ORIGIN = window.location.origin;
+
+  function seed(record: Record<string, unknown>): void {
+    window.sessionStorage.setItem(COACHING_CAPABILITY_STORAGE_KEY, JSON.stringify(record));
+  }
+
+  function readRecord(): Record<string, unknown> | null {
+    const raw = window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY);
+    return raw === null ? null : (JSON.parse(raw) as Record<string, unknown>);
+  }
+
+  beforeEach(() => {
+    window.sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.sessionStorage.clear();
+  });
+
+  it("reuses a live capability for the same origin+account across a reload", async () => {
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-live", expiresInMs: 600_000 })]);
+    const first = new CoachingClient({
+      fetchImpl: impl,
+      getAccessToken: () => "super-secret-bearer",
+      accountId: "user-a",
+    });
+    await first.bootstrap();
+    expect(seen).toHaveLength(1);
+
+    const record = readRecord();
+    expect(record).toMatchObject({
+      version: 1,
+      origin: ORIGIN,
+      accountId: "user-a",
+      capability: "cap-live",
+    });
+    // ONLY the capability plus its binding/expiry is stored — never the bearer.
+    expect(Object.keys(record ?? {}).sort()).toEqual(["accountId", "capability", "expiresAt", "origin", "version"]);
+    expect(window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY)).not.toContain("super-secret-bearer");
+
+    // A full reload creates a NEW client over the same tab storage. Its fetch
+    // router has only the session reply, so any extra bootstrap would fail.
+    const { impl: reloadImpl, seen: reloadSeen } = fakeFetch([jsonResponse({ id: SESSION })]);
+    const reloaded = new CoachingClient({
+      fetchImpl: reloadImpl,
+      getAccessToken: () => "super-secret-bearer",
+      accountId: "user-a",
+    });
+    expect(reloaded.isBootstrapped).toBe(true);
+    expect(reloaded.capabilitySnapshot()).toBe("cap-live");
+
+    expect(await reloaded.readSession(SESSION)).toEqual({ id: SESSION });
+    expect(reloadSeen.map((entry) => entry.url)).toEqual([`/coaching/sessions/${SESSION}`]);
+    expect(headersOf(reloadSeen)[COACHING_CAPABILITY_HEADER]).toBe("cap-live");
+  });
+
+  it("treats an expired entry as absent and mints exactly one new capability", async () => {
+    seed({
+      version: 1,
+      origin: ORIGIN,
+      accountId: "user-a",
+      capability: "cap-old",
+      expiresAt: Date.now() - 1,
+    });
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-new", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    expect(client.isBootstrapped).toBe(false);
+    expect(window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY)).toBeNull();
+    await client.bootstrap();
+    expect(seen).toHaveLength(1);
+    expect(readRecord()?.capability).toBe("cap-new");
+  });
+
+  it("does not reuse another account's capability", async () => {
+    seed({
+      version: 1,
+      origin: ORIGIN,
+      accountId: "user-a",
+      capability: "cap-a",
+      expiresAt: Date.now() + 600_000,
+    });
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-b", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-b" });
+    expect(client.isBootstrapped).toBe(false);
+    await client.bootstrap();
+    expect(seen).toHaveLength(1);
+    expect(readRecord()).toMatchObject({ accountId: "user-b", capability: "cap-b" });
+  });
+
+  it("does not reuse a capability bound to another origin", async () => {
+    seed({
+      version: 1,
+      origin: "https://other.example",
+      accountId: "user-a",
+      capability: "cap-foreign",
+      expiresAt: Date.now() + 600_000,
+    });
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-here", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    expect(client.isBootstrapped).toBe(false);
+    await client.bootstrap();
+    expect(seen).toHaveLength(1);
+    expect(readRecord()?.origin).toBe(ORIGIN);
+  });
+
+  it("never persists when the account identity is unknown", async () => {
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-anon", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer" });
+    await client.bootstrap();
+    expect(client.isBootstrapped).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY)).toBeNull();
+  });
+
+  it("ignores corrupt storage and falls back to a fresh bootstrap", async () => {
+    window.sessionStorage.setItem(COACHING_CAPABILITY_STORAGE_KEY, "{not-json");
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-new", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    expect(client.isBootstrapped).toBe(false);
+    await client.bootstrap();
+    expect(seen).toHaveLength(1);
+    expect(readRecord()?.capability).toBe("cap-new");
+  });
+
+  it("ignores a malformed record shape and falls back to a fresh bootstrap", async () => {
+    seed({ version: 1, origin: ORIGIN, accountId: "user-a", capability: "", expiresAt: Date.now() + 600_000 });
+    const { impl } = fakeFetch([jsonResponse({ capability: "cap-new", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    expect(client.isBootstrapped).toBe(false);
+  });
+
+  it("survives blocked sessionStorage and still bootstraps in memory", async () => {
+    const blocked = (): never => {
+      throw new DOMException("blocked", "SecurityError");
+    };
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(blocked);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(blocked);
+    const { impl, seen } = fakeFetch([jsonResponse({ capability: "cap-memory", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    expect(client.isBootstrapped).toBe(false);
+    await expect(client.bootstrap()).resolves.toMatchObject({ capability: "cap-memory" });
+    expect(client.isBootstrapped).toBe(true);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("discardCredentials removes the persisted entry", async () => {
+    const { impl } = fakeFetch([jsonResponse({ capability: "cap-live", expiresInMs: 600_000 })]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    await client.bootstrap();
+    expect(readRecord()?.capability).toBe("cap-live");
+    client.discardCredentials();
+    expect(client.isBootstrapped).toBe(false);
+    expect(window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY)).toBeNull();
+  });
+
+  it("drops a capability rejected with 401 so the next retry bootstraps fresh", async () => {
+    const { impl, seen } = fakeFetch([
+      jsonResponse({ capability: "cap-rejected", expiresInMs: 600_000 }),
+      errorResponse("UNAUTHENTICATED", "Invalid or expired capability.", 401),
+      jsonResponse({ capability: "cap-fresh", expiresInMs: 600_000 }),
+    ]);
+    const client = new CoachingClient({ fetchImpl: impl, getAccessToken: () => "bearer", accountId: "user-a" });
+    await client.bootstrap();
+    await expect(client.readSession(SESSION)).rejects.toMatchObject({ code: API_ERROR_CODES.UNAUTHENTICATED });
+    expect(client.isBootstrapped).toBe(false);
+    expect(window.sessionStorage.getItem(COACHING_CAPABILITY_STORAGE_KEY)).toBeNull();
+    await client.bootstrap();
+    expect(seen).toHaveLength(3);
+    expect(readRecord()?.capability).toBe("cap-fresh");
+  });
+
+  it("one account's discard leaves another account's entry intact", async () => {
+    seed({
+      version: 1,
+      origin: ORIGIN,
+      accountId: "user-b",
+      capability: "cap-b",
+      expiresAt: Date.now() + 600_000,
+    });
+    const client = new CoachingClient({
+      fetchImpl: fakeFetch([]).impl,
+      getAccessToken: () => "bearer",
+      accountId: "user-a",
+    });
+    client.discardCredentials();
+    expect(readRecord()?.capability).toBe("cap-b");
   });
 });

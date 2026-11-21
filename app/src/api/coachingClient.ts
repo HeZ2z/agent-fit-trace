@@ -37,7 +37,10 @@ import type {
 /**
  * Same-origin browser client for the local coaching HTTP + fetch-SSE API.
  *
- * Transport only — no React state, no UI, no storage.
+ * Transport only — no React state, no UI. The ONLY storage is a tab-scoped
+ * `sessionStorage` mirror of a still-valid capability (origin + account bound),
+ * so a full reload can reuse it instead of minting another against the daemon's
+ * per-account cap. No bearer, prompt, or run data is ever stored.
  * - Same origin only: `baseUrl` is `""` or root-relative; absolute URLs reject.
  * - Bootstrap sends the bearer only and holds the TTL-capped capability in
  *   memory. Other routes require a live capability, else UNAUTHENTICATED.
@@ -53,6 +56,13 @@ import type {
  /** Must match `CAPABILITY_HEADER` in `server/coaching/coachingServer.ts`. */
 export const COACHING_CAPABILITY_HEADER = "x-fit-trace-capability";
 
+/**
+ * Tab-scoped capability mirror. The value also carries the canonical origin and
+ * account id it was issued for; a mismatch means it is never reused. This is
+ * the only persisted credential, and it expires on its own TTL.
+ */
+export const COACHING_CAPABILITY_STORAGE_KEY = "agent-fit-trace:coaching:capability:v1";
+
 const SSE_ACCEPT = "text/event-stream";
 
 export type CoachingAccessTokenProvider = () => string | null | Promise<string | null>;
@@ -63,6 +73,12 @@ export interface CoachingClientOptions {
   fetchImpl?: typeof fetch;
   /** Current bearer per request (awaited); `null` sends no credentials. */
   getAccessToken?: CoachingAccessTokenProvider;
+  /**
+   * Account identity for the tab-scoped capability mirror. Without it, the
+   * client stays memory-only: an unknown identity must never risk handing one
+   * account's capability to another. Callers that know `user.id` pass it.
+   */
+  accountId?: string | null;
 }
 
 export interface CreateCoachingSnapshotFilter {
@@ -95,6 +111,62 @@ export interface CoachingEventSubscription {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface StoredCapability {
+  version: 1;
+  origin: string;
+  accountId: string;
+  capability: string;
+  /** Absolute epoch millis from bootstrap; never recomputed on load. */
+  expiresAt: number;
+}
+
+/** Canonical browser origin, or `null` when unaddressable (e.g. file://). */
+function canonicalOrigin(): string | null {
+  try {
+    // Root `tsc` typechecks app sources without the DOM lib, so read the
+    // browser global through a narrow local shape instead of `globalThis.location`.
+    const holder = globalThis as unknown as { location?: { origin?: unknown } };
+    const origin = holder.location?.origin;
+    return typeof origin === "string" && origin !== "" && origin !== "null" ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `sessionStorage` or `null`; never throws (privacy mode/blocked access). */
+function sessionStorageSafe(): Storage | null {
+  try {
+    return globalThis.sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredCapability(raw: string | null): StoredCapability | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isObject(parsed)) return null;
+  if (parsed.version !== 1) return null;
+  if (typeof parsed.origin !== "string" || parsed.origin === "") return null;
+  if (typeof parsed.accountId !== "string" || parsed.accountId.trim() === "") return null;
+  if (typeof parsed.capability !== "string" || parsed.capability.trim() === "") return null;
+  if (typeof parsed.expiresAt !== "number" || !Number.isFinite(parsed.expiresAt) || parsed.expiresAt <= 0) {
+    return null;
+  }
+  return {
+    version: 1,
+    origin: parsed.origin,
+    accountId: parsed.accountId,
+    capability: parsed.capability,
+    expiresAt: parsed.expiresAt,
+  };
 }
 
 function isOkStatus(status: number): boolean {
@@ -318,16 +390,108 @@ export class CoachingClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly getAccessToken?: CoachingAccessTokenProvider;
+  /** `null` means "identity unknown": never persist/reuse across identities. */
+  private readonly accountId: string | null;
   private capability: string | null = null;
   private capabilityExpiresAt = 0;
   private credentialGeneration = 0;
   private inflightBootstrap: Promise<CoachingBootstrapResult> | null = null;
 
-  constructor({ baseUrl = "", fetchImpl = (input, init) => globalThis.fetch(input, init), getAccessToken }: CoachingClientOptions = {}) {
+  constructor({
+    baseUrl = "",
+    fetchImpl = (input, init) => globalThis.fetch(input, init),
+    getAccessToken,
+    accountId = null,
+  }: CoachingClientOptions = {}) {
     assertSameOriginBase(baseUrl);
     this.baseUrl = baseUrl;
     this.fetchImpl = fetchImpl;
     this.getAccessToken = getAccessToken;
+    this.accountId = typeof accountId === "string" && accountId.trim() !== "" ? accountId : null;
+    this.restoreStoredCapability();
+  }
+
+  /**
+   * Load a still-valid tab-scoped capability for THIS origin+account. Storage
+   * failures and malformed values are ignored; the client simply starts
+   * unbootstrapped and will mint a fresh capability when asked.
+   */
+  private restoreStoredCapability(): void {
+    if (this.accountId === null) return;
+    const origin = canonicalOrigin();
+    if (origin === null) return;
+    const storage = sessionStorageSafe();
+    if (storage === null) return;
+    let raw: string | null = null;
+    try {
+      raw = storage.getItem(COACHING_CAPABILITY_STORAGE_KEY);
+    } catch {
+      return;
+    }
+    const stored = parseStoredCapability(raw);
+    if (stored === null) return;
+    // Defense in depth: sessionStorage is already origin-scoped, and the
+    // account check is what makes a shared tab safe across identity changes.
+    if (stored.origin !== origin || stored.accountId !== this.accountId) return;
+    // Strict TTL: reuse only, never extend. An expired entry is dropped.
+    if (stored.expiresAt <= Date.now()) {
+      this.removeStoredCapability();
+      return;
+    }
+    this.capability = stored.capability;
+    this.capabilityExpiresAt = stored.expiresAt;
+  }
+
+  /** Mirror the live capability for this tab; best-effort, never throws. */
+  private persistCapability(capability: string, expiresAt: number): void {
+    if (this.accountId === null) return;
+    const origin = canonicalOrigin();
+    if (origin === null) return;
+    const storage = sessionStorageSafe();
+    if (storage === null) return;
+    try {
+      const stored: StoredCapability = {
+        version: 1,
+        origin,
+        accountId: this.accountId,
+        capability,
+        expiresAt,
+      };
+      storage.setItem(COACHING_CAPABILITY_STORAGE_KEY, JSON.stringify(stored));
+    } catch {
+      // Blocked/quota: the in-memory capability still serves this page.
+    }
+  }
+
+  /**
+   * Remove the persisted entry for THIS origin+account. A record owned by a
+   * different identity (an account switch already replaced it) is left alone,
+   * so one account's cleanup can never erase another's live capability.
+   */
+  private removeStoredCapability(): void {
+    if (this.accountId === null) return;
+    const origin = canonicalOrigin();
+    if (origin === null) return;
+    const storage = sessionStorageSafe();
+    if (storage === null) return;
+    try {
+      const stored = parseStoredCapability(storage.getItem(COACHING_CAPABILITY_STORAGE_KEY));
+      if (stored !== null && (stored.origin !== origin || stored.accountId !== this.accountId)) return;
+      storage.removeItem(COACHING_CAPABILITY_STORAGE_KEY);
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  /**
+   * Drop a capability the server just rejected. Only the value that was sent
+   * is cleared: a newer capability that replaced it meanwhile stays valid.
+   */
+  private discardRejectedCapability(rejected: string | null): void {
+    if (rejected === null || rejected === "" || this.capability !== rejected) return;
+    this.capability = null;
+    this.capabilityExpiresAt = 0;
+    this.removeStoredCapability();
   }
 
   /** True while a non-expired capability is held (re-bootstrap after). */
@@ -335,12 +499,16 @@ export class CoachingClient {
     return this.capability !== null && this.capability !== "" && Date.now() < this.capabilityExpiresAt;
   }
 
-  /** Forget the in-memory capability (account switch / auth outage). */
+  /**
+   * Forget the capability (account switch / logout / auth outage). The
+   * tab-scoped mirror is removed too, so a later reload cannot resurrect it.
+   */
   discardCredentials(): void {
     this.credentialGeneration += 1;
     this.inflightBootstrap = null;
     this.capability = null;
     this.capabilityExpiresAt = 0;
+    this.removeStoredCapability();
   }
 
   /**
@@ -405,14 +573,22 @@ export class CoachingClient {
       parsed = JSON.parse(text) as unknown;
     } catch {
       if (isOkStatus(response.status)) throw new MalformedResponseError("(root)", "is not valid JSON");
+      if (response.status === 401) this.discardRejectedCapability(opts.capability);
       throw toApiError(undefined, response.status);
     }
-    if (!isOkStatus(response.status)) throw toApiError(parsed, response.status);
+    if (!isOkStatus(response.status)) {
+      // A rejected capability (missing/expired/account- or origin-mismatch) is
+      // gone for good: drop it so the NEXT attempt bootstraps fresh instead of
+      // replaying the same stale value after a reload.
+      if (response.status === 401) this.discardRejectedCapability(opts.capability);
+      throw toApiError(parsed, response.status);
+    }
     return parse(readData(parsed));
   }
 
   /**
-   * Bearer-only bootstrap; stores the TTL-capped capability in memory.
+   * Bearer-only bootstrap; stores the TTL-capped capability in memory and, when
+   * the account identity is known, mirrors it to tab-scoped `sessionStorage`.
    * Concurrent calls share one fetch; a discard in flight wins over the late
    * response (nothing stale is stored). Callers must discard/create clients
    * on account switch rather than reusing a capability across identities.
@@ -428,8 +604,12 @@ export class CoachingClient {
         parseCoachingBootstrapResult,
       );
       if (this.credentialGeneration === generation) {
+        // One expiry value feeds both the memory and tab mirrors: loading the
+        // stored record later must never extend the server-issued TTL.
+        const expiresAt = Date.now() + result.expiresInMs;
         this.capability = result.capability;
-        this.capabilityExpiresAt = Date.now() + result.expiresInMs;
+        this.capabilityExpiresAt = expiresAt;
+        this.persistCapability(result.capability, expiresAt);
       }
       return result;
     })();
@@ -692,6 +872,9 @@ export class CoachingClient {
           } catch {
             parsed = undefined;
           }
+          // Same rule as JSON routes: a rejected capability must not survive to
+          // be replayed by the next reconnect/reload.
+          if (response.status === 401) this.discardRejectedCapability(capability);
           finishError(toApiError(parsed, response.status));
           return;
         }

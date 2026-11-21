@@ -444,8 +444,12 @@ export function useCoachSession({ client: clientProp }: { client?: CoachRunClien
   const { id: sharedDefaultBackend, source: sharedDefaultSource } = useSharedDefaultBackend();
   const explicitlySelected = useRef(false);
   const localClient = useMemo(
-    () => sharedClient ?? new CoachingClient({ getAccessToken: boundTokenProvider }),
-    [sharedClient, boundTokenProvider],
+    () =>
+      sharedClient ??
+      // Account-bound like the provider's own client, so a provider-less mount
+      // also reuses a still-valid tab capability across reloads.
+      new CoachingClient({ getAccessToken: boundTokenProvider, accountId }),
+    [sharedClient, boundTokenProvider, accountId],
   );
   // Destination+issuer+binding of the cloud run this hook is currently bound
   // to. Established run-scoped requests echo the binding so a destination
