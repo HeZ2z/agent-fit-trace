@@ -271,8 +271,11 @@ Desktop packaging requires `FIT_TRACE_DESKTOP_CHANNEL` to be `release` or
 from GitHub Actions repository variables. It fails if either value is absent or
 invalid. Only the public URL and `sb_publishable_` key belong there: never use a
 service-role key, token, provider credential, or `.env` file. For a deliberately
-local-only build set `FIT_TRACE_DESKTOP_CHANNEL=guest-only` and leave both public
-values unset. The generated `desktop-public-config.json` contains exactly
+local-only build run `FIT_TRACE_DESKTOP_CHANNEL=guest-only pnpm desktop:build`
+(and then `pnpm desktop:package`) with both public values unset; see
+[`local-daemon.md`](local-daemon.md#unsigned-internal-builds-pnpm-desktoppackage).
+An unset channel is a build error, never an implicit guest-only default. The
+generated `desktop-public-config.json` contains exactly
 `schemaVersion`, `channel`, `supabaseUrl`, and `supabasePublishableKey`; guest-only
 uses empty strings for the two auth fields. Each build replaces any prior file.
 
