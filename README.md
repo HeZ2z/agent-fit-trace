@@ -43,4 +43,6 @@ pnpm typecheck
 - [MVP design](docs/mvp-design.md)
 - [pi integration spec](docs/extension-skill-spec.md)
 - [Local daemon & desktop shell](docs/local-daemon.md)
+- [Real-app acceptance check](docs/verification.md)
+- [Coaching prompt evaluation](docs/prompt-eval.md)
 - [MCP server](docs/mcp.md)

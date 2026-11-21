@@ -35,17 +35,21 @@ export function AnalysisView({ analysis }: { analysis: AnalysisResult }) {
       <section>
         <h2>{t("Metrics")}</h2>
         <ul className="analysis-metrics">
-          <li>{t("Sessions: {count}", { count: metrics.sessions })}</li>
-          <li>{t("Sets: {count}", { count: metrics.total_sets })}</li>
-          <li>{t("Reps: {count}", { count: metrics.total_reps })}</li>
-          <li>{t("Volume: {volume} kg", { volume: metrics.volume_kg })}</li>
-          <li>
+          <li data-metric="sessions">{t("Sessions: {count}", { count: metrics.sessions })}</li>
+          <li data-metric="sets">{t("Sets: {count}", { count: metrics.total_sets })}</li>
+          <li data-metric="reps">{t("Reps: {count}", { count: metrics.total_reps })}</li>
+          <li data-metric="volume">{t("Volume: {volume} kg", { volume: metrics.volume_kg })}</li>
+          <li data-metric="avg_rpe">
             {t("Average RPE: {rpe}", {
               rpe: metrics.avg_rpe === null ? t("n/a") : metrics.avg_rpe,
             })}
           </li>
-          <li>{t("Average rest: {days} days", { days: metrics.avg_rest_days })}</li>
-          <li>{t("Max gap: {days} days", { days: metrics.max_gap_days })}</li>
+          <li data-metric="avg_rest">
+            {t("Average rest: {days} days", { days: metrics.avg_rest_days })}
+          </li>
+          <li data-metric="max_gap">
+            {t("Max gap: {days} days", { days: metrics.max_gap_days })}
+          </li>
         </ul>
       </section>
 
@@ -91,7 +95,7 @@ export function AnalysisView({ analysis }: { analysis: AnalysisResult }) {
         )}
       </section>
 
-      <p className="analysis-source-count">
+      <p className="analysis-source-count" data-metric="sources">
         {t("Computed from {count} record(s).", { count: analysis.source_records.length })}
       </p>
     </>

@@ -81,6 +81,10 @@ git diff --check
 
 Current [CI](.github/workflows/ci.yml) runs `pnpm test` and `pnpm typecheck`; verify the build locally. The repository has no separate lint or static analysis script. `typecheck` provides TypeScript static checks. Run any additional checks introduced in the future as well.
 
+For App/UI or daemon changes, run `pnpm build && pnpm verify:app`. It starts a throwaway daemon, drives the built app as the guest through logging, reload, history, and analysis, keeps screenshots and a manifest under `.fit-trace/verification/`, and cross-checks the analysis API. The manifest records commit/dirty state, the `app/dist` digest, the saved record ids, and confirmed cleanup.
+
+For desktop shell, packaging, daemon spawn/quit, or restart-persistence changes, run `pnpm verify:desktop` after a guest-only package build. It launches the real `.app`, logs one workout, quits with a confirmed daemon-port release, reopens with the same data directory, and verifies history and analysis persisted. Both commands keep evidence under `.fit-trace/verification/`; see [docs/verification.md](docs/verification.md). Attach the evidence directory to the PR or state why it was not run. CI does not run either check because they need a local browser or GUI-capable macOS host.
+
 For documentation-only changes, review the content, check relative links, and run `git diff --check`. Explain why code checks were not run. If the environment prevents a required check, record the blocker and unverified scope, keep the PR in Draft, and do not report the check as passing.
 
 Add verification appropriate to the changed area:
@@ -90,7 +94,9 @@ Add verification appropriate to the changed area:
 | Shared core / domain tools | Determinism, input validation, import idempotency and conflicts, date boundaries, draft-only plan generation |
 | Data clients / API | Shared contract tests and error semantics; authorization and user data isolation when authentication is affected |
 | pi Extension / storage | Failures propagate by throwing, stored records are revalidated on load, corrupt-store errors; pi/typebox imports stay in `index.ts` |
-| App / UI | Affected interactions, loading and error states; local / HTTP paths when data modes are affected |
+| Coach prompts / Skill | Fixed-fixture behaviour per [docs/prompt-eval.md](docs/prompt-eval.md): claimed numbers traceable to tool output, insufficient evidence stated, draft plans never described as saved |
+| App / UI | Affected interactions, loading and error states; local / HTTP paths when data modes are affected; real guest flow via `pnpm verify:app` when the change crosses daemon, HTTP, or storage |
+| Desktop / packaging | Guest-only package build and launch; daemon spawn/quit; history and analysis persistence across a restart; confirmed port release via `pnpm verify:desktop` |
 | Deployment / configuration | Required environment variables, build artifacts, deployment steps, and rollback procedures |
 
 For bug fixes, add a regression test that fails without the fix and passes with it. If an automated test is not practical, explain why and provide reproducible manual verification. Tests should verify meaningful, observable behavior rather than mirror the implementation or merely increase coverage. Do not describe planned Agent execution paths as implemented.

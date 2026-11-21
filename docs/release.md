@@ -352,3 +352,11 @@ against the intended Supabase project: an existing account signed in, remained
 signed in after quitting and reopening at the same origin, and returned to the
 local guest after sign-out. Live token refresh and switching between two accounts
 were not exercised; Windows and Linux packaged launches also remain untested.
+
+The guest-only packaged path also has a repeatable local check:
+`pnpm verify:desktop` builds the package with `package:dir`, logs one workout
+through the real `.app`, quits with a confirmed daemon-port release, reopens
+with the same data directory, and verifies the record and analysis persisted
+(`docs/verification.md`). It covers the unsigned guest-only macOS package only;
+signed/release-channel runs, signing, notarization, and auto-update remain
+manual release work.
