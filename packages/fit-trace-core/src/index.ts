@@ -11,5 +11,6 @@ export * from "./schema.ts";
 export * from "./metrics.ts";
 export * from "./analyze.ts";
 export * from "./plan.ts";
+export * from "./toolText.ts";
 export * from "./canonical.ts";
 export * from "./exercises/index.ts";

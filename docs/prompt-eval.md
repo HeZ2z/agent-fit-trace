@@ -18,7 +18,7 @@ evaluating before scoring.
 | Entry | Prompt source | Tools exposed | Can produce a draft plan? | Can save? | Local run |
 | --- | --- | --- | --- | --- | --- |
 | **MCP host** | `.pi/skills/training-coach/SKILL.md`, served as the `training-coach` MCP prompt (`packages/fit-trace-mcp/src/prompts.ts:33-41`, `packages/fit-trace-mcp/src/server.ts:27-42`) | `import_workout`, `get_training_history`, `analyze_progress`, `generate_next_plan` (`packages/fit-trace-mcp/src/tools.ts:124-234`; `docs/mcp.md:92-100`) | **Yes**, `generate_next_plan` returns `is_draft: true` / `requires_confirmation: true` and never writes (`packages/fit-trace-mcp/src/tools.ts:208-233`) | `import_workout` can save a workout record; no tool saves a plan | Yes, see below |
-| **pi extension normal mode** | Same Skill, auto-discovered from `.pi/skills/`; the extension is auto-loaded from `.pi/extensions/` (`.pi/extensions/fit-trace/index.ts:7`) | Same four tools (`index.ts:382-385`); coached mode registers only two and returns early (`index.ts:375-379`) | **Yes**, same draft-only tool (`index.ts:322-352`) | `import_workout` can save a workout record; no plan write | Yes, see below |
+| **pi extension normal mode** | Same Skill, auto-discovered from `.pi/skills/`; the extension is auto-loaded from `.pi/extensions/` (`.pi/extensions/fit-trace/index.ts:7`) | Same four tools (`index.ts:382-385`); coached mode registers only two and returns early (`index.ts:375-379`). Normal mode also exposes pi's built-in coding tools unless `--no-builtin-tools` is passed | **Yes**, same draft-only tool (`index.ts:322-352`) | `import_workout` can save a workout record; no plan write | Yes, see below |
 | **App local pi (coached)** | `COACHED_SYSTEM_PROMPT` in `server/coaching/piProcessAdapter.ts:78-85`; `--no-skills` is passed (`:93-112`), so the Skill is **not** loaded | `COACHED_TOOL_NAMES` only: `get_training_history`, `analyze_progress` (`packages/fit-trace-api-contracts/src/coaching.ts:167`; allowlist `server/coaching/coachedToolPolicy.ts:23-25`) | **No** — `generate_next_plan` is explicitly denied (`coachedToolPolicy.ts:28-39`) | No write tools; the run cannot confirm dialogs or persist a plan | Yes, see below |
 | **Cloud coach** | `SYSTEM_PROMPT` in `server/cloud/openRouterProvider.ts:199-205` (default `builtin` agent) or the same text in `server/cloud/piAgentProvider.ts:86-92` (agent `pi-agent-core`); selection is in `server/cloud/workerEntrypoint.ts:41-48` | Only the two history/analysis tools (`openRouterProvider.ts:207-246`; `piAgentProvider.ts:485-525`) | **No** | No write tools; the prompt forbids claiming a write or a confirmed plan (`openRouterProvider.ts:203`) | No local path; requires a hosted deployment with cloud coaching available (`docs/coaching-api.md:116-125`) |
 
@@ -70,14 +70,16 @@ transcript.
 
 ```sh
 PI_FIT_TRACE_STORE=/tmp/prompt-eval-02-store.json \
-  pi -a --no-context-files --name prompt-eval-02-A
+  pi -a --no-context-files --no-builtin-tools --name prompt-eval-02-A
 ```
 
 `-a` trusts the repo-local extension/skill for this run; `--no-context-files`
 keeps `AGENTS.md` from becoming an uncontrolled extra prompt (state that choice
-in the evidence). Do not pass `--no-skills`; that is the coached-mode isolation
-flag, not the normal-mode entry. Do not pass `--continue`/`--resume`: each run
-must start a new session.
+in the evidence). `--no-builtin-tools` keeps the four extension tools but removes
+pi's `read`/`bash`/`edit`/`write`, so the model cannot inspect the store or the
+extension source during a coaching evaluation. Do not pass `--no-skills`; that
+is the coached-mode isolation flag, not the normal-mode entry. Do not pass
+`--continue`/`--resume`: each run must start a new session.
 
 **App local pi (coached).** Build once, start the daemon with an isolated data
 directory, and seed the fixture into its guest store:
@@ -125,6 +127,12 @@ Score each criterion **pass / fail** (or `n/a` only where noted). Do not award
 partial credit. "Tool output" means the structured result of
 `get_training_history` / `analyze_progress` (and, for scenario 03, the draft-plan
 tool).
+
+The model sees a tool's `content.text`, not its `details`/`structuredContent`
+payload (that payload is for the UI or server-side analysis). Score what the
+model could actually read. If the required ids, trends, flags, or recommendation
+bodies are absent from the text, mark the criterion failed: that is a tool-output
+gap, not permission to infer the missing values.
 
 If any tool call returns an error (`isError`, `run_error`, or a refused tool),
 the answer must surface that failure honestly and must not invent the missing
@@ -262,6 +270,10 @@ identifiers out; the transcript excerpt is enough to defend the score.
   entries, and record the entry's actual tool surface.
 - **Prompt changes still need normal tests.** Run `pnpm test`, `pnpm typecheck`,
   and the relevant deterministic-core tests. This kit does not replace them.
+- **Tool text is the model's context.** `details` never reaches a pi run's
+  model. When a scenario fails because numbers, ids, flags, or recommendation
+  bodies are missing, fix the tool's bounded `content.text` before changing the
+  prompt.
 - **Fixture shape only.** Validation covers `validateWorkoutRecord`; it says
   nothing about provider billing, hosted deployment, auth, quota, or sync.
 

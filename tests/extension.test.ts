@@ -69,15 +69,27 @@ test("drives import -> history -> analyze -> draft plan through the adapter", as
 
     const history = await tools.get("get_training_history")!.execute("call", {}, undefined, undefined, ctx);
     assert.equal(history.details.total, 3);
+    const historyText = history.content[0].text;
+    assert.match(historyText, /^Returned 3 of 3 matching record\(s\)\./);
+    assert.match(historyText, /2026-09-01-strength \| 2026-09-01 \| strength \| bench_press \(3 sets\), squat \(3 sets\)/);
+    assert.match(historyText, /2026-09-08-strength/);
 
     const analysis = await tools.get("analyze_progress")!.execute("call", {}, undefined, undefined, ctx);
     assert.equal(analysis.details.metrics.sessions, 3);
     assert.equal(analysis.details.metrics.volume_kg, 8325);
+    const analysisText = analysis.content[0].text;
+    assert.match(analysisText, /^Analyzed 3 session\(s\): volume 8325 kg/);
+    assert.match(analysisText, /Barbell Bench Press - Medium Grip: 93\.33 -> 99\.17 kg/);
+    assert.match(analysisText, /Source records: 2026-09-01-strength, 2026-09-04-strength, 2026-09-08-strength\./);
 
     const plan = await tools.get("generate_next_plan")!.execute("call", { goal: "strength" }, undefined, undefined, ctx);
     assert.equal(plan.details.is_draft, true);
     assert.equal(plan.details.requires_confirmation, true);
     assert.ok(plan.details.recommendations.length > 0);
+    const planText = plan.content[0].text;
+    assert.match(planText, /^Generated a draft plan with \d+ recommendation\(s\)\. This is a draft and requires user confirmation\./);
+    assert.match(planText, /Evidence: \{/);
+    assert.match(planText, /2026-09-01-strength/);
   } finally {
     delete process.env.PI_FIT_TRACE_STORE;
     await rm(dir, { recursive: true, force: true });

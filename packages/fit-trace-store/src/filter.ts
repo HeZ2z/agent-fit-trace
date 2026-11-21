@@ -1,6 +1,7 @@
 import {
   assertOrderedDateRange,
   assertValidFilterDate,
+  createExerciseMatcher,
   toDateKey,
 } from "@agent-fit-trace/core";
 import type { HistoryFilter, WorkoutRecord } from "@agent-fit-trace/core";
@@ -25,9 +26,14 @@ export function assertValidHistoryFilter(filter: HistoryFilter = {}): void {
 
 /**
  * Pure history filtering shared by the JSON and SQLite backends: validated date
- * bounds, case-insensitive exercise match, then offset/limit paging. Callers
- * sort their records before invoking this so page ordering stays identical
- * across backends.
+ * bounds, alias-aware exercise match, then offset/limit paging. Callers sort
+ * their records before invoking this so page ordering stays identical across
+ * backends.
+ *
+ * The exercise match reuses core's analysis matcher, so `get_training_history`
+ * selects exactly the records `analyze_progress` would: raw case-insensitive
+ * equality OR the same resolved catalog entry (aliases, canonical names,
+ * `_`/`-`/space variants). Unknown custom names stay exact-only.
  */
 export function filterRecordsPage(
   records: WorkoutRecord[],
@@ -50,9 +56,9 @@ export function filterRecordsPage(
     filtered = filtered.filter((record) => toDateKey(record.date) <= toKey);
   }
   if (filter.exercise !== undefined) {
-    const needle = filter.exercise.toLowerCase();
+    const matchesExercise = createExerciseMatcher([filter.exercise]);
     filtered = filtered.filter((record) =>
-      record.exercises.some((exercise) => exercise.name.toLowerCase() === needle),
+      record.exercises.some((exercise) => matchesExercise(exercise.name)),
     );
   }
 
